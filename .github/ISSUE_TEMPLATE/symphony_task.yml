@@ -1,0 +1,31 @@
+name: Symphony task
+description: Work item for the Personal Symphony orchestrator
+title: "[Symphony]: "
+labels: ["symphony"]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What should the coding agent accomplish?
+      placeholder: Describe the concrete outcome expected from this task.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the checks that must pass before handoff.
+      placeholder: |
+        - Builds successfully
+        - Tests cover the changed behavior
+        - Documentation updated
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Links, files, constraints, or prior decisions the agent should know.
+    validations:
+      required: false

@@ -1,0 +1,5 @@
+(library
+ (name symphony_backend)
+ (public_name personal_symphony.backend)
+ (wrapped false)
+ (libraries unix yojson))

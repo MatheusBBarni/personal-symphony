@@ -1,0 +1,4 @@
+(executable
+ (public_name symphony)
+ (name main)
+ (libraries symphony_backend cmdliner unix yojson))

@@ -1,0 +1,9 @@
+node_modules/
+_build/
+dist/
+apps/frontend/lib/
+.symphony-workspaces/
+*.install
+.env
+.env.*
+!.env.example
