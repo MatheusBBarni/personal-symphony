@@ -3,6 +3,7 @@ type tracker = {
   owner : string;
   repo : string;
   project_number : int;
+  api_key_env : string;
   api_key : string option;
   active_states : string list;
   terminal_states : string list;
@@ -25,6 +26,8 @@ type t = {
   server : server;
 }
 
+type readiness_gap = { requirement : string; remediation : string }
+
 exception Invalid_config of string
 
 let default_active_states = [ "Todo"; "In Progress" ]
@@ -37,6 +40,11 @@ let resolve_secret = function
       | Some var -> Util.getenv_nonempty var
       | None when s <> "" -> Some s
       | _ -> None)
+
+let resolve_env_secret env_name =
+  match Util.getenv_nonempty env_name with
+  | Some _ as token -> token
+  | None -> if env_name = "GITHUB_TOKEN" then Util.getenv_nonempty "GH_TOKEN" else None
 
 let expand_path ~base_dir path =
   let path =
@@ -102,6 +110,7 @@ let from_workflow workflow =
         owner;
         repo;
         project_number;
+        api_key_env = "GITHUB_TOKEN";
         api_key;
         active_states;
         terminal_states;
@@ -127,7 +136,104 @@ let from_workflow workflow =
     server = { port = Simple_yaml.get_int "port" server_raw };
   }
 
+let member name = function
+  | `Assoc fields -> List.assoc_opt name fields |> Option.value ~default:`Null
+  | _ -> `Null
+
+let json_string name json ~default =
+  match member name json with `String s -> s | `Int i -> string_of_int i | _ -> default
+
+let json_int name json ~default =
+  match member name json with `Int i -> i | `String s -> Option.value (int_of_string_opt s) ~default | _ -> default
+
+let json_string_list name json ~default =
+  match member name json with
+  | `List values ->
+      values
+      |> List.filter_map (function `String s -> Some s | `Int i -> Some (string_of_int i) | _ -> None)
+  | _ -> default
+
+let from_settings_file ~workspace_root path =
+  let root =
+    try Yojson.Safe.from_file path
+    with Yojson.Json_error msg -> raise (Invalid_config ("settings.json parse error: " ^ msg))
+  in
+  let tracker_raw = member "tracker" root in
+  let project_raw = member "project" root in
+  let polling_raw = member "polling" root in
+  let workspace_raw = member "workspace" root in
+  let agent_raw = member "agent" root in
+  let codex_raw = member "codex" root in
+  let server_raw = member "server" root in
+  let kind = json_string "kind" tracker_raw ~default:"github" in
+  if kind <> "github" then raise (Invalid_config "tracker.kind must be github for this implementation");
+  let api_key_env = json_string "apiKeyEnv" tracker_raw ~default:"GITHUB_TOKEN" in
+  let workspace_root_value =
+    json_string "root" workspace_raw ~default:".symphony/workspaces" |> expand_path ~base_dir:workspace_root
+  in
+  {
+    workflow_path = path;
+    tracker =
+      {
+        kind;
+        owner = json_string "owner" tracker_raw ~default:"";
+        repo = json_string "repo" tracker_raw ~default:"";
+        project_number = json_int "projectNumber" tracker_raw ~default:0;
+        api_key_env;
+        api_key = resolve_env_secret api_key_env;
+        active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
+        terminal_states = json_string_list "terminalStates" project_raw ~default:default_terminal_states;
+        project_status_field = json_string "statusField" project_raw ~default:"Status";
+      };
+    polling = { interval_ms = positive "polling.intervalMs" (json_int "intervalMs" polling_raw ~default:30000) };
+    workspace = { root = workspace_root_value };
+    agent =
+      {
+        max_concurrent_agents =
+          positive "agent.maxConcurrentAgents" (json_int "maxConcurrentAgents" agent_raw ~default:2);
+        max_turns = positive "agent.maxTurns" (json_int "maxTurns" agent_raw ~default:10);
+        max_retry_backoff_ms =
+          positive "agent.maxRetryBackoffMs" (json_int "maxRetryBackoffMs" agent_raw ~default:300000);
+      };
+    codex =
+      {
+        command = json_string "command" codex_raw ~default:"codex app-server";
+        turn_timeout_ms = json_int "turnTimeoutMs" codex_raw ~default:3600000;
+        read_timeout_ms = json_int "readTimeoutMs" codex_raw ~default:5000;
+        stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
+      };
+    server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
+  }
+
+let is_placeholder = function "" | "your-org" | "your-repo" -> true | _ -> false
+
+let readiness_gaps config =
+  let gaps = ref [] in
+  let add requirement remediation = gaps := { requirement; remediation } :: !gaps in
+  if is_placeholder config.tracker.owner then
+    add "tracker.owner" "Set tracker.owner in .symphony/settings.json to the GitHub organization or user that owns the repository.";
+  if is_placeholder config.tracker.repo then
+    add "tracker.repo" "Set tracker.repo in .symphony/settings.json to the GitHub repository name.";
+  if config.tracker.project_number <= 0 then
+    add "tracker.projectNumber" "Set tracker.projectNumber in .symphony/settings.json to a positive GitHub Projects number.";
+  if config.tracker.api_key = None then
+    add ("environment." ^ config.tracker.api_key_env)
+      (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env);
+  if Util.trim config.codex.command = "" then
+    add "codex.command" "Set codex.command in .symphony/settings.json to the command that starts the Codex app server.";
+  if config.tracker.active_states = [] then
+    add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
+  if config.tracker.terminal_states = [] then
+    add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
+  List.rev !gaps
+
 let validate_for_dispatch config =
-  if config.tracker.api_key = None then Error "missing GitHub token (set GITHUB_TOKEN or tracker.api_key)"
-  else if Util.trim config.codex.command = "" then Error "codex.command must be present"
-  else Ok ()
+  match readiness_gaps config with
+  | [] -> Ok ()
+  | gaps ->
+      let message =
+        gaps
+        |> List.map (fun gap -> gap.requirement ^ ": " ^ gap.remediation)
+        |> String.concat "; "
+      in
+      Error message

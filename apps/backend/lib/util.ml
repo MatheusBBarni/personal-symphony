@@ -33,6 +33,12 @@ let read_file path =
       let len = in_channel_length ic in
       really_input_string ic len)
 
+let write_file path content =
+  let oc = open_out_bin path in
+  Fun.protect
+    ~finally:(fun () -> close_out_noerr oc)
+    (fun () -> output_string oc content)
+
 let write_stdout_line s =
   output_string stdout (s ^ "\n");
   flush stdout

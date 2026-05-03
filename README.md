@@ -1,8 +1,9 @@
 # Personal Symphony
 
-Personal Symphony is a pnpm monorepo scaffold for the Symphony service described in
-[Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). The backend is OCaml, the
-frontend is ReScript React, and the UI is styled with Tailwind.
+Personal Symphony is an installable `symphony` CLI for the Symphony service described in
+[Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). The product repository keeps
+the OCaml backend, the ReScript React dashboard, and the npm launcher; each workspace repository gets
+its own repository-owned runtime contract under `.symphony/`.
 
 This implementation variant targets GitHub Issues plus GitHub Projects for issue tracking.
 
@@ -13,12 +14,15 @@ This implementation variant targets GitHub Issues plus GitHub Projects for issue
 - `apps/frontend`: ReScript React/Vite dashboard that consumes the backend state API.
 - `.github/ISSUE_TEMPLATE`: issue template for work items Symphony can dispatch.
 - `.github/project-tracking.md`: required GitHub Project setup and workflow notes.
-- `WORKFLOW.example.md`: example repository-owned runtime contract.
+- `WORKFLOW.example.md`: legacy/developer fixture for the earlier root workflow format.
+- `bin/symphony.js`: npm `bin` launcher that runs a packaged platform binary or the local dune
+  executable in product-repository development.
 
 ## Prerequisites
 
 - `pnpm` 10.x
-- OCaml toolchain with `opam`, `dune`, `cmdliner`, `yojson`, and `alcotest`
+- OCaml toolchain with `opam`, `dune`, `cmdliner`, `yojson`, and `alcotest` for product-repository
+  development only
 - GitHub CLI: `gh`
 - A GitHub token available as `GITHUB_TOKEN` or `GH_TOKEN`
 - `codex` CLI available on `PATH` when running real agent sessions
@@ -26,7 +30,68 @@ This implementation variant targets GitHub Issues plus GitHub Projects for issue
 The local scripts run OCaml commands through `opam exec`, so make sure the active opam switch has
 the required packages installed.
 
-## Set Up In A Repository
+## Install
+
+The npm package exposes a global `symphony` command:
+
+```sh
+npm install -g personal-symphony
+```
+
+Published packages should include a platform-specific binary at `vendor/symphony-<platform>-<arch>`.
+When running from this product repository, the Node launcher falls back to:
+
+```sh
+opam exec -- dune exec symphony --
+```
+
+## Set Up In A Workspace Repository
+
+Run the command from the root of a Git repository:
+
+```sh
+symphony init
+symphony
+```
+
+`symphony init` and the first `symphony` run are idempotent. They create missing runtime files under
+`.symphony/` without overwriting user-edited files:
+
+- `.symphony/settings.json`
+- `.symphony/prompt.md`
+- `.symphony/.env.example`
+- `.symphony/.gitignore`
+- `.symphony/.env`
+- `.symphony/state/`
+- `.symphony/workspaces/`
+
+`.symphony/.gitignore` ignores local secrets and runtime state:
+
+```gitignore
+/.env
+/state/
+/workspaces/
+```
+
+Edit `.symphony/settings.json` to set the GitHub owner, repository, project number, project states,
+and runtime commands. Secrets are referenced by environment variable name, not stored in settings:
+
+```json
+{
+  "tracker": {
+    "kind": "github",
+    "owner": "your-org",
+    "repo": "your-repo",
+    "projectNumber": 1,
+    "apiKeyEnv": "GITHUB_TOKEN"
+  }
+}
+```
+
+If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
+steps. Dispatch remains disabled until those gaps are resolved.
+
+## Product Repository Development
 
 1. Install dependencies:
 
@@ -34,7 +99,7 @@ the required packages installed.
    pnpm install
    ```
 
-2. Create a workflow file for the repository:
+2. Optionally create a legacy workflow file for product-repository fixture runs:
 
    ```sh
    cp WORKFLOW.example.md WORKFLOW.md
@@ -111,9 +176,11 @@ The frontend proxies `/api/*` requests to the backend at `127.0.0.1:8080`.
 pnpm backend:build
 pnpm backend:test
 pnpm frontend:build
+opam exec -- dune exec symphony -- --once
+opam exec -- dune exec symphony -- init
+opam exec -- dune exec symphony -- --web --port 8080
 opam exec -- dune exec symphony -- --once WORKFLOW.md
-opam exec -- dune exec symphony -- --port 8080 WORKFLOW.md
 ```
 
-If no GitHub token is configured, the backend still starts and serves a runtime snapshot, but
-`last_error` reports the missing token and live issue dispatch is disabled.
+If no GitHub token is configured, the runtime still starts, but readiness gaps report the missing
+token and live issue dispatch is disabled.

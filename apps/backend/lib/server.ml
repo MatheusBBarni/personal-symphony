@@ -3,7 +3,72 @@ let response ?(status = "200 OK") ?(content_type = "application/json") body =
     status content_type (String.length body) body
 
 let html =
-  "<!doctype html><html><head><title>Personal Symphony</title></head><body><h1>Personal Symphony</h1><p>Use /api/v1/state for JSON state.</p></body></html>"
+  {|<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personal Symphony</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #09090b; color: #f4f4f5; }
+    body { margin: 0; min-height: 100vh; background: #09090b; }
+    header { border-bottom: 1px solid #27272a; padding: 18px 24px; }
+    main { max-width: 1040px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 22px; margin: 0; letter-spacing: 0; }
+    .muted { color: #a1a1aa; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 20px 0; }
+    .metric, .panel { border: 1px solid #27272a; border-radius: 8px; background: #18181b; padding: 16px; }
+    .metric strong { display: block; font-size: 28px; margin-top: 6px; }
+    .gaps { border-color: #92400e; background: #431407; color: #ffedd5; }
+    .gaps li { margin: 8px 0; }
+    code { color: #bae6fd; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Personal Symphony</h1>
+    <div class="muted">GitHub Issues + Projects orchestration</div>
+  </header>
+  <main>
+    <section class="metrics">
+      <div class="metric"><span class="muted">Running</span><strong id="running">-</strong></div>
+      <div class="metric"><span class="muted">Retrying</span><strong id="retrying">-</strong></div>
+      <div class="metric"><span class="muted">Total tokens</span><strong id="tokens">-</strong></div>
+    </section>
+    <section id="readiness" class="panel gaps" hidden>
+      <strong>Readiness Gaps</strong>
+      <ul id="gap-list"></ul>
+    </section>
+    <section class="panel">
+      <div class="muted">Generated</div>
+      <div id="generated">Loading...</div>
+      <p class="muted">State API: <code>/api/v1/state</code></p>
+    </section>
+  </main>
+  <script>
+    const text = (id, value) => { document.getElementById(id).textContent = String(value); };
+    async function loadState() {
+      const response = await fetch("/api/v1/state", { headers: { Accept: "application/json" } });
+      const state = await response.json();
+      text("running", state.counts?.running ?? 0);
+      text("retrying", state.counts?.retrying ?? 0);
+      text("tokens", state.codex_totals?.total_tokens ?? 0);
+      text("generated", state.generated_at ?? "");
+      const gaps = Array.isArray(state.readiness_gaps) ? state.readiness_gaps : [];
+      const panel = document.getElementById("readiness");
+      const list = document.getElementById("gap-list");
+      list.replaceChildren(...gaps.map((gap) => {
+        const item = document.createElement("li");
+        item.textContent = `${gap.requirement}: ${gap.remediation}`;
+        return item;
+      }));
+      panel.hidden = gaps.length === 0;
+    }
+    loadState().catch((error) => text("generated", error.message));
+    setInterval(() => loadState().catch(() => {}), 5000);
+  </script>
+</body>
+</html>|}
 
 let parse_path request =
   match String.split_on_char ' ' request with _method :: path :: _ -> path | _ -> "/"
