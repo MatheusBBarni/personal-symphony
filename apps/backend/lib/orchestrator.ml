@@ -21,6 +21,7 @@ type t = {
   mutable children : child list;
   retry_due : (string, float) Hashtbl.t;
   attempts : (string, int) Hashtbl.t;
+  blocked : (string, string) Hashtbl.t;
   launch : launch;
   fetch : fetch;
   set_status : set_status;
@@ -111,6 +112,9 @@ let render_commit_failed issue_identifier error =
 let running_ids state = List.map (fun (row : Runtime_state.running) -> row.issue.id) state.Runtime_state.running
 let is_running state issue = List.exists (( = ) issue.Issue.id) (running_ids state)
 let string_equal_ci a b = String.lowercase_ascii a = String.lowercase_ascii b
+let block_key issue = issue.Issue.id ^ "\x00" ^ String.lowercase_ascii issue.Issue.state
+let is_blocked orchestrator issue = Hashtbl.mem orchestrator.blocked (block_key issue)
+
 let retrying_due orchestrator issue =
   match Hashtbl.find_opt orchestrator.retry_due issue.Issue.id with
   | None -> true
@@ -297,6 +301,7 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     children = [];
     retry_due = Hashtbl.create 16;
     attempts = Hashtbl.create 16;
+    blocked = Hashtbl.create 16;
     launch;
     fetch;
     set_status;
@@ -488,6 +493,25 @@ let mark_retrying orchestrator issue_id error =
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
       render_dispatch_retrying row.issue.identifier next_attempt error
 
+let non_retryable_completion_error = function
+  | "commit required but agent produced no code changes" | "commit required but no staged changes were found" -> true
+  | _ -> false
+
+let mark_blocked orchestrator issue_id error =
+  match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
+  | None -> ()
+  | Some row ->
+      Hashtbl.remove orchestrator.attempts issue_id;
+      Hashtbl.remove orchestrator.retry_due issue_id;
+      Hashtbl.replace orchestrator.blocked (block_key row.issue) error;
+      orchestrator.state <-
+        {
+          orchestrator.state with
+          running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) orchestrator.state.running;
+          retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
+          last_error = Some error;
+        }
+
 let complete_child orchestrator child =
   let issue_id = child.issue_id in
   Hashtbl.remove orchestrator.attempts issue_id;
@@ -508,7 +532,8 @@ let mark_completed orchestrator child =
   | Error error ->
       set_error orchestrator error;
       render_commit_failed child.issue_identifier error;
-      mark_retrying orchestrator issue_id error
+      if non_retryable_completion_error error then mark_blocked orchestrator issue_id error
+      else mark_retrying orchestrator issue_id error
   | Ok () ->
       (match next_status with
       | None -> complete_child orchestrator child
@@ -580,14 +605,18 @@ let poll_once orchestrator =
   render_poll_started orchestrator;
   try
     let candidates = orchestrator.fetch orchestrator.tracker in
-    orchestrator.state <- { orchestrator.state with Runtime_state.issues = candidates; last_error = None };
+    let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
+    orchestrator.state <- { orchestrator.state with Runtime_state.issues = candidates; last_error };
     let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
-    if available > 0 then
+    let dispatchable =
       candidates
-      |> List.filter (fun issue -> (not (is_running orchestrator.state issue)) && retrying_due orchestrator issue)
-      |> take available
-      |> List.iter (dispatch_issue orchestrator);
-    render_poll_completed orchestrator (List.length candidates)
+      |> List.filter (fun issue ->
+             (not (is_running orchestrator.state issue))
+             && (not (is_blocked orchestrator issue))
+             && retrying_due orchestrator issue)
+    in
+    if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
+    render_poll_completed orchestrator (List.length dispatchable)
   with exn ->
     let msg = Printexc.to_string exn in
     set_error orchestrator msg;

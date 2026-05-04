@@ -18,6 +18,16 @@ function Dashboard(props) {
     ],
     className: "rounded-lg border border-zinc-800 bg-zinc-900 p-4"
   });
+  let issueStateColumns = issues => {
+    let states = [];
+    for (let i = 0, i_finish = issues.length; i < i_finish; ++i) {
+      let issue = issues[i];
+      if (issue !== undefined && !states.includes(issue.state)) {
+        states.push(issue.state);
+      }
+    }
+    return states;
+  };
   let content;
   if (error !== undefined) {
     content = JsxRuntime.jsxs("div", {
@@ -51,12 +61,42 @@ function Dashboard(props) {
           className: "grid gap-4 sm:grid-cols-3"
         }),
         tmp,
+        JsxRuntime.jsx("section", {
+          children: JsxRuntime.jsxs("div", {
+            children: [
+              JsxRuntime.jsxs("div", {
+                children: [
+                  JsxRuntime.jsx("div", {
+                    children: "Generated",
+                    className: "text-xs uppercase text-zinc-500"
+                  }),
+                  JsxRuntime.jsx("div", {
+                    children: snapshot.generatedAt,
+                    className: "mt-1 text-sm text-zinc-200"
+                  })
+                ]
+              }),
+              JsxRuntime.jsxs("div", {
+                children: [
+                  "State API: ",
+                  JsxRuntime.jsx("code", {
+                    children: "/api/v1/state",
+                    className: "text-sky-200"
+                  })
+                ],
+                className: "text-sm text-zinc-400"
+              })
+            ],
+            className: "grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
+          }),
+          className: "mb-6 mt-5 max-w-xl rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3"
+        }),
         JsxRuntime.jsxs("section", {
           children: [
             JsxRuntime.jsxs("div", {
               children: [
                 JsxRuntime.jsx("div", {
-                  children: "Project issues",
+                  children: "Project board",
                   className: "text-sm font-medium text-zinc-200"
                 }),
                 JsxRuntime.jsx("div", {
@@ -67,85 +107,64 @@ function Dashboard(props) {
               className: "flex items-center justify-between border-b border-zinc-800 px-4 py-3"
             }),
             match !== 0 ? JsxRuntime.jsx("div", {
-                children: snapshot.issues.map(issue => JsxRuntime.jsxs("article", {
-                  children: [
-                    JsxRuntime.jsxs("div", {
+                children: JsxRuntime.jsx("div", {
+                  children: issueStateColumns(snapshot.issues).map(state => {
+                    let stateIssues = snapshot.issues.filter(issue => issue.state === state);
+                    return JsxRuntime.jsxs("section", {
                       children: [
                         JsxRuntime.jsxs("div", {
                           children: [
-                            JsxRuntime.jsx("span", {
-                              children: issue.identifier,
-                              className: "rounded-md border border-sky-800 bg-sky-950 px-2 py-0.5 text-xs font-medium text-sky-200"
-                            }),
                             JsxRuntime.jsx("h2", {
-                              children: issue.title,
+                              children: state,
                               className: "text-sm font-semibold text-zinc-100"
+                            }),
+                            JsxRuntime.jsx("span", {
+                              children: stateIssues.length.toString(),
+                              className: "rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400"
                             })
                           ],
-                          className: "flex flex-wrap items-center gap-2"
+                          className: "flex items-center justify-between border-b border-zinc-800 px-3 py-2.5"
                         }),
-                        JsxRuntime.jsx("p", {
-                          children: issue.description,
-                          className: "mt-2 max-w-3xl text-sm leading-6 text-zinc-400"
+                        JsxRuntime.jsx("div", {
+                          children: stateIssues.map(issue => JsxRuntime.jsxs("article", {
+                            children: [
+                              JsxRuntime.jsxs("div", {
+                                children: [
+                                  JsxRuntime.jsx("span", {
+                                    children: issue.identifier,
+                                    className: "rounded-md border border-sky-800 bg-sky-950 px-2 py-0.5 text-xs font-medium text-sky-200"
+                                  }),
+                                  JsxRuntime.jsx("span", {
+                                    children: "read-only",
+                                    className: "text-xs text-zinc-500"
+                                  })
+                                ],
+                                className: "flex flex-wrap items-center gap-2"
+                              }),
+                              JsxRuntime.jsx("h3", {
+                                children: issue.title,
+                                className: "mt-2 text-sm font-semibold leading-5 text-zinc-100"
+                              }),
+                              JsxRuntime.jsx("p", {
+                                children: issue.description,
+                                className: "mt-2 line-clamp-4 text-sm leading-6 text-zinc-400"
+                              })
+                            ],
+                            className: "rounded-md border border-zinc-800 bg-zinc-900 p-3"
+                          })),
+                          className: "space-y-3 p-3"
                         })
                       ],
-                      className: "min-w-0"
-                    }),
-                    JsxRuntime.jsx("div", {
-                      children: JsxRuntime.jsx("span", {
-                        children: issue.state,
-                        className: "rounded-md border border-emerald-800 bg-emerald-950 px-2.5 py-1 text-xs font-medium text-emerald-200"
-                      }),
-                      className: "flex items-start md:justify-end"
-                    })
-                  ],
-                  className: "grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto]"
-                })),
-                className: "divide-y divide-zinc-800"
+                      className: "min-h-48 rounded-lg border border-zinc-800 bg-zinc-950"
+                    });
+                  }),
+                  className: "grid min-w-[760px] auto-cols-[minmax(240px,1fr)] grid-flow-col gap-4"
+                }),
+                className: "overflow-x-auto p-4"
               }) : JsxRuntime.jsx("div", {
                 children: "No project issues were returned by the latest poll.",
                 className: "p-4 text-sm text-zinc-400"
               })
-          ],
-          className: "mt-6 rounded-lg border border-zinc-800 bg-zinc-900"
-        }),
-        JsxRuntime.jsxs("section", {
-          children: [
-            JsxRuntime.jsx("div", {
-              children: "Runtime Snapshot",
-              className: "border-b border-zinc-800 px-4 py-3 text-sm font-medium text-zinc-200"
-            }),
-            JsxRuntime.jsxs("div", {
-              children: [
-                JsxRuntime.jsxs("div", {
-                  children: [
-                    JsxRuntime.jsx("div", {
-                      children: "Generated",
-                      className: "text-xs uppercase text-zinc-500"
-                    }),
-                    JsxRuntime.jsx("div", {
-                      children: snapshot.generatedAt,
-                      className: "mt-1 text-sm text-zinc-200"
-                    })
-                  ],
-                  className: "rounded-md bg-zinc-950 p-4"
-                }),
-                JsxRuntime.jsxs("div", {
-                  children: [
-                    JsxRuntime.jsx("div", {
-                      children: "Tracker",
-                      className: "text-xs uppercase text-zinc-500"
-                    }),
-                    JsxRuntime.jsx("div", {
-                      children: "GitHub Issues and GitHub Projects",
-                      className: "mt-1 text-sm text-zinc-200"
-                    })
-                  ],
-                  className: "rounded-md bg-zinc-950 p-4"
-                })
-              ],
-              className: "grid gap-4 p-4 md:grid-cols-2"
-            })
           ],
           className: "mt-6 rounded-lg border border-zinc-800 bg-zinc-900"
         })

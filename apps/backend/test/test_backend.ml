@@ -886,6 +886,89 @@ let test_stage_commit_requires_code_changes () =
       | Ok () -> Alcotest.fail "empty commit-required stages must fail"
       | Error error -> Alcotest.(check string) "empty commit error" "commit required but agent produced no code changes" error)
 
+let test_orchestrator_does_not_retry_empty_commit () =
+  with_temp_dir "symphony-empty-commit-block-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "In progress" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "In progress" ];
+                    agent = "engineer";
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message };
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
+      let launches = ref 0 in
+      let statuses = ref [] in
+      let fetch _ = [ issue ] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launches;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let commit_stage _ _ _ _ = Error "commit required but agent produced no code changes" in
+      let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~commit_stage ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "first launch" 1 !launches;
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "no immediate relaunch" 1 !launches;
+      Alcotest.(check (list string)) "no status move after empty commit" [] (List.rev !statuses);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "not retrying" 0 (List.length state.retrying);
+      Alcotest.(check (option string)) "last error" (Some "commit required but agent produced no code changes") state.last_error)
+
 let () =
   Alcotest.run "symphony-backend"
     [
@@ -924,5 +1007,6 @@ let () =
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "retries when success status move fails" `Quick test_orchestrator_retries_when_success_status_move_fails;
           Alcotest.test_case "stage commit requires code changes" `Quick test_stage_commit_requires_code_changes;
+          Alcotest.test_case "does not retry empty required commits" `Quick test_orchestrator_does_not_retry_empty_commit;
         ] );
     ]
