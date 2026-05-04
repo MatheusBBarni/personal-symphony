@@ -1,8 +1,13 @@
 type request = { request_line : string; path : string; headers : (string * string) list }
 
+type live_client = {
+  oc : out_channel;
+  write_mutex : Mutex.t;
+}
+
 type live_state = {
   get_state : unit -> Runtime_state.t;
-  mutable clients : out_channel list;
+  mutable clients : live_client list;
   mutex : Mutex.t;
 }
 
@@ -250,18 +255,21 @@ let websocket_text_frame text =
 
 let snapshot_payload live = Runtime_state.to_yojson (live.get_state ()) |> Yojson.Safe.to_string
 
-let remove_client live oc =
+let remove_client live client =
   Mutex.lock live.mutex;
-  live.clients <- List.filter (fun candidate -> candidate != oc) live.clients;
+  live.clients <- List.filter (fun candidate -> candidate != client) live.clients;
   Mutex.unlock live.mutex
 
-let send_frame live oc payload =
+let send_frame live client payload =
+  Mutex.lock client.write_mutex;
   try
-    output_string oc (websocket_text_frame payload);
-    flush oc;
+    output_string client.oc (websocket_text_frame payload);
+    flush client.oc;
+    Mutex.unlock client.write_mutex;
     true
   with Sys_error _ | Unix.Unix_error _ ->
-    remove_client live oc;
+    Mutex.unlock client.write_mutex;
+    remove_client live client;
     false
 
 let broadcast_live_state live =
@@ -275,10 +283,13 @@ let broadcast_live_state live =
          List.iter (fun oc -> ignore (send_frame live oc payload)) clients)
        ())
 
-let register_client live oc =
+let make_client oc = { oc; write_mutex = Mutex.create () }
+
+let register_client live client =
   Mutex.lock live.mutex;
-  live.clients <- oc :: live.clients;
-  Mutex.unlock live.mutex
+  live.clients <- client :: live.clients;
+  Mutex.unlock live.mutex;
+  client
 
 let drain_websocket fd =
   let buffer = Bytes.create 1024 in
@@ -320,10 +331,11 @@ let handle_websocket live fd oc request =
   | Some key ->
       output_string oc (websocket_response (websocket_accept key));
       flush oc;
-      if send_frame live oc (snapshot_payload live) then (
-        register_client live oc;
+      let client = make_client oc in
+      if send_frame live client (snapshot_payload live) then (
+        ignore (register_client live client);
         drain_websocket fd;
-        remove_client live oc)
+        remove_client live client)
 
 let colors_enabled () = Sys.getenv_opt "NO_COLOR" = None
 let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
