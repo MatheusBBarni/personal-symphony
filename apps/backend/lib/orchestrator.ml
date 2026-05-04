@@ -459,6 +459,18 @@ let mark_retrying orchestrator issue_id error =
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
       render_dispatch_retrying row.issue.identifier next_attempt error
 
+let complete_child orchestrator child =
+  let issue_id = child.issue_id in
+  Hashtbl.remove orchestrator.attempts issue_id;
+  Hashtbl.remove orchestrator.retry_due issue_id;
+  orchestrator.state <-
+    {
+      orchestrator.state with
+      running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) orchestrator.state.running;
+      retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
+    };
+  render_dispatch_completed child.issue_identifier child.issue_title
+
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
   let stage = stage_for_issue orchestrator.config child.issue in
@@ -470,17 +482,11 @@ let mark_completed orchestrator child =
       mark_retrying orchestrator issue_id error
   | Ok () ->
       (match next_status with
-      | None -> ()
-      | Some status -> ignore (move_issue_status orchestrator child.issue status));
-      Hashtbl.remove orchestrator.attempts issue_id;
-      Hashtbl.remove orchestrator.retry_due issue_id;
-      orchestrator.state <-
-        {
-          orchestrator.state with
-          running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) orchestrator.state.running;
-          retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
-        };
-      render_dispatch_completed child.issue_identifier child.issue_title
+      | None -> complete_child orchestrator child
+      | Some status ->
+          if not (move_issue_status orchestrator child.issue status) then
+            mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
+          else complete_child orchestrator child)
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()

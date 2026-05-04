@@ -132,7 +132,9 @@ mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optionId:String!) {
 let run_gh_graphql ~query ~variables =
   let variable_flags =
     variables
-    |> List.map (fun (k, v) -> Printf.sprintf "-F %s=%s" (Util.shell_quote k) (Util.shell_quote v))
+    |> List.map (fun (k, v) ->
+           let flag = if k = "projectNumber" then "-F" else "-f" in
+           Printf.sprintf "%s %s=%s" flag (Util.shell_quote k) (Util.shell_quote v))
     |> String.concat " "
   in
   let command = Printf.sprintf "gh api graphql %s -f query=%s 2>/dev/null" variable_flags (Util.shell_quote query) in
