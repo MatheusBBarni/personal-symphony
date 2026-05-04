@@ -240,6 +240,7 @@ let test_runtime_state_exposes_running_issue_details () =
   let state =
     {
       (Runtime_state.empty ()) with
+      issues = [ issue ];
       running =
         [
           {
@@ -261,7 +262,9 @@ let test_runtime_state_exposes_running_issue_details () =
   Alcotest.(check string) "state" "In progress" (row |> member "state" |> to_string);
   Alcotest.(check string) "title" "Add dashboard issue list" (row |> member "title" |> to_string);
   Alcotest.(check string) "description" "Show the status, title, and a concise description for each running issue."
-    (row |> member "description" |> to_string)
+    (row |> member "description" |> to_string);
+  let issue_row = Runtime_state.to_yojson state |> member "issues" |> to_list |> List.hd in
+  Alcotest.(check string) "issue snapshot status" "In progress" (issue_row |> member "state" |> to_string)
 
 let test_ready_terminal_mode_runs_orchestrator () =
   Alcotest.(check bool) "ready terminal loops" true

@@ -19,6 +19,9 @@ let html =
     .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 20px 0; }
     .metric, .panel { border: 1px solid #27272a; border-radius: 8px; background: #18181b; padding: 16px; }
     .metric strong { display: block; font-size: 28px; margin-top: 6px; }
+    .issue { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; border-top: 1px solid #27272a; padding: 12px 0; }
+    .issue:first-child { border-top: 0; }
+    .status { color: #a7f3d0; border: 1px solid #065f46; border-radius: 6px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
     .gaps { border-color: #92400e; background: #431407; color: #ffedd5; }
     .gaps li { margin: 8px 0; }
     code { color: #bae6fd; }
@@ -40,6 +43,10 @@ let html =
       <ul id="gap-list"></ul>
     </section>
     <section class="panel">
+      <div class="muted">Project Issues</div>
+      <div id="issues">Loading...</div>
+    </section>
+    <section class="panel">
       <div class="muted">Generated</div>
       <div id="generated">Loading...</div>
       <p class="muted">State API: <code>/api/v1/state</code></p>
@@ -54,6 +61,23 @@ let html =
       text("retrying", state.counts?.retrying ?? 0);
       text("tokens", state.codex_totals?.total_tokens ?? 0);
       text("generated", state.generated_at ?? "");
+      const issueList = document.getElementById("issues");
+      const issues = Array.isArray(state.issues) ? state.issues : [];
+      if (issues.length === 0) {
+        issueList.textContent = "No project issues were returned by the latest poll.";
+      } else {
+        issueList.replaceChildren(...issues.map((issue) => {
+          const row = document.createElement("article");
+          row.className = "issue";
+          const title = document.createElement("div");
+          title.textContent = `${issue.issue_identifier} ${issue.title}`;
+          const status = document.createElement("span");
+          status.className = "status";
+          status.textContent = issue.state || "";
+          row.append(title, status);
+          return row;
+        }));
+      }
       const gaps = Array.isArray(state.readiness_gaps) ? state.readiness_gaps : [];
       const panel = document.getElementById("readiness");
       const list = document.getElementById("gap-list");

@@ -37,6 +37,7 @@ type runtimeState = {
   generated_at: string,
   last_error: option<string>,
   readiness_gaps: array<readinessGap>,
+  issues: array<runningIssue>,
   running: array<runningIssue>,
 }
 
@@ -108,7 +109,7 @@ let loadState = root => {
               tokens: state.codex_totals.total_tokens->Int.toString,
               generatedAt: state.generated_at,
               lastError: readinessText(state),
-              issues: state.running->Array.map(issue => {
+              issues: state.issues->Array.map(issue => {
                 let description = switch issue.description {
                 | Some(value) => value
                 | None => ""

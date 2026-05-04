@@ -56,11 +56,11 @@ function Dashboard(props) {
             JsxRuntime.jsxs("div", {
               children: [
                 JsxRuntime.jsx("div", {
-                  children: "Issues in progress",
+                  children: "Project issues",
                   className: "text-sm font-medium text-zinc-200"
                 }),
                 JsxRuntime.jsx("div", {
-                  children: snapshot.running + " active",
+                  children: snapshot.issues.length.toString() + " tracked",
                   className: "text-xs text-zinc-500"
                 })
               ],
@@ -103,7 +103,7 @@ function Dashboard(props) {
                 })),
                 className: "divide-y divide-zinc-800"
               }) : JsxRuntime.jsx("div", {
-                children: "No issues are currently being worked.",
+                children: "No project issues were returned by the latest poll.",
                 className: "p-4 text-sm text-zinc-400"
               })
           ],

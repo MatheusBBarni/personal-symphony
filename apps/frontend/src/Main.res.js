@@ -54,7 +54,7 @@ function loadState(root) {
       tokens: state.codex_totals.total_tokens.toString(),
       generatedAt: state.generated_at,
       lastError: readinessText(state),
-      issues: state.running.map(issue => {
+      issues: state.issues.map(issue => {
         let value = issue.description;
         let description = value !== undefined ? value : "";
         return {

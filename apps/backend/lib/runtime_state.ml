@@ -15,6 +15,7 @@ type retrying = { issue_id : string; issue_identifier : string; attempt : int; d
 type readiness_gap = { requirement : string; remediation : string }
 
 type t = {
+  issues : Issue.t list;
   running : running list;
   retrying : retrying list;
   readiness_gaps : readiness_gap list;
@@ -27,6 +28,7 @@ type t = {
 let empty ?(readiness_gaps = []) ?last_error () =
   {
     running = [];
+    issues = [];
     retrying = [];
     readiness_gaps;
     codex_totals = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
@@ -41,6 +43,19 @@ let tokens_to_yojson tokens =
       ("input_tokens", `Int tokens.input_tokens);
       ("output_tokens", `Int tokens.output_tokens);
       ("total_tokens", `Int tokens.total_tokens);
+    ]
+
+let issue_to_yojson issue =
+  `Assoc
+    [
+      ("issue_id", `String issue.Issue.id);
+      ("issue_identifier", `String issue.identifier);
+      ("title", `String issue.title);
+      ("description", (match issue.description with Some s -> `String s | None -> `Null));
+      ("url", (match issue.url with Some s -> `String s | None -> `Null));
+      ("state", `String issue.state);
+      ("created_at", (match issue.created_at with Some s -> `String s | None -> `Null));
+      ("updated_at", (match issue.updated_at with Some s -> `String s | None -> `Null));
     ]
 
 let running_to_yojson row =
@@ -79,6 +94,7 @@ let to_yojson state =
     [
       ("generated_at", `String (Util.now_iso8601 ()));
       ("counts", `Assoc [ ("running", `Int (List.length state.running)); ("retrying", `Int (List.length state.retrying)) ]);
+      ("issues", `List (List.map issue_to_yojson state.issues));
       ("running", `List (List.map running_to_yojson state.running));
       ("retrying", `List (List.map retrying_to_yojson state.retrying));
       ("readiness_gaps", `List (List.map readiness_gap_to_yojson state.readiness_gaps));

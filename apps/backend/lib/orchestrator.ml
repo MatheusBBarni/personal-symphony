@@ -370,58 +370,61 @@ let retry_status orchestrator issue =
   | None -> orchestrator.config.tracker.project_status_on_retry
 
 let dispatch_issue orchestrator issue =
+  let target_start_status = start_status orchestrator issue in
   let can_dispatch =
-    match start_status orchestrator issue with
+    match target_start_status with
     | None -> true
     | Some status -> move_issue_status orchestrator issue status
   in
   if can_dispatch then (
-  let workspace = Workspace.create_for_issue ~root:orchestrator.config.workspace.root issue.Issue.identifier in
-  let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
-  let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
-  let prompt = compose_prompt orchestrator.config issue rendered in
-  let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
-  let now = Util.now_iso8601 () in
-  let row =
-    {
-      Runtime_state.issue;
-      session_id = launched.session_id;
-      turn_count = 0;
-      last_event = Some launched.event;
-      last_message = None;
-      started_at = now;
-      last_event_at = Some now;
-      tokens = runtime_tokens;
-    }
-  in
-  Hashtbl.remove orchestrator.retry_due issue.id;
-  orchestrator.state <-
-    {
-      orchestrator.state with
-      running = row :: orchestrator.state.running;
-      retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue.id) orchestrator.state.retrying;
-      last_error = None;
-    };
-  (match launched.pid with
-  | Some pid ->
-      let now_float = Unix.time () in
-      orchestrator.children <-
-        {
-          pid;
-          issue;
-          issue_id = issue.id;
-          issue_identifier = issue.identifier;
-          issue_title = issue.title;
-          started_at = now_float;
-          last_output_at = now_float;
-          stdout_path = launched.stdout_path;
-          stderr_path = launched.stderr_path;
-          stdout_size = file_size launched.stdout_path;
-          stderr_size = file_size launched.stderr_path;
-        }
-        :: orchestrator.children
-  | None -> ());
-  render_dispatch_started issue)
+    let issue = match target_start_status with Some state -> { issue with Issue.state } | None -> issue in
+    let workspace = Workspace.create_for_issue ~root:orchestrator.config.workspace.root issue.Issue.identifier in
+    let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
+    let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
+    let prompt = compose_prompt orchestrator.config issue rendered in
+    let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
+    let now = Util.now_iso8601 () in
+    let row =
+      {
+        Runtime_state.issue;
+        session_id = launched.session_id;
+        turn_count = 0;
+        last_event = Some launched.event;
+        last_message = None;
+        started_at = now;
+        last_event_at = Some now;
+        tokens = runtime_tokens;
+      }
+    in
+    Hashtbl.remove orchestrator.retry_due issue.id;
+    orchestrator.state <-
+      {
+        orchestrator.state with
+        issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) orchestrator.state.issues;
+        running = row :: orchestrator.state.running;
+        retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue.id) orchestrator.state.retrying;
+        last_error = None;
+      };
+    (match launched.pid with
+    | Some pid ->
+        let now_float = Unix.time () in
+        orchestrator.children <-
+          {
+            pid;
+            issue;
+            issue_id = issue.id;
+            issue_identifier = issue.identifier;
+            issue_title = issue.title;
+            started_at = now_float;
+            last_output_at = now_float;
+            stdout_path = launched.stdout_path;
+            stderr_path = launched.stderr_path;
+            stdout_size = file_size launched.stdout_path;
+            stderr_size = file_size launched.stderr_path;
+          }
+          :: orchestrator.children
+    | None -> ());
+    render_dispatch_started issue)
 
 let mark_retrying orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
@@ -551,6 +554,7 @@ let poll_once orchestrator =
   render_poll_started orchestrator;
   try
     let candidates = orchestrator.fetch orchestrator.tracker in
+    orchestrator.state <- { orchestrator.state with Runtime_state.issues = candidates; last_error = None };
     let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
     if available > 0 then
       candidates

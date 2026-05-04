@@ -46,13 +46,13 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
       }}
       <section className="mt-6 rounded-lg border border-zinc-800 bg-zinc-900">
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
-          <div className="text-sm font-medium text-zinc-200"> {React.string("Issues in progress")} </div>
-          <div className="text-xs text-zinc-500"> {React.string(data.running ++ " active")} </div>
+          <div className="text-sm font-medium text-zinc-200"> {React.string("Project issues")} </div>
+          <div className="text-xs text-zinc-500"> {React.string(Array.length(data.issues)->Int.toString ++ " tracked")} </div>
         </div>
         {switch Array.length(data.issues) {
         | 0 =>
           <div className="p-4 text-sm text-zinc-400">
-            {React.string("No issues are currently being worked.")}
+            {React.string("No project issues were returned by the latest poll.")}
           </div>
         | _ =>
           <div className="divide-y divide-zinc-800">
