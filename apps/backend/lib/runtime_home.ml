@@ -39,6 +39,16 @@ let settings_json =
   "workspace": {
     "root": ".symphony/workspaces"
   },
+  "git": {
+    "taskBranchPrefix": "symphony/task-",
+    "protectedTrunkBranches": ["main", "master"],
+    "autoMerge": true,
+    "mergeAttentionStatus": "Human attention",
+    "cleanup": {
+      "removeWorktreeAfterMerge": true,
+      "keepTaskBranch": true
+    }
+  },
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
@@ -52,7 +62,8 @@ let settings_json =
         "commit": {
           "enabled": false,
           "type": "feature",
-          "message": "<type>: <generated_message_max_90char>"
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
         }
       },
       {
@@ -64,7 +75,8 @@ let settings_json =
         "commit": {
           "enabled": true,
           "type": "feature",
-          "message": "<type>: <generated_message_max_90char>"
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
         }
       },
       {
@@ -75,7 +87,8 @@ let settings_json =
         "commit": {
           "enabled": false,
           "type": "refactor",
-          "message": "<type>: <generated_message_max_90char>"
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
         }
       }
     ]

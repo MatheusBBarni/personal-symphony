@@ -16,6 +16,14 @@ type tracker = {
 
 type polling = { interval_ms : int }
 type workspace = { root : string }
+type git_cleanup = { remove_worktree_after_merge : bool; keep_task_branch : bool }
+type git = {
+  task_branch_prefix : string;
+  protected_trunk_branches : string list;
+  auto_merge : bool;
+  merge_attention_status : string;
+  cleanup : git_cleanup;
+}
 type agent = { max_concurrent_agents : int; max_turns : int; max_retry_backoff_ms : int }
 type codex = {
   command : string;
@@ -26,7 +34,7 @@ type codex = {
   stall_timeout_ms : int;
 }
 type server = { port : int option }
-type stage_commit = { enabled : bool; commit_type : string; message : string }
+type stage_commit = { enabled : bool; commit_type : string; message : string; push : bool }
 type stage_agent = {
   states : string list;
   agent : string;
@@ -44,6 +52,7 @@ type t = {
   tracker : tracker;
   polling : polling;
   workspace : workspace;
+  git : git;
   agent : agent;
   codex : codex;
   server : server;
@@ -59,10 +68,20 @@ let default_terminal_states = [ "Done"; "Closed"; "Cancelled"; "Canceled"; "Dupl
 let default_dispatch_status = "In progress"
 let default_review_status = "In review"
 let default_retry_status = "To-Do"
+let default_merge_attention_status = "Human attention"
 let default_commit_message = "<type>: <generated_message_max_90char>"
 let default_model = "gpt-5.5"
 let default_reasoning_effort = "medium"
 let default_codex_command = "codex exec"
+
+let default_git =
+  {
+    task_branch_prefix = "symphony/task-";
+    protected_trunk_branches = [ "main"; "master" ];
+    auto_merge = true;
+    merge_attention_status = default_merge_attention_status;
+    cleanup = { remove_worktree_after_merge = true; keep_task_branch = true };
+  }
 
 let normalize_codex_command command =
   if Util.trim command = "codex app-server" then default_codex_command else command
@@ -75,7 +94,7 @@ let default_stage_agents =
       start_status = None;
       success_status = Some "To-Do";
       retry_status = Some "Backlog";
-      commit = Some { enabled = false; commit_type = "feature"; message = default_commit_message };
+      commit = Some { enabled = false; commit_type = "feature"; message = default_commit_message; push = false };
     };
     {
       states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
@@ -83,7 +102,7 @@ let default_stage_agents =
       start_status = Some "In progress";
       success_status = Some "In review";
       retry_status = Some "To-Do";
-      commit = Some { enabled = true; commit_type = "feature"; message = default_commit_message };
+      commit = Some { enabled = true; commit_type = "feature"; message = default_commit_message; push = false };
     };
     {
       states = [ "In review"; "In Review" ];
@@ -91,7 +110,7 @@ let default_stage_agents =
       start_status = None;
       success_status = Some "Done";
       retry_status = Some "In progress";
-      commit = Some { enabled = false; commit_type = "refactor"; message = default_commit_message };
+      commit = Some { enabled = false; commit_type = "refactor"; message = default_commit_message; push = false };
     };
   ]
 
@@ -188,6 +207,7 @@ let from_workflow workflow =
       };
     polling = { interval_ms = positive "polling.interval_ms" (Option.value (Simple_yaml.get_int "interval_ms" polling_raw) ~default:30000) };
     workspace = { root = workspace_root };
+    git = default_git;
     agent =
       {
         max_concurrent_agents =
@@ -247,6 +267,7 @@ let json_stage_agent json =
             enabled = json_bool "enabled" commit_raw ~default:false;
             commit_type = json_string "type" commit_raw ~default:"feature";
             message = json_string "message" commit_raw ~default:default_commit_message;
+            push = json_bool "push" commit_raw ~default:false;
           }
     | _ -> None
   in
@@ -268,6 +289,7 @@ let from_settings_file ~workspace_root path =
   let project_raw = member "project" root in
   let polling_raw = member "polling" root in
   let workspace_raw = member "workspace" root in
+  let git_raw = member "git" root in
   let agent_raw = member "agent" root in
   let codex_raw = member "codex" root in
   let server_raw = member "server" root in
@@ -302,6 +324,23 @@ let from_settings_file ~workspace_root path =
       };
     polling = { interval_ms = positive "polling.intervalMs" (json_int "intervalMs" polling_raw ~default:30000) };
     workspace = { root = workspace_root_value };
+    git =
+      {
+        task_branch_prefix = json_string "taskBranchPrefix" git_raw ~default:default_git.task_branch_prefix;
+        protected_trunk_branches =
+          json_string_list "protectedTrunkBranches" git_raw ~default:default_git.protected_trunk_branches;
+        auto_merge = json_bool "autoMerge" git_raw ~default:default_git.auto_merge;
+        merge_attention_status =
+          json_string "mergeAttentionStatus" git_raw ~default:default_git.merge_attention_status;
+        cleanup =
+          {
+            remove_worktree_after_merge =
+              json_bool "removeWorktreeAfterMerge" (member "cleanup" git_raw)
+                ~default:default_git.cleanup.remove_worktree_after_merge;
+            keep_task_branch =
+              json_bool "keepTaskBranch" (member "cleanup" git_raw) ~default:default_git.cleanup.keep_task_branch;
+          };
+      };
     agent =
       {
         max_concurrent_agents =
