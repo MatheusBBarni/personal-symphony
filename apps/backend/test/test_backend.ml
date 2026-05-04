@@ -462,12 +462,13 @@ let test_github_active_state_filtering () =
       ensure_project_statuses = true;
     }
   in
-  let node status =
+  let node ?(issue_state = "OPEN") status =
     Yojson.Safe.from_string
       (Printf.sprintf
          {|{
   "id": "I_1",
   "number": 42,
+  "state": %S,
   "title": "Fix parser",
   "labels": { "nodes": [] },
   "projectItems": { "nodes": [
@@ -476,12 +477,16 @@ let test_github_active_state_filtering () =
     ] } }
   ] }
 }|}
-         status)
+         issue_state status)
   in
   Alcotest.(check bool) "todo included" true
     (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node "Todo")));
   Alcotest.(check bool) "done visible" true
     (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node "Done")));
+  Alcotest.(check bool) "closed done visible" true
+    (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node ~issue_state:"CLOSED" "Done")));
+  Alcotest.(check bool) "closed active issue excluded" true
+    (Option.is_none (Github_tracker.issue_from_project_node ~config:base_config (node ~issue_state:"CLOSED" "Todo")));
   Alcotest.(check bool) "unconfigured status excluded" true
     (Option.is_none (Github_tracker.issue_from_project_node ~config:base_config (node "In review")));
   Alcotest.(check bool) "missing project excluded" true

@@ -209,6 +209,8 @@ let init () =
 
 open Cmdliner
 
+let version = "0.1.0"
+
 let workflow_arg =
   Arg.(value & pos 0 (some string) None & info [] ~docv:"WORKFLOW" ~doc:"Optional legacy WORKFLOW.md path.")
 
@@ -227,6 +229,14 @@ let cmd =
   let init_cmd =
     Cmd.v (Cmd.info "init" ~doc:"Create missing .symphony runtime files without overwriting edits.") Term.(const init $ const ())
   in
-  Cmd.group (Cmd.info "symphony" ~doc) ~default [ init_cmd ]
+  Cmd.group (Cmd.info "symphony" ~doc ~version) ~default [ init_cmd ]
 
-let () = exit (Cmd.eval' cmd)
+let normalize_help_argv argv =
+  Array.map
+    (function
+      | "-h" -> "--help"
+      | "-v" -> "--version"
+      | arg -> arg)
+    argv
+
+let () = exit (Cmd.eval' ~argv:(normalize_help_argv Sys.argv) cmd)

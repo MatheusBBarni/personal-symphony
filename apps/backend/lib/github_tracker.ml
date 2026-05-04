@@ -33,10 +33,11 @@ let candidate_query =
   {|
 query($owner:String!, $repo:String!) {
   repository(owner:$owner, name:$repo) {
-    issues(first:50, states:OPEN, orderBy:{field:CREATED_AT,direction:ASC}) {
+    issues(first:50, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT,direction:ASC}) {
       nodes {
         id
         number
+        state
         title
         body
         url
@@ -207,11 +208,20 @@ let status_is_visible ~config status =
   status_is_active ~active_states:config.Config.active_states status
   || List.exists (string_equal_ci status) config.terminal_states
 
+let status_is_terminal ~config status =
+  List.exists (string_equal_ci status) config.Config.terminal_states
+
+let issue_is_closed node =
+  match node |> member "state" |> safe_to_string_option with
+  | Some state -> string_equal_ci state "CLOSED"
+  | None -> false
+
 let issue_from_project_node ~(config : Config.tracker) node =
   let open Yojson.Safe.Util in
   match issue_project_status ~project_number:config.project_number ~status_field:config.project_status_field node with
   | None -> None
   | Some state when not (status_is_visible ~config state) -> None
+  | Some state when issue_is_closed node && not (status_is_terminal ~config state) -> None
   | Some state ->
       let number = node |> member "number" |> to_int in
       Some
