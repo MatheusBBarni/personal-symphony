@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createLiveStateConnection } from "../src/liveState.js";
+import { createLiveStateConnection } from "../src/LiveState.res.js";
 
 const sockets = [];
 const timers = [];
