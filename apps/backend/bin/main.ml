@@ -19,12 +19,6 @@ let readiness_state config =
   in
   Runtime_state.empty ?last_error ~readiness_gaps ()
 
-let render_bootstrap_report report =
-  List.iter
-    (fun (item : Runtime_home.bootstrap_item) ->
-      Printf.eprintf "event=bootstrap status=%s path=%s\n%!" (Runtime_home.status_to_string item.status) item.path)
-    report
-
 let colors_enabled () =
   Sys.getenv_opt "NO_COLOR" = None
 
@@ -37,21 +31,45 @@ let yellow text = color "33;1" text
 let red text = color "31;1" text
 let dim text = color "2" text
 
+let status_badge = function
+  | Runtime_home.Created -> green "created"
+  | Runtime_home.Already_present -> cyan "present"
+  | Runtime_home.Skipped_existing -> yellow "kept"
+
+let basename path = Filename.basename path
+
+let render_bootstrap_report report =
+  let created =
+    List.filter (fun (item : Runtime_home.bootstrap_item) -> item.status = Runtime_home.Created) report |> List.length
+  in
+  let existing = List.length report - created in
+  Printf.eprintf "%s %s %s\n%!" (blue "bootstrap") (green (Printf.sprintf "%d created" created))
+    (dim (Printf.sprintf "%d already configured" existing));
+  List.iter
+    (fun (item : Runtime_home.bootstrap_item) ->
+      Printf.eprintf "  %s %-7s %s\n%!" (status_badge item.status) (basename item.path) (dim item.path))
+    report
+
+let render_startup_completed ~mode ~config ~runtime_home =
+  Printf.eprintf "%s %s %s %s %s\n%!" (blue "startup") (green "ready") (dim mode)
+    (Printf.sprintf "%s/%s" config.Config.tracker.owner config.tracker.repo)
+    (dim (Printf.sprintf "project #%d - %s" config.tracker.project_number runtime_home))
+
 let symphoony_banner =
   [
+    " ____  __   __ __  __ ____  _   _  ___   ___  _   _ __   __";
+    "/ ___| \\ \\ / /|  \\/  |  _ \\| | | |/ _ \\ / _ \\| \\ | |\\ \\ / /";
+    "\\___ \\  \\ V / | |\\/| | |_) | |_| | | | | | | |  \\| | \\ V / ";
+    " ___) |  | |  | |  | |  __/|  _  | |_| | |_| | |\\  |  | |  ";
+    "|____/   |_|  |_|  |_|_|   |_| |_|\\___/ \\___/|_| \\_|  |_|  ";
     "                         SYMPHOONY";
-    " SSS  Y   Y M   M PPPP  H   H  OOO   OOO  N   N Y   Y";
-    "S      Y Y  MM MM P   P H   H O   O O   O NN  N  Y Y ";
-    " SSS    Y   M M M PPPP  HHHHH O   O O   O N N N   Y  ";
-    "    S   Y   M   M P     H   H O   O O   O N  NN   Y  ";
-    "SSSS    Y   M   M P     H   H  OOO   OOO  N   N   Y  ";
   ]
 
 let print_section title = Printf.printf "\n%s\n%!" (cyan title)
 
 let render_terminal_console config state =
   List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphoony_banner;
-  Printf.printf "%s\n%!" (dim "Personal Symphony Terminal Console");
+  Printf.printf "%s\n%!" (dim "Terminal Console");
   print_section "Tracker";
   Printf.printf "  %s %s/%s\n%!" (dim "Repository") config.Config.tracker.owner config.tracker.repo;
   Printf.printf "  %s GitHub Project #%d\n%!" (dim "Project") config.tracker.project_number;
@@ -120,9 +138,7 @@ let run_runtime port once web =
         let config, prompt_template = load_runtime_config home in
         let mode = Cli_mode.select ~web in
         let state = readiness_state config in
-        Printf.eprintf
-          "event=startup outcome=completed mode=%s tracker=github owner=%s repo=%s project_number=%d runtime_home=%s\n%!"
-          (Cli_mode.to_string mode) config.tracker.owner config.tracker.repo config.tracker.project_number home.runtime_dir;
+        render_startup_completed ~mode:(Cli_mode.to_string mode) ~config ~runtime_home:home.runtime_dir;
         if once then (
           if mode = Cli_mode.Terminal_console then render_terminal_console config state;
           0)

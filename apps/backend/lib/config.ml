@@ -8,6 +8,10 @@ type tracker = {
   active_states : string list;
   terminal_states : string list;
   project_status_field : string;
+  project_status_on_dispatch : string option;
+  project_status_on_success : string option;
+  project_status_on_retry : string option;
+  ensure_project_statuses : bool;
 }
 
 type polling = { interval_ms : int }
@@ -32,6 +36,9 @@ exception Invalid_config of string
 
 let default_active_states = [ "Todo"; "In Progress" ]
 let default_terminal_states = [ "Done"; "Closed"; "Cancelled"; "Canceled"; "Duplicate" ]
+let default_dispatch_status = "In progress"
+let default_review_status = "In review"
+let default_retry_status = "Todo"
 
 let resolve_secret = function
   | None -> None
@@ -115,6 +122,13 @@ let from_workflow workflow =
         active_states;
         terminal_states;
         project_status_field = Option.value (Simple_yaml.get_string "project_status_field" tracker_raw) ~default:"Status";
+        project_status_on_dispatch =
+          Some (Option.value (Simple_yaml.get_string "project_status_on_dispatch" tracker_raw) ~default:default_dispatch_status);
+        project_status_on_success =
+          Some (Option.value (Simple_yaml.get_string "project_status_on_success" tracker_raw) ~default:default_review_status);
+        project_status_on_retry =
+          Some (Option.value (Simple_yaml.get_string "project_status_on_retry" tracker_raw) ~default:default_retry_status);
+        ensure_project_statuses = true;
       };
     polling = { interval_ms = positive "polling.interval_ms" (Option.value (Simple_yaml.get_int "interval_ms" polling_raw) ~default:30000) };
     workspace = { root = workspace_root };
@@ -153,6 +167,12 @@ let json_string_list name json ~default =
       |> List.filter_map (function `String s -> Some s | `Int i -> Some (string_of_int i) | _ -> None)
   | _ -> default
 
+let json_bool name json ~default =
+  match member name json with `Bool b -> b | `String "true" -> true | `String "false" -> false | _ -> default
+
+let json_optional_string name json =
+  match member name json with `String s when Util.trim s <> "" -> Some s | _ -> None
+
 let from_settings_file ~workspace_root path =
   let root =
     try Yojson.Safe.from_file path
@@ -184,6 +204,13 @@ let from_settings_file ~workspace_root path =
         active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
         terminal_states = json_string_list "terminalStates" project_raw ~default:default_terminal_states;
         project_status_field = json_string "statusField" project_raw ~default:"Status";
+        project_status_on_dispatch =
+          Some (Option.value (json_optional_string "startStatus" project_raw) ~default:default_dispatch_status);
+        project_status_on_success =
+          Some (Option.value (json_optional_string "reviewStatus" project_raw) ~default:default_review_status);
+        project_status_on_retry =
+          Some (Option.value (json_optional_string "retryStatus" project_raw) ~default:default_retry_status);
+        ensure_project_statuses = json_bool "ensureStatuses" project_raw ~default:true;
       };
     polling = { interval_ms = positive "polling.intervalMs" (json_int "intervalMs" polling_raw ~default:30000) };
     workspace = { root = workspace_root_value };

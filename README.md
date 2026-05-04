@@ -91,6 +91,36 @@ and runtime commands. Secrets are referenced by environment variable name, not s
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.
 
+## Project Status Workflow
+
+Symphony moves the configured GitHub Projects `Status` field as work progresses:
+
+- `startStatus`: applied before launching an agent, default `In progress`.
+- `reviewStatus`: applied after the agent exits successfully, default `In review`.
+- `retryStatus`: applied when the agent fails or times out and Symphony schedules a retry, default
+  `Todo`.
+- `ensureStatuses`: when `true`, Symphony creates missing single-select status options in the
+  Project field before applying them.
+
+Configure these in `.symphony/settings.json`:
+
+```json
+{
+  "project": {
+    "statusField": "Status",
+    "activeStates": ["Todo", "In Progress"],
+    "terminalStates": ["Done", "Closed", "Cancelled"],
+    "startStatus": "In progress",
+    "reviewStatus": "In review",
+    "retryStatus": "Todo",
+    "ensureStatuses": true
+  }
+}
+```
+
+The token needs GitHub Projects write access for status moves and status option creation. If
+`reviewStatus` is not listed in `activeStates`, completed issues stop being picked up on later polls.
+
 ## GitHub Token Permissions
 
 Personal Symphony reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
@@ -153,6 +183,9 @@ Symphony still reports repository or project access gaps, remove the stale `GITH
      active_states: [Todo, In Progress]
      terminal_states: [Done, Closed, Cancelled]
      project_status_field: Status
+     project_status_on_dispatch: In progress
+     project_status_on_success: In review
+     project_status_on_retry: Todo
    ```
 
 4. Configure the GitHub Project:
@@ -160,6 +193,7 @@ Symphony still reports repository or project access gaps, remove the stale `GITH
    - Add a single-select `Status` field.
    - Add active values matching `active_states`, usually `Todo` and `In Progress`.
    - Add terminal values matching `terminal_states`, usually `Done`, `Closed`, and `Cancelled`.
+   - Add or let Symphony create transition values such as `In progress` and `In review`.
    - Add repository issues to the project before expecting Symphony to pick them up.
 
 5. Authenticate GitHub access:

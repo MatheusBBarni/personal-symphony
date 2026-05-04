@@ -26,7 +26,11 @@ let settings_json =
   "project": {
     "statusField": "Status",
     "activeStates": ["Todo", "In Progress"],
-    "terminalStates": ["Done", "Closed", "Cancelled"]
+    "terminalStates": ["Done", "Closed", "Cancelled"],
+    "startStatus": "In progress",
+    "reviewStatus": "In review",
+    "retryStatus": "Todo",
+    "ensureStatuses": true
   },
   "polling": {
     "intervalMs": 30000

@@ -136,6 +136,10 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check int) "project number" 1 config.tracker.project_number;
       Alcotest.(check string) "workspace root" (Filename.concat (Unix.realpath root) ".symphony/workspaces") config.workspace.root;
       Alcotest.(check int) "server port" 8080 (Option.get config.server.port);
+      Alcotest.(check (option string)) "dispatch status" (Some "In progress") config.tracker.project_status_on_dispatch;
+      Alcotest.(check (option string)) "review status" (Some "In review") config.tracker.project_status_on_success;
+      Alcotest.(check (option string)) "retry status" (Some "Todo") config.tracker.project_status_on_retry;
+      Alcotest.(check bool) "ensure statuses" true config.tracker.ensure_project_statuses;
       let prompt = Runtime_home.load_prompt home in
       let issue = Issue.empty ~id:"I" ~identifier:"#1" ~title:"Install CLI" ~state:"Todo" in
       let rendered = Prompt.render ~issue ~attempt:(Some 3) prompt in
@@ -230,6 +234,10 @@ let test_github_project_field_parsing () =
       active_states = [ "Todo"; "In Progress" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
+      project_status_on_dispatch = Some "In progress";
+      project_status_on_success = Some "In review";
+      project_status_on_retry = Some "Todo";
+      ensure_project_statuses = true;
     }
   in
   let node =
@@ -276,6 +284,10 @@ let test_github_active_state_filtering () =
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
+      project_status_on_dispatch = Some "In progress";
+      project_status_on_success = Some "In review";
+      project_status_on_retry = Some "Todo";
+      ensure_project_statuses = true;
     }
   in
   let node status =
@@ -316,6 +328,10 @@ let test_github_empty_project_field_values_are_ignored () =
       active_states = [ "To-Do" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
+      project_status_on_dispatch = Some "In progress";
+      project_status_on_success = Some "In review";
+      project_status_on_retry = Some "Todo";
+      ensure_project_statuses = true;
     }
   in
   let node =
@@ -338,6 +354,57 @@ let test_github_empty_project_field_values_are_ignored () =
   | None -> Alcotest.fail "expected empty field value placeholders to be ignored"
   | Some issue -> Alcotest.(check string) "status" "To-Do" issue.state
 
+let test_github_status_metadata_parsing () =
+  let config =
+    {
+      Config.kind = "github";
+      owner = "acme";
+      repo = "widgets";
+      project_number = 2;
+      api_key_env = "GITHUB_TOKEN";
+      api_key = Some "token";
+      active_states = [ "Todo" ];
+      terminal_states = [ "Done" ];
+      project_status_field = "Status";
+      project_status_on_dispatch = Some "In progress";
+      project_status_on_success = Some "In review";
+      project_status_on_retry = Some "Todo";
+      ensure_project_statuses = true;
+    }
+  in
+  let json =
+    Yojson.Safe.from_string
+      {|{
+  "data": {
+    "repositoryOwner": {
+      "projectV2": {
+        "id": "PVT_1",
+        "fields": { "nodes": [
+          {},
+          { "id": "PVTSSF_status", "name": "Status", "options": [
+            { "id": "todo", "name": "Todo", "color": "GRAY", "description": "" },
+            { "id": "doing", "name": "In Progress", "color": "YELLOW", "description": "" }
+          ] }
+        ] }
+      }
+    },
+    "node": {
+      "projectItems": { "nodes": [
+        { "id": "PVTI_other", "project": { "number": 1 } },
+        { "id": "PVTI_item", "project": { "number": 2 } }
+      ] }
+    }
+  }
+}|}
+  in
+  match Github_tracker.status_metadata_from_json ~config json with
+  | Error error -> Alcotest.fail error
+  | Ok metadata ->
+      Alcotest.(check string) "project id" "PVT_1" metadata.project_id;
+      Alcotest.(check string) "item id" "PVTI_item" metadata.item_id;
+      Alcotest.(check string) "field id" "PVTSSF_status" metadata.field_id;
+      Alcotest.(check int) "options" 2 (List.length metadata.options)
+
 let test_orchestrator_dispatch_limits () =
   with_temp_dir "symphony-orchestrator-" (fun root ->
       let config =
@@ -354,6 +421,10 @@ let test_orchestrator_dispatch_limits () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
@@ -375,7 +446,8 @@ let test_orchestrator_dispatch_limits () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let fetch _ = issues in
-      let orchestrator = Orchestrator.make ~launch ~fetch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      let set_status _ _ _ = Ok () in
+      let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "running limited" 2 (List.length state.Runtime_state.running);
@@ -400,6 +472,10 @@ let test_orchestrator_retries_failed_agent () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
@@ -410,7 +486,8 @@ let test_orchestrator_retries_failed_agent () =
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
       let fetch _ = [ issue ] in
-      let orchestrator = Orchestrator.make ~fetch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      let set_status _ _ _ = Ok () in
+      let orchestrator = Orchestrator.make ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       Unix.sleepf 0.05;
       Orchestrator.poll_once orchestrator;
@@ -422,6 +499,57 @@ let test_orchestrator_retries_failed_agent () =
           Alcotest.(check string) "retry issue" "I1" retry.issue_id;
           Alcotest.(check int) "retry attempt" 1 retry.attempt
       | [] -> Alcotest.fail "expected retry row")
+
+let test_orchestrator_moves_status_to_review_on_success () =
+  with_temp_dir "symphony-orchestrator-status-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo"; "In progress" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let current_status = ref "Todo" in
+      let fetch _ =
+        if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
+        then [ { issue with state = !current_status } ]
+        else []
+      in
+      let statuses = ref [] in
+      let set_status _ issue status =
+        current_status := status;
+        statuses := (issue.Issue.identifier, status) :: !statuses;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list (pair string string))) "status transitions"
+        [ ("#1", "In progress"); ("#1", "In review") ]
+        (List.rev !statuses);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "completed agent removed" 0 (List.length state.Runtime_state.running))
 
 let () =
   Alcotest.run "symphony-backend"
@@ -449,10 +577,12 @@ let () =
           Alcotest.test_case "parses project status field" `Quick test_github_project_field_parsing;
           Alcotest.test_case "filters active states" `Quick test_github_active_state_filtering;
           Alcotest.test_case "ignores empty project field values" `Quick test_github_empty_project_field_values_are_ignored;
+          Alcotest.test_case "parses status update metadata" `Quick test_github_status_metadata_parsing;
         ] );
       ( "orchestrator",
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
+          Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
         ] );
     ]

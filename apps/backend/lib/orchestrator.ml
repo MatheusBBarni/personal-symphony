@@ -10,6 +10,7 @@ type launch =
   config:Config.t -> workspace:Workspace.t -> prompt:string -> issue:Issue.t -> launch_result
 
 type fetch = Github_tracker.t -> Issue.t list
+type set_status = Github_tracker.t -> Issue.t -> string -> (unit, string) result
 
 type t = {
   config : Config.t;
@@ -21,11 +22,15 @@ type t = {
   attempts : (string, int) Hashtbl.t;
   launch : launch;
   fetch : fetch;
+  set_status : set_status;
 }
 
 and child = {
   pid : int;
+  issue : Issue.t;
   issue_id : string;
+  issue_identifier : string;
+  issue_title : string;
   mutable started_at : float;
   mutable last_output_at : float;
   stdout_path : string option;
@@ -75,15 +80,20 @@ let render_poll_failed msg =
   Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (blue "poll") (red "failed") msg
 
 let render_dispatch_started issue =
-  Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "started")
-    issue.Issue.identifier
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "started")
+    issue.Issue.identifier issue.title
 
 let render_dispatch_retrying issue_identifier attempt error =
   Printf.eprintf "%s%s %s %s %s %s %d %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (yellow "retrying")
     issue_identifier (dim "attempt") attempt error
 
-let render_dispatch_completed issue_id =
-  Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "completed") issue_id
+let render_dispatch_completed issue_identifier issue_title =
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "completed")
+    issue_identifier issue_title
+
+let render_status_failed issue_identifier status error =
+  Printf.eprintf "%s%s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "status") (red "failed")
+    issue_identifier status error
 
 let running_ids state = List.map (fun (row : Runtime_state.running) -> row.issue.id) state.Runtime_state.running
 let is_running state issue = List.exists (( = ) issue.Issue.id) (running_ids state)
@@ -122,7 +132,8 @@ let shell_launch ~config ~workspace ~prompt ~issue =
     stderr_path = Some stderr_path;
   }
 
-let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ~config ~prompt_template () =
+let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ?(set_status = Github_tracker.update_issue_status)
+    ~config ~prompt_template () =
   {
     config;
     prompt_template;
@@ -133,6 +144,7 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     attempts = Hashtbl.create 16;
     launch;
     fetch;
+    set_status;
   }
 
 let get_state orchestrator = orchestrator.state
@@ -204,7 +216,21 @@ let update_running orchestrator issue_id f =
           orchestrator.state.running;
     }
 
+let move_issue_status orchestrator issue status =
+  match orchestrator.set_status orchestrator.tracker issue status with
+  | Ok () -> true
+  | Error error ->
+      set_error orchestrator error;
+      render_status_failed issue.Issue.identifier status error;
+      false
+
 let dispatch_issue orchestrator issue =
+  let can_dispatch =
+    match orchestrator.config.tracker.project_status_on_dispatch with
+    | None -> true
+    | Some status -> move_issue_status orchestrator issue status
+  in
+  if can_dispatch then (
   let workspace = Workspace.create_for_issue ~root:orchestrator.config.workspace.root issue.Issue.identifier in
   let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
   let prompt = Prompt.render ~issue ~attempt orchestrator.prompt_template in
@@ -236,7 +262,10 @@ let dispatch_issue orchestrator issue =
       orchestrator.children <-
         {
           pid;
+          issue;
           issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
           started_at = now_float;
           last_output_at = now_float;
           stdout_path = launched.stdout_path;
@@ -246,7 +275,7 @@ let dispatch_issue orchestrator issue =
         }
         :: orchestrator.children
   | None -> ());
-  render_dispatch_started issue
+  render_dispatch_started issue)
 
 let mark_retrying orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
@@ -279,9 +308,16 @@ let mark_retrying orchestrator issue_id error =
             :: List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
           last_error = Some error;
         };
+      (match orchestrator.config.tracker.project_status_on_retry with
+      | None -> ()
+      | Some status -> ignore (move_issue_status orchestrator row.issue status));
       render_dispatch_retrying row.issue.identifier next_attempt error
 
-let mark_completed orchestrator issue_id =
+let mark_completed orchestrator child =
+  let issue_id = child.issue_id in
+  (match orchestrator.config.tracker.project_status_on_success with
+  | None -> ()
+  | Some status -> ignore (move_issue_status orchestrator child.issue status));
   Hashtbl.remove orchestrator.attempts issue_id;
   Hashtbl.remove orchestrator.retry_due issue_id;
   orchestrator.state <-
@@ -290,7 +326,7 @@ let mark_completed orchestrator issue_id =
       running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) orchestrator.state.running;
       retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
     };
-  render_dispatch_completed issue_id
+  render_dispatch_completed child.issue_identifier child.issue_title
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()
@@ -331,7 +367,7 @@ let reap_children orchestrator =
           match Unix.waitpid [ Unix.WNOHANG ] child.pid with
           | 0, _ -> (finished, child :: running)
           | _, Unix.WEXITED 0 ->
-              mark_completed orchestrator child.issue_id;
+              mark_completed orchestrator child;
               (child.issue_id :: finished, running)
           | _, Unix.WEXITED code ->
               mark_retrying orchestrator child.issue_id (Printf.sprintf "agent exited with code %d" code);
@@ -343,7 +379,7 @@ let reap_children orchestrator =
               set_error orchestrator (Printf.sprintf "agent for %s stopped by signal %d" child.issue_id signal);
               (finished, child :: running)
           | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
-              mark_completed orchestrator child.issue_id;
+              mark_completed orchestrator child;
               (child.issue_id :: finished, running))
       ([], []) orchestrator.children
   in
