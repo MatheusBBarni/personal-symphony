@@ -65,6 +65,9 @@ let settings_json =
         "agent": "planner",
         "successStatus": "To-Do",
         "retryStatus": "Backlog",
+        "goal": {
+          "enabled": false
+        },
         "commit": {
           "enabled": false,
           "type": "feature",
@@ -78,6 +81,9 @@ let settings_json =
         "startStatus": "In progress",
         "successStatus": "In review",
         "retryStatus": "To-Do",
+        "goal": {
+          "enabled": false
+        },
         "commit": {
           "enabled": true,
           "type": "feature",
@@ -90,6 +96,9 @@ let settings_json =
         "agent": "reviewer",
         "successStatus": "Done",
         "retryStatus": "In progress",
+        "goal": {
+          "enabled": false
+        },
         "commit": {
           "enabled": false,
           "type": "refactor",
