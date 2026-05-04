@@ -97,6 +97,7 @@ let render_status_failed issue_identifier status error =
 
 let running_ids state = List.map (fun (row : Runtime_state.running) -> row.issue.id) state.Runtime_state.running
 let is_running state issue = List.exists (( = ) issue.Issue.id) (running_ids state)
+let string_equal_ci a b = String.lowercase_ascii a = String.lowercase_ascii b
 let retrying_due orchestrator issue =
   match Hashtbl.find_opt orchestrator.retry_due issue.Issue.id with
   | None -> true
@@ -114,6 +115,36 @@ let write_prompt workspace prompt =
   let path = Filename.concat workspace.Workspace.path "prompt.md" in
   Util.write_file path prompt;
   path
+
+let stage_for_issue config issue =
+  if not config.Config.stage_agents.enabled then None
+  else
+    config.stage_agents.stages
+    |> List.find_opt (fun (stage : Config.stage_agent) ->
+           List.exists (fun state -> string_equal_ci state issue.Issue.state) stage.states)
+
+let agent_file config agent =
+  Filename.concat config.Config.stage_agents.root (agent ^ ".md")
+
+let agent_prompt config issue =
+  if not config.Config.stage_agents.enabled then None
+  else
+    let agent =
+      match stage_for_issue config issue with
+      | Some stage -> Some stage.agent
+      | None -> config.stage_agents.default_agent
+    in
+    match agent with
+    | None -> None
+    | Some agent ->
+        let path = agent_file config agent in
+        if Sys.file_exists path then Some (agent, Util.read_file path |> Util.trim) else None
+
+let compose_prompt config issue base_prompt =
+  match agent_prompt config issue with
+  | None -> base_prompt
+  | Some (agent, prompt) ->
+      Printf.sprintf "%s\n\n---\n\nStage agent: %s\n\n%s\n" prompt agent base_prompt
 
 let shell_launch ~config ~workspace ~prompt ~issue =
   let prompt_path = write_prompt workspace prompt in
@@ -224,16 +255,32 @@ let move_issue_status orchestrator issue status =
       render_status_failed issue.Issue.identifier status error;
       false
 
+let start_status orchestrator issue =
+  match stage_for_issue orchestrator.config issue with
+  | Some stage -> stage.start_status
+  | None -> orchestrator.config.tracker.project_status_on_dispatch
+
+let success_status orchestrator issue =
+  match stage_for_issue orchestrator.config issue with
+  | Some stage -> stage.success_status
+  | None -> orchestrator.config.tracker.project_status_on_success
+
+let retry_status orchestrator issue =
+  match stage_for_issue orchestrator.config issue with
+  | Some stage -> stage.retry_status
+  | None -> orchestrator.config.tracker.project_status_on_retry
+
 let dispatch_issue orchestrator issue =
   let can_dispatch =
-    match orchestrator.config.tracker.project_status_on_dispatch with
+    match start_status orchestrator issue with
     | None -> true
     | Some status -> move_issue_status orchestrator issue status
   in
   if can_dispatch then (
   let workspace = Workspace.create_for_issue ~root:orchestrator.config.workspace.root issue.Issue.identifier in
   let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
-  let prompt = Prompt.render ~issue ~attempt orchestrator.prompt_template in
+  let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
+  let prompt = compose_prompt orchestrator.config issue rendered in
   let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
   let now = Util.now_iso8601 () in
   let row =
@@ -308,14 +355,14 @@ let mark_retrying orchestrator issue_id error =
             :: List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
           last_error = Some error;
         };
-      (match orchestrator.config.tracker.project_status_on_retry with
+      (match retry_status orchestrator row.issue with
       | None -> ()
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
       render_dispatch_retrying row.issue.identifier next_attempt error
 
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
-  (match orchestrator.config.tracker.project_status_on_success with
+  (match success_status orchestrator child.issue with
   | None -> ()
   | Some status -> ignore (move_issue_status orchestrator child.issue status));
   Hashtbl.remove orchestrator.attempts issue_id;

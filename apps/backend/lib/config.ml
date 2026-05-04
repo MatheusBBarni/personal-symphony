@@ -19,6 +19,15 @@ type workspace = { root : string }
 type agent = { max_concurrent_agents : int; max_turns : int; max_retry_backoff_ms : int }
 type codex = { command : string; turn_timeout_ms : int; read_timeout_ms : int; stall_timeout_ms : int }
 type server = { port : int option }
+type stage_agent = {
+  states : string list;
+  agent : string;
+  start_status : string option;
+  success_status : string option;
+  retry_status : string option;
+}
+
+type stage_agents = { enabled : bool; root : string; default_agent : string option; stages : stage_agent list }
 
 type t = {
   workflow_path : string;
@@ -28,6 +37,7 @@ type t = {
   agent : agent;
   codex : codex;
   server : server;
+  stage_agents : stage_agents;
 }
 
 type readiness_gap = { requirement : string; remediation : string }
@@ -39,6 +49,19 @@ let default_terminal_states = [ "Done"; "Closed"; "Cancelled"; "Canceled"; "Dupl
 let default_dispatch_status = "In progress"
 let default_review_status = "In review"
 let default_retry_status = "Todo"
+
+let default_stage_agents =
+  [
+    { states = [ "Backlog" ]; agent = "planner"; start_status = None; success_status = Some "Todo"; retry_status = Some "Backlog" };
+    {
+      states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
+      agent = "engineer";
+      start_status = Some "In progress";
+      success_status = Some "In review";
+      retry_status = Some "Todo";
+    };
+    { states = [ "In review"; "In Review" ]; agent = "reviewer"; start_status = None; success_status = Some "Done"; retry_status = Some "In progress" };
+  ]
 
 let resolve_secret = function
   | None -> None
@@ -148,6 +171,7 @@ let from_workflow workflow =
         stall_timeout_ms = Option.value (Simple_yaml.get_int "stall_timeout_ms" codex_raw) ~default:300000;
       };
     server = { port = Simple_yaml.get_int "port" server_raw };
+    stage_agents = { enabled = false; root = Filename.concat workflow.dir ".symphony/agents"; default_agent = None; stages = [] };
   }
 
 let member name = function
@@ -173,6 +197,18 @@ let json_bool name json ~default =
 let json_optional_string name json =
   match member name json with `String s when Util.trim s <> "" -> Some s | _ -> None
 
+let json_object_list name json =
+  match member name json with `List values -> values | _ -> []
+
+let json_stage_agent json =
+  {
+    states = json_string_list "states" json ~default:[];
+    agent = json_string "agent" json ~default:"";
+    start_status = json_optional_string "startStatus" json;
+    success_status = json_optional_string "successStatus" json;
+    retry_status = json_optional_string "retryStatus" json;
+  }
+
 let from_settings_file ~workspace_root path =
   let root =
     try Yojson.Safe.from_file path
@@ -185,6 +221,7 @@ let from_settings_file ~workspace_root path =
   let agent_raw = member "agent" root in
   let codex_raw = member "codex" root in
   let server_raw = member "server" root in
+  let stage_agents_raw = member "stageAgents" root in
   let kind = json_string "kind" tracker_raw ~default:"github" in
   if kind <> "github" then raise (Invalid_config "tracker.kind must be github for this implementation");
   let api_key_env = json_string "apiKeyEnv" tracker_raw ~default:"GITHUB_TOKEN" in
@@ -230,6 +267,16 @@ let from_settings_file ~workspace_root path =
         stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
       };
     server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
+    stage_agents =
+      {
+        enabled = json_bool "enabled" stage_agents_raw ~default:true;
+        root = json_string "root" stage_agents_raw ~default:".symphony/agents" |> expand_path ~base_dir:workspace_root;
+        default_agent = json_optional_string "defaultAgent" stage_agents_raw;
+        stages =
+          (match json_object_list "stages" stage_agents_raw |> List.map json_stage_agent |> List.filter (fun stage -> stage.states <> [] && stage.agent <> "") with
+          | [] -> default_stage_agents
+          | stages -> stages);
+      };
   }
 
 let is_placeholder = function "" | "your-org" | "your-repo" -> true | _ -> false
@@ -255,6 +302,15 @@ let readiness_gaps config =
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
+  if config.stage_agents.enabled then (
+    if not (Sys.file_exists config.stage_agents.root && Sys.is_directory config.stage_agents.root) then
+      add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";
+    List.iter
+      (fun (stage : stage_agent) ->
+        let path = Filename.concat config.stage_agents.root (stage.agent ^ ".md") in
+        if not (Sys.file_exists path) then
+          add ("stageAgents." ^ stage.agent) (Printf.sprintf "Create the stage agent prompt file: %s" path))
+      config.stage_agents.stages);
   List.rev !gaps
 
 let validate_for_dispatch config =

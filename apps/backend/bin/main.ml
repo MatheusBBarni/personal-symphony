@@ -55,6 +55,11 @@ let render_startup_completed ~mode ~config ~runtime_home =
     (Printf.sprintf "%s/%s" config.Config.tracker.owner config.tracker.repo)
     (dim (Printf.sprintf "project #%d - %s" config.tracker.project_number runtime_home))
 
+let render_web_dashboard_starting ~port =
+  let url = Printf.sprintf "http://0.0.0.0:%d/" port in
+  Printf.eprintf "%s %s %s %s %s\n%!" (blue "web_dashboard") (yellow "starting") (dim "url") (cyan url)
+    (dim (Printf.sprintf "event=web_dashboard status=starting url=%s" url))
+
 let symphoony_banner =
   [
     " ____  __   __ __  __ ____  _   _  ___   ___  _   _ __   __";
@@ -62,14 +67,14 @@ let symphoony_banner =
     "\\___ \\  \\ V / | |\\/| | |_) | |_| | | | | | | |  \\| | \\ V / ";
     " ___) |  | |  | |  | |  __/|  _  | |_| | |_| | |\\  |  | |  ";
     "|____/   |_|  |_|  |_|_|   |_| |_|\\___/ \\___/|_| \\_|  |_|  ";
-    "                         SYMPHOONY";
   ]
 
 let print_section title = Printf.printf "\n%s\n%!" (cyan title)
 
+let render_banner () = List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphoony_banner
+
 let render_terminal_console config state =
-  List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphoony_banner;
-  Printf.printf "%s\n%!" (dim "Terminal Console");
+  render_banner ();
   print_section "Tracker";
   Printf.printf "  %s %s/%s\n%!" (dim "Repository") config.Config.tracker.owner config.tracker.repo;
   Printf.printf "  %s GitHub Project #%d\n%!" (dim "Project") config.tracker.project_number;
@@ -139,6 +144,7 @@ let run_runtime port once web =
         let mode = Cli_mode.select ~web in
         let state = readiness_state config in
         render_startup_completed ~mode:(Cli_mode.to_string mode) ~config ~runtime_home:home.runtime_dir;
+        if mode = Cli_mode.Web_dashboard then render_banner ();
         if once then (
           if mode = Cli_mode.Terminal_console then render_terminal_console config state;
           0)
@@ -148,7 +154,7 @@ let run_runtime port once web =
               match mode with
               | Cli_mode.Web_dashboard ->
                   let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-                  Printf.eprintf "event=web_dashboard status=starting url=http://127.0.0.1:%d/\n%!" port;
+                  render_web_dashboard_starting ~port;
                   Server.serve ~port ~get_state:(fun () -> state);
                   0
               | Cli_mode.Terminal_console ->
@@ -162,7 +168,7 @@ let run_runtime port once web =
               (match mode with
               | Cli_mode.Web_dashboard ->
                   let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-                  Printf.eprintf "event=web_dashboard status=starting url=http://127.0.0.1:%d/\n%!" port;
+                  render_web_dashboard_starting ~port;
                   ignore (Thread.create Orchestrator.run_forever orchestrator);
                   Server.serve ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator);
                   0

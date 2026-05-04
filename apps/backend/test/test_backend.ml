@@ -89,6 +89,9 @@ let test_bootstrap_idempotency_preserves_user_files () =
       let ignore_contents = Util.read_file (Filename.concat home.runtime_dir ".gitignore") in
       Alcotest.(check bool) "env ignored" true (String.contains ignore_contents 'e');
       Alcotest.(check bool) "state ignored" true (Util.starts_with ~prefix:"/.env" ignore_contents);
+      Alcotest.(check bool) "planner agent created" true (Sys.file_exists (Filename.concat home.agents_dir "planner.md"));
+      Alcotest.(check bool) "engineer agent created" true (Sys.file_exists (Filename.concat home.agents_dir "engineer.md"));
+      Alcotest.(check bool) "reviewer agent created" true (Sys.file_exists (Filename.concat home.agents_dir "reviewer.md"));
       Util.write_file home.prompt_path "custom prompt {{ issue.title }}";
       let _, second = Runtime_home.bootstrap root in
       Alcotest.(check string) "prompt preserved" "custom prompt {{ issue.title }}" (Util.read_file home.prompt_path);
@@ -140,6 +143,9 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check (option string)) "review status" (Some "In review") config.tracker.project_status_on_success;
       Alcotest.(check (option string)) "retry status" (Some "Todo") config.tracker.project_status_on_retry;
       Alcotest.(check bool) "ensure statuses" true config.tracker.ensure_project_statuses;
+      Alcotest.(check bool) "stage agents enabled" true config.stage_agents.enabled;
+      Alcotest.(check string) "stage agent root" (Filename.concat (Unix.realpath root) ".symphony/agents") config.stage_agents.root;
+      Alcotest.(check int) "stage mappings" 3 (List.length config.stage_agents.stages);
       let prompt = Runtime_home.load_prompt home in
       let issue = Issue.empty ~id:"I" ~identifier:"#1" ~title:"Install CLI" ~state:"Todo" in
       let rendered = Prompt.render ~issue ~attempt:(Some 3) prompt in
@@ -431,6 +437,7 @@ let test_orchestrator_dispatch_limits () =
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
       let issues =
@@ -482,6 +489,7 @@ let test_orchestrator_retries_failed_agent () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "false"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
@@ -526,6 +534,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
@@ -550,6 +559,90 @@ let test_orchestrator_moves_status_to_review_on_success () =
         (List.rev !statuses);
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "completed agent removed" 0 (List.length state.Runtime_state.running))
+
+let test_orchestrator_uses_stage_agent_prompt_and_status () =
+  with_temp_dir "symphony-stage-agent-" (fun root ->
+      let agents_root = Filename.concat root "agents" in
+      Unix.mkdir agents_root 0o755;
+      Util.write_file (Filename.concat agents_root "reviewer.md") "Reviewer stage instructions";
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "In review" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          stage_agents =
+            {
+              enabled = true;
+              root = agents_root;
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "In review" ];
+                    agent = "reviewer";
+                    start_status = None;
+                    success_status = Some "Done";
+                    retry_status = Some "In progress";
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In review" in
+      let current_status = ref "In review" in
+      let fetch _ = if !current_status = "In review" then [ { issue with state = !current_status } ] else [] in
+      let statuses = ref [] in
+      let captured_prompt = ref "" in
+      let set_status _ issue status =
+        current_status := status;
+        statuses := (issue.Issue.identifier, status) :: !statuses;
+        Ok ()
+      in
+      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }} {{ issue.title }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "reviewer prompt included" true (String.contains !captured_prompt 'R');
+      Alcotest.(check bool) "base prompt included" true (String.contains !captured_prompt '#');
+      Alcotest.(check (list (pair string string))) "no start status for review" [] (List.rev !statuses);
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Alcotest.(check (list (pair string string))) "review moves done" [ ("#1", "Done") ] (List.rev !statuses))
 
 let () =
   Alcotest.run "symphony-backend"
@@ -584,5 +677,6 @@ let () =
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
+          Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
         ] );
     ]

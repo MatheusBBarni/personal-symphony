@@ -91,15 +91,28 @@ let handle_request get_state request =
         (`Assoc [ ("error", `Assoc [ ("code", `String "not_found"); ("message", `String "route not found") ]) ]
         |> Yojson.Safe.to_string)
 
+let colors_enabled () = Sys.getenv_opt "NO_COLOR" = None
+let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
+let color code text = ansi code ^ text ^ ansi "0"
+let blue text = color "34;1" text
+let green text = color "32;1" text
+let cyan text = color "36;1" text
+let dim text = color "2" text
+
+let render_server_ready ~port =
+  Printf.eprintf "%s %s %s %s %s\n%!" (blue "server") (green "ready") (dim "listening")
+    (cyan (Printf.sprintf "0.0.0.0:%d" port))
+    (dim (Printf.sprintf "event=startup outcome=completed server_host=0.0.0.0 server_port=%d" port))
+
 let serve ~port ~get_state =
   let socket = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   Unix.setsockopt socket Unix.SO_REUSEADDR true;
-  Unix.bind socket (Unix.ADDR_INET (Unix.inet_addr_loopback, port));
+  Unix.bind socket (Unix.ADDR_INET (Unix.inet_addr_any, port));
   Unix.listen socket 16;
   let actual_port =
     match Unix.getsockname socket with Unix.ADDR_INET (_, port) -> port | _ -> port
   in
-  Printf.eprintf "event=startup outcome=completed server_port=%d\n%!" actual_port;
+  render_server_ready ~port:actual_port;
   while true do
     let client, _ = Unix.accept socket in
     let ic = Unix.in_channel_of_descr client in

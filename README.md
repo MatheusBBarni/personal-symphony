@@ -121,6 +121,50 @@ Configure these in `.symphony/settings.json`:
 The token needs GitHub Projects write access for status moves and status option creation. If
 `reviewStatus` is not listed in `activeStates`, completed issues stop being picked up on later polls.
 
+## Stage Agents
+
+Symphony can route different Project statuses to different local agent prompts. The default runtime
+home creates:
+
+- `.symphony/agents/planner.md` for `Backlog`.
+- `.symphony/agents/engineer.md` for `Todo`, `To-Do`, and `In progress`.
+- `.symphony/agents/reviewer.md` for `In review`, then moves successful reviews to `Done`.
+
+Configure or disable this in `.symphony/settings.json`:
+
+```json
+{
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "defaultAgent": "engineer",
+    "stages": [
+      {
+        "states": ["Backlog"],
+        "agent": "planner",
+        "successStatus": "Todo",
+        "retryStatus": "Backlog"
+      },
+      {
+        "states": ["Todo", "To-Do", "In progress", "In Progress"],
+        "agent": "engineer",
+        "startStatus": "In progress",
+        "successStatus": "In review",
+        "retryStatus": "Todo"
+      },
+      {
+        "states": ["In review", "In Review"],
+        "agent": "reviewer",
+        "successStatus": "Done",
+        "retryStatus": "In progress"
+      }
+    ]
+  }
+}
+```
+
+Set `"enabled": false` to use the single base `.symphony/prompt.md` for every issue.
+
 ## GitHub Token Permissions
 
 Personal Symphony reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
@@ -224,6 +268,7 @@ The backend serves:
 
 - Dashboard placeholder/API root: `http://127.0.0.1:8080/`
 - Runtime state JSON: `http://127.0.0.1:8080/api/v1/state`
+- Tailscale/LAN access: `http://<machine-ip>:8080/` because the backend binds to `0.0.0.0`.
 
 Start the ReScript React frontend in another terminal:
 

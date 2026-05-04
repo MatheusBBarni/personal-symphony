@@ -8,6 +8,7 @@ type t = {
   settings_path : string;
   prompt_path : string;
   env_path : string;
+  agents_dir : string;
 }
 
 exception Runtime_home_error of string
@@ -25,7 +26,7 @@ let settings_json =
   },
   "project": {
     "statusField": "Status",
-    "activeStates": ["Todo", "In Progress"],
+    "activeStates": ["Backlog", "Todo", "To-Do", "In progress", "In Progress", "In review"],
     "terminalStates": ["Done", "Closed", "Cancelled"],
     "startStatus": "In progress",
     "reviewStatus": "In review",
@@ -37,6 +38,32 @@ let settings_json =
   },
   "workspace": {
     "root": ".symphony/workspaces"
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "defaultAgent": "engineer",
+    "stages": [
+      {
+        "states": ["Backlog"],
+        "agent": "planner",
+        "successStatus": "Todo",
+        "retryStatus": "Backlog"
+      },
+      {
+        "states": ["Todo", "To-Do", "In progress", "In Progress"],
+        "agent": "engineer",
+        "startStatus": "In progress",
+        "successStatus": "In review",
+        "retryStatus": "Todo"
+      },
+      {
+        "states": ["In review", "In Review"],
+        "agent": "reviewer",
+        "successStatus": "Done",
+        "retryStatus": "In progress"
+      }
+    ]
   },
   "agent": {
     "maxConcurrentAgents": 2,
@@ -64,6 +91,43 @@ Attempt: {{ attempt }}
 
 Use the repository-owned workflow policy, make focused changes, validate them, and hand off through
 the project status expected by the team.
+|}
+
+let planner_agent_md =
+  {|You are the Planner agent for Personal Symphony.
+
+Your job is to turn a Backlog issue into an implementation-ready task.
+
+Focus:
+- Clarify the problem, acceptance criteria, risks, and likely files/modules.
+- Prefer concise technical planning over implementation.
+- Leave concrete next steps for the engineer.
+- Do not make broad code changes unless they are necessary to make the task actionable.
+|}
+
+let engineer_agent_md =
+  {|You are the Engineer agent for Personal Symphony.
+
+You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
+
+Principles:
+- Use type-driven design and keep illegal states unrepresentable where practical.
+- Keep a functional core with an imperative shell.
+- Make focused production-quality changes.
+- Run targeted verification and report what changed.
+- Avoid unrelated refactors.
+|}
+
+let reviewer_agent_md =
+  {|You are the Code Reviewer agent for Personal Symphony.
+
+You are a tech lead reviewing completed work before it moves to Done.
+
+Review focus:
+- Correctness, regressions, missing tests, race conditions, and edge cases.
+- OCaml/ReScript type soundness and clear module boundaries.
+- React/TypeScript state, rendering, accessibility, and maintainability.
+- Provide actionable findings first. If no blocking issues remain, say so clearly.
 |}
 
 let env_example = "GITHUB_TOKEN=\n"
@@ -103,6 +167,7 @@ let paths workspace_root =
     settings_path = Filename.concat runtime_dir "settings.json";
     prompt_path = Filename.concat runtime_dir "prompt.md";
     env_path = Filename.concat runtime_dir ".env";
+    agents_dir = Filename.concat runtime_dir "agents";
   }
 
 let status_to_string = function
@@ -135,6 +200,10 @@ let bootstrap workspace_root =
   let report = ensure_file report home.env_path "" in
   let report = ensure_dir report (Filename.concat home.runtime_dir "state") in
   let report = ensure_dir report (Filename.concat home.runtime_dir "workspaces") in
+  let report = ensure_dir report home.agents_dir in
+  let report = ensure_file report (Filename.concat home.agents_dir "planner.md") planner_agent_md in
+  let report = ensure_file report (Filename.concat home.agents_dir "engineer.md") engineer_agent_md in
+  let report = ensure_file report (Filename.concat home.agents_dir "reviewer.md") reviewer_agent_md in
   (home, List.rev report)
 
 let is_env_name name =
