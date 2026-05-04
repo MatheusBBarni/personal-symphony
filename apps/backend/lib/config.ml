@@ -36,12 +36,14 @@ type codex = {
 type server = { port : int option }
 type pull_request = { enabled : bool; base_branch : string; title : string; body : string }
 type stage_commit = { enabled : bool; commit_type : string; message : string; push : bool }
+type stage_goal = { enabled : bool }
 type stage_agent = {
   states : string list;
   agent : string;
   start_status : string option;
   success_status : string option;
   retry_status : string option;
+  goal : stage_goal option;
   commit : stage_commit option;
 }
 
@@ -99,6 +101,7 @@ let default_stage_agents =
       start_status = None;
       success_status = Some "To-Do";
       retry_status = Some "Backlog";
+      goal = Some { enabled = false };
       commit = Some { enabled = false; commit_type = "feature"; message = default_commit_message; push = false };
     };
     {
@@ -107,6 +110,7 @@ let default_stage_agents =
       start_status = Some "In progress";
       success_status = Some "In review";
       retry_status = Some "To-Do";
+      goal = Some { enabled = false };
       commit = Some { enabled = true; commit_type = "feature"; message = default_commit_message; push = false };
     };
     {
@@ -115,6 +119,7 @@ let default_stage_agents =
       start_status = None;
       success_status = Some "Done";
       retry_status = Some "In progress";
+      goal = Some { enabled = false };
       commit = Some { enabled = false; commit_type = "refactor"; message = default_commit_message; push = false };
     };
   ]
@@ -269,6 +274,8 @@ let json_object_list name json =
   match member name json with `List values -> values | _ -> []
 
 let json_stage_agent json =
+  let goal_raw = member "goal" json in
+  let goal = match goal_raw with `Assoc _ -> Some { enabled = json_bool "enabled" goal_raw ~default:false } | _ -> None in
   let commit_raw = member "commit" json in
   let commit =
     match commit_raw with
@@ -288,8 +295,97 @@ let json_stage_agent json =
     start_status = json_optional_string "startStatus" json;
     success_status = json_optional_string "successStatus" json;
     retry_status = json_optional_string "retryStatus" json;
+    goal;
     commit;
   }
+
+let stage_goal_enabled (stage : stage_agent) = match stage.goal with Some goal -> goal.enabled | None -> false
+
+let stage_goal_handoff_enabled config =
+  config.stage_agents.enabled && List.exists stage_goal_enabled config.stage_agents.stages
+
+let codex_config_path () =
+  match Sys.getenv_opt "HOME" with
+  | Some home when Util.trim home <> "" -> Filename.concat (Filename.concat home ".codex") "config.toml"
+  | _ -> Filename.concat (Filename.concat (Unix.getcwd ()) ".codex") "config.toml"
+
+let line_without_comment line =
+  match String.index_opt line '#' with
+  | Some index -> String.sub line 0 index
+  | None -> line
+  |> Util.trim
+
+let codex_goals_feature_enabled path =
+  if not (Sys.file_exists path) then false
+  else
+    let lines = Util.read_file path |> String.split_on_char '\n' in
+    let in_features = ref false in
+    List.exists
+      (fun line ->
+        let line = line_without_comment line in
+        if String.length line >= 2 && line.[0] = '[' && line.[String.length line - 1] = ']' then (
+          let section = String.sub line 1 (String.length line - 2) |> Util.trim in
+          in_features := section = "features";
+          false)
+        else
+          !in_features
+          &&
+          match String.split_on_char '=' line with
+          | [ key; value ] -> Util.trim key = "goals" && Util.trim value = "true"
+          | _ -> false)
+      lines
+
+let codex_goal_stdin_probe_enabled () =
+  match Sys.getenv_opt "SYMPHONY_CODEX_GOAL_STDIN_PROBE" with Some "1" | Some "true" -> true | _ -> false
+
+let replace_angle_token ~token ~value text =
+  String.split_on_char '<' text
+  |> List.mapi (fun index part ->
+         if index = 0 then part
+         else
+           match String.split_on_char '>' part with
+           | key :: rest when key = token -> value ^ String.concat ">" rest
+           | _ -> "<" ^ part)
+  |> String.concat ""
+
+let codex_probe_command config =
+  config.codex.command
+  |> replace_angle_token ~token:"model" ~value:(Util.shell_quote config.codex.model)
+  |> replace_angle_token ~token:"reasoning" ~value:(Util.shell_quote config.codex.reasoning_effort)
+
+let is_env_assignment word =
+  match String.index_opt word '=' with
+  | None -> false
+  | Some index -> index > 0
+
+let rec drop_env_assignments = function
+  | word :: rest when is_env_assignment word -> drop_env_assignments rest
+  | words -> words
+
+let static_codex_exec_command command =
+  let words = String.split_on_char ' ' command |> List.filter (fun word -> Util.trim word <> "") in
+  let words =
+    match words with
+    | "env" :: rest -> rest
+    | _ -> words
+    |> drop_env_assignments
+  in
+  match words with
+  | executable :: rest when Filename.basename executable = "codex" -> List.exists (( = ) "exec") rest
+  | _ -> false
+
+let codex_goal_stdin_supported config =
+  let command = Util.trim config.codex.command in
+  if command = "" then false
+  else if not (codex_goal_stdin_probe_enabled ()) then
+    static_codex_exec_command command
+  else
+    let probe = "/goal Verify Codex goal stdin support.\n\nReturn ok.\n" in
+    let command = codex_probe_command config in
+    let shell_command =
+      Printf.sprintf "printf %%s %s | timeout 20s %s >/dev/null 2>&1" (Util.shell_quote probe) command
+    in
+    match Unix.system shell_command with Unix.WEXITED 0 -> true | _ -> false
 
 let from_settings_file ~workspace_root path =
   let root =
@@ -424,6 +520,14 @@ let readiness_gaps config =
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
   if config.pull_request.enabled && Util.trim config.pull_request.base_branch = "" then
     add "pullRequest.baseBranch" "Set pullRequest.baseBranch in .symphony/settings.json when pullRequest.enabled is true.";
+  if stage_goal_handoff_enabled config then (
+    let codex_config = codex_config_path () in
+    if not (codex_goals_feature_enabled codex_config) then
+      add "codex.goals"
+        "Add the following to ~/.codex/config.toml to enable Stage Goal Handoff:\n\n[features]\ngoals = true";
+    if not (codex_goal_stdin_supported config) then
+      add "codex.goalStdin"
+        "Use a Codex command that accepts /goal from standard input before enabling Stage Goal Handoff.");
   if config.stage_agents.enabled then (
     if not (Sys.file_exists config.stage_agents.root && Sys.is_directory config.stage_agents.root) then
       add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";

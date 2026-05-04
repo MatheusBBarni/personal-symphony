@@ -1,4 +1,5 @@
 type tokens = { input_tokens : int; output_tokens : int; total_tokens : int }
+type goal_usage = { status : string option; time_used_seconds : float option; tokens_used : int option }
 
 type running = {
   issue : Issue.t;
@@ -9,10 +10,18 @@ type running = {
   started_at : string;
   last_event_at : string option;
   tokens : tokens;
+  goal_usage : goal_usage option;
 }
 
-type retrying = { issue_id : string; issue_identifier : string; attempt : int; due_at : string; error : string option }
-type issue_error = { issue_id : string; issue_identifier : string; error : string }
+type retrying = {
+  issue_id : string;
+  issue_identifier : string;
+  attempt : int;
+  due_at : string;
+  error : string option;
+  goal_usage : goal_usage option;
+}
+type issue_error = { issue_id : string; issue_identifier : string; error : string; goal_usage : goal_usage option }
 type readiness_gap = { requirement : string; remediation : string }
 type pull_request_handoff = {
   enabled : bool;
@@ -60,6 +69,14 @@ let tokens_to_yojson tokens =
       ("total_tokens", `Int tokens.total_tokens);
     ]
 
+let goal_usage_to_yojson (usage : goal_usage) =
+  `Assoc
+    [
+      ("status", (match usage.status with Some value -> `String value | None -> `Null));
+      ("time_used_seconds", (match usage.time_used_seconds with Some value -> `Float value | None -> `Null));
+      ("tokens_used", (match usage.tokens_used with Some value -> `Int value | None -> `Null));
+    ]
+
 let issue_to_yojson issue =
   `Assoc
     [
@@ -89,6 +106,7 @@ let running_to_yojson row =
       ("started_at", `String row.started_at);
       ("last_event_at", (match row.last_event_at with Some s -> `String s | None -> `Null));
       ("tokens", tokens_to_yojson row.tokens);
+      ("goal_usage", (match row.goal_usage with Some usage -> goal_usage_to_yojson usage | None -> `Null));
     ]
 
 let retrying_to_yojson (row : retrying) =
@@ -99,6 +117,7 @@ let retrying_to_yojson (row : retrying) =
       ("attempt", `Int row.attempt);
       ("due_at", `String row.due_at);
       ("error", (match row.error with Some s -> `String s | None -> `Null));
+      ("goal_usage", (match row.goal_usage with Some usage -> goal_usage_to_yojson usage | None -> `Null));
     ]
 
 let issue_error_to_yojson (row : issue_error) =
@@ -107,6 +126,7 @@ let issue_error_to_yojson (row : issue_error) =
       ("issue_id", `String row.issue_id);
       ("issue_identifier", `String row.issue_identifier);
       ("error", `String row.error);
+      ("goal_usage", (match row.goal_usage with Some usage -> goal_usage_to_yojson usage | None -> `Null));
     ]
 
 let readiness_gap_to_yojson row =

@@ -5,6 +5,7 @@ type issueItem = {
   url: string,
   description: string,
   error: string,
+  goalUsage: string,
 }
 
 type snapshot = {
@@ -126,6 +127,14 @@ let issueCard = issue =>
         {React.string(message)}
       </div>
     }}
+    {switch issue.goalUsage {
+    | "" => React.null
+    | value =>
+      <div className="mt-3 rounded border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs leading-5 text-neutral-300">
+        <span className="font-medium text-neutral-100"> {React.string("Goal Usage")} </span>
+        <span className="ml-2"> {React.string(value)} </span>
+      </div>
+    }}
   </article>
 
 let emptyOrchestrator = error =>
@@ -146,7 +155,8 @@ let emptyOrchestrator = error =>
     </HeroUI.Card>
   </>
 
-let orchestratorView = (snapshot, error) =>
+@react.component
+let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
   <div className="space-y-5">
     <div>
       <h1 className="text-2xl font-semibold tracking-normal text-neutral-50">
@@ -221,148 +231,3 @@ let orchestratorView = (snapshot, error) =>
       </>
     }}
   </div>
-
-let configurationView = (~audioEnabled, ~onAudioToggle) =>
-  <div className="space-y-5">
-    <div>
-      <h1 className="text-2xl font-semibold tracking-normal text-neutral-50">
-        {React.string("Configuration")}
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
-        {React.string("Browser-local Audio Notification Configuration.")}
-      </p>
-    </div>
-    <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
-      <HeroUI.CardHeader className="border-b border-neutral-800 px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold text-neutral-100">
-            {React.string("Audio notifications")}
-          </div>
-          <div className="mt-1 text-xs text-neutral-500">
-            {React.string("Stored in this browser only; Runtime Settings are unchanged.")}
-          </div>
-        </div>
-      </HeroUI.CardHeader>
-      <HeroUI.CardContent className="grid gap-4 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-        <div>
-          <div className="text-sm font-medium text-neutral-100">
-            {React.string("Notify when tracked work changes")}
-          </div>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-neutral-500">
-            {React.string("The dashboard can play a local browser sound when active work enters a notable state.")}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <HeroUI.Switch isSelected=audioEnabled onChange={enabled => onAudioToggle(enabled)}>
-            {React.string(if audioEnabled {
-              "Audio on"
-            } else {
-              "Audio off"
-            })}
-          </HeroUI.Switch>
-        </div>
-      </HeroUI.CardContent>
-    </HeroUI.Card>
-  </div>
-
-let navItem = (href, label, isActive) =>
-  <a
-    href=href
-    className={
-      "block rounded px-3 py-2 text-sm transition-colors " ++
-      if isActive {
-        "bg-teal-950/80 text-teal-100"
-      } else {
-        "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-100"
-      }
-    }>
-    {React.string(label)}
-  </a>
-
-@react.component
-let make = (
-  ~snapshot: option<snapshot>,
-  ~error: option<string>,
-  ~audioEnabled: bool,
-  ~onAudioToggle: bool => unit,
-) => {
-  let location = ReactRouter.useLocation()
-  let isConfiguration = location.pathname == "/configuration"
-
-  <section className="min-h-screen bg-[#0b0b0b] text-neutral-100">
-    <div className="grid min-h-screen lg:grid-cols-[240px_minmax(0,1fr)]">
-      <aside className="border-b border-neutral-800 bg-neutral-950 px-4 py-4 lg:border-b-0 lg:border-r">
-        <div className="flex items-center justify-between gap-4 lg:block">
-          <div>
-            <div className="text-lg font-semibold tracking-normal text-neutral-50">
-              {React.string("Symphony")}
-            </div>
-            <div className="mt-1 text-xs text-neutral-500">
-              {React.string("Workspace Repository control")}
-            </div>
-          </div>
-          <HeroUI.Chip
-            size="sm"
-            variant="flat"
-            className="rounded border border-emerald-800 bg-emerald-950/70 px-3 text-emerald-100 lg:mt-4">
-            {React.string("Live OCaml API")}
-          </HeroUI.Chip>
-        </div>
-        <nav className="mt-5 grid grid-cols-2 gap-2 lg:grid-cols-1">
-          {navItem("#/", "Orchestrator", !isConfiguration)}
-          {navItem("#/configuration", "Configuration", isConfiguration)}
-        </nav>
-      </aside>
-      <main className="min-w-0">
-        <header className="border-b border-neutral-800 bg-neutral-950/95 px-5 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-xs text-neutral-500">
-              <span className="uppercase"> {React.string("Generated")} </span>
-              <span className="ml-2 text-neutral-200">
-                {React.string(switch snapshot {
-                | Some(data) => data.generatedAt
-                | None => "-"
-                })}
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-500">
-              <span>
-                {React.string("Live state: ")}
-                <code className="text-teal-200"> {React.string("/api/v1/state/live")} </code>
-              </span>
-              <HeroUI.Button
-                type_="button"
-                variant="bordered"
-                size="sm"
-                onClick={_ => onAudioToggle(!audioEnabled)}
-                className={
-                  "rounded border px-3 py-1 text-xs font-medium " ++
-                  if audioEnabled {
-                    "border-teal-700 bg-teal-950/60 text-teal-100"
-                  } else {
-                    "border-neutral-700 bg-neutral-900 text-neutral-300"
-                  }
-                }>
-                {React.string(if audioEnabled {
-                  "Audio on"
-                } else {
-                  "Audio off"
-                })}
-              </HeroUI.Button>
-            </div>
-          </div>
-        </header>
-        <div className="px-5 py-6">
-          <ReactRouter.Routes>
-            <ReactRouter.Route path="/" element={orchestratorView(snapshot, error)} />
-            <ReactRouter.Route
-              path="/configuration"
-              element={configurationView(~audioEnabled, ~onAudioToggle)}
-            />
-            <ReactRouter.Route path="*" element={<ReactRouter.Navigate to="/" replace=true />} />
-          </ReactRouter.Routes>
-        </div>
-      </main>
-    </div>
-  </section>
-}

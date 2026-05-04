@@ -157,6 +157,9 @@ Configure or disable this in `.symphony/settings.json`:
         "agent": "planner",
         "successStatus": "To-Do",
         "retryStatus": "Backlog",
+        "goal": {
+          "enabled": false
+        },
         "commit": {
           "enabled": false,
           "type": "feature",
@@ -170,6 +173,9 @@ Configure or disable this in `.symphony/settings.json`:
         "startStatus": "In progress",
         "successStatus": "In review",
         "retryStatus": "To-Do",
+        "goal": {
+          "enabled": false
+        },
         "commit": {
           "enabled": true,
           "type": "feature",
@@ -182,6 +188,9 @@ Configure or disable this in `.symphony/settings.json`:
         "agent": "reviewer",
         "successStatus": "Done",
         "retryStatus": "In progress",
+        "goal": {
+          "enabled": false
+        },
         "commit": {
           "enabled": false,
           "type": "refactor",
@@ -195,6 +204,23 @@ Configure or disable this in `.symphony/settings.json`:
 ```
 
 Set `"enabled": false` to use the single base `.symphony/prompt.md` for every issue.
+
+Set `goal.enabled` to `true` on a specific stage to enable Stage Goal Handoff for that stage only.
+When enabled, Symphony sends `/goal` with deterministic Stage Goal Context before the normal Agent
+Prompt. Stage Goal Context includes issue identifier, title, description, URL, current project
+status, labels, priority when present, blocker references when present, attempt, and stage agent
+name. It omits issue creation and update timestamps.
+
+Stage Goal Handoff requires Codex goals in `~/.codex/config.toml`:
+
+```toml
+[features]
+goals = true
+```
+
+If a stage enables goal handoff but Codex goals are not enabled, Symphony reports a Readiness Gap.
+Goal Usage reported by Codex is stored in Runtime State for running, retrying, and attention-needed
+task details when available; missing or unparseable Goal Usage does not fail a task.
 
 Stage commits run after an agent exits successfully and before Symphony moves the issue to the
 stage's `successStatus`. Set `commit.enabled` per stage to control which transitions create commits;

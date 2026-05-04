@@ -251,6 +251,7 @@ _Avoid_: reinitialize, reset
 - Symphony does not invent **Goal Usage** when Codex output does not report it.
 - **Goal Usage** may include goal status, time used, and token usage when Codex reports those fields.
 - **Goal Usage** belongs in **Runtime State**.
+- **Goal Usage** remains in **Runtime State** when a task moves from running to retrying or attention-needed state.
 - The **Web Dashboard** shows **Goal Usage** in task execution details when available.
 - **Goal Usage** is not a primary **Web Dashboard** metric.
 - **Stage Goal Handoff** does not change retry, completion, status transition, commit, push, auto-merge, or Batch Pull Request behavior.

@@ -172,11 +172,50 @@ let agent_prompt config issue =
         let path = agent_file config agent in
         if Sys.file_exists path then Some (agent, Util.read_file path |> Util.trim) else None
 
-let compose_prompt config issue base_prompt =
+let normal_prompt config issue base_prompt =
   match agent_prompt config issue with
   | None -> base_prompt
   | Some (agent, prompt) ->
       Printf.sprintf "%s\n\n---\n\nStage agent: %s\n\n%s\n" prompt agent base_prompt
+
+let stage_goal_handoff_stage config issue =
+  match stage_for_issue config issue with
+  | Some stage when Config.stage_goal_enabled stage -> Some stage
+  | _ -> None
+
+let json_option_string = function Some value when Util.trim value <> "" -> `String value | _ -> `Null
+let json_option_int = function Some value -> `Int value | None -> `Null
+
+let blocker_to_goal_json (blocker : Issue.blocker) =
+  `Assoc
+    [
+      ("id", json_option_string blocker.id);
+      ("identifier", json_option_string blocker.identifier);
+      ("state", json_option_string blocker.state);
+    ]
+
+let stage_goal_context issue attempt (stage : Config.stage_agent) =
+  `Assoc
+    [
+      ("kind", `String "Stage Goal Context");
+      ("issue_identifier", `String issue.Issue.identifier);
+      ("title", `String issue.title);
+      ("description", json_option_string issue.description);
+      ("url", json_option_string issue.url);
+      ("current_project_status", `String issue.state);
+      ("labels", `List (List.map (fun label -> `String label) issue.labels));
+      ("priority", json_option_int issue.priority);
+      ("blocker_references", `List (List.map blocker_to_goal_json issue.blocked_by));
+      ("attempt", `Int (Option.value attempt ~default:0));
+      ("stage_agent_name", `String stage.agent);
+    ]
+  |> Yojson.Safe.to_string
+
+let compose_prompt config issue attempt base_prompt =
+  let prompt = normal_prompt config issue base_prompt in
+  match stage_goal_handoff_stage config issue with
+  | None -> prompt
+  | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
 
 let replace_token ~token ~value text =
   String.split_on_char '<' text
@@ -529,6 +568,99 @@ let parse_tokens stdout_path stderr_path =
     total_tokens = find_int_key "total_tokens" content;
   }
 
+let json_member name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let json_string_member name json =
+  match json_member name json with Some (`String value) when Util.trim value <> "" -> Some value | _ -> None
+
+let json_int_member name json =
+  match json_member name json with
+  | Some (`Int value) -> Some value
+  | Some (`Float value) -> Some (int_of_float value)
+  | Some (`String value) -> int_of_string_opt (Util.trim value)
+  | _ -> None
+
+let json_float_member name json =
+  match json_member name json with
+  | Some (`Float value) -> Some value
+  | Some (`Int value) -> Some (float_of_int value)
+  | Some (`String value) -> (try Some (float_of_string (Util.trim value)) with Failure _ -> None)
+  | _ -> None
+
+let first_some values = List.find_map Fun.id values
+
+let nested_json_member names json =
+  names
+  |> List.find_map (fun name ->
+         match json_member name json with Some (`Assoc _ as value) -> Some value | _ -> None)
+
+let nested_int_member containers keys json =
+  containers
+  |> List.find_map (fun container ->
+         match nested_json_member [ container ] json with
+         | Some nested -> first_some (List.map (fun key -> json_int_member key nested) keys)
+         | None -> None)
+
+let goal_usage_from_json ?(allow_top_level = false) json =
+  let source =
+    match json_member "goal_usage" json with
+    | Some (`Assoc _ as usage) -> Some usage
+    | _ -> (
+        match json_member "goalUsage" json with
+        | Some (`Assoc _ as usage) -> Some usage
+        | _ -> (
+            match json_member "goal" json with
+            | Some (`Assoc _ as goal) -> (
+                match json_member "usage" goal with Some (`Assoc _ as usage) -> Some usage | _ -> Some goal)
+            | _ -> if allow_top_level then Some json else None))
+  in
+  match source with
+  | None -> None
+  | Some usage ->
+      let result =
+        {
+          Runtime_state.status = first_some [ json_string_member "status" usage; json_string_member "goal_status" usage; json_string_member "goalStatus" usage ];
+          time_used_seconds =
+            first_some
+              [
+                json_float_member "time_used_seconds" usage;
+                json_float_member "timeUsedSeconds" usage;
+                json_float_member "duration_seconds" usage;
+                json_float_member "durationSeconds" usage;
+              ];
+          tokens_used =
+            first_some
+              [
+                json_int_member "tokens_used" usage;
+                json_int_member "tokensUsed" usage;
+                nested_int_member [ "tokens"; "token_usage"; "tokenUsage" ]
+                  [ "total_tokens"; "totalTokens"; "tokens_used"; "tokensUsed" ]
+                  usage;
+              ];
+        }
+      in
+      if result.status = None && result.time_used_seconds = None && result.tokens_used = None then None else Some result
+
+let parse_goal_usage_from_line line =
+  let line = Util.trim line in
+  let lower_line = String.lowercase_ascii line in
+  let json_text =
+    if String.starts_with ~prefix:"goal usage:" lower_line then
+      Some (true, String.sub line 11 (String.length line - 11) |> Util.trim)
+    else if String.length line > 0 && line.[0] = '{' then Some (false, line)
+    else None
+  in
+  match json_text with
+  | None -> None
+  | Some (allow_top_level, text) -> (
+      try Yojson.Safe.from_string text |> goal_usage_from_json ~allow_top_level with Yojson.Json_error _ -> None)
+
+let parse_goal_usage stdout_path stderr_path =
+  let content = file_contents stdout_path ^ "\n" ^ file_contents stderr_path in
+  content |> String.split_on_char '\n' |> List.filter_map parse_goal_usage_from_line |> List.rev |> List.find_opt (fun _ -> true)
+
 let max_tokens a b =
   {
     Runtime_state.input_tokens = max a.Runtime_state.input_tokens b.Runtime_state.input_tokens;
@@ -634,7 +766,7 @@ let dispatch_issue orchestrator issue =
         let issue = match target_start_status with Some state -> { issue with Issue.state } | None -> issue in
         let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
         let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
-        let prompt = compose_prompt orchestrator.config issue rendered in
+        let prompt = compose_prompt orchestrator.config issue attempt rendered in
         let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
         let now = Util.now_iso8601 () in
         let row =
@@ -647,6 +779,7 @@ let dispatch_issue orchestrator issue =
             started_at = now;
             last_event_at = Some now;
             tokens = runtime_tokens;
+            goal_usage = None;
           }
         in
         Hashtbl.remove orchestrator.retry_due issue.id;
@@ -709,6 +842,7 @@ let mark_retrying orchestrator issue_id error =
               attempt = next_attempt;
               due_at;
               error = Some error;
+              goal_usage = row.goal_usage;
             }
             :: List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
           issue_errors =
@@ -746,6 +880,7 @@ let mark_blocked orchestrator issue_id error =
               Runtime_state.issue_id;
               issue_identifier = row.issue.identifier;
               error;
+              goal_usage = row.goal_usage;
             }
             :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
           last_error = Some error;
@@ -796,6 +931,11 @@ let auto_merge_child orchestrator child =
 let mark_merge_attention orchestrator child error =
   set_error orchestrator error;
   ignore (move_issue_status orchestrator child.issue orchestrator.config.git.merge_attention_status);
+  let goal_usage =
+    match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = child.issue_id) orchestrator.state.running with
+    | Some row -> row.goal_usage
+    | None -> None
+  in
   update_state orchestrator (fun state ->
     {
       state with
@@ -806,6 +946,7 @@ let mark_merge_attention orchestrator child error =
           Runtime_state.issue_id = child.issue_id;
           issue_identifier = child.issue_identifier;
           error;
+          goal_usage;
         }
         :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> child.issue_id) state.issue_errors;
       last_error = Some error;
@@ -835,15 +976,16 @@ let mark_completed orchestrator child =
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()
 
-let refresh_child_output orchestrator child =
+let refresh_child_output ?(force = false) orchestrator child =
   let stdout_size = file_size child.stdout_path in
   let stderr_size = file_size child.stderr_path in
-  if stdout_size <> child.stdout_size || stderr_size <> child.stderr_size then (
+  if force || stdout_size <> child.stdout_size || stderr_size <> child.stderr_size then (
     child.stdout_size <- stdout_size;
     child.stderr_size <- stderr_size;
     child.last_output_at <- Unix.time ();
     let now = Util.now_iso8601 () in
     let tokens = parse_tokens child.stdout_path child.stderr_path in
+    let goal_usage = parse_goal_usage child.stdout_path child.stderr_path in
     update_state orchestrator (fun state -> { state with codex_totals = max_tokens state.codex_totals tokens });
     update_running orchestrator child.issue_id (fun row ->
         {
@@ -852,6 +994,7 @@ let refresh_child_output orchestrator child =
           last_message = Some "stdout/stderr updated";
           last_event_at = Some now;
           tokens = max_tokens row.tokens tokens;
+          goal_usage = (match goal_usage with Some _ -> goal_usage | None -> row.goal_usage);
         }))
 
 let reap_children orchestrator =
@@ -864,6 +1007,7 @@ let reap_children orchestrator =
           now -. child.started_at > float_of_int orchestrator.config.codex.turn_timeout_ms /. 1000.
           || now -. child.last_output_at > float_of_int orchestrator.config.codex.stall_timeout_ms /. 1000.
         then (
+          refresh_child_output ~force:true orchestrator child;
           kill_child child;
           mark_retrying orchestrator child.issue_id "agent timed out";
           (child.issue_id :: finished, running))
@@ -871,12 +1015,15 @@ let reap_children orchestrator =
           match Unix.waitpid [ Unix.WNOHANG ] child.pid with
           | 0, _ -> (finished, child :: running)
           | _, Unix.WEXITED 0 ->
+              refresh_child_output ~force:true orchestrator child;
               mark_completed orchestrator child;
               (child.issue_id :: finished, running)
           | _, Unix.WEXITED code ->
+              refresh_child_output ~force:true orchestrator child;
               mark_retrying orchestrator child.issue_id (Printf.sprintf "agent exited with code %d" code);
               (child.issue_id :: finished, running)
           | _, Unix.WSIGNALED signal ->
+              refresh_child_output ~force:true orchestrator child;
               mark_retrying orchestrator child.issue_id (Printf.sprintf "agent signaled %d" signal);
               (child.issue_id :: finished, running)
           | _, Unix.WSTOPPED signal ->

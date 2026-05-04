@@ -94,6 +94,198 @@ let test_config_parses_git_policy_and_stage_push () =
           Alcotest.(check bool) "stage push default" false reviewer_commit.push
       | _ -> Alcotest.fail "expected stage commit policy")
 
+let test_config_parses_stage_goal_and_readiness () =
+  let original_home = Sys.getenv_opt "HOME" in
+  let original_probe = Sys.getenv_opt "SYMPHONY_CODEX_GOAL_STDIN_PROBE" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match original_home with Some value -> Unix.putenv "HOME" value | None -> Unix.putenv "HOME" "");
+      match original_probe with
+      | Some value -> Unix.putenv "SYMPHONY_CODEX_GOAL_STDIN_PROBE" value
+      | None -> Unix.putenv "SYMPHONY_CODEX_GOAL_STDIN_PROBE" "")
+    (fun () ->
+      with_temp_dir "symphony-stage-goal-" (fun root ->
+          Unix.putenv "HOME" root;
+          Unix.putenv "SYMPHONY_CODEX_GOAL_STDIN_PROBE" "";
+          Unix.putenv "GITHUB_TOKEN" "token";
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          (match config.stage_agents.stages with
+          | [ stage ] -> Alcotest.(check bool) "goal enabled" true (Config.stage_goal_enabled stage)
+          | _ -> Alcotest.fail "expected one stage");
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "missing codex goals gap" true
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goals") gaps);
+          Util.mkdir_p (Filename.concat root ".codex");
+          Util.write_file (Filename.concat (Filename.concat root ".codex") "config.toml") "[ features ]\ngoals = true # enable Codex goals\n";
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "codex goals gap resolved" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goals") gaps)))
+
+let test_disabled_stage_goal_does_not_require_codex_goals () =
+  let original_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match original_home with Some value -> Unix.putenv "HOME" value | None -> Unix.putenv "HOME" "")
+    (fun () ->
+      with_temp_dir "symphony-stage-goal-disabled-" (fun root ->
+          Unix.putenv "HOME" root;
+          Unix.putenv "GITHUB_TOKEN" "token";
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": false}}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "no codex goals gap" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goals") gaps);
+          Alcotest.(check bool) "no stdin gap" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
+
+let test_stage_goal_requires_codex_exec_stdin_support () =
+  let original_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match original_home with Some value -> Unix.putenv "HOME" value | None -> Unix.putenv "HOME" "")
+    (fun () ->
+      with_temp_dir "symphony-stage-goal-stdin-" (fun root ->
+          Unix.putenv "HOME" root;
+          Unix.putenv "GITHUB_TOKEN" "token";
+          Util.mkdir_p (Filename.concat root ".codex");
+          Util.write_file (Filename.concat (Filename.concat root ".codex") "config.toml") "[features]\ngoals = true\n";
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {"command": "cat"},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "stdin gap" true
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps);
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {"command": "env CODEX_HOME=/tmp/codex /usr/local/bin/codex -m <model> exec"},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "codex exec path accepted with env" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps);
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {"command": "printf codex exec"},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "codex as argument rejected" true
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
+
+let test_stage_goal_live_stdin_probe () =
+  let original_home = Sys.getenv_opt "HOME" in
+  let original_probe = Sys.getenv_opt "SYMPHONY_CODEX_GOAL_STDIN_PROBE" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match original_home with Some value -> Unix.putenv "HOME" value | None -> Unix.putenv "HOME" "");
+      match original_probe with
+      | Some value -> Unix.putenv "SYMPHONY_CODEX_GOAL_STDIN_PROBE" value
+      | None -> Unix.putenv "SYMPHONY_CODEX_GOAL_STDIN_PROBE" "")
+    (fun () ->
+      with_temp_dir "symphony-stage-goal-live-probe-" (fun root ->
+          Unix.putenv "HOME" root;
+          Unix.putenv "GITHUB_TOKEN" "token";
+          Unix.putenv "SYMPHONY_CODEX_GOAL_STDIN_PROBE" "1";
+          Util.mkdir_p (Filename.concat root ".codex");
+          Util.write_file (Filename.concat (Filename.concat root ".codex") "config.toml") "[features]\ngoals = true\n";
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let fake_codex = Filename.concat root "fake-codex.sh" in
+          Util.write_file fake_codex
+            {|#!/bin/sh
+input="$(cat)"
+case "$input" in
+  /goal*) exit 0 ;;
+  *) exit 42 ;;
+esac
+|};
+          Unix.chmod fake_codex 0o755;
+          let settings = Filename.concat root "settings.json" in
+          let write_settings command =
+            Util.write_file settings
+              (Printf.sprintf
+                 {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {"command": %S, "model": "fixture-model", "reasoningEffort": "low"},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|}
+                 command)
+          in
+          write_settings (fake_codex ^ " -m <model> exec");
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "live probe accepted" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps);
+          write_settings "false";
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "live probe rejected" true
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
+
 let test_pull_request_base_branch_readiness_gap () =
   with_temp_dir "symphony-settings-pr-gap-" (fun root ->
       let settings = Filename.concat root "settings.json" in
@@ -363,6 +555,8 @@ let test_settings_and_prompt_loading () =
       (match config.stage_agents.stages with
       | planner :: engineer :: _ ->
           Alcotest.(check (option string)) "planner success status" (Some "To-Do") planner.success_status;
+          Alcotest.(check bool) "planner goal disabled" false (Config.stage_goal_enabled planner);
+          Alcotest.(check bool) "engineer goal disabled" false (Config.stage_goal_enabled engineer);
           (match engineer.Config.commit with
           | Some commit ->
               Alcotest.(check bool) "engineer commits enabled" true commit.enabled;
@@ -467,6 +661,7 @@ let test_runtime_state_exposes_running_issue_details () =
             started_at = "2026-05-04T00:00:00Z";
             last_event_at = None;
             tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+            goal_usage = None;
           };
         ];
     }
@@ -484,6 +679,66 @@ let test_runtime_state_exposes_running_issue_details () =
   Alcotest.(check (list string)) "status order"
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
+
+let test_runtime_state_exposes_goal_usage_when_available () =
+  let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add goal usage" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      running =
+        [
+          {
+            Runtime_state.issue;
+            session_id = Some "pid:123";
+            turn_count = 0;
+            last_event = Some "agent_output";
+            last_message = Some "stdout/stderr updated";
+            started_at = "2026-05-04T00:00:00Z";
+            last_event_at = Some "2026-05-04T00:00:05Z";
+            tokens = { input_tokens = 1; output_tokens = 2; total_tokens = 3 };
+            goal_usage = Some { Runtime_state.status = Some "complete"; time_used_seconds = Some 5.; tokens_used = Some 99 };
+          };
+        ];
+    }
+  in
+  let open Yojson.Safe.Util in
+  let usage = Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd |> member "goal_usage" in
+  Alcotest.(check string) "goal status" "complete" (usage |> member "status" |> to_string);
+  Alcotest.(check (float 0.01)) "goal time" 5. (usage |> member "time_used_seconds" |> to_float);
+  Alcotest.(check int) "goal tokens" 99 (usage |> member "tokens_used" |> to_int);
+  let retrying_state =
+    {
+      (Runtime_state.empty ()) with
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I1";
+            issue_identifier = "#1";
+            attempt = 1;
+            due_at = "2026-05-04T00:01:00Z";
+            error = Some "agent exited with code 1";
+            goal_usage = Some { Runtime_state.status = Some "active"; time_used_seconds = None; tokens_used = Some 42 };
+          };
+        ];
+      issue_errors =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            error = "commit required but agent produced no code changes";
+            goal_usage = Some { Runtime_state.status = Some "blocked"; time_used_seconds = Some 2.; tokens_used = None };
+          };
+        ];
+    }
+  in
+  let retry_usage = Runtime_state.to_yojson retrying_state |> member "retrying" |> to_list |> List.hd |> member "goal_usage" in
+  Alcotest.(check string) "retry goal status" "active" (retry_usage |> member "status" |> to_string);
+  Alcotest.(check int) "retry goal tokens" 42 (retry_usage |> member "tokens_used" |> to_int);
+  let error_usage =
+    Runtime_state.to_yojson retrying_state |> member "issue_errors" |> to_list |> List.hd |> member "goal_usage"
+  in
+  Alcotest.(check string) "error goal status" "blocked" (error_usage |> member "status" |> to_string);
+  Alcotest.(check (float 0.01)) "error goal time" 2. (error_usage |> member "time_used_seconds" |> to_float)
 
 let websocket_request () =
   {
@@ -591,6 +846,7 @@ let test_websocket_broadcast_after_state_change () =
                 started_at = "2026-05-04T00:00:00Z";
                 last_event_at = None;
                 tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                goal_usage = None;
               };
             ];
         };
@@ -658,6 +914,278 @@ let test_orchestrator_notifies_each_state_mutation () =
       Orchestrator.poll_once orchestrator;
       Orchestrator.poll_once orchestrator;
       Alcotest.(check int) "notifies repeated state writes" 2 !notifications)
+
+let test_orchestrator_parses_final_output_when_size_was_already_seen () =
+  with_temp_dir "symphony-final-output-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = None;
+              project_status_on_retry = None;
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Fast output" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:(Filename.concat root "workspaces") issue.identifier in
+      let stdout_path = Filename.concat workspace.path "stdout.log" in
+      Util.write_file stdout_path
+        {|input_tokens: 11
+output_tokens: 13
+total_tokens: 24
+Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
+|};
+      let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "true" |] Unix.stdin Unix.stdout Unix.stderr in
+      Unix.sleepf 0.05;
+      let snapshots = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
+          ~notify_state:(fun state -> snapshots := state :: !snapshots)
+          ()
+      in
+      Orchestrator.set_state orchestrator
+        {
+          (Runtime_state.empty ()) with
+          running =
+            [
+              {
+                Runtime_state.issue;
+                session_id = Some "pid:test";
+                turn_count = 0;
+                last_event = Some "launched";
+                last_message = None;
+                started_at = "2026-05-04T00:00:00Z";
+                last_event_at = None;
+                tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                goal_usage = None;
+              };
+            ];
+        };
+      orchestrator.Orchestrator.children <-
+        [
+          {
+            Orchestrator.pid;
+            issue;
+            issue_id = issue.id;
+            issue_identifier = issue.identifier;
+            issue_title = issue.title;
+            workspace;
+            started_at = Unix.time ();
+            last_output_at = Unix.time ();
+            stdout_path = Some stdout_path;
+            stderr_path = None;
+            stdout_size = (Unix.stat stdout_path).Unix.st_size;
+            stderr_size = 0;
+          };
+        ];
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "final total tokens parsed" 24 state.codex_totals.total_tokens;
+      Alcotest.(check int) "completed row removed" 0 (List.length state.running);
+      let saw_goal_usage =
+        List.exists
+          (fun (state : Runtime_state.t) ->
+            List.exists
+              (fun (row : Runtime_state.running) ->
+                match row.goal_usage with
+                | Some usage -> usage.status = Some "complete" && usage.tokens_used = Some 24
+                | None -> false)
+              state.running)
+          !snapshots
+      in
+      Alcotest.(check bool) "goal usage was exposed before completion" true saw_goal_usage)
+
+let test_orchestrator_parses_final_output_before_timeout_retry () =
+  with_temp_dir "symphony-timeout-output-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = None;
+              project_status_on_retry = None;
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1; read_timeout_ms = 1000; stall_timeout_ms = 100000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Timeout output" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:(Filename.concat root "workspaces") issue.identifier in
+      let stdout_path = Filename.concat workspace.path "stdout.log" in
+      Util.write_file stdout_path
+        {|input_tokens: 3
+output_tokens: 5
+total_tokens: 8
+Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
+|};
+      let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "sleep 30" |] Unix.stdin Unix.stdout Unix.stderr in
+      let snapshots = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
+          ~notify_state:(fun state -> snapshots := state :: !snapshots)
+          ()
+      in
+      Orchestrator.set_state orchestrator
+        {
+          (Runtime_state.empty ()) with
+          running =
+            [
+              {
+                Runtime_state.issue;
+                session_id = Some "pid:timeout";
+                turn_count = 0;
+                last_event = Some "launched";
+                last_message = None;
+                started_at = "2026-05-04T00:00:00Z";
+                last_event_at = None;
+                tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                goal_usage = None;
+              };
+            ];
+        };
+      orchestrator.Orchestrator.children <-
+        [
+          {
+            Orchestrator.pid;
+            issue;
+            issue_id = issue.id;
+            issue_identifier = issue.identifier;
+            issue_title = issue.title;
+            workspace;
+            started_at = Unix.time () -. 10.;
+            last_output_at = Unix.time ();
+            stdout_path = Some stdout_path;
+            stderr_path = None;
+            stdout_size = (Unix.stat stdout_path).Unix.st_size;
+            stderr_size = 0;
+          };
+        ];
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "timeout total tokens parsed" 8 state.codex_totals.total_tokens;
+      Alcotest.(check int) "running removed" 0 (List.length state.running);
+      Alcotest.(check int) "retrying added" 1 (List.length state.retrying);
+      (match state.retrying with
+      | retry :: _ -> (
+          match retry.goal_usage with
+          | Some usage ->
+              Alcotest.(check (option string)) "retry goal status preserved" (Some "active") usage.status;
+              Alcotest.(check (option int)) "retry goal tokens preserved" (Some 8) usage.tokens_used
+          | None -> Alcotest.fail "expected retry goal usage")
+      | [] -> Alcotest.fail "expected retrying row");
+      let saw_goal_usage =
+        List.exists
+          (fun (state : Runtime_state.t) ->
+            List.exists
+              (fun (row : Runtime_state.running) ->
+                match row.goal_usage with
+                | Some usage -> usage.status = Some "active" && usage.tokens_used = Some 8
+                | None -> false)
+              state.running)
+          !snapshots
+      in
+      Alcotest.(check bool) "timeout goal usage exposed before retry" true saw_goal_usage)
+
+let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
+  with_temp_dir "symphony-blocked-goal-usage-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = None;
+              project_status_on_retry = None;
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Blocked usage" ~state:"Todo" in
+      let orchestrator = Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.set_state orchestrator
+        {
+          (Runtime_state.empty ()) with
+          running =
+            [
+              {
+                Runtime_state.issue;
+                session_id = Some "pid:block";
+                turn_count = 0;
+                last_event = Some "agent_output";
+                last_message = Some "stdout/stderr updated";
+                started_at = "2026-05-04T00:00:00Z";
+                last_event_at = Some "2026-05-04T00:00:10Z";
+                tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                goal_usage = Some { Runtime_state.status = Some "blocked"; time_used_seconds = Some 10.; tokens_used = Some 77 };
+              };
+            ];
+        };
+      Orchestrator.mark_blocked orchestrator issue.id "commit required but agent produced no code changes";
+      match (Orchestrator.get_state orchestrator).issue_errors with
+      | issue_error :: _ -> (
+          match issue_error.goal_usage with
+          | Some usage ->
+              Alcotest.(check (option string)) "blocked goal status" (Some "blocked") usage.status;
+              Alcotest.(check (option int)) "blocked goal tokens" (Some 77) usage.tokens_used
+          | None -> Alcotest.fail "expected blocked goal usage")
+      | [] -> Alcotest.fail "expected issue error")
 
 let test_ready_terminal_mode_runs_orchestrator () =
   Alcotest.(check bool) "ready terminal loops" true
@@ -1111,6 +1639,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                     start_status = None;
                     success_status = Some "Done";
                     retry_status = Some "In progress";
+                    goal = None;
                     commit = None;
                   };
                 ];
@@ -1155,6 +1684,212 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
         };
       Alcotest.(check (list (pair string string))) "review moves done" [ ("#1", "Done") ] (List.rev !statuses))
 
+let test_orchestrator_prepends_stage_goal_handoff () =
+  with_temp_dir "symphony-stage-goal-prompt-" (fun root ->
+      let agents_root = Filename.concat root "agents" in
+      Unix.mkdir agents_root 0o755;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents =
+            {
+              enabled = true;
+              root = agents_root;
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "engineer";
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = Some { enabled = true };
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issue =
+        {
+          (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo") with
+          description = Some "Build the feature";
+          url = Some "https://example.test/issues/1";
+          labels = [ "enhancement"; "codex" ];
+          priority = Some 2;
+          blocked_by = [ { Issue.id = Some "I0"; identifier = Some "#0"; state = Some "Done" } ];
+          created_at = Some "2026-01-01T00:00:00Z";
+        }
+      in
+      let captured_prompt = ref "" in
+      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
+      Alcotest.(check bool) "stage agent included" true (String.contains !captured_prompt 'E');
+      Alcotest.(check bool) "normal prompt included" true (String.contains !captured_prompt '#');
+      let goal_line =
+        match String.split_on_char '\n' !captured_prompt with
+        | first :: _ -> first
+        | [] -> Alcotest.fail "expected prompt"
+      in
+      let goal_json = String.sub goal_line 6 (String.length goal_line - 6) |> Yojson.Safe.from_string in
+      let open Yojson.Safe.Util in
+      Alcotest.(check string) "goal kind" "Stage Goal Context" (goal_json |> member "kind" |> to_string);
+      Alcotest.(check string) "goal issue" "#1" (goal_json |> member "issue_identifier" |> to_string);
+      Alcotest.(check string) "goal description" "Build the feature" (goal_json |> member "description" |> to_string);
+      Alcotest.(check (list string)) "goal labels" [ "enhancement"; "codex" ]
+        (goal_json |> member "labels" |> to_list |> List.map to_string);
+      Alcotest.(check int) "goal priority" 2 (goal_json |> member "priority" |> to_int);
+      Alcotest.(check string) "goal blocker" "#0"
+        (goal_json |> member "blocker_references" |> to_list |> List.hd |> member "identifier" |> to_string);
+      Alcotest.(check bool) "created timestamp omitted" true
+        (match goal_json |> member "created_at" with `Null -> true | _ -> false);
+      Alcotest.(check bool) "updated timestamp omitted" true
+        (match goal_json |> member "updated_at" with `Null -> true | _ -> false))
+
+let test_orchestrator_skips_stage_goal_when_disabled () =
+  with_temp_dir "symphony-stage-goal-disabled-prompt-" (fun root ->
+      let agents_root = Filename.concat root "agents" in
+      Unix.mkdir agents_root 0o755;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents =
+            {
+              enabled = true;
+              root = agents_root;
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "engineer";
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = Some { enabled = false };
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "no goal command" false (String.starts_with ~prefix:"/goal" !captured_prompt);
+      Alcotest.(check bool) "stage agent still included" true (String.contains !captured_prompt 'E');
+      Alcotest.(check bool) "normal prompt still included" true (String.contains !captured_prompt '#'))
+
+let test_parse_goal_usage_from_codex_output () =
+  with_temp_dir "symphony-goal-usage-" (fun root ->
+      let stdout_path = Filename.concat root "stdout.log" in
+      Util.write_file stdout_path
+        {|noise
+Goal Usage: {"goal_usage":{"status":"complete","time_used_seconds":12.5,"tokens_used":345}}
+|};
+      match Orchestrator.parse_goal_usage (Some stdout_path) None with
+      | None -> Alcotest.fail "expected goal usage"
+      | Some usage ->
+          Alcotest.(check (option string)) "status" (Some "complete") usage.status;
+          Alcotest.(check (option (float 0.01))) "time" (Some 12.5) usage.time_used_seconds;
+          Alcotest.(check (option int)) "tokens" (Some 345) usage.tokens_used)
+
+let test_parse_goal_usage_variants_and_ignores_invalid () =
+  with_temp_dir "symphony-goal-usage-variants-" (fun root ->
+      let stdout_path = Filename.concat root "stdout.log" in
+      let stderr_path = Filename.concat root "stderr.log" in
+      Util.write_file stdout_path "Goal Usage: not json\n";
+      Alcotest.(check bool) "invalid ignored" true (Option.is_none (Orchestrator.parse_goal_usage (Some stdout_path) None));
+      Util.write_file stdout_path {|{"status":"active","timeUsedSeconds":3,"tokensUsed":44}|};
+      Alcotest.(check bool) "bare non-goal json ignored" true
+        (Option.is_none (Orchestrator.parse_goal_usage (Some stdout_path) None));
+      Util.write_file stdout_path {|Goal Usage: {"status":"active","timeUsedSeconds":3,"tokensUsed":44}|};
+      (match Orchestrator.parse_goal_usage (Some stdout_path) None with
+      | None -> Alcotest.fail "expected prefixed top-level goal usage"
+      | Some usage ->
+          Alcotest.(check (option string)) "prefixed status" (Some "active") usage.status;
+          Alcotest.(check (option int)) "prefixed tokens" (Some 44) usage.tokens_used);
+      Util.write_file stderr_path {|goal usage: {"status":"active","timeUsedSeconds":3,"tokensUsed":44}|};
+      match Orchestrator.parse_goal_usage (Some stdout_path) (Some stderr_path) with
+      | None -> Alcotest.fail "expected camel case goal usage"
+      | Some usage ->
+          Alcotest.(check (option string)) "status" (Some "active") usage.status;
+          Alcotest.(check (option (float 0.01))) "time" (Some 3.) usage.time_used_seconds;
+          Alcotest.(check (option int)) "tokens" (Some 44) usage.tokens_used)
+
+let test_parse_goal_usage_nested_usage_fields () =
+  with_temp_dir "symphony-goal-usage-nested-" (fun root ->
+      let stdout_path = Filename.concat root "stdout.log" in
+      Util.write_file stdout_path
+        {|{"goalUsage":{"goalStatus":"complete","durationSeconds":7.25,"tokenUsage":{"totalTokens":88}}}|};
+      match Orchestrator.parse_goal_usage (Some stdout_path) None with
+      | None -> Alcotest.fail "expected nested goal usage"
+      | Some usage ->
+          Alcotest.(check (option string)) "nested status" (Some "complete") usage.status;
+          Alcotest.(check (option (float 0.01))) "nested time" (Some 7.25) usage.time_used_seconds;
+          Alcotest.(check (option int)) "nested tokens" (Some 88) usage.tokens_used)
+
 let test_orchestrator_commits_stage_before_success_status () =
   with_temp_dir "symphony-stage-commit-" (fun root ->
       let config =
@@ -1197,6 +1932,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal = None;
                     commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>"; push = false };
                   };
                 ];
@@ -1342,6 +2078,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal = None;
                     commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = true };
                   };
                 ];
@@ -1426,6 +2163,7 @@ let test_stage_commit_requires_code_changes () =
             start_status = None;
             success_status = Some "In review";
             retry_status = Some "Todo";
+            goal = None;
             commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
           }
       in
@@ -1476,6 +2214,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal = None;
                     commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
                   };
                 ];
@@ -1818,6 +2557,7 @@ let test_stage_commit_pushes_task_branch () =
             start_status = None;
             success_status = Some "In review";
             retry_status = Some "Todo";
+            goal = None;
             commit = Some { enabled = true; commit_type = "feat"; message = Config.default_commit_message; push = true };
           }
       in
@@ -2004,9 +2744,17 @@ let () =
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
+          Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
+          Alcotest.test_case "disabled stage goal does not require codex goals" `Quick test_disabled_stage_goal_does_not_require_codex_goals;
+          Alcotest.test_case "stage goal requires codex exec stdin support" `Quick test_stage_goal_requires_codex_exec_stdin_support;
+          Alcotest.test_case "stage goal live stdin probe" `Quick test_stage_goal_live_stdin_probe;
           Alcotest.test_case "requires pull request base branch when enabled" `Quick test_pull_request_base_branch_readiness_gap;
         ] );
-      ("runtime-state", [ Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details ]);
+      ( "runtime-state",
+        [
+          Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
+          Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
+        ] );
       ( "server",
         [
           Alcotest.test_case "handles websocket upgrade and initial snapshot" `Quick test_websocket_accept_and_initial_snapshot;
@@ -2032,6 +2780,11 @@ let () =
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
+          Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
+          Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
+          Alcotest.test_case "parses goal usage output" `Quick test_parse_goal_usage_from_codex_output;
+          Alcotest.test_case "parses goal usage variants" `Quick test_parse_goal_usage_variants_and_ignores_invalid;
+          Alcotest.test_case "parses nested goal usage fields" `Quick test_parse_goal_usage_nested_usage_fields;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "retries when success status move fails" `Quick test_orchestrator_retries_when_success_status_move_fails;
           Alcotest.test_case "retries push failure before success status"
@@ -2039,6 +2792,12 @@ let () =
           Alcotest.test_case "stage commit requires code changes" `Quick test_stage_commit_requires_code_changes;
           Alcotest.test_case "does not retry empty required commits" `Quick test_orchestrator_does_not_retry_empty_commit;
           Alcotest.test_case "notifies repeated state mutations" `Quick test_orchestrator_notifies_each_state_mutation;
+          Alcotest.test_case "parses final output when size was already seen"
+            `Quick test_orchestrator_parses_final_output_when_size_was_already_seen;
+          Alcotest.test_case "parses final output before timeout retry"
+            `Quick test_orchestrator_parses_final_output_before_timeout_retry;
+          Alcotest.test_case "preserves goal usage on blocked issue error"
+            `Quick test_orchestrator_preserves_goal_usage_on_blocked_issue_error;
           Alcotest.test_case "creates task worktree and branch" `Quick test_orchestrator_creates_task_worktree_and_branch;
           Alcotest.test_case "opens batch pull request once when idle" `Quick test_orchestrator_opens_batch_pull_request_once_when_idle;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
