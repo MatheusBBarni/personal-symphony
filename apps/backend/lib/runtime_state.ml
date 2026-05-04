@@ -14,6 +14,14 @@ type running = {
 type retrying = { issue_id : string; issue_identifier : string; attempt : int; due_at : string; error : string option }
 type issue_error = { issue_id : string; issue_identifier : string; error : string }
 type readiness_gap = { requirement : string; remediation : string }
+type pull_request_handoff = {
+  enabled : bool;
+  head_branch : string option;
+  base_branch : string option;
+  status : string;
+  url : string option;
+  error : string option;
+}
 
 type t = {
   issues : Issue.t list;
@@ -25,6 +33,7 @@ type t = {
   codex_totals : tokens;
   seconds_running : float;
   rate_limits : Yojson.Safe.t option;
+  pull_request : pull_request_handoff option;
   last_error : string option;
 }
 
@@ -39,6 +48,7 @@ let empty ?(readiness_gaps = []) ?(status_order = []) ?last_error () =
     codex_totals = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
     seconds_running = 0.;
     rate_limits = None;
+    pull_request = None;
     last_error;
   }
 
@@ -102,6 +112,17 @@ let issue_error_to_yojson (row : issue_error) =
 let readiness_gap_to_yojson row =
   `Assoc [ ("requirement", `String row.requirement); ("remediation", `String row.remediation) ]
 
+let pull_request_handoff_to_yojson row =
+  `Assoc
+    [
+      ("enabled", `Bool row.enabled);
+      ("head_branch", (match row.head_branch with Some s -> `String s | None -> `Null));
+      ("base_branch", (match row.base_branch with Some s -> `String s | None -> `Null));
+      ("status", `String row.status);
+      ("url", (match row.url with Some s -> `String s | None -> `Null));
+      ("error", (match row.error with Some s -> `String s | None -> `Null));
+    ]
+
 let to_yojson state =
   `Assoc
     [
@@ -122,5 +143,6 @@ let to_yojson state =
             ("seconds_running", `Float state.seconds_running);
           ] );
       ("rate_limits", Option.value state.rate_limits ~default:`Null);
+      ("pull_request", (match state.pull_request with Some row -> pull_request_handoff_to_yojson row | None -> `Null));
       ("last_error", (match state.last_error with Some s -> `String s | None -> `Null));
     ]

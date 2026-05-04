@@ -49,6 +49,12 @@ let settings_json =
       "keepTaskBranch": true
     }
   },
+  "pullRequest": {
+    "enabled": false,
+    "baseBranch": "main",
+    "title": "Symphony batch from <head_branch>",
+    "body": "Opened automatically by Symphony after orchestration became idle."
+  },
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",

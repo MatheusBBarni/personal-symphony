@@ -34,6 +34,7 @@ type codex = {
   stall_timeout_ms : int;
 }
 type server = { port : int option }
+type pull_request = { enabled : bool; base_branch : string; title : string; body : string }
 type stage_commit = { enabled : bool; commit_type : string; message : string; push : bool }
 type stage_agent = {
   states : string list;
@@ -56,6 +57,7 @@ type t = {
   agent : agent;
   codex : codex;
   server : server;
+  pull_request : pull_request;
   stage_agents : stage_agents;
 }
 
@@ -73,6 +75,9 @@ let default_commit_message = "<type>: <generated_message_max_90char>"
 let default_model = "gpt-5.5"
 let default_reasoning_effort = "medium"
 let default_codex_command = "codex exec"
+let default_pull_request_title = "Symphony batch from <head_branch>"
+let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
+let default_pull_request = { enabled = false; base_branch = "main"; title = default_pull_request_title; body = default_pull_request_body }
 
 let default_git =
   {
@@ -113,6 +118,10 @@ let default_stage_agents =
       commit = Some { enabled = false; commit_type = "refactor"; message = default_commit_message; push = false };
     };
   ]
+
+let add_string_ci value values =
+  if List.exists (fun existing -> String.lowercase_ascii existing = String.lowercase_ascii value) values then values
+  else values @ [ value ]
 
 let resolve_secret = function
   | None -> None
@@ -176,7 +185,8 @@ let from_workflow workflow =
     match Simple_yaml.get_list "active_states" tracker_raw with [] -> default_active_states | states -> states
   in
   let terminal_states =
-    match Simple_yaml.get_list "terminal_states" tracker_raw with [] -> default_terminal_states | states -> states
+    (match Simple_yaml.get_list "terminal_states" tracker_raw with [] -> default_terminal_states | states -> states)
+    |> add_string_ci default_git.merge_attention_status
   in
   let workspace_root =
     Simple_yaml.get_string "root" workspace_raw
@@ -228,6 +238,7 @@ let from_workflow workflow =
         stall_timeout_ms = Option.value (Simple_yaml.get_int "stall_timeout_ms" codex_raw) ~default:300000;
       };
     server = { port = Simple_yaml.get_int "port" server_raw };
+    pull_request = default_pull_request;
     stage_agents = { enabled = false; root = Filename.concat workflow.dir ".symphony/agents"; default_agent = None; stages = [] };
   }
 
@@ -293,10 +304,18 @@ let from_settings_file ~workspace_root path =
   let agent_raw = member "agent" root in
   let codex_raw = member "codex" root in
   let server_raw = member "server" root in
+  let pull_request_raw = member "pullRequest" root in
   let stage_agents_raw = member "stageAgents" root in
   let kind = json_string "kind" tracker_raw ~default:"github" in
   if kind <> "github" then raise (Invalid_config "tracker.kind must be github for this implementation");
   let api_key_env = json_string "apiKeyEnv" tracker_raw ~default:"GITHUB_TOKEN" in
+  let merge_attention_status =
+    json_string "mergeAttentionStatus" git_raw ~default:default_git.merge_attention_status
+  in
+  let terminal_states =
+    json_string_list "terminalStates" project_raw ~default:default_terminal_states
+    |> add_string_ci merge_attention_status
+  in
   let workspace_root_value =
     json_string "root" workspace_raw ~default:".symphony/workspaces" |> expand_path ~base_dir:workspace_root
   in
@@ -312,7 +331,7 @@ let from_settings_file ~workspace_root path =
         api_key_env;
         api_key = resolve_env_secret api_key_env;
         active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
-        terminal_states = json_string_list "terminalStates" project_raw ~default:default_terminal_states;
+        terminal_states;
         project_status_field = json_string "statusField" project_raw ~default:"Status";
         project_status_on_dispatch =
           Some (Option.value (json_optional_string "startStatus" project_raw) ~default:default_dispatch_status);
@@ -330,8 +349,7 @@ let from_settings_file ~workspace_root path =
         protected_trunk_branches =
           json_string_list "protectedTrunkBranches" git_raw ~default:default_git.protected_trunk_branches;
         auto_merge = json_bool "autoMerge" git_raw ~default:default_git.auto_merge;
-        merge_attention_status =
-          json_string "mergeAttentionStatus" git_raw ~default:default_git.merge_attention_status;
+        merge_attention_status;
         cleanup =
           {
             remove_worktree_after_merge =
@@ -359,6 +377,13 @@ let from_settings_file ~workspace_root path =
         stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
       };
     server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
+    pull_request =
+      {
+        enabled = json_bool "enabled" pull_request_raw ~default:default_pull_request.enabled;
+        base_branch = json_string "baseBranch" pull_request_raw ~default:default_pull_request.base_branch;
+        title = json_string "title" pull_request_raw ~default:default_pull_request.title;
+        body = json_string "body" pull_request_raw ~default:default_pull_request.body;
+      };
     stage_agents =
       {
         enabled = json_bool "enabled" stage_agents_raw ~default:true;
@@ -397,6 +422,8 @@ let readiness_gaps config =
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
+  if config.pull_request.enabled && Util.trim config.pull_request.base_branch = "" then
+    add "pullRequest.baseBranch" "Set pullRequest.baseBranch in .symphony/settings.json when pullRequest.enabled is true.";
   if config.stage_agents.enabled then (
     if not (Sys.file_exists config.stage_agents.root && Sys.is_directory config.stage_agents.root) then
       add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";

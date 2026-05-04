@@ -52,6 +52,12 @@ let test_config_parses_git_policy_and_stage_push () =
     "mergeAttentionStatus": "Needs merge",
     "cleanup": {"removeWorktreeAfterMerge": false, "keepTaskBranch": true}
   },
+  "pullRequest": {
+    "enabled": true,
+    "baseBranch": "main",
+    "title": "Symphony batch from <head_branch> into <base_branch>",
+    "body": "Batch handoff for <head_branch>."
+  },
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
@@ -76,12 +82,33 @@ let test_config_parses_git_policy_and_stage_push () =
       Alcotest.(check (list string)) "protected trunks" [ "main"; "release" ] config.git.protected_trunk_branches;
       Alcotest.(check bool) "auto merge" false config.git.auto_merge;
       Alcotest.(check string) "attention status" "Needs merge" config.git.merge_attention_status;
+      Alcotest.(check bool) "attention status visible" true
+        (List.exists (( = ) "Needs merge") config.tracker.terminal_states);
       Alcotest.(check bool) "cleanup worktree" false config.git.cleanup.remove_worktree_after_merge;
+      Alcotest.(check bool) "pull request enabled" true config.pull_request.enabled;
+      Alcotest.(check string) "pull request base" "main" config.pull_request.base_branch;
+      Alcotest.(check string) "pull request title" "Symphony batch from <head_branch> into <base_branch>" config.pull_request.title;
       match config.stage_agents.stages with
       | [ { Config.commit = Some engineer_commit; _ }; { Config.commit = Some reviewer_commit; _ } ] ->
           Alcotest.(check bool) "stage push" true engineer_commit.push;
           Alcotest.(check bool) "stage push default" false reviewer_commit.push
       | _ -> Alcotest.fail "expected stage commit policy")
+
+let test_pull_request_base_branch_readiness_gap () =
+  with_temp_dir "symphony-settings-pr-gap-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      Util.mkdir_p (Filename.concat root ".symphony");
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "pullRequest": {"enabled": true, "baseBranch": ""},
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let gaps = Config.readiness_gaps config in
+      Alcotest.(check bool) "base branch gap" true
+        (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "pullRequest.baseBranch") gaps))
 
 let test_workflow_and_config () =
   let content =
@@ -169,6 +196,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
               stall_timeout_ms = 1000;
             };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -254,9 +282,10 @@ let test_project_status_order_uses_transition_flow () =
           turn_timeout_ms = 1000;
           read_timeout_ms = 100;
           stall_timeout_ms = 1000;
-        };
-      server = { port = None };
-      stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
+      };
+    server = { port = None };
+    pull_request = Config.default_pull_request;
+    stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
     }
   in
   Alcotest.(check (list string)) "kanban status order" [ "To-Do"; "In progress"; "In review"; "Done" ]
@@ -615,6 +644,7 @@ let test_orchestrator_notifies_each_state_mutation () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -855,6 +885,7 @@ let test_orchestrator_dispatch_limits () =
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -909,6 +940,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -959,6 +991,7 @@ let test_orchestrator_retries_failed_agent () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1006,6 +1039,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1063,6 +1097,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents =
             {
               enabled = true;
@@ -1148,6 +1183,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents =
             {
               enabled = true;
@@ -1228,6 +1264,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1291,6 +1328,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents =
             {
               enabled = true;
@@ -1375,6 +1413,7 @@ let test_stage_commit_requires_code_changes () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1423,6 +1462,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
+          pull_request = Config.default_pull_request;
           stage_agents =
             {
               enabled = true;
@@ -1513,8 +1553,9 @@ let base_orchestrator_config root git =
         turn_timeout_ms = 1000;
         read_timeout_ms = 100;
         stall_timeout_ms = 1000;
-      };
+    };
     server = { port = None };
+    pull_request = Config.default_pull_request;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
@@ -1543,6 +1584,127 @@ let test_orchestrator_creates_task_worktree_and_branch () =
       Alcotest.(check bool) "task branch exists" true
         (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-3") = 0);
       Alcotest.(check (list string)) "start status moved" [ "In progress" ] (List.rev !statuses))
+
+let pull_request_config config =
+  {
+    config with
+    Config.pull_request =
+      {
+        enabled = true;
+        base_branch = "main";
+        title = "Symphony batch from <head_branch>";
+        body = "Opened automatically by Symphony after orchestration became idle.";
+      };
+  }
+
+let test_orchestrator_opens_batch_pull_request_once_when_idle () =
+  with_temp_dir "symphony-batch-pr-idle-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) |> pull_request_config in
+      let attempts = ref [] in
+      let batch_pull_request_handoff _config ~head_branch =
+        attempts := head_branch :: !attempts;
+        Ok (Some "https://github.example/acme/widgets/pull/1")
+      in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "handoff attempted once" [ "feature/start" ] (List.rev !attempts);
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "status" "completed" handoff.status;
+          Alcotest.(check (option string)) "url" (Some "https://github.example/acme/widgets/pull/1") handoff.url
+      | None -> Alcotest.fail "expected pull request handoff state")
+
+let test_orchestrator_retries_batch_pull_request_handoff_failure () =
+  with_temp_dir "symphony-batch-pr-retry-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) |> pull_request_config in
+      let attempts = ref 0 in
+      let batch_pull_request_handoff _config ~head_branch:_ =
+        incr attempts;
+        if !attempts = 1 then Error "batch branch push failed: exit 1: rejected" else Ok None
+      in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      (match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "failure status" "retryable_failure" handoff.status;
+          Alcotest.(check (option string)) "failure error" (Some "batch branch push failed: exit 1: rejected") handoff.error
+      | None -> Alcotest.fail "expected failed handoff state");
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "retried on later idle poll" 2 !attempts;
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff -> Alcotest.(check string) "eventual status" "completed" handoff.status
+      | None -> Alcotest.fail "expected completed handoff state")
+
+let test_orchestrator_blocks_batch_pull_request_on_attention () =
+  with_temp_dir "symphony-batch-pr-attention-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) |> pull_request_config in
+      let attempts = ref 0 in
+      let batch_pull_request_handoff _config ~head_branch:_ =
+        incr attempts;
+        Ok None
+      in
+      let issue = Issue.empty ~id:"I-attn" ~identifier:"#99" ~title:"Needs merge" ~state:"Human attention" in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~batch_pull_request_handoff ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "no handoff while attention remains" 0 !attempts;
+      Alcotest.(check bool) "no handoff state" true
+        (Option.is_none (Orchestrator.get_state orchestrator).Runtime_state.pull_request))
+
+let test_batch_pull_request_handoff_reuses_existing_pr () =
+  with_temp_dir "symphony-batch-pr-existing-" (fun root ->
+      let remote = Filename.concat root "remote.git" in
+      let repo = Filename.concat root "repo" in
+      let bin = Filename.concat root "bin" in
+      Unix.mkdir repo 0o755;
+      Unix.mkdir bin 0o755;
+      ignore (run_ok ~cwd:root "bare remote" ("git init -q --bare " ^ Util.shell_quote remote));
+      init_repo repo "feature/start";
+      ignore (run_ok ~cwd:repo "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+      let gh_log = Filename.concat root "gh.log" in
+      let gh_path = Filename.concat bin "gh" in
+      Util.write_file gh_path
+        (Printf.sprintf
+           {|#!/bin/sh
+printf '%%s\n' "$*" >> %s
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  printf '[{"url":"https://github.example/acme/widgets/pull/9"}]\n'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  exit 42
+fi
+exit 1
+|}
+           (Util.shell_quote gh_log));
+      Unix.chmod gh_path 0o755;
+      let original_path = Sys.getenv_opt "PATH" in
+      Fun.protect
+        ~finally:(fun () -> match original_path with Some path -> Unix.putenv "PATH" path | None -> Unix.putenv "PATH" "")
+        (fun () ->
+          Unix.putenv "PATH" (bin ^ ":" ^ Option.value original_path ~default:"");
+          let config = base_orchestrator_config repo (git_policy ()) |> pull_request_config in
+          match Orchestrator.gh_batch_pull_request_handoff config ~head_branch:"feature/start" with
+          | Error error -> Alcotest.fail error
+          | Ok url ->
+              Alcotest.(check (option string)) "existing PR URL" (Some "https://github.example/acme/widgets/pull/9") url;
+              Alcotest.(check bool) "remote loop-start branch pushed" true
+                (Sys.command ("git --git-dir " ^ Util.shell_quote remote ^ " show-ref --verify --quiet refs/heads/feature/start") = 0);
+              let lines = Util.read_file gh_log |> Util.split_lines in
+              Alcotest.(check bool) "looked for existing PR" true
+                (List.exists (Util.starts_with ~prefix:"pr list") lines);
+              Alcotest.(check bool) "did not create duplicate" false
+                (List.exists (Util.starts_with ~prefix:"pr create") lines)))
 
 let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
   with_temp_dir "symphony-dirty-loop-" (fun root ->
@@ -1842,6 +2004,7 @@ let () =
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
+          Alcotest.test_case "requires pull request base branch when enabled" `Quick test_pull_request_base_branch_readiness_gap;
         ] );
       ("runtime-state", [ Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details ]);
       ( "server",
@@ -1877,6 +2040,10 @@ let () =
           Alcotest.test_case "does not retry empty required commits" `Quick test_orchestrator_does_not_retry_empty_commit;
           Alcotest.test_case "notifies repeated state mutations" `Quick test_orchestrator_notifies_each_state_mutation;
           Alcotest.test_case "creates task worktree and branch" `Quick test_orchestrator_creates_task_worktree_and_branch;
+          Alcotest.test_case "opens batch pull request once when idle" `Quick test_orchestrator_opens_batch_pull_request_once_when_idle;
+          Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
+          Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
+          Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;
           Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
           Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
           Alcotest.test_case "reuses worktree for existing in-progress task"

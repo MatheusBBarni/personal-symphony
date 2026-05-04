@@ -237,6 +237,7 @@ _Avoid_: reinitialize, reset
 - A **Batch Branch Push** pushes the **Loop-Start Branch** to its remote head branch.
 - A failed **Batch Branch Push** prevents the **Batch Pull Request** from being opened.
 - A failed **Batch Branch Push** is retryable.
+- Runtime State records Batch Pull Request handoff attempts, completions, and retryable failures.
 - The **Runtime Contract** is version-controlled with the Workspace Repository.
 - A **Readiness Gap** prevents dispatch but does not prevent the TUI from starting.
 - Personal Symphony starts the **Terminal Console** by default.

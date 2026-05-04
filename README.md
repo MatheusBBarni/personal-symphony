@@ -204,6 +204,32 @@ template supports `<type>`, `<generated_message_max_90char>`, `<issue_identifier
 branch after a successful stage commit and before the status transition; omitted values default to
 `false`.
 
+## Batch Pull Requests
+
+Symphony can optionally open one Batch Pull Request after Orchestration Idle, using the Loop-Start
+Branch as the PR head. Automatic PR creation is disabled by default:
+
+```json
+{
+  "pullRequest": {
+    "enabled": false,
+    "baseBranch": "main",
+    "title": "Symphony batch from <head_branch>",
+    "body": "Opened automatically by Symphony after orchestration became idle."
+  }
+}
+```
+
+When `pullRequest.enabled` is `true`, `pullRequest.baseBranch` must be set explicitly. On an idle
+poll, Symphony first performs a non-force Batch Branch Push of the Loop-Start Branch to `origin`,
+then checks for an existing open PR with the same head/base pair before creating one with `gh`.
+Failed pushes or PR creation attempts are recorded in Runtime State as retryable handoff failures and
+are retried on later idle polls. Symphony does not attempt a Batch Pull Request while any issue is in
+the configured Merge Attention Status or has unresolved orchestration attention.
+
+The `title` and `body` fields are deterministic templates. They support `<head_branch>` and
+`<base_branch>`; Symphony does not generate PR prose with an agent.
+
 ## GitHub Token Permissions
 
 Personal Symphony reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
