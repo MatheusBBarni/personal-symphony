@@ -1,0 +1,48 @@
+name: Learn from reviews
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  learn:
+    if: contains(github.event.review.body, '@claude-learn')
+    runs-on: ubuntu-latest
+    env:
+      REVIEW_BODY: ${{ github.event.review.body }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract safe rule
+        id: rule
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(printf '%s\n' "$REVIEW_BODY" | sed -n 's/.*@claude-learn[[:space:]]*//p' | head -n 1)"
+          rule="$(printf '%s' "$raw" | tr -cd '[:alnum:] .,:;_/@+-' | cut -c 1-200 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if [ -z "$rule" ]; then exit 0; fi
+          if printf '%s' "$raw" | grep -Eq '`|[$][(]|[$][{]|[;&|<>]'; then exit 0; fi
+          if ! printf '%s' "$rule" | grep -Eq '^[[:alnum:] .,:;_/@+-]{1,200}$'; then exit 0; fi
+          printf 'rule=%s\n' "$rule" >> "$GITHUB_OUTPUT"
+      - name: Append rule
+        if: steps.rule.outputs.rule != ''
+        shell: bash
+        env:
+          SAFE_RULE: ${{ steps.rule.outputs.rule }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="claude-learn/pr-${PR_NUMBER}"
+          git checkout -b "$branch"
+          printf '\n- MUST %s\n' "$SAFE_RULE" >> AGENTS.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add AGENTS.md
+          git commit -m "docs: learn agent rule from review"
+          git push -u origin "$branch"
+          gh pr create --title "docs: learn agent rule from review" --body "Adds a sanitized rule requested with @claude-learn." --base "$BASE_REF" --head "$branch"

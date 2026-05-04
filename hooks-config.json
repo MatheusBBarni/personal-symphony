@@ -1,0 +1,55 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_TOOL_INPUT\" in *apps/frontend/src/*.res*) pnpm --filter @personal-symphony/frontend rescript:build ;; *apps/backend/*.ml*) opam exec -- dune build @all ;; esac"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_TOOL_INPUT\" in *\"git push origin main\"*|*\"git push origin master\"*|*\"git push main\"*|*\"git push master\"*) echo \"Blocked direct push to protected trunk branch\" >&2; exit 2 ;; esac"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_TOOL_INPUT\" in *\"git commit\"*) pnpm test && pnpm frontend:test ;; esac"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\n=== Personal Symphony context refresh ===\\n'; sed -n '1,30p' CLAUDE.md; printf '\\nLandmines:\\n'; sed -n '/^## Landmines/,$p' AGENTS.md | sed -n '1,18p'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "find AGENTS.md CLAUDE.md -maxdepth 0 -mtime +14 -print 2>/dev/null | sed 's/^/Agent config may be stale: /'"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -88,6 +88,18 @@ _Avoid_: auto commit, every step commit
 An optional push of a Stage Commit to the currently checked-out Task Branch after the Stage Commit is created.
 _Avoid_: auto push, push every step
 
+**Stage Goal Handoff**:
+A stage-specific Codex handoff that sets a Codex goal when Symphony launches an agent for that stage.
+_Avoid_: global goal mode, `/goal` setting, issue goal
+
+**Stage Goal Context**:
+The deterministic issue and stage data used as the Codex goal payload for a Stage Goal Handoff.
+_Avoid_: whole prompt, all context, goal message
+
+**Goal Usage**:
+The Codex-reported time and usage data for a Stage Goal Handoff.
+_Avoid_: goal time, timer, duration
+
 **Orchestration Idle**:
 The orchestration condition where no active issue is running, retrying, or dispatchable.
 _Avoid_: queue empty, all tasks finished, done processing
@@ -217,6 +229,32 @@ _Avoid_: reinitialize, reset
 - Symphony does not push the **Loop-Start Branch** after auto-merge.
 - A failed **Stage Push** prevents the stage from moving to its success project state.
 - A failed **Stage Push** is retryable.
+- A **Stage Goal Handoff** is configured per **Stage Agent**.
+- A **Stage Goal Handoff** is not a global Codex launch mode.
+- Runtime Settings configure **Stage Goal Handoff** with `goal.enabled` on a stage.
+- A missing `goal` setting means **Stage Goal Handoff** is disabled for that stage.
+- Bootstrapped Runtime Settings include `goal.enabled` as `false` in each example stage.
+- A **Stage Goal Handoff** uses **Stage Goal Context** as its Codex goal payload.
+- A **Stage Goal Handoff** supplements the normal **Agent Prompt**.
+- A **Stage Goal Handoff** must not replace the normal **Agent Prompt**.
+- A **Stage Goal Handoff** requires Codex goal support to be enabled before Symphony dispatches work.
+- Missing Codex goal support is a **Readiness Gap**, not a task retry condition.
+- The **Readiness Gap** for missing Codex goal support tells the user how to enable Codex goals.
+- Symphony checks `~/.codex/config.toml` for `[features] goals = true` when any **Stage Goal Handoff** is enabled.
+- Symphony tells the user to add `[features] goals = true` to `~/.codex/config.toml` when Codex goal support is missing.
+- Symphony sends the Codex `/goal` command before the normal rendered **Agent Prompt** when performing a **Stage Goal Handoff**.
+- Implementation of **Stage Goal Handoff** must verify that `codex exec` accepts `/goal` from standard input before treating the feature as supported.
+- If `codex exec` does not accept `/goal` from standard input, Symphony must surface the blocker instead of pretending **Stage Goal Handoff** works.
+- **Stage Goal Context** includes issue identifier, title, description, URL, current project status, labels, priority when present, blocker references when present, attempt, and stage agent name.
+- **Stage Goal Context** does not include issue creation or update timestamps by default.
+- Symphony extracts **Goal Usage** from Codex output when Codex reports it in a parseable form.
+- Symphony does not invent **Goal Usage** when Codex output does not report it.
+- **Goal Usage** may include goal status, time used, and token usage when Codex reports those fields.
+- **Goal Usage** belongs in **Runtime State**.
+- The **Web Dashboard** shows **Goal Usage** in task execution details when available.
+- **Goal Usage** is not a primary **Web Dashboard** metric.
+- **Stage Goal Handoff** does not change retry, completion, status transition, commit, push, auto-merge, or Batch Pull Request behavior.
+- Missing or unparseable **Goal Usage** must not fail a task.
 - Symphony reaches **Orchestration Idle** when no active issue is running, retrying, or dispatchable.
 - A **Batch Pull Request** represents the combined task work already integrated into the **Loop-Start Branch**.
 - Symphony may open a **Batch Pull Request** after reaching **Orchestration Idle**.
@@ -343,6 +381,8 @@ _Avoid_: reinitialize, reset
 - "worktress" was used to mean per-task Git worktrees; resolved: use **Agent Worktree** for an **Agent Workspace** backed by `git worktree`.
 - "push the code in every step" was used to mean pushing after each successful stage-level commit; resolved: use **Stage Push** for the optional push that follows a **Stage Commit**.
 - "push to the branch that we are in" was used to mean pushing the currently checked-out **Task Branch**, especially from an **Agent Worktree**.
+- "/goal" was used to mean a per-stage Codex launch handoff; resolved: use **Stage Goal Handoff**.
+- "all the context" for `/goal` was used broadly; resolved: use **Stage Goal Context** for deterministic issue and stage data.
 - "sounds in frontend" was used to mean browser-played cues from the Web Dashboard; resolved: use **Audio Notification** for sound cues emitted after relevant Runtime State transitions.
 - "queue finished" was used without a queue concept in the Runtime State model; resolved: use **Work Became Idle** for the transition from running or retrying work to zero running and zero retrying work.
 - "error happens" was used broadly; resolved: use **Task Needs Attention** only when a new Runtime State issue error appears.
