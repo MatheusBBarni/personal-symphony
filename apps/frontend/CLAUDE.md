@@ -2,7 +2,7 @@
 
 Use this when editing `apps/frontend/**`.
 
-- MUST edit `.res` files first; `.res.js` files are generated outputs.
+- MUST edit `.res` files only; `.res.js` files are generated outputs and must not be committed.
 - MUST run `pnpm frontend:test` for live-state parsing changes.
 - MUST run `pnpm frontend:build` for ReScript or UI changes.
 - MUST keep the Live Dashboard Connection as Runtime State snapshots, not an event envelope.

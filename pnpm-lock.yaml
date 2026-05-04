@@ -13,6 +13,9 @@ importers:
       '@rescript/react':
         specifier: ^0.13.1
         version: 0.13.1(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@rescript/runtime':
+        specifier: ^12.2.0
+        version: 12.2.0
       '@vitejs/plugin-react':
         specifier: ^5.1.1
         version: 5.2.0(vite@7.3.2(jiti@2.6.1)(lightningcss@1.32.0))

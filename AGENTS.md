@@ -14,7 +14,7 @@
 ## Stack
 
 - Backend is OCaml/Dune with `cmdliner`, `yojson`, and `alcotest`.
-- Frontend is ReScript React compiled in source to `.res.js`, then Vite.
+- Frontend is ReScript React compiled to ignored `.res.js` files, then Vite.
 - Package distribution is npm `bin/symphony.js` plus a platform binary in `vendor/`.
 - Runtime files belong to a Workspace Repository under `.symphony/`; this repo is the Product Repository.
 
@@ -25,7 +25,7 @@
 - MUST use the glossary in `CONTEXT.md` for product terms such as Workspace Repository, Product Repository, Runtime Home, Runtime Contract, Loop-Start Branch, and Task Branch.
 - MUST update `CONTEXT.md` when adding or changing domain language.
 - MUST add or update an ADR under `docs/adr/` for architecture decisions that change runtime semantics.
-- MUST edit `.res` sources before generated `.res.js` files, then run `pnpm frontend:build` or `pnpm --filter @personal-symphony/frontend rescript:build`.
+- MUST edit `.res` sources only; generated `apps/frontend/src/*.res.js` files are ignored and must not be committed. Run `pnpm frontend:build` or `pnpm --filter @personal-symphony/frontend rescript:build` after ReScript changes.
 - MUST keep `symphony` commands rooted in a Workspace Repository; root validation is an accepted product behavior.
 - MUST preserve idempotent Bootstrap behavior: create missing Runtime Home files without overwriting user-edited runtime files.
 - MUST treat `GITHUB_TOKEN` and `GH_TOKEN` as secret values; only variable names belong in docs or examples.
@@ -41,7 +41,7 @@
 ### Never
 
 - NEVER commit secrets, token values, webhook URLs, or local `.env` contents.
-- NEVER edit generated `apps/frontend/src/*.res.js` without the matching `.res` source change.
+- NEVER commit generated `apps/frontend/src/*.res.js` files.
 - NEVER auto-merge task work into a Protected Trunk Branch.
 - NEVER force-push as part of Stage Push or Batch Branch Push behavior.
 - NEVER overwrite existing `.symphony/settings.json`, `.symphony/prompt.md`, `.symphony/agents/*`, or `.symphony/.env` during Bootstrap.

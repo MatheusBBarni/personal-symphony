@@ -2,6 +2,7 @@ node_modules/
 _build/
 dist/
 apps/frontend/lib/
+apps/frontend/src/*.res.js
 .symphony-workspaces/
 *.install
 .env

@@ -23,7 +23,12 @@ type snapshot = {
 @send external toLowerCase: string => string = "toLowerCase"
 
 @react.component
-let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
+let make = (
+  ~snapshot: option<snapshot>,
+  ~error: option<string>,
+  ~audioEnabled: bool,
+  ~onAudioToggle: bool => unit,
+) => {
   let metric = (label, value, tone) =>
     <article className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
       <div className="text-sm text-zinc-400"> {React.string(label)} </div>
@@ -197,6 +202,28 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 sm:justify-end">
+          <button
+            type_="button"
+            ariaPressed={if audioEnabled {
+              #"true"
+            } else {
+              #"false"
+            }}
+            onClick={_ => onAudioToggle(!audioEnabled)}
+            className={
+              "rounded-md border px-3 py-1 font-medium transition-colors " ++
+              if audioEnabled {
+                "border-sky-600 bg-sky-950 text-sky-100 hover:border-sky-400"
+              } else {
+                "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500"
+              }
+            }>
+            {React.string(if audioEnabled {
+              "Audio on"
+            } else {
+              "Audio off"
+            })}
+          </button>
           {switch snapshot {
           | Some(data) =>
             <>
