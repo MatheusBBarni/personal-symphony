@@ -160,7 +160,8 @@ Configure or disable this in `.symphony/settings.json`:
         "commit": {
           "enabled": false,
           "type": "feature",
-          "message": "<type>: <generated_message_max_90char>"
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
         }
       },
       {
@@ -172,7 +173,8 @@ Configure or disable this in `.symphony/settings.json`:
         "commit": {
           "enabled": true,
           "type": "feature",
-          "message": "<type>: <generated_message_max_90char>"
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
         }
       },
       {
@@ -183,7 +185,8 @@ Configure or disable this in `.symphony/settings.json`:
         "commit": {
           "enabled": false,
           "type": "refactor",
-          "message": "<type>: <generated_message_max_90char>"
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
         }
       }
     ]
@@ -197,7 +200,9 @@ Stage commits run after an agent exits successfully and before Symphony moves th
 stage's `successStatus`. Set `commit.enabled` per stage to control which transitions create commits;
 for example, keep `Backlog -> To-Do` uncommitted and commit `In progress -> In review`. The message
 template supports `<type>`, `<generated_message_max_90char>`, `<issue_identifier>`, `<issue_title>`,
-`<from_status>`, `<to_status>`, and `<agent>`.
+`<from_status>`, `<to_status>`, and `<agent>`. Set `commit.push` to `true` to push the current task
+branch after a successful stage commit and before the status transition; omitted values default to
+`false`.
 
 ## GitHub Token Permissions
 
