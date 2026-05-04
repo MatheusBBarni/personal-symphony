@@ -332,10 +332,9 @@ let batch_branch_push config ~head_branch =
 
 let existing_batch_pull_request config ~head_branch =
   let repo_full_name = config.Config.tracker.owner ^ "/" ^ config.tracker.repo in
-  let head_filter = config.tracker.owner ^ ":" ^ head_branch in
   let command =
     Printf.sprintf "gh pr list --repo %s --state open --head %s --base %s --limit 1 --json url"
-      (Util.shell_quote repo_full_name) (Util.shell_quote head_filter)
+      (Util.shell_quote repo_full_name) (Util.shell_quote head_branch)
       (Util.shell_quote config.pull_request.base_branch)
   in
   match run_shell_capture ~cwd:config.repository_root command with
