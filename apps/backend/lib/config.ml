@@ -206,6 +206,7 @@ let from_settings_file ~workspace_root path =
   }
 
 let is_placeholder = function "" | "your-org" | "your-repo" -> true | _ -> false
+let is_repository_name value = not (String.contains value '/')
 
 let readiness_gaps config =
   let gaps = ref [] in
@@ -214,6 +215,8 @@ let readiness_gaps config =
     add "tracker.owner" "Set tracker.owner in .symphony/settings.json to the GitHub organization or user that owns the repository.";
   if is_placeholder config.tracker.repo then
     add "tracker.repo" "Set tracker.repo in .symphony/settings.json to the GitHub repository name.";
+  if (not (is_placeholder config.tracker.repo)) && not (is_repository_name config.tracker.repo) then
+    add "tracker.repo" "Set tracker.repo in .symphony/settings.json to the repository name only, not a GitHub URL or owner/name pair.";
   if config.tracker.project_number <= 0 then
     add "tracker.projectNumber" "Set tracker.projectNumber in .symphony/settings.json to a positive GitHub Projects number.";
   if config.tracker.api_key = None then

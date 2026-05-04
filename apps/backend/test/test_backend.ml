@@ -124,6 +124,10 @@ let test_root_validation () =
                 (String.contains msg 'r' && String.contains msg 'o' && String.contains msg 't')))
 
 let test_settings_and_prompt_loading () =
+  let original_github_token = Sys.getenv_opt "GITHUB_TOKEN" in
+  let original_gh_token = Sys.getenv_opt "GH_TOKEN" in
+  Unix.putenv "GITHUB_TOKEN" "";
+  Unix.putenv "GH_TOKEN" "";
   with_temp_dir "symphony-settings-" (fun root ->
       let home, _ = Runtime_home.bootstrap root in
       let config = Config.from_settings_file ~workspace_root:root home.settings_path in
@@ -140,7 +144,60 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check bool) "placeholder owner gap" true
         (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "tracker.owner") gaps);
       Alcotest.(check bool) "token gap" true
-        (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "environment.GITHUB_TOKEN") gaps))
+        (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "environment.GITHUB_TOKEN") gaps));
+  (match original_github_token with Some value -> Unix.putenv "GITHUB_TOKEN" value | None -> Unix.putenv "GITHUB_TOKEN" "");
+  match original_gh_token with Some value -> Unix.putenv "GH_TOKEN" value | None -> Unix.putenv "GH_TOKEN" ""
+
+let test_runtime_env_loading () =
+  let original_github_token = Sys.getenv_opt "GITHUB_TOKEN" in
+  let original_gh_token = Sys.getenv_opt "GH_TOKEN" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match original_github_token with Some value -> Unix.putenv "GITHUB_TOKEN" value | None -> Unix.putenv "GITHUB_TOKEN" "");
+      match original_gh_token with Some value -> Unix.putenv "GH_TOKEN" value | None -> Unix.putenv "GH_TOKEN" "")
+    (fun () ->
+      Unix.putenv "GITHUB_TOKEN" "";
+      Unix.putenv "GH_TOKEN" "";
+      with_temp_dir "symphony-env-" (fun root ->
+          let home, _ = Runtime_home.bootstrap root in
+          Util.write_file home.env_path "GITHUB_TOKEN=github_pat_from_env_file\n";
+          Runtime_home.load_env home;
+          let config = Config.from_settings_file ~workspace_root:root home.settings_path in
+          Alcotest.(check (option string)) "token loaded" (Some "github_pat_from_env_file") config.tracker.api_key;
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "token gap resolved" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "environment.GITHUB_TOKEN") gaps)))
+
+let test_repo_url_readiness_gap () =
+  let original_github_token = Sys.getenv_opt "GITHUB_TOKEN" in
+  let original_gh_token = Sys.getenv_opt "GH_TOKEN" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match original_github_token with Some value -> Unix.putenv "GITHUB_TOKEN" value | None -> Unix.putenv "GITHUB_TOKEN" "");
+      match original_gh_token with Some value -> Unix.putenv "GH_TOKEN" value | None -> Unix.putenv "GH_TOKEN" "")
+    (fun () ->
+      Unix.putenv "GITHUB_TOKEN" "github_pat_test";
+      Unix.putenv "GH_TOKEN" "";
+      with_temp_dir "symphony-repo-url-" (fun root ->
+          let home, _ = Runtime_home.bootstrap root in
+          Util.write_file home.settings_path
+            {|{
+  "tracker": {
+    "kind": "github",
+    "owner": "acme",
+    "repo": "https://github.com/acme/widgets",
+    "projectNumber": 1,
+    "apiKeyEnv": "GITHUB_TOKEN"
+  }
+}
+|};
+          let config = Config.from_settings_file ~workspace_root:root home.settings_path in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "repo URL gap" true
+            (List.exists
+               (fun (gap : Config.readiness_gap) ->
+                 gap.requirement = "tracker.repo" && String.contains gap.remediation '/')
+               gaps)))
 
 let test_runtime_gitignore_contents () =
   with_temp_dir "symphony-ignore-" (fun root ->
@@ -153,6 +210,219 @@ let test_cli_mode_selection () =
   Alcotest.(check string) "terminal default" "terminal_console" (Cli_mode.(select ~web:false |> to_string));
   Alcotest.(check string) "web flag" "web_dashboard" (Cli_mode.(select ~web:true |> to_string))
 
+let test_ready_terminal_mode_runs_orchestrator () =
+  Alcotest.(check bool) "ready terminal loops" true
+    (Runtime_policy.action ~mode:Cli_mode.Terminal_console ~readiness_gaps:[] = Runtime_policy.Run_orchestrator);
+  Alcotest.(check bool) "gapped terminal serves readiness state" true
+    (Runtime_policy.action ~mode:Cli_mode.Terminal_console
+       ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+    = Runtime_policy.Serve_readiness_state)
+
+let test_github_project_field_parsing () =
+  let config =
+    {
+      Config.kind = "github";
+      owner = "acme";
+      repo = "widgets";
+      project_number = 7;
+      api_key_env = "GITHUB_TOKEN";
+      api_key = Some "token";
+      active_states = [ "Todo"; "In Progress" ];
+      terminal_states = [ "Done" ];
+      project_status_field = "Status";
+    }
+  in
+  let node =
+    Yojson.Safe.from_string
+      {|{
+  "id": "I_1",
+  "number": 42,
+  "title": "Fix parser",
+  "body": "Body",
+  "url": "https://github.example/acme/widgets/issues/42",
+  "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-02T00:00:00Z",
+  "labels": { "nodes": [{ "name": "Bug" }] },
+  "projectItems": {
+    "nodes": [
+      {
+        "project": { "number": 99 },
+        "fieldValues": { "nodes": [{ "name": "Done", "field": { "name": "Status" } }] }
+      },
+      {
+        "project": { "number": 7 },
+        "fieldValues": { "nodes": [{ "name": "In Progress", "field": { "name": "Status" } }] }
+      }
+    ]
+  }
+}|}
+  in
+  match Github_tracker.issue_from_project_node ~config node with
+  | None -> Alcotest.fail "expected active issue from matching project"
+  | Some issue ->
+      Alcotest.(check string) "identifier" "#42" issue.identifier;
+      Alcotest.(check string) "status" "In Progress" issue.state;
+      Alcotest.(check (list string)) "labels lowercased" [ "bug" ] issue.labels
+
+let test_github_active_state_filtering () =
+  let base_config =
+    {
+      Config.kind = "github";
+      owner = "acme";
+      repo = "widgets";
+      project_number = 7;
+      api_key_env = "GITHUB_TOKEN";
+      api_key = Some "token";
+      active_states = [ "Todo" ];
+      terminal_states = [ "Done" ];
+      project_status_field = "Status";
+    }
+  in
+  let node status =
+    Yojson.Safe.from_string
+      (Printf.sprintf
+         {|{
+  "id": "I_1",
+  "number": 42,
+  "title": "Fix parser",
+  "labels": { "nodes": [] },
+  "projectItems": { "nodes": [
+    { "project": { "number": 7 }, "fieldValues": { "nodes": [
+      { "name": %S, "field": { "name": "Status" } }
+    ] } }
+  ] }
+}|}
+         status)
+  in
+  Alcotest.(check bool) "todo included" true
+    (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node "Todo")));
+  Alcotest.(check bool) "done excluded" true
+    (Option.is_none (Github_tracker.issue_from_project_node ~config:base_config (node "Done")));
+  Alcotest.(check bool) "missing project excluded" true
+    (Option.is_none
+       (Github_tracker.issue_from_project_node
+          ~config:{ base_config with Config.project_number = 99 }
+          (node "Todo")))
+
+let test_github_empty_project_field_values_are_ignored () =
+  let config =
+    {
+      Config.kind = "github";
+      owner = "acme";
+      repo = "widgets";
+      project_number = 2;
+      api_key_env = "GITHUB_TOKEN";
+      api_key = Some "token";
+      active_states = [ "To-Do" ];
+      terminal_states = [ "Done" ];
+      project_status_field = "Status";
+    }
+  in
+  let node =
+    Yojson.Safe.from_string
+      {|{
+  "id": "I_2",
+  "number": 2,
+  "title": "Replicate pi-agent IPC",
+  "labels": { "nodes": [] },
+  "projectItems": { "nodes": [
+    { "project": { "number": 2 }, "fieldValues": { "nodes": [
+      {},
+      {},
+      { "name": "To-Do", "field": { "name": "Status" } }
+    ] } }
+  ] }
+}|}
+  in
+  match Github_tracker.issue_from_project_node ~config node with
+  | None -> Alcotest.fail "expected empty field value placeholders to be ignored"
+  | Some issue -> Alcotest.(check string) "status" "To-Do" issue.state
+
+let test_orchestrator_dispatch_limits () =
+  with_temp_dir "symphony-orchestrator-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "cat"; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+        }
+      in
+      let issues =
+        [
+          Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo";
+          Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Two" ~state:"Todo";
+          Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Three" ~state:"Todo";
+        ]
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.id :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let fetch _ = issues in
+      let orchestrator = Orchestrator.make ~launch ~fetch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "running limited" 2 (List.length state.Runtime_state.running);
+      Alcotest.(check int) "launch count limited" 2 (List.length !launched);
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "still capped" 2 (List.length state.Runtime_state.running))
+
+let test_orchestrator_retries_failed_agent () =
+  with_temp_dir "symphony-orchestrator-retry-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "false"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let fetch _ = [ issue ] in
+      let orchestrator = Orchestrator.make ~fetch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "no longer running" 0 (List.length state.Runtime_state.running);
+      Alcotest.(check int) "retry queued" 1 (List.length state.retrying);
+      match state.retrying with
+      | retry :: _ ->
+          Alcotest.(check string) "retry issue" "I1" retry.issue_id;
+          Alcotest.(check int) "retry attempt" 1 retry.attempt
+      | [] -> Alcotest.fail "expected retry row")
+
 let () =
   Alcotest.run "symphony-backend"
     [
@@ -164,8 +434,25 @@ let () =
           Alcotest.test_case "bootstrap is idempotent" `Quick test_bootstrap_idempotency_preserves_user_files;
           Alcotest.test_case "requires git repository root" `Quick test_root_validation;
           Alcotest.test_case "loads settings and prompt" `Quick test_settings_and_prompt_loading;
+          Alcotest.test_case "loads runtime env file" `Quick test_runtime_env_loading;
+          Alcotest.test_case "rejects repo URL in settings" `Quick test_repo_url_readiness_gap;
           Alcotest.test_case "writes ignore rules" `Quick test_runtime_gitignore_contents;
         ] );
       ("config", [ Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind ]);
-      ("cli", [ Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection ]);
+      ( "cli",
+        [
+          Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
+          Alcotest.test_case "ready terminal mode runs orchestrator" `Quick test_ready_terminal_mode_runs_orchestrator;
+        ] );
+      ( "github-tracker",
+        [
+          Alcotest.test_case "parses project status field" `Quick test_github_project_field_parsing;
+          Alcotest.test_case "filters active states" `Quick test_github_active_state_filtering;
+          Alcotest.test_case "ignores empty project field values" `Quick test_github_empty_project_field_values_are_ignored;
+        ] );
+      ( "orchestrator",
+        [
+          Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
+          Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
+        ] );
     ]

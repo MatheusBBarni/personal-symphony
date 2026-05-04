@@ -24,7 +24,7 @@ This implementation variant targets GitHub Issues plus GitHub Projects for issue
 - OCaml toolchain with `opam`, `dune`, `cmdliner`, `yojson`, and `alcotest` for product-repository
   development only
 - GitHub CLI: `gh`
-- A GitHub token available as `GITHUB_TOKEN` or `GH_TOKEN`
+- A GitHub personal access token available as `GITHUB_TOKEN` or `GH_TOKEN`
 - `codex` CLI available on `PATH` when running real agent sessions
 
 The local scripts run OCaml commands through `opam exec`, so make sure the active opam switch has
@@ -91,6 +91,42 @@ and runtime commands. Secrets are referenced by environment variable name, not s
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.
 
+## GitHub Token Permissions
+
+Personal Symphony reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
+when the GitHub Project is owned by a user account, such as `@your-user's Kanban`. GitHub
+fine-grained personal access tokens currently cannot access Projects owned by a user account.
+
+Recommended classic PAT scopes:
+
+- `repo`: required for private Workspace Repositories and repository Issues.
+- `read:project`: enough for readiness checks and read-only project polling.
+- `project`: required instead of `read:project` when Symphony will move project cards, update
+  project fields, or otherwise write GitHub Projects data.
+
+Classic PATs do **not** ask you to select individual repositories or projects. If GitHub shows a
+repository picker, project picker, "Resource owner", or "Repository access" section, you are creating
+a fine-grained token. Go back to **Personal access tokens > Tokens (classic) > Generate new token
+(classic)** for user-owned Projects.
+
+Fine-grained PATs are only suitable when the GitHub Project is owned by an organization and GitHub
+allows fine-grained tokens for that owner. Configure the token with:
+
+- Resource owner: the organization that owns the Workspace Repository and GitHub Project.
+- Repository access: select the Workspace Repository, or all repositories for that owner.
+- Repository permissions: `Metadata: Read`, `Issues: Read and write`, and `Contents: Read`.
+- Organization permissions: `Projects: Read and write`.
+
+Store the token in the Workspace Repository Local Environment:
+
+```sh
+printf 'GITHUB_TOKEN=github_pat_...\n' > .symphony/.env
+```
+
+`GITHUB_TOKEN` takes precedence over `GH_TOKEN`. If `gh auth status` shows a working stored token but
+Symphony still reports repository or project access gaps, remove the stale `GITHUB_TOKEN` from
+`.symphony/.env` or replace it with a token that has the scopes above.
+
 ## Product Repository Development
 
 1. Install dependencies:
@@ -133,8 +169,7 @@ steps. Dispatch remains disabled until those gaps are resolved.
    export GITHUB_TOKEN=...
    ```
 
-   The token needs read access to repository issues and project item metadata. If the agent will
-   update issues or project fields, its runtime credentials need matching write access.
+   See "GitHub Token Permissions" above for the exact PAT scopes and fine-grained permissions.
 
 ## Run Locally
 

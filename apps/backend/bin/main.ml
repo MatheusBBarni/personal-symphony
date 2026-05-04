@@ -4,7 +4,8 @@ let load_config workflow_path =
   (workflow, config)
 
 let readiness_state config =
-  let gaps = Config.readiness_gaps config in
+  let local_gaps = Config.readiness_gaps config in
+  let gaps = match local_gaps with [] -> Github_tracker.remote_readiness_gaps config | gaps -> gaps in
   let last_error =
     match gaps with
     | [] -> None
@@ -24,19 +25,52 @@ let render_bootstrap_report report =
       Printf.eprintf "event=bootstrap status=%s path=%s\n%!" (Runtime_home.status_to_string item.status) item.path)
     report
 
+let colors_enabled () =
+  Sys.getenv_opt "NO_COLOR" = None
+
+let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
+let color code text = ansi code ^ text ^ ansi "0"
+let blue text = color "34;1" text
+let cyan text = color "36;1" text
+let green text = color "32;1" text
+let yellow text = color "33;1" text
+let red text = color "31;1" text
+let dim text = color "2" text
+
+let symphoony_banner =
+  [
+    "                         SYMPHOONY";
+    " SSS  Y   Y M   M PPPP  H   H  OOO   OOO  N   N Y   Y";
+    "S      Y Y  MM MM P   P H   H O   O O   O NN  N  Y Y ";
+    " SSS    Y   M M M PPPP  HHHHH O   O O   O N N N   Y  ";
+    "    S   Y   M   M P     H   H O   O O   O N  NN   Y  ";
+    "SSSS    Y   M   M P     H   H  OOO   OOO  N   N   Y  ";
+  ]
+
+let print_section title = Printf.printf "\n%s\n%!" (cyan title)
+
 let render_terminal_console config state =
-  Printf.printf "Personal Symphony Terminal Console\n%!";
-  Printf.printf "tracker=github owner=%s repo=%s project_number=%d\n%!" config.Config.tracker.owner
-    config.tracker.repo config.tracker.project_number;
+  List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphoony_banner;
+  Printf.printf "%s\n%!" (dim "Personal Symphony Terminal Console");
+  print_section "Tracker";
+  Printf.printf "  %s %s/%s\n%!" (dim "Repository") config.Config.tracker.owner config.tracker.repo;
+  Printf.printf "  %s GitHub Project #%d\n%!" (dim "Project") config.tracker.project_number;
+  Printf.printf "  %s %s\n%!" (dim "Workspace") config.workspace.root;
+  print_section "Activity";
+  Printf.printf "  %s %d running, %d retrying\n%!" (dim "Agents") (List.length state.Runtime_state.running)
+    (List.length state.retrying);
+  Printf.printf "  %s %d total\n%!" (dim "Tokens") state.codex_totals.total_tokens;
+  print_section "Readiness";
   match state.Runtime_state.readiness_gaps with
-  | [] -> Printf.printf "Readiness: ready\n%!"
+  | [] -> Printf.printf "  %s ready\n%!" (green "OK")
   | gaps ->
-      Printf.printf "Readiness Gaps:\n%!";
+      Printf.printf "  %s %d gap%s\n%!" (yellow "Needs attention") (List.length gaps)
+        (if List.length gaps = 1 then "" else "s");
       List.iter
         (fun (gap : Runtime_state.readiness_gap) ->
-          Printf.printf "- %s: %s\n%!" gap.requirement gap.remediation)
+          Printf.printf "  %s %s\n%!" (red gap.requirement) gap.remediation)
         gaps;
-      Printf.printf "Dispatch disabled until readiness gaps are resolved.\n%!"
+      Printf.printf "  %s\n%!" (dim "Dispatch is disabled until readiness gaps are resolved.")
 
 let run_legacy workflow_path port once =
   try
@@ -67,11 +101,12 @@ let run_legacy workflow_path port once =
       1
 
 let load_runtime_config home =
+  Runtime_home.load_env home;
   let config = Config.from_settings_file ~workspace_root:home.Runtime_home.workspace_root home.settings_path in
   let prompt_template = Runtime_home.load_prompt home in
   let example_issue = Issue.empty ~id:"local" ~identifier:"#0" ~title:"Local dry run" ~state:"Todo" in
   let _rendered = Prompt.render ~issue:example_issue ~attempt:None prompt_template in
-  config
+  (config, prompt_template)
 
 let run_runtime port once web =
   try
@@ -82,7 +117,7 @@ let run_runtime port once web =
     | Ok workspace_root ->
         let home, report = Runtime_home.bootstrap workspace_root in
         render_bootstrap_report report;
-        let config = load_runtime_config home in
+        let config, prompt_template = load_runtime_config home in
         let mode = Cli_mode.select ~web in
         let state = readiness_state config in
         Printf.eprintf
@@ -92,18 +127,33 @@ let run_runtime port once web =
           if mode = Cli_mode.Terminal_console then render_terminal_console config state;
           0)
         else
-          match mode with
-          | Cli_mode.Web_dashboard ->
-              let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-              Printf.eprintf "event=web_dashboard status=starting url=http://127.0.0.1:%d/\n%!" port;
-              Server.serve ~port ~get_state:(fun () -> state);
-              0
-          | Cli_mode.Terminal_console ->
-              render_terminal_console config state;
-              while true do
-                Unix.sleep 60
-              done;
-              0
+          match Runtime_policy.action ~mode ~readiness_gaps:state.Runtime_state.readiness_gaps with
+          | Runtime_policy.Serve_readiness_state -> (
+              match mode with
+              | Cli_mode.Web_dashboard ->
+                  let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+                  Printf.eprintf "event=web_dashboard status=starting url=http://127.0.0.1:%d/\n%!" port;
+                  Server.serve ~port ~get_state:(fun () -> state);
+                  0
+              | Cli_mode.Terminal_console ->
+                  render_terminal_console config state;
+                  while true do
+                    Unix.sleep 60
+                  done;
+                  0)
+          | Runtime_policy.Run_orchestrator ->
+              let orchestrator = Orchestrator.make ~config ~prompt_template () in
+              (match mode with
+              | Cli_mode.Web_dashboard ->
+                  let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+                  Printf.eprintf "event=web_dashboard status=starting url=http://127.0.0.1:%d/\n%!" port;
+                  ignore (Thread.create Orchestrator.run_forever orchestrator);
+                  Server.serve ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator);
+                  0
+              | Cli_mode.Terminal_console ->
+                  render_terminal_console config state;
+                  Orchestrator.run_forever orchestrator;
+                  0)
   with
   | Runtime_home.Runtime_home_error msg | Config.Invalid_config msg | Prompt.Template_render_error msg
   | Workspace.Workspace_error msg ->

@@ -2,7 +2,13 @@ type bootstrap_status = Created | Already_present | Skipped_existing
 
 type bootstrap_item = { path : string; status : bootstrap_status }
 
-type t = { workspace_root : string; runtime_dir : string; settings_path : string; prompt_path : string }
+type t = {
+  workspace_root : string;
+  runtime_dir : string;
+  settings_path : string;
+  prompt_path : string;
+  env_path : string;
+}
 
 exception Runtime_home_error of string
 
@@ -92,6 +98,7 @@ let paths workspace_root =
     runtime_dir;
     settings_path = Filename.concat runtime_dir "settings.json";
     prompt_path = Filename.concat runtime_dir "prompt.md";
+    env_path = Filename.concat runtime_dir ".env";
   }
 
 let status_to_string = function
@@ -121,10 +128,48 @@ let bootstrap workspace_root =
   let report = ensure_file report home.prompt_path prompt_md in
   let report = ensure_file report (Filename.concat home.runtime_dir ".env.example") env_example in
   let report = ensure_file report (Filename.concat home.runtime_dir ".gitignore") gitignore in
-  let report = ensure_file report (Filename.concat home.runtime_dir ".env") "" in
+  let report = ensure_file report home.env_path "" in
   let report = ensure_dir report (Filename.concat home.runtime_dir "state") in
   let report = ensure_dir report (Filename.concat home.runtime_dir "workspaces") in
   (home, List.rev report)
+
+let is_env_name name =
+  let valid_char = function 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' -> true | _ -> false in
+  String.length name > 0
+  && (match name.[0] with 'A' .. 'Z' | 'a' .. 'z' | '_' -> true | _ -> false)
+  && String.for_all valid_char name
+
+let strip_matching_quotes value =
+  let len = String.length value in
+  if len >= 2 then
+    match (value.[0], value.[len - 1]) with
+    | '"', '"' | '\'', '\'' -> String.sub value 1 (len - 2)
+    | _ -> value
+  else value
+
+let parse_env_line line =
+  let line = Util.trim line in
+  if line = "" || Util.starts_with ~prefix:"#" line then None
+  else
+    let line =
+      match Util.drop_prefix ~prefix:"export " line with
+      | Some rest -> Util.trim rest
+      | None -> line
+    in
+    match String.index_opt line '=' with
+    | None -> None
+    | Some idx ->
+        let name = String.sub line 0 idx |> Util.trim in
+        let value = String.sub line (idx + 1) (String.length line - idx - 1) |> Util.trim |> strip_matching_quotes in
+        if is_env_name name then Some (name, value) else None
+
+let load_env home =
+  if Sys.file_exists home.env_path then
+    Util.read_file home.env_path |> Util.split_lines
+    |> List.iter (fun line ->
+           match parse_env_line line with
+           | Some (name, value) when Util.getenv_nonempty name = None -> Unix.putenv name value
+           | _ -> ())
 
 let load_prompt home =
   if not (Sys.file_exists home.prompt_path) then
