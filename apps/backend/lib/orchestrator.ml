@@ -11,7 +11,7 @@ type launch =
 
 type fetch = Github_tracker.t -> Issue.t list
 type set_status = Github_tracker.t -> Issue.t -> string -> (unit, string) result
-type commit_stage = Config.t -> Issue.t -> Config.stage_agent option -> string option -> (unit, string) result
+type commit_stage = Config.t -> Workspace.t -> Issue.t -> Config.stage_agent option -> string option -> (unit, string) result
 type notify_state = Runtime_state.t -> unit
 
 type t = {
@@ -28,6 +28,7 @@ type t = {
   set_status : set_status;
   commit_stage : commit_stage;
   notify_state : notify_state;
+  loop_start_branch : string;
 }
 
 and child = {
@@ -36,6 +37,7 @@ and child = {
   issue_id : string;
   issue_identifier : string;
   issue_title : string;
+  workspace : Workspace.t;
   mutable started_at : float;
   mutable last_output_at : float;
   stdout_path : string option;
@@ -214,12 +216,93 @@ let run_shell_capture ~cwd command =
   | Unix.WSIGNALED signal -> Error (Printf.sprintf "signal %d: %s" signal output)
   | Unix.WSTOPPED signal -> Error (Printf.sprintf "stopped %d: %s" signal output)
 
+let current_branch root =
+  match run_shell_capture ~cwd:root "git branch --show-current" with
+  | Ok branch when Util.trim branch <> "" -> Util.trim branch
+  | _ -> (
+      match run_shell_capture ~cwd:root "git rev-parse --short HEAD" with Ok sha -> sha | Error _ -> "HEAD")
+
+let is_git_repository root =
+  match run_shell_capture ~cwd:root "git rev-parse --is-inside-work-tree" with
+  | Ok "true" -> true
+  | _ -> false
+
+let git_ref_exists root refname =
+  match run_shell_capture ~cwd:root (Printf.sprintf "git show-ref --verify --quiet refs/heads/%s" (Util.shell_quote refname)) with
+  | Ok _ -> true
+  | Error _ -> false
+
+let worktree_branch path =
+  if Sys.file_exists path && Sys.is_directory path then
+    match (run_shell_capture ~cwd:path "git rev-parse --show-toplevel", run_shell_capture ~cwd:path "git branch --show-current") with
+    | Ok top_level, Ok branch when Unix.realpath top_level = Unix.realpath path && Util.trim branch <> "" -> Some (Util.trim branch)
+    | _ -> None
+  else None
+
+let issue_branch_key issue =
+  let digits =
+    issue.Issue.identifier |> String.to_seq
+    |> Seq.filter (function '0' .. '9' -> true | _ -> false)
+    |> String.of_seq
+  in
+  if digits <> "" then digits else Workspace.sanitize issue.id
+
+let task_branch config issue = config.Config.git.task_branch_prefix ^ issue_branch_key issue
+
+let require_clean_loop_start root =
+  match run_shell_capture ~cwd:root "git status --porcelain" with
+  | Ok "" -> Ok ()
+  | Ok _ -> Error "loop-start worktree must be clean before creating task worktrees"
+  | Error error -> Error ("git status failed: " ^ error)
+
+let shell_prepare_workspace config ~loop_start_branch issue =
+  let branch = task_branch config issue in
+  if not (is_git_repository config.repository_root) then
+    Ok (Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier)
+  else
+    let workspace_key = Workspace.sanitize issue.Issue.identifier in
+    let workspace_path = Filename.concat config.Config.workspace.root workspace_key in
+    match worktree_branch workspace_path with
+    | Some existing when existing = branch -> Ok (Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier)
+    | Some existing -> Error (Printf.sprintf "agent worktree uses %s but expected %s" existing branch)
+    | None when Sys.file_exists workspace_path -> Error (workspace_path ^ " exists but is not an Agent Worktree")
+    | None ->
+      match require_clean_loop_start config.repository_root with
+      | Error _ as error -> error
+      | Ok () ->
+          let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
+          let create_branch =
+            if git_ref_exists config.repository_root branch then Ok ()
+            else
+              match
+                run_shell_capture ~cwd:config.repository_root
+                  (Printf.sprintf "git branch %s %s" (Util.shell_quote branch) (Util.shell_quote loop_start_branch))
+              with
+              | Ok _ -> Ok ()
+              | Error _ as error -> error
+          in
+          (match create_branch with
+          | Error error -> Error ("task branch creation failed: " ^ error)
+          | Ok _ -> (
+              match
+                run_shell_capture ~cwd:config.repository_root
+                  (Printf.sprintf "git worktree add %s %s" (Util.shell_quote workspace.path) (Util.shell_quote branch))
+              with
+              | Ok _ -> Ok workspace
+              | Error error -> Error ("agent worktree creation failed: " ^ error)))
+
 let has_worktree_changes root =
   match run_shell_capture ~cwd:root "git status --porcelain" with
   | Ok output -> Ok (output <> "")
   | Error error -> Error ("git status failed: " ^ error)
 
-let git_commit_stage_changes config issue stage next_status =
+let push_current_branch root =
+  match run_shell_capture ~cwd:root "git rev-parse --abbrev-ref --symbolic-full-name @{u}" with
+  | Ok _ -> run_shell_capture ~cwd:root "git push"
+  | Error _ ->
+      run_shell_capture ~cwd:root "git push -u origin HEAD"
+
+let git_commit_stage_changes _config workspace issue stage next_status =
   match stage with
   | None -> Ok ()
   | Some stage -> (
@@ -227,7 +310,7 @@ let git_commit_stage_changes config issue stage next_status =
       | None -> Ok ()
       | Some policy when not policy.enabled -> Ok ()
       | Some policy ->
-          let root = config.Config.repository_root in
+          let root = workspace.Workspace.path in
           match has_worktree_changes root with
           | Error error -> Error error
           | Ok false ->
@@ -247,7 +330,11 @@ let git_commit_stage_changes config issue stage next_status =
                       match run_shell_capture ~cwd:root command with
                       | Ok _ ->
                           render_commit_completed issue.Issue.identifier message;
-                          Ok ()
+                          if policy.Config.push then
+                            match push_current_branch root with
+                            | Ok _ -> Ok ()
+                            | Error error -> Error ("stage push failed: " ^ error)
+                          else Ok ()
                       | Error error -> Error error))
 
 let replace_first_word command replacement =
@@ -281,7 +368,7 @@ let shell_launch ~config ~workspace ~prompt ~issue =
   let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
   let stderr_path = Filename.concat workspace.Workspace.path "stderr.log" in
   let command =
-    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote config.Config.repository_root) (codex_command config)
+    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.Workspace.path) (codex_command config)
       (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path)
   in
   let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; command |] Unix.stdin Unix.stdout Unix.stderr in
@@ -311,6 +398,7 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     set_status;
     commit_stage;
     notify_state;
+    loop_start_branch = current_branch config.repository_root;
   }
 
 let get_state orchestrator = orchestrator.state
@@ -415,62 +503,68 @@ let issue_is_active orchestrator issue =
 
 let dispatch_issue orchestrator issue =
   let target_start_status = start_status orchestrator issue in
-  let can_dispatch =
-    match target_start_status with
-    | None -> true
-    | Some status -> move_issue_status orchestrator issue status
-  in
-  if can_dispatch then (
-    let issue = match target_start_status with Some state -> { issue with Issue.state } | None -> issue in
-    let workspace = Workspace.create_for_issue ~root:orchestrator.config.workspace.root issue.Issue.identifier in
-    let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
-    let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
-    let prompt = compose_prompt orchestrator.config issue rendered in
-    let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
-    let now = Util.now_iso8601 () in
-    let row =
-      {
-        Runtime_state.issue;
-        session_id = launched.session_id;
-        turn_count = 0;
-        last_event = Some launched.event;
-        last_message = None;
-        started_at = now;
-        last_event_at = Some now;
-        tokens = runtime_tokens;
-      }
-    in
-    Hashtbl.remove orchestrator.retry_due issue.id;
-    update_state orchestrator (fun state ->
-      {
-        state with
-        issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) state.issues;
-        running = row :: state.running;
-        retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue.id) state.retrying;
-        issue_errors =
-          List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
-        last_error = None;
-      });
-    (match launched.pid with
-    | Some pid ->
-        let now_float = Unix.time () in
-        orchestrator.children <-
+  match shell_prepare_workspace orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch issue with
+  | Error error ->
+      set_error orchestrator error;
+      render_dispatch_retrying issue.identifier 0 error;
+      ignore (move_issue_status orchestrator issue orchestrator.config.git.merge_attention_status)
+  | Ok workspace ->
+      let can_dispatch =
+        match target_start_status with
+        | None -> true
+        | Some status -> move_issue_status orchestrator issue status
+      in
+      if can_dispatch then (
+        let issue = match target_start_status with Some state -> { issue with Issue.state } | None -> issue in
+        let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
+        let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
+        let prompt = compose_prompt orchestrator.config issue rendered in
+        let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
+        let now = Util.now_iso8601 () in
+        let row =
           {
-            pid;
-            issue;
-            issue_id = issue.id;
-            issue_identifier = issue.identifier;
-            issue_title = issue.title;
-            started_at = now_float;
-            last_output_at = now_float;
-            stdout_path = launched.stdout_path;
-            stderr_path = launched.stderr_path;
-            stdout_size = file_size launched.stdout_path;
-            stderr_size = file_size launched.stderr_path;
+            Runtime_state.issue;
+            session_id = launched.session_id;
+            turn_count = 0;
+            last_event = Some launched.event;
+            last_message = None;
+            started_at = now;
+            last_event_at = Some now;
+            tokens = runtime_tokens;
           }
-          :: orchestrator.children
-    | None -> ());
-    render_dispatch_started issue)
+        in
+        Hashtbl.remove orchestrator.retry_due issue.id;
+        update_state orchestrator (fun state ->
+          {
+            state with
+            issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) state.issues;
+            running = row :: state.running;
+            retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue.id) state.retrying;
+            issue_errors =
+              List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
+            last_error = None;
+          });
+        (match launched.pid with
+        | Some pid ->
+            let now_float = Unix.time () in
+            orchestrator.children <-
+              {
+                pid;
+                issue;
+                issue_id = issue.id;
+                issue_identifier = issue.identifier;
+                issue_title = issue.title;
+                workspace;
+                started_at = now_float;
+                last_output_at = now_float;
+                stdout_path = launched.stdout_path;
+                stderr_path = launched.stderr_path;
+                stdout_size = file_size launched.stdout_path;
+                stderr_size = file_size launched.stderr_path;
+              }
+              :: orchestrator.children
+        | None -> ());
+        render_dispatch_started issue)
 
 let mark_retrying orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
@@ -555,23 +649,72 @@ let complete_child orchestrator child =
     });
   render_dispatch_completed child.issue_identifier child.issue_title
 
+let protected_loop_start orchestrator =
+  List.exists
+    (fun branch -> String.lowercase_ascii branch = String.lowercase_ascii orchestrator.loop_start_branch)
+    orchestrator.config.git.protected_trunk_branches
+
+let cleanup_task_worktree orchestrator child =
+  if orchestrator.config.git.cleanup.remove_worktree_after_merge then
+    ignore
+      (run_shell_capture ~cwd:orchestrator.config.repository_root
+         (Printf.sprintf "git worktree remove %s" (Util.shell_quote child.workspace.path)));
+  if not orchestrator.config.git.cleanup.keep_task_branch then
+    ignore
+      (run_shell_capture ~cwd:orchestrator.config.repository_root
+         (Printf.sprintf "git branch -d %s" (Util.shell_quote (task_branch orchestrator.config child.issue))))
+
+let auto_merge_child orchestrator child =
+  if (not (is_git_repository orchestrator.config.repository_root)) || (not orchestrator.config.git.auto_merge) || protected_loop_start orchestrator then Ok ()
+  else
+    let branch = task_branch orchestrator.config child.issue in
+    match
+      run_shell_capture ~cwd:orchestrator.config.repository_root
+        (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch))
+    with
+    | Ok _ ->
+        cleanup_task_worktree orchestrator child;
+        Ok ()
+    | Error error -> Error ("auto-merge failed: " ^ error)
+
+let mark_merge_attention orchestrator child error =
+  set_error orchestrator error;
+  ignore (move_issue_status orchestrator child.issue orchestrator.config.git.merge_attention_status);
+  update_state orchestrator (fun state ->
+    {
+      state with
+      running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> child.issue_id) state.running;
+      retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> child.issue_id) state.retrying;
+      issue_errors =
+        {
+          Runtime_state.issue_id = child.issue_id;
+          issue_identifier = child.issue_identifier;
+          error;
+        }
+        :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> child.issue_id) state.issue_errors;
+      last_error = Some error;
+    })
+
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
   let stage = stage_for_issue orchestrator.config child.issue in
   let next_status = success_status orchestrator child.issue in
-  match orchestrator.commit_stage orchestrator.config child.issue stage next_status with
+  match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
   | Error error ->
       set_error orchestrator error;
       render_commit_failed child.issue_identifier error;
       if non_retryable_completion_error error then mark_blocked orchestrator issue_id error
       else mark_retrying orchestrator issue_id error
   | Ok () ->
-      (match next_status with
-      | None -> complete_child orchestrator child
-      | Some status ->
-          if not (move_issue_status orchestrator child.issue status) then
-            mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
-          else complete_child orchestrator child)
+      (match auto_merge_child orchestrator child with
+      | Error error -> mark_merge_attention orchestrator child error
+      | Ok () -> (
+          match next_status with
+          | None -> complete_child orchestrator child
+          | Some status ->
+              if not (move_issue_status orchestrator child.issue status) then
+                mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
+              else complete_child orchestrator child))
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()

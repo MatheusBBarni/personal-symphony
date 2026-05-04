@@ -16,6 +16,66 @@ let with_temp_dir prefix f =
       Unix.mkdir root 0o755;
       f root)
 
+let run_ok ?(cwd = ".") label command =
+  match Orchestrator.run_shell_capture ~cwd command with
+  | Ok output -> output
+  | Error error -> Alcotest.fail (label ^ ": " ^ error)
+
+let init_repo root branch =
+  ignore (run_ok ~cwd:root "git init" (Printf.sprintf "git init -q -b %s" (Util.shell_quote branch)));
+  ignore (run_ok ~cwd:root "git user email" "git config user.email test@example.com");
+  ignore (run_ok ~cwd:root "git user name" "git config user.name Test");
+  Util.write_file (Filename.concat root "README.md") "initial\n";
+  ignore (run_ok ~cwd:root "initial commit" "git add README.md && git commit -q -m initial")
+
+let git_policy ?(auto_merge = false) ?(protected_trunk_branches = [ "main"; "master" ])
+    ?(merge_attention_status = "Human attention") ?(remove_worktree_after_merge = true) () =
+  {
+    Config.default_git with
+    auto_merge;
+    protected_trunk_branches;
+    merge_attention_status;
+    cleanup = { Config.remove_worktree_after_merge = remove_worktree_after_merge; keep_task_branch = true };
+  }
+
+let test_config_parses_git_policy_and_stage_push () =
+  with_temp_dir "symphony-settings-git-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "git": {
+    "taskBranchPrefix": "agent/",
+    "protectedTrunkBranches": ["main", "release"],
+    "autoMerge": false,
+    "mergeAttentionStatus": "Needs merge",
+    "cleanup": {"removeWorktreeAfterMerge": false, "keepTaskBranch": true}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {
+        "states": ["In progress"],
+        "agent": "engineer",
+        "commit": {"enabled": true, "type": "feat", "message": "<type>: work", "push": true}
+      }
+    ]
+  }
+}|};
+      Util.write_file (Filename.concat root ".symphony/agents/engineer.md") "Engineer";
+      Unix.putenv "GITHUB_TOKEN" "token";
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "branch prefix" "agent/" config.git.task_branch_prefix;
+      Alcotest.(check (list string)) "protected trunks" [ "main"; "release" ] config.git.protected_trunk_branches;
+      Alcotest.(check bool) "auto merge" false config.git.auto_merge;
+      Alcotest.(check string) "attention status" "Needs merge" config.git.merge_attention_status;
+      Alcotest.(check bool) "cleanup worktree" false config.git.cleanup.remove_worktree_after_merge;
+      match config.stage_agents.stages with
+      | [ { Config.commit = Some commit; _ } ] -> Alcotest.(check bool) "stage push" true commit.push
+      | _ -> Alcotest.fail "expected stage commit policy")
+
 let test_workflow_and_config () =
   let content =
     {|
@@ -65,7 +125,7 @@ let test_workspace_safety () =
       let reused = Workspace.create_for_issue ~root "ABC/42 needs work" in
       Alcotest.(check bool) "reused" false reused.created_now)
 
-let test_shell_launch_runs_agent_in_repository_root () =
+let test_shell_launch_runs_agent_in_agent_worktree () =
   with_temp_dir "symphony-launch-root-" (fun root ->
       let workspace_root = Filename.concat root "workspaces" in
       let config =
@@ -90,6 +150,7 @@ let test_shell_launch_runs_agent_in_repository_root () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = workspace_root };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex =
             {
@@ -110,9 +171,10 @@ let test_shell_launch_runs_agent_in_repository_root () =
       (match launched.pid with
       | Some pid -> ignore (Unix.waitpid [] pid)
       | None -> Alcotest.fail "expected shell launch pid");
-      Alcotest.(check string) "agent cwd" (Unix.realpath root) (Util.read_file (Filename.concat root "launched.cwd") |> Util.trim);
-      Alcotest.(check string) "prompt piped" "Issue #1" (Util.read_file (Filename.concat root "launched.prompt") |> Util.trim);
-      Alcotest.(check bool) "workspace is only logs" false (Sys.file_exists (Filename.concat workspace.path "launched.cwd")))
+      Alcotest.(check string) "agent cwd" (Unix.realpath workspace.path)
+        (Util.read_file (Filename.concat workspace.path "launched.cwd") |> Util.trim);
+      Alcotest.(check string) "prompt piped" "Issue #1" (Util.read_file (Filename.concat workspace.path "launched.prompt") |> Util.trim);
+      Alcotest.(check bool) "loop-start unchanged" false (Sys.file_exists (Filename.concat root "launched.cwd")))
 
 let test_invalid_tracker_kind () =
   let content =
@@ -175,6 +237,7 @@ let test_project_status_order_uses_transition_flow () =
       tracker;
       polling = { interval_ms = 1000 };
       workspace = { root = "/tmp/widgets/.symphony/workspaces" };
+      git = Config.default_git;
       agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
       codex =
         {
@@ -541,6 +604,7 @@ let test_orchestrator_notifies_each_state_mutation () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -780,6 +844,7 @@ let test_orchestrator_dispatch_limits () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -833,6 +898,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -882,6 +948,7 @@ let test_orchestrator_retries_failed_agent () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -928,6 +995,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -984,6 +1052,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -1034,6 +1103,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
+          workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
           started_at = Unix.time ();
           last_output_at = Unix.time ();
           stdout_path = None;
@@ -1067,6 +1137,7 @@ let test_orchestrator_commits_stage_before_success_status () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -1083,7 +1154,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
-                    commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>" };
+                    commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>"; push = false };
                   };
                 ];
             };
@@ -1095,7 +1166,7 @@ let test_orchestrator_commits_stage_before_success_status () =
         events := ("status:" ^ status) :: !events;
         Ok ()
       in
-      let commit_stage _ issue stage next_status =
+      let commit_stage _ _workspace issue stage next_status =
         let message =
           match stage with
           | Some { Config.commit = Some policy; _ } -> Orchestrator.render_commit_message issue stage next_status policy
@@ -1112,6 +1183,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
+          workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
           started_at = Unix.time ();
           last_output_at = Unix.time ();
           stdout_path = None;
@@ -1145,6 +1217,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -1166,6 +1239,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
+          workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
           started_at = Unix.time ();
           last_output_at = Unix.time ();
           stdout_path = None;
@@ -1207,6 +1281,7 @@ let test_stage_commit_requires_code_changes () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -1222,10 +1297,11 @@ let test_stage_commit_requires_code_changes () =
             start_status = None;
             success_status = Some "In review";
             retry_status = Some "Todo";
-            commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message };
+            commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
           }
       in
-      match Orchestrator.git_commit_stage_changes config issue stage (Some "In review") with
+      let workspace = { Workspace.path = root; workspace_key = "test"; created_now = false } in
+      match Orchestrator.git_commit_stage_changes config workspace issue stage (Some "In review") with
       | Ok () -> Alcotest.fail "empty commit-required stages must fail"
       | Error error -> Alcotest.(check string) "empty commit error" "commit required but agent produced no code changes" error)
 
@@ -1253,6 +1329,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
             };
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
@@ -1269,7 +1346,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
-                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message };
+                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
                   };
                 ];
             };
@@ -1287,7 +1364,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
         statuses := status :: !statuses;
         Ok ()
       in
-      let commit_stage _ _ _ _ = Error "commit required but agent produced no code changes" in
+      let commit_stage _ _ _ _ _ = Error "commit required but agent produced no code changes" in
       let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~commit_stage ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check int) "first launch" 1 !launches;
@@ -1298,6 +1375,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
+          workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
           started_at = Unix.time ();
           last_output_at = Unix.time ();
           stdout_path = None;
@@ -1313,13 +1391,352 @@ let test_orchestrator_does_not_retry_empty_commit () =
       Alcotest.(check int) "issue error recorded" 1 (List.length state.issue_errors);
       Alcotest.(check (option string)) "last error" (Some "commit required but agent produced no code changes") state.last_error)
 
+let base_orchestrator_config root git =
+  {
+    Config.workflow_path = "settings.json";
+    repository_root = root;
+    tracker =
+      {
+        kind = "github";
+        owner = "acme";
+        repo = "widgets";
+        project_number = 7;
+        api_key_env = "GITHUB_TOKEN";
+        api_key = Some "token";
+        active_states = [ "Todo"; "In progress" ];
+        terminal_states = [ "Done" ];
+        project_status_field = "Status";
+        project_status_on_dispatch = Some "In progress";
+        project_status_on_success = Some "In review";
+        project_status_on_retry = Some "Todo";
+        ensure_project_statuses = true;
+      };
+    polling = { interval_ms = 1000 };
+    workspace = { root = Filename.concat root ".symphony/workspaces" };
+    git;
+    agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+    codex =
+      {
+        command = "true";
+        model = Config.default_model;
+        reasoning_effort = Config.default_reasoning_effort;
+        turn_timeout_ms = 1000;
+        read_timeout_ms = 100;
+        stall_timeout_ms = 1000;
+      };
+    server = { port = None };
+    stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+  }
+
+let test_orchestrator_creates_task_worktree_and_branch () =
+  with_temp_dir "symphony-task-worktree-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#3" ~title:"Three" ~state:"Todo" in
+      let captured_workspace = ref None in
+      let launch ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        captured_workspace := Some workspace;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let workspace = match !captured_workspace with Some workspace -> workspace | None -> Alcotest.fail "expected launch" in
+      Alcotest.(check bool) "under runtime workspaces" true (Workspace.is_inside ~root:config.workspace.root ~path:workspace.path);
+      Alcotest.(check string) "task branch" "symphony/task-3" (run_ok ~cwd:workspace.path "branch" "git branch --show-current");
+      Alcotest.(check bool) "task branch exists" true
+        (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-3") = 0);
+      Alcotest.(check (list string)) "start status moved" [ "In progress" ] (List.rev !statuses))
+
+let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
+  with_temp_dir "symphony-dirty-loop-" (fun root ->
+      init_repo root "feature/start";
+      Util.write_file (Filename.concat root "dirty.txt") "dirty\n";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I2" ~identifier:"#4" ~title:"Four" ~state:"Todo" in
+      let launches = ref 0 in
+      let statuses = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launches;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launches;
+      Alcotest.(check (list string)) "moves to attention without in-progress" [ "Human attention" ] (List.rev !statuses);
+      Alcotest.(check (option string)) "last error"
+        (Some "loop-start worktree must be clean before creating task worktrees")
+        (Orchestrator.get_state orchestrator).last_error;
+      Alcotest.(check bool) "no placeholder worktree left" false
+        (Sys.file_exists (Filename.concat config.workspace.root "_4")))
+
+let test_orchestrator_reuses_existing_task_branch_on_restart () =
+  with_temp_dir "symphony-reuse-task-branch-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I6" ~identifier:"#8" ~title:"Eight" ~state:"In progress" in
+      ignore (run_ok ~cwd:root "create task branch" "git branch symphony/task-8 feature/start");
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Alcotest.(check string) "reused branch checked out" "symphony/task-8"
+        (run_ok ~cwd:workspace.path "branch" "git branch --show-current"))
+
+let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch () =
+  with_temp_dir "symphony-existing-progress-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I9" ~identifier:"#11" ~title:"Eleven" ~state:"In progress" in
+      ignore (run_ok ~cwd:root "create task branch" "git branch symphony/task-11 feature/start");
+      let launched_branch = ref None in
+      let launch ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        launched_branch := Some (run_ok ~cwd:workspace.path "branch" "git branch --show-current");
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (option string)) "launched from reused task branch" (Some "symphony/task-11") !launched_branch)
+
+let test_orchestrator_rejects_existing_non_worktree_workspace () =
+  with_temp_dir "symphony-existing-non-worktree-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I10" ~identifier:"#12" ~title:"Twelve" ~state:"In progress" in
+      Util.mkdir_p config.workspace.root;
+      let stale_workspace = Filename.concat config.workspace.root "_12" in
+      Unix.mkdir stale_workspace 0o755;
+      let launches = ref 0 in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launches;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launches;
+      Alcotest.(check (list string)) "attention status" [ "Human attention" ] (List.rev !statuses);
+      Alcotest.(check (option string)) "last error"
+        (Some (stale_workspace ^ " exists but is not an Agent Worktree"))
+        (Orchestrator.get_state orchestrator).last_error)
+
+let test_stage_commit_pushes_task_branch () =
+  with_temp_dir "symphony-stage-push-" (fun root ->
+      let remote = Filename.concat root "remote.git" in
+      let repo = Filename.concat root "repo" in
+      Unix.mkdir repo 0o755;
+      ignore (run_ok ~cwd:root "bare remote" ("git init -q --bare " ^ Util.shell_quote remote));
+      init_repo repo "feature/start";
+      ignore (run_ok ~cwd:repo "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+      let config = base_orchestrator_config repo (git_policy ()) in
+      let issue = Issue.empty ~id:"I3" ~identifier:"#5" ~title:"Five" ~state:"In progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "work.txt") "work\n";
+      let stage =
+        Some
+          {
+            Config.states = [ "In progress" ];
+            agent = "engineer";
+            start_status = None;
+            success_status = Some "In review";
+            retry_status = Some "Todo";
+            commit = Some { enabled = true; commit_type = "feat"; message = Config.default_commit_message; push = true };
+          }
+      in
+      (match Orchestrator.git_commit_stage_changes config workspace issue stage (Some "In review") with
+      | Ok () -> ()
+      | Error error -> Alcotest.fail error);
+      Alcotest.(check bool) "remote task branch exists" true
+        (Sys.command ("git --git-dir " ^ Util.shell_quote remote ^ " show-ref --verify --quiet refs/heads/symphony/task-5") = 0);
+      Alcotest.(check bool) "loop-start branch not pushed" false
+        (Sys.command ("git --git-dir " ^ Util.shell_quote remote ^ " show-ref --verify --quiet refs/heads/feature/start") = 0))
+
+let test_auto_merge_fast_forwards_and_removes_worktree () =
+  with_temp_dir "symphony-auto-merge-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ~auto_merge:true ()) in
+      let issue = Issue.empty ~id:"I4" ~identifier:"#6" ~title:"Six" ~state:"In progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "merged.txt") "merged\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add merged.txt && git commit -q -m task");
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Alcotest.(check bool) "merged file present" true (Sys.file_exists (Filename.concat root "merged.txt"));
+      Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path);
+      Alcotest.(check bool) "task branch kept" true
+        (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-6") = 0);
+      Alcotest.(check (list string)) "success status after merge" [ "In review" ] (List.rev !statuses))
+
+let test_cleanup_can_remove_task_branch_after_merge () =
+  with_temp_dir "symphony-cleanup-branch-" (fun root ->
+      init_repo root "feature/start";
+      let git =
+        {
+          (git_policy ~auto_merge:true ()) with
+          cleanup = { Config.remove_worktree_after_merge = true; keep_task_branch = false };
+        }
+      in
+      let config = base_orchestrator_config root git in
+      let issue = Issue.empty ~id:"I7" ~identifier:"#9" ~title:"Nine" ~state:"In progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "cleanup.txt") "cleanup\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add cleanup.txt && git commit -q -m task");
+      let orchestrator = Orchestrator.make ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Alcotest.(check bool) "task branch removed" false
+        (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-9") = 0))
+
+let test_auto_merge_skips_protected_trunk_branch () =
+  with_temp_dir "symphony-protected-trunk-" (fun root ->
+      init_repo root "main";
+      let config = base_orchestrator_config root (git_policy ~auto_merge:true ()) in
+      let issue = Issue.empty ~id:"I8" ~identifier:"#10" ~title:"Ten" ~state:"In progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"main" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "protected.txt") "protected\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add protected.txt && git commit -q -m task");
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Alcotest.(check bool) "not merged into main" false (Sys.file_exists (Filename.concat root "protected.txt"));
+      Alcotest.(check bool) "worktree kept" true (Sys.file_exists workspace.path);
+      Alcotest.(check (list string)) "still advances status" [ "In review" ] (List.rev !statuses))
+
+let test_auto_merge_failure_moves_human_attention () =
+  with_temp_dir "symphony-auto-merge-fail-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ~auto_merge:true ()) in
+      let issue = Issue.empty ~id:"I5" ~identifier:"#7" ~title:"Seven" ~state:"In progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "task.txt") "task\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add task.txt && git commit -q -m task");
+      Util.write_file (Filename.concat root "loop.txt") "loop\n";
+      ignore (run_ok ~cwd:root "loop commit" "git add loop.txt && git commit -q -m loop");
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Alcotest.(check (list string)) "attention status only" [ "Human attention" ] (List.rev !statuses);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "issue error" 1 (List.length state.issue_errors);
+      Alcotest.(check bool) "worktree kept for inspection" true (Sys.file_exists workspace.path))
+
 let () =
   Alcotest.run "symphony-backend"
     [
       ("workflow", [ Alcotest.test_case "parse config" `Quick test_workflow_and_config ]);
       ("prompt", [ Alcotest.test_case "strict render" `Quick test_prompt_strict_rendering ]);
       ("workspace", [ Alcotest.test_case "sanitize and reuse" `Quick test_workspace_safety ]);
-      ("launch", [ Alcotest.test_case "runs agent in repository root" `Quick test_shell_launch_runs_agent_in_repository_root ]);
+      ("launch", [ Alcotest.test_case "runs agent in agent worktree" `Quick test_shell_launch_runs_agent_in_agent_worktree ]);
       ( "runtime-home",
         [
           Alcotest.test_case "bootstrap is idempotent" `Quick test_bootstrap_idempotency_preserves_user_files;
@@ -1334,6 +1751,7 @@ let () =
           Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
+          Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
         ] );
       ("runtime-state", [ Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details ]);
       ( "server",
@@ -1366,5 +1784,16 @@ let () =
           Alcotest.test_case "stage commit requires code changes" `Quick test_stage_commit_requires_code_changes;
           Alcotest.test_case "does not retry empty required commits" `Quick test_orchestrator_does_not_retry_empty_commit;
           Alcotest.test_case "notifies repeated state mutations" `Quick test_orchestrator_notifies_each_state_mutation;
+          Alcotest.test_case "creates task worktree and branch" `Quick test_orchestrator_creates_task_worktree_and_branch;
+          Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
+          Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
+          Alcotest.test_case "reuses worktree for existing in-progress task"
+            `Quick test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch;
+          Alcotest.test_case "rejects existing non-worktree workspace" `Quick test_orchestrator_rejects_existing_non_worktree_workspace;
+          Alcotest.test_case "pushes task branch after stage commit" `Quick test_stage_commit_pushes_task_branch;
+          Alcotest.test_case "fast-forwards task branch and removes worktree" `Quick test_auto_merge_fast_forwards_and_removes_worktree;
+          Alcotest.test_case "can remove task branch after merge" `Quick test_cleanup_can_remove_task_branch_after_merge;
+          Alcotest.test_case "skips auto-merge on protected trunk" `Quick test_auto_merge_skips_protected_trunk_branch;
+          Alcotest.test_case "moves merge failures to human attention" `Quick test_auto_merge_failure_moves_human_attention;
         ] );
     ]
