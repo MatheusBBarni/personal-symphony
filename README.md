@@ -98,7 +98,7 @@ Symphony moves the configured GitHub Projects `Status` field as work progresses:
 - `startStatus`: applied before launching an agent, default `In progress`.
 - `reviewStatus`: applied after the agent exits successfully, default `In review`.
 - `retryStatus`: applied when the agent fails or times out and Symphony schedules a retry, default
-  `Todo`.
+  `To-Do`.
 - `ensureStatuses`: when `true`, Symphony creates missing single-select status options in the
   Project field before applying them.
 
@@ -108,11 +108,11 @@ Configure these in `.symphony/settings.json`:
 {
   "project": {
     "statusField": "Status",
-    "activeStates": ["Todo", "In Progress"],
+    "activeStates": ["To-Do", "Todo", "In Progress"],
     "terminalStates": ["Done", "Closed", "Cancelled"],
     "startStatus": "In progress",
     "reviewStatus": "In review",
-    "retryStatus": "Todo",
+    "retryStatus": "To-Do",
     "ensureStatuses": true
   }
 }
@@ -142,7 +142,7 @@ Configure or disable this in `.symphony/settings.json`:
       {
         "states": ["Backlog"],
         "agent": "planner",
-        "successStatus": "Todo",
+        "successStatus": "To-Do",
         "retryStatus": "Backlog",
         "commit": {
           "enabled": false,
@@ -155,7 +155,7 @@ Configure or disable this in `.symphony/settings.json`:
         "agent": "engineer",
         "startStatus": "In progress",
         "successStatus": "In review",
-        "retryStatus": "Todo",
+        "retryStatus": "To-Do",
         "commit": {
           "enabled": true,
           "type": "feature",
@@ -182,7 +182,7 @@ Set `"enabled": false` to use the single base `.symphony/prompt.md` for every is
 
 Stage commits run after an agent exits successfully and before Symphony moves the issue to the
 stage's `successStatus`. Set `commit.enabled` per stage to control which transitions create commits;
-for example, keep `Backlog -> Todo` uncommitted and commit `In progress -> In review`. The message
+for example, keep `Backlog -> To-Do` uncommitted and commit `In progress -> In review`. The message
 template supports `<type>`, `<generated_message_max_90char>`, `<issue_identifier>`, `<issue_title>`,
 `<from_status>`, `<to_status>`, and `<agent>`.
 

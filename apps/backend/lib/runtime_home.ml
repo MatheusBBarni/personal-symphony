@@ -30,7 +30,7 @@ let settings_json =
     "terminalStates": ["Done", "Closed", "Cancelled"],
     "startStatus": "In progress",
     "reviewStatus": "In review",
-    "retryStatus": "Todo",
+    "retryStatus": "To-Do",
     "ensureStatuses": true
   },
   "polling": {
@@ -47,7 +47,7 @@ let settings_json =
       {
         "states": ["Backlog"],
         "agent": "planner",
-        "successStatus": "Todo",
+        "successStatus": "To-Do",
         "retryStatus": "Backlog",
         "commit": {
           "enabled": false,
@@ -60,7 +60,7 @@ let settings_json =
         "agent": "engineer",
         "startStatus": "In progress",
         "successStatus": "In review",
-        "retryStatus": "Todo",
+        "retryStatus": "To-Do",
         "commit": {
           "enabled": true,
           "type": "feature",

@@ -47,11 +47,11 @@ type readiness_gap = { requirement : string; remediation : string }
 
 exception Invalid_config of string
 
-let default_active_states = [ "Todo"; "In Progress" ]
+let default_active_states = [ "To-Do"; "Todo"; "In Progress" ]
 let default_terminal_states = [ "Done"; "Closed"; "Cancelled"; "Canceled"; "Duplicate" ]
 let default_dispatch_status = "In progress"
 let default_review_status = "In review"
-let default_retry_status = "Todo"
+let default_retry_status = "To-Do"
 let default_commit_message = "<type>: <generated_message_max_90char>"
 
 let default_stage_agents =
@@ -60,7 +60,7 @@ let default_stage_agents =
       states = [ "Backlog" ];
       agent = "planner";
       start_status = None;
-      success_status = Some "Todo";
+      success_status = Some "To-Do";
       retry_status = Some "Backlog";
       commit = Some { enabled = false; commit_type = "feature"; message = default_commit_message };
     };
@@ -69,7 +69,7 @@ let default_stage_agents =
       agent = "engineer";
       start_status = Some "In progress";
       success_status = Some "In review";
-      retry_status = Some "Todo";
+      retry_status = Some "To-Do";
       commit = Some { enabled = true; commit_type = "feature"; message = default_commit_message };
     };
     {

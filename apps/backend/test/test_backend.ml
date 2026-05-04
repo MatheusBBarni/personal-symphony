@@ -141,13 +141,14 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check int) "server port" 8080 (Option.get config.server.port);
       Alcotest.(check (option string)) "dispatch status" (Some "In progress") config.tracker.project_status_on_dispatch;
       Alcotest.(check (option string)) "review status" (Some "In review") config.tracker.project_status_on_success;
-      Alcotest.(check (option string)) "retry status" (Some "Todo") config.tracker.project_status_on_retry;
+      Alcotest.(check (option string)) "retry status" (Some "To-Do") config.tracker.project_status_on_retry;
       Alcotest.(check bool) "ensure statuses" true config.tracker.ensure_project_statuses;
       Alcotest.(check bool) "stage agents enabled" true config.stage_agents.enabled;
       Alcotest.(check string) "stage agent root" (Filename.concat (Unix.realpath root) ".symphony/agents") config.stage_agents.root;
       Alcotest.(check int) "stage mappings" 3 (List.length config.stage_agents.stages);
       (match config.stage_agents.stages with
-      | _planner :: engineer :: _ ->
+      | planner :: engineer :: _ ->
+          Alcotest.(check (option string)) "planner success status" (Some "To-Do") planner.success_status;
           (match engineer.Config.commit with
           | Some commit ->
               Alcotest.(check bool) "engineer commits enabled" true commit.enabled;
