@@ -15,5 +15,6 @@ Dispatch model:
 
 Packaging:
 - npm exposes `symphony` through `bin/symphony.js`.
-- Published packages should include `vendor/symphony-<platform>-<arch>`.
+- Published packages should include `vendor/symphony-linux-x64`, `vendor/symphony-darwin-x64`,
+  `vendor/symphony-darwin-arm64`, and `vendor/symphony-win32-x64.exe`.
 - Product Repository development falls back to `opam exec -- dune exec symphony --`.

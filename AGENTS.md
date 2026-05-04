@@ -53,7 +53,7 @@
 - `apps/backend/test/test_backend.ml` is a 2K-line integration-heavy suite; prefer targeted test additions near existing related cases.
 - `apps/backend/lib/orchestrator.ml`, `config.ml`, `github_tracker.ml`, and `server.ml` are large shared modules; run focused backend tests after touching them.
 - `apps/backend/lib/runtime_home.ml` embeds default JSON and agent prompt templates; keep examples secret-free and idempotent.
-- `scripts/package-binary.js` copies `_build/default/apps/backend/bin/main.exe` into `vendor/symphony-<platform>-<arch>`; packaging depends on that exact Dune output.
+- `scripts/package-binary.js` copies `_build/default/apps/backend/bin/main.exe` into `vendor/symphony-<platform>-<arch>` or `vendor/symphony-win32-<arch>.exe`; packaging depends on that exact Dune output.
 
 ## Patterns
 

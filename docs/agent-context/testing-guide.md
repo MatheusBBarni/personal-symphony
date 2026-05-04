@@ -12,3 +12,7 @@ Frontend:
 
 Packaging:
 - Use `pnpm prepack` before validating npm package contents or `vendor/` binary behavior.
+- Use `pnpm npm:validate` to pack the CLI Package, install the tarball into a
+  temporary global npm prefix, and verify that the installed `symphony` command runs.
+- Use `pnpm npm:validate:release` before publishing; it also requires the Linux, macOS, and Windows
+  vendor binaries to be present in the packed tarball.

@@ -1,5 +1,5 @@
 {
-  "name": "personal-symphony",
+  "name": "symphony-orchestrator",
   "version": "0.1.0",
   "private": false,
   "bin": {
@@ -16,6 +16,8 @@
     "build": "pnpm -r build && opam exec -- dune build @all",
     "test": "opam exec -- dune runtest",
     "prepack": "pnpm frontend:build && pnpm backend:build && node scripts/package-binary.js",
+    "npm:validate": "node scripts/validate-npm-export.js",
+    "npm:validate:release": "node scripts/validate-npm-export.js --require-all-platforms",
     "backend:build": "opam exec -- dune build @all",
     "backend:test": "opam exec -- dune runtest",
     "backend:dev": "opam exec -- dune exec symphony -- --port 8080 --web WORKFLOW.example.md",

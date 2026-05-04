@@ -35,15 +35,32 @@ the required packages installed.
 The npm package exposes a global `symphony` command:
 
 ```sh
-npm install -g personal-symphony
+npm install -g symphony-orchestrator
 ```
 
-Published packages should include a platform-specific binary at `vendor/symphony-<platform>-<arch>`.
+Published packages should include platform-specific binaries for Linux, macOS, and Windows:
+
+- `vendor/symphony-linux-x64`
+- `vendor/symphony-darwin-x64`
+- `vendor/symphony-darwin-arm64`
+- `vendor/symphony-win32-x64.exe`
+
 When running from this product repository, the Node launcher falls back to:
 
 ```sh
 opam exec -- dune exec symphony --
 ```
+
+Before publishing, run:
+
+```sh
+pnpm npm:validate:release
+```
+
+The GitHub Actions `Export npm package` workflow builds those binaries on Linux, macOS, and Windows,
+assembles the npm tarball, uploads the tarball and binaries as a GitHub workflow artifact, and uploads
+the same files to a GitHub Release when run from a `v*` tag. Manual runs can publish to npm when
+`publish_npm` is enabled and the repository has an `NPM_TOKEN` secret.
 
 ## Set Up In A Workspace Repository
 

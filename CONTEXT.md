@@ -173,7 +173,7 @@ A task condition shown in Runtime State issue errors that requires user interven
 _Avoid_: retrying error, global error, any error
 
 **CLI Package**:
-The npm-distributed Personal Symphony package that provides the `symphony` command.
+The npm-distributed Personal Symphony package that provides the `symphony` command and carries platform binaries for supported operating systems.
 _Avoid_: npm wrapper, global install
 
 **Idempotent Bootstrap**:
@@ -327,6 +327,7 @@ _Avoid_: reinitialize, reset
 - The **Web Dashboard** shows a Live Dashboard Connection error only when the connection is down.
 - The **Product Repository** provides the **CLI Package**.
 - The **CLI Package** provides the `symphony` command.
+- The **CLI Package** contains Linux x64, macOS x64, macOS arm64, and Windows x64 binaries under `vendor/`.
 
 ## Example Dialogue
 
