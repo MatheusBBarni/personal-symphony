@@ -279,14 +279,16 @@ let shell_launch ~config ~workspace ~prompt ~issue =
   let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
   let stderr_path = Filename.concat workspace.Workspace.path "stderr.log" in
   let command =
-    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.path) (codex_command config)
+    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote config.Config.repository_root) (codex_command config)
       (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path)
   in
   let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; command |] Unix.stdin Unix.stdout Unix.stderr in
   {
     pid = Some pid;
     session_id = Some (Printf.sprintf "pid:%d" pid);
-    event = Printf.sprintf "launched issue=%s workspace=%s" issue.Issue.identifier workspace.Workspace.path;
+    event =
+      Printf.sprintf "launched issue=%s repository=%s workspace=%s" issue.Issue.identifier config.repository_root
+        workspace.Workspace.path;
     stdout_path = Some stdout_path;
     stderr_path = Some stderr_path;
   }
@@ -433,7 +435,9 @@ let dispatch_issue orchestrator issue =
         orchestrator.state with
         issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) orchestrator.state.issues;
         running = row :: orchestrator.state.running;
-        retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue.id) orchestrator.state.retrying;
+        retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue.id) orchestrator.state.retrying;
+        issue_errors =
+          List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) orchestrator.state.issue_errors;
         last_error = None;
       };
     (match launched.pid with
@@ -485,7 +489,9 @@ let mark_retrying orchestrator issue_id error =
               due_at;
               error = Some error;
             }
-            :: List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
+            :: List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) orchestrator.state.retrying;
+          issue_errors =
+            List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) orchestrator.state.issue_errors;
           last_error = Some error;
         };
       (match retry_status orchestrator row.issue with
@@ -504,11 +510,23 @@ let mark_blocked orchestrator issue_id error =
       Hashtbl.remove orchestrator.attempts issue_id;
       Hashtbl.remove orchestrator.retry_due issue_id;
       Hashtbl.replace orchestrator.blocked (block_key row.issue) error;
+      (match retry_status orchestrator row.issue with
+      | None -> ()
+      | Some status ->
+          if move_issue_status orchestrator row.issue status then
+            Hashtbl.replace orchestrator.blocked (block_key { row.issue with Issue.state = status }) error);
       orchestrator.state <-
         {
           orchestrator.state with
           running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) orchestrator.state.running;
-          retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
+          retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) orchestrator.state.retrying;
+          issue_errors =
+            {
+              Runtime_state.issue_id;
+              issue_identifier = row.issue.identifier;
+              error;
+            }
+            :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) orchestrator.state.issue_errors;
           last_error = Some error;
         }
 
@@ -520,7 +538,9 @@ let complete_child orchestrator child =
     {
       orchestrator.state with
       running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) orchestrator.state.running;
-      retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
+      retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) orchestrator.state.retrying;
+      issue_errors =
+        List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) orchestrator.state.issue_errors;
     };
   render_dispatch_completed child.issue_identifier child.issue_title
 

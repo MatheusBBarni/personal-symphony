@@ -94,7 +94,7 @@ with `medium` reasoning:
 ```json
 {
   "codex": {
-    "command": "codex app-server",
+    "command": "codex exec",
     "model": "gpt-5.5",
     "reasoningEffort": "medium"
   }
@@ -265,7 +265,7 @@ Symphony still reports repository or project access gaps, remove the stale `GITH
      project_status_on_success: In review
      project_status_on_retry: Todo
    codex:
-     command: codex app-server
+     command: codex exec
      model: gpt-5.5
      reasoning_effort: medium
    ```

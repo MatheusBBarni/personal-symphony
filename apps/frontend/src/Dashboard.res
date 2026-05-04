@@ -3,6 +3,7 @@ type issueItem = {
   title: string,
   state: string,
   description: string,
+  error: string,
 }
 
 type snapshot = {
@@ -41,20 +42,27 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
   }
 
   let content = switch (snapshot, error) {
-  | (_, Some(message)) =>
+  | (None, Some(message)) =>
     <div className="rounded-lg border border-red-900 bg-red-950 p-5 text-red-100">
       <div className="text-sm font-semibold uppercase tracking-wide text-red-300">
         {React.string("Backend unavailable")}
       </div>
       <p className="mt-2 text-sm"> {React.string(message)} </p>
     </div>
-  | (Some(data), None) =>
+  | (Some(data), maybeError) =>
     <>
       <div className="grid gap-4 sm:grid-cols-3">
         {metric("Running", data.running, "text-sky-200")}
         {metric("Retrying", data.retrying, "text-amber-200")}
         {metric("Total tokens", data.tokens, "text-emerald-200")}
       </div>
+      {switch maybeError {
+      | Some(message) =>
+        <div className="mt-5 rounded-lg border border-red-900 bg-red-950 p-4 text-sm text-red-100">
+          {React.string(message)}
+        </div>
+      | None => React.null
+      }}
       {switch data.lastError {
       | "" => React.null
       | value =>
@@ -62,18 +70,6 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
           {React.string(value)}
         </div>
       }}
-      <section className="mb-6 mt-5 max-w-xl rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-          <div>
-            <div className="text-xs uppercase text-zinc-500"> {React.string("Generated")} </div>
-            <div className="mt-1 text-sm text-zinc-200"> {React.string(data.generatedAt)} </div>
-          </div>
-          <div className="text-sm text-zinc-400">
-            {React.string("State API: ")}
-            <code className="text-sky-200"> {React.string("/api/v1/state")} </code>
-          </div>
-        </div>
-      </section>
       <section className="mt-6 rounded-lg border border-zinc-800 bg-zinc-900">
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
           <div className="text-sm font-medium text-zinc-200"> {React.string("Project board")} </div>
@@ -91,7 +87,7 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
               ->issueStateColumns
               ->Array.map(state => {
                 let stateIssues = arrayFilter(data.issues, issue => issue.state == state)
-                <section className="min-h-48 rounded-lg border border-zinc-800 bg-zinc-950">
+                <section key=state className="min-h-48 rounded-lg border border-zinc-800 bg-zinc-950">
                   <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2.5">
                     <h2 className="text-sm font-semibold text-zinc-100"> {React.string(state)} </h2>
                     <span className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400">
@@ -101,7 +97,7 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
                   <div className="space-y-3 p-3">
                     {stateIssues
                     ->Array.map(issue =>
-                      <article className="rounded-md border border-zinc-800 bg-zinc-900 p-3">
+                      <article key=issue.identifier className="rounded-md border border-zinc-800 bg-zinc-900 p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="rounded-md border border-sky-800 bg-sky-950 px-2 py-0.5 text-xs font-medium text-sky-200">
                             {React.string(issue.identifier)}
@@ -114,6 +110,13 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
                         <p className="mt-2 line-clamp-4 text-sm leading-6 text-zinc-400">
                           {React.string(issue.description)}
                         </p>
+                        {switch issue.error {
+                        | "" => React.null
+                        | message =>
+                          <div className="mt-3 rounded-md border border-red-900 bg-red-950 px-3 py-2 text-xs leading-5 text-red-100">
+                            {React.string(message)}
+                          </div>
+                        }}
                       </article>
                     )
                     ->React.array}
@@ -141,16 +144,32 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
 
   <section className="min-h-screen bg-zinc-950 text-zinc-100">
     <header className="border-b border-zinc-800 bg-zinc-950/95">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
+      <div className="mx-auto grid max-w-6xl gap-4 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
         <div>
           <h1 className="text-xl font-semibold tracking-normal"> {React.string("Personal Symphony")} </h1>
           <p className="text-sm text-zinc-400">
             {React.string("GitHub Issues + Projects orchestration")}
           </p>
         </div>
-        <span className="rounded-md border border-emerald-700/60 bg-emerald-950 px-3 py-1 text-xs font-medium text-emerald-200">
-          {React.string("OCaml API")}
-        </span>
+        <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 sm:justify-end">
+          {switch snapshot {
+          | Some(data) =>
+            <>
+              <div>
+                <span className="uppercase text-zinc-500"> {React.string("Generated")} </span>
+                <span className="ml-2 text-zinc-200"> {React.string(data.generatedAt)} </span>
+              </div>
+              <div>
+                {React.string("State API: ")}
+                <code className="text-sky-200"> {React.string("/api/v1/state")} </code>
+              </div>
+            </>
+          | None => React.null
+          }}
+          <span className="rounded-md border border-emerald-700/60 bg-emerald-950 px-3 py-1 font-medium text-emerald-200">
+            {React.string("OCaml API")}
+          </span>
+        </div>
       </div>
     </header>
     <div className="mx-auto max-w-6xl px-5 py-6"> {content} </div>

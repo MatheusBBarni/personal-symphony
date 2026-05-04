@@ -24,7 +24,20 @@ type readinessGap = {
   remediation: string,
 }
 
+type taskError = {
+  issue_id: string,
+  issue_identifier: string,
+  error: option<string>,
+}
+
+type blockedTaskError = {
+  issue_id: string,
+  issue_identifier: string,
+  error: string,
+}
+
 type runningIssue = {
+  issue_id: string,
   issue_identifier: string,
   title: string,
   state: string,
@@ -39,6 +52,8 @@ type runtimeState = {
   readiness_gaps: array<readinessGap>,
   issues: array<runningIssue>,
   running: array<runningIssue>,
+  retrying: array<taskError>,
+  issue_errors: array<blockedTaskError>,
 }
 
 @val @scope("document") external getElementById: string => Nullable.t<domElement> = "getElementById"
@@ -70,18 +85,53 @@ let readinessText = state =>
     ->Array.map(gap => gap.requirement ++ ": " ++ gap.remediation)
     ->Array.join("; "))
   } else {
-    switch state.last_error {
-    | Some(message) => message
+    ""
+  }
+
+let taskErrorForIssue = (state, issueId) => {
+  switch state.issue_errors->Array.find(error => error.issue_id == issueId) {
+  | Some(error) => error.error
+  | None =>
+    switch state.retrying->Array.find(error => error.issue_id == issueId) {
+    | Some(error) =>
+      switch error.error {
+      | Some(message) => message
+      | None => ""
+      }
     | None => ""
     }
   }
+}
 
 let renderDashboard = (root, ~snapshot, ~error) =>
   root->render(<Dashboard snapshot error />)
 
-let loadState = root => {
-  renderDashboard(root, ~snapshot=None, ~error=None)
+let snapshotFromState = state => {
+  Dashboard.running: state.counts.running->Int.toString,
+  retrying: state.counts.retrying->Int.toString,
+  tokens: state.codex_totals.total_tokens->Int.toString,
+  generatedAt: state.generated_at,
+  lastError: readinessText(state),
+  issues: state.issues->Array.map(issue => {
+    let description = switch issue.description {
+    | Some(value) => value
+    | None => ""
+    }
+    {
+      Dashboard.identifier: issue.issue_identifier,
+      title: issue.title,
+      state: issue.state,
+      description: description->shortDescription,
+      error: taskErrorForIssue(state, issue.issue_id),
+    }
+  }),
+}
 
+let loadState = (root, latestSnapshot, isLoading) => {
+  if isLoading.contents {
+    ()
+  } else {
+    isLoading := true
   fetch("/api/v1/state", {"headers": {"Accept": "application/json"}})
   ->(
     promise =>
@@ -101,29 +151,10 @@ let loadState = root => {
       thenValue(
         promise,
         state => {
-          renderDashboard(
-            root,
-            ~snapshot=Some({
-              running: state.counts.running->Int.toString,
-              retrying: state.counts.retrying->Int.toString,
-              tokens: state.codex_totals.total_tokens->Int.toString,
-              generatedAt: state.generated_at,
-              lastError: readinessText(state),
-              issues: state.issues->Array.map(issue => {
-                let description = switch issue.description {
-                | Some(value) => value
-                | None => ""
-                }
-                {
-                  Dashboard.identifier: issue.issue_identifier,
-                  title: issue.title,
-                  state: issue.state,
-                  description: description->shortDescription,
-                }
-              }),
-            }),
-            ~error=None,
-          )
+          let snapshot = snapshotFromState(state)
+          isLoading := false
+          latestSnapshot := Some(snapshot)
+          renderDashboard(root, ~snapshot=Some(snapshot), ~error=None)
           ()
         },
       )
@@ -133,22 +164,27 @@ let loadState = root => {
       catchValue(
         promise,
         _error => {
+          isLoading := false
           let message = switch _error->message->Nullable.toOption {
           | Some(message) => message
           | None => "Unable to load state"
           }
-          renderDashboard(root, ~snapshot=None, ~error=Some(message))
+          renderDashboard(root, ~snapshot=latestSnapshot.contents, ~error=Some(message))
           ()
         },
       )
   )
   ->ignore
+  }
 }
 
 switch getElementById("root")->Nullable.toOption {
 | Some(element) =>
   let root = createRoot(element)
-  loadState(root)
-  setInterval(() => loadState(root), 5000)->ignore
+  let latestSnapshot = ref(None)
+  let isLoading = ref(false)
+  renderDashboard(root, ~snapshot=None, ~error=None)
+  loadState(root, latestSnapshot, isLoading)
+  setInterval(() => loadState(root, latestSnapshot, isLoading), 5000)->ignore
 | None => ()
 }

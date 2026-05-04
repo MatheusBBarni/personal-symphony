@@ -86,7 +86,7 @@ let settings_json =
     "maxRetryBackoffMs": 300000
   },
   "codex": {
-    "command": "codex app-server",
+    "command": "codex exec",
     "model": "gpt-5.5",
     "reasoningEffort": "medium",
     "turnTimeoutMs": 3600000,

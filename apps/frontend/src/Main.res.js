@@ -17,8 +17,21 @@ function shortDescription(value) {
 function readinessText(state) {
   if (state.readiness_gaps.length !== 0) {
     return "Readiness Gaps: " + state.readiness_gaps.map(gap => gap.requirement + ": " + gap.remediation).join("; ");
+  } else {
+    return "";
   }
-  let message = state.last_error;
+}
+
+function taskErrorForIssue(state, issueId) {
+  let error = state.issue_errors.find(error => error.issue_id === issueId);
+  if (error !== undefined) {
+    return error.error;
+  }
+  let error$1 = state.retrying.find(error => error.issue_id === issueId);
+  if (error$1 === undefined) {
+    return "";
+  }
+  let message = error$1.error;
   if (message !== undefined) {
     return message;
   } else {
@@ -33,8 +46,32 @@ function renderDashboard(root, snapshot, error) {
   }));
 }
 
-function loadState(root) {
-  renderDashboard(root, undefined, undefined);
+function snapshotFromState(state) {
+  return {
+    running: state.counts.running.toString(),
+    retrying: state.counts.retrying.toString(),
+    tokens: state.codex_totals.total_tokens.toString(),
+    generatedAt: state.generated_at,
+    lastError: readinessText(state),
+    issues: state.issues.map(issue => {
+      let value = issue.description;
+      let description = value !== undefined ? value : "";
+      return {
+        identifier: issue.issue_identifier,
+        title: issue.title,
+        state: issue.state,
+        description: shortDescription(description),
+        error: taskErrorForIssue(state, issue.issue_id)
+      };
+    })
+  };
+}
+
+function loadState(root, latestSnapshot, isLoading) {
+  if (isLoading.contents) {
+    return;
+  }
+  isLoading.contents = true;
   let promise = fetch("/api/v1/state", {
     headers: {
       Accept: "application/json"
@@ -48,28 +85,16 @@ function loadState(root) {
     }
   });
   let promise$2 = promise$1.then(state => {
-    renderDashboard(root, {
-      running: state.counts.running.toString(),
-      retrying: state.counts.retrying.toString(),
-      tokens: state.codex_totals.total_tokens.toString(),
-      generatedAt: state.generated_at,
-      lastError: readinessText(state),
-      issues: state.issues.map(issue => {
-        let value = issue.description;
-        let description = value !== undefined ? value : "";
-        return {
-          identifier: issue.issue_identifier,
-          title: issue.title,
-          state: issue.state,
-          description: shortDescription(description)
-        };
-      })
-    }, undefined);
+    let snapshot = snapshotFromState(state);
+    isLoading.contents = false;
+    latestSnapshot.contents = snapshot;
+    renderDashboard(root, snapshot, undefined);
   });
   promise$2.catch(_error => {
+    isLoading.contents = false;
     let message = _error.message;
     let message$1 = (message == null) ? "Unable to load state" : message;
-    renderDashboard(root, undefined, message$1);
+    renderDashboard(root, latestSnapshot.contents, message$1);
   });
 }
 
@@ -77,13 +102,22 @@ let element = document.getElementById("root");
 
 if (!(element == null)) {
   let root = Client.createRoot(element);
-  loadState(root);
-  setInterval(() => loadState(root), 5000);
+  let latestSnapshot = {
+    contents: undefined
+  };
+  let isLoading = {
+    contents: false
+  };
+  renderDashboard(root, undefined, undefined);
+  loadState(root, latestSnapshot, isLoading);
+  setInterval(() => loadState(root, latestSnapshot, isLoading), 5000);
 }
 
 export {
   readinessText,
+  taskErrorForIssue,
   renderDashboard,
+  snapshotFromState,
   loadState,
 }
 /*  Not a pure module */

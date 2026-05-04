@@ -12,12 +12,14 @@ type running = {
 }
 
 type retrying = { issue_id : string; issue_identifier : string; attempt : int; due_at : string; error : string option }
+type issue_error = { issue_id : string; issue_identifier : string; error : string }
 type readiness_gap = { requirement : string; remediation : string }
 
 type t = {
   issues : Issue.t list;
   running : running list;
   retrying : retrying list;
+  issue_errors : issue_error list;
   readiness_gaps : readiness_gap list;
   codex_totals : tokens;
   seconds_running : float;
@@ -30,6 +32,7 @@ let empty ?(readiness_gaps = []) ?last_error () =
     running = [];
     issues = [];
     retrying = [];
+    issue_errors = [];
     readiness_gaps;
     codex_totals = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
     seconds_running = 0.;
@@ -76,7 +79,7 @@ let running_to_yojson row =
       ("tokens", tokens_to_yojson row.tokens);
     ]
 
-let retrying_to_yojson row =
+let retrying_to_yojson (row : retrying) =
   `Assoc
     [
       ("issue_id", `String row.issue_id);
@@ -84,6 +87,14 @@ let retrying_to_yojson row =
       ("attempt", `Int row.attempt);
       ("due_at", `String row.due_at);
       ("error", (match row.error with Some s -> `String s | None -> `Null));
+    ]
+
+let issue_error_to_yojson (row : issue_error) =
+  `Assoc
+    [
+      ("issue_id", `String row.issue_id);
+      ("issue_identifier", `String row.issue_identifier);
+      ("error", `String row.error);
     ]
 
 let readiness_gap_to_yojson row =
@@ -97,6 +108,7 @@ let to_yojson state =
       ("issues", `List (List.map issue_to_yojson state.issues));
       ("running", `List (List.map running_to_yojson state.running));
       ("retrying", `List (List.map retrying_to_yojson state.retrying));
+      ("issue_errors", `List (List.map issue_error_to_yojson state.issue_errors));
       ("readiness_gaps", `List (List.map readiness_gap_to_yojson state.readiness_gaps));
       ( "codex_totals",
         `Assoc

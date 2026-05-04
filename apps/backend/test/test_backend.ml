@@ -30,7 +30,7 @@ tracker:
 workspace:
   root: ./workspaces
 codex:
-  command: codex app-server
+  command: codex exec
 ---
 Issue {{ issue.identifier }}: {{ issue.title }}
 |}
@@ -65,6 +65,55 @@ let test_workspace_safety () =
       let reused = Workspace.create_for_issue ~root "ABC/42 needs work" in
       Alcotest.(check bool) "reused" false reused.created_now)
 
+let test_shell_launch_runs_agent_in_repository_root () =
+  with_temp_dir "symphony-launch-root-" (fun root ->
+      let workspace_root = Filename.concat root "workspaces" in
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = workspace_root };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "sh -c 'pwd > launched.cwd; cat > launched.prompt'";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 1000;
+              read_timeout_ms = 100;
+              stall_timeout_ms = 1000;
+            };
+          server = { port = None };
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+      let launched = Orchestrator.shell_launch ~config ~workspace ~prompt:"Issue #1" ~issue in
+      (match launched.pid with
+      | Some pid -> ignore (Unix.waitpid [] pid)
+      | None -> Alcotest.fail "expected shell launch pid");
+      Alcotest.(check string) "agent cwd" (Unix.realpath root) (Util.read_file (Filename.concat root "launched.cwd") |> Util.trim);
+      Alcotest.(check string) "prompt piped" "Issue #1" (Util.read_file (Filename.concat root "launched.prompt") |> Util.trim);
+      Alcotest.(check bool) "workspace is only logs" false (Sys.file_exists (Filename.concat workspace.path "launched.cwd")))
+
 let test_invalid_tracker_kind () =
   let content =
     {|
@@ -80,6 +129,26 @@ body
       Alcotest.check_raises "linear rejected"
         (Config.Invalid_config "tracker.kind must be github for this implementation")
         (fun () -> ignore (Config.from_workflow workflow)))
+
+let test_legacy_codex_app_server_command_normalizes_to_exec () =
+  let content =
+    {|
+---
+tracker:
+  kind: github
+  owner: acme
+  repo: widgets
+  project_number: 7
+codex:
+  command: codex app-server
+---
+body
+|}
+  in
+  with_temp_file content (fun path ->
+      let workflow = Workflow.load path in
+      let config = Config.from_workflow workflow in
+      Alcotest.(check string) "legacy command" Config.default_codex_command config.codex.command)
 
 let test_bootstrap_idempotency_preserves_user_files () =
   with_temp_dir "symphony-bootstrap-" (fun root ->
@@ -141,7 +210,7 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check int) "server port" 8080 (Option.get config.server.port);
       Alcotest.(check string) "codex model" "gpt-5.5" config.codex.model;
       Alcotest.(check string) "codex reasoning" "medium" config.codex.reasoning_effort;
-      Alcotest.(check string) "codex launch command" "codex -m 'gpt-5.5' -c 'model_reasoning_effort=\"medium\"' app-server"
+      Alcotest.(check string) "codex launch command" "codex -m 'gpt-5.5' -c 'model_reasoning_effort=\"medium\"' exec"
         (Orchestrator.codex_command config);
       Alcotest.(check (option string)) "dispatch status" (Some "In progress") config.tracker.project_status_on_dispatch;
       Alcotest.(check (option string)) "review status" (Some "In review") config.tracker.project_status_on_success;
@@ -964,9 +1033,10 @@ let test_orchestrator_does_not_retry_empty_commit () =
         };
       Orchestrator.poll_once orchestrator;
       Alcotest.(check int) "no immediate relaunch" 1 !launches;
-      Alcotest.(check (list string)) "no status move after empty commit" [] (List.rev !statuses);
+      Alcotest.(check (list string)) "moves no-change issue out of in-progress" [ "Todo" ] (List.rev !statuses);
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "not retrying" 0 (List.length state.retrying);
+      Alcotest.(check int) "issue error recorded" 1 (List.length state.issue_errors);
       Alcotest.(check (option string)) "last error" (Some "commit required but agent produced no code changes") state.last_error)
 
 let () =
@@ -975,6 +1045,7 @@ let () =
       ("workflow", [ Alcotest.test_case "parse config" `Quick test_workflow_and_config ]);
       ("prompt", [ Alcotest.test_case "strict render" `Quick test_prompt_strict_rendering ]);
       ("workspace", [ Alcotest.test_case "sanitize and reuse" `Quick test_workspace_safety ]);
+      ("launch", [ Alcotest.test_case "runs agent in repository root" `Quick test_shell_launch_runs_agent_in_repository_root ]);
       ( "runtime-home",
         [
           Alcotest.test_case "bootstrap is idempotent" `Quick test_bootstrap_idempotency_preserves_user_files;
@@ -984,7 +1055,11 @@ let () =
           Alcotest.test_case "rejects repo URL in settings" `Quick test_repo_url_readiness_gap;
           Alcotest.test_case "writes ignore rules" `Quick test_runtime_gitignore_contents;
         ] );
-      ("config", [ Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind ]);
+      ( "config",
+        [
+          Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind;
+          Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
+        ] );
       ("runtime-state", [ Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details ]);
       ( "cli",
         [

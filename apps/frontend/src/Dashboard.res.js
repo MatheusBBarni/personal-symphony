@@ -29,21 +29,7 @@ function Dashboard(props) {
     return states;
   };
   let content;
-  if (error !== undefined) {
-    content = JsxRuntime.jsxs("div", {
-      children: [
-        JsxRuntime.jsx("div", {
-          children: "Backend unavailable",
-          className: "text-sm font-semibold uppercase tracking-wide text-red-300"
-        }),
-        JsxRuntime.jsx("p", {
-          children: error,
-          className: "mt-2 text-sm"
-        })
-      ],
-      className: "rounded-lg border border-red-900 bg-red-950 p-5 text-red-100"
-    });
-  } else if (snapshot !== undefined) {
+  if (snapshot !== undefined) {
     let value = snapshot.lastError;
     let tmp = value === "" ? null : JsxRuntime.jsx("div", {
         children: value,
@@ -60,37 +46,11 @@ function Dashboard(props) {
           ],
           className: "grid gap-4 sm:grid-cols-3"
         }),
+        error !== undefined ? JsxRuntime.jsx("div", {
+            children: error,
+            className: "mt-5 rounded-lg border border-red-900 bg-red-950 p-4 text-sm text-red-100"
+          }) : null,
         tmp,
-        JsxRuntime.jsx("section", {
-          children: JsxRuntime.jsxs("div", {
-            children: [
-              JsxRuntime.jsxs("div", {
-                children: [
-                  JsxRuntime.jsx("div", {
-                    children: "Generated",
-                    className: "text-xs uppercase text-zinc-500"
-                  }),
-                  JsxRuntime.jsx("div", {
-                    children: snapshot.generatedAt,
-                    className: "mt-1 text-sm text-zinc-200"
-                  })
-                ]
-              }),
-              JsxRuntime.jsxs("div", {
-                children: [
-                  "State API: ",
-                  JsxRuntime.jsx("code", {
-                    children: "/api/v1/state",
-                    className: "text-sky-200"
-                  })
-                ],
-                className: "text-sm text-zinc-400"
-              })
-            ],
-            className: "grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
-          }),
-          className: "mb-6 mt-5 max-w-xl rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3"
-        }),
         JsxRuntime.jsxs("section", {
           children: [
             JsxRuntime.jsxs("div", {
@@ -126,37 +86,45 @@ function Dashboard(props) {
                           className: "flex items-center justify-between border-b border-zinc-800 px-3 py-2.5"
                         }),
                         JsxRuntime.jsx("div", {
-                          children: stateIssues.map(issue => JsxRuntime.jsxs("article", {
-                            children: [
-                              JsxRuntime.jsxs("div", {
-                                children: [
-                                  JsxRuntime.jsx("span", {
-                                    children: issue.identifier,
-                                    className: "rounded-md border border-sky-800 bg-sky-950 px-2 py-0.5 text-xs font-medium text-sky-200"
-                                  }),
-                                  JsxRuntime.jsx("span", {
-                                    children: "read-only",
-                                    className: "text-xs text-zinc-500"
-                                  })
-                                ],
-                                className: "flex flex-wrap items-center gap-2"
-                              }),
-                              JsxRuntime.jsx("h3", {
-                                children: issue.title,
-                                className: "mt-2 text-sm font-semibold leading-5 text-zinc-100"
-                              }),
-                              JsxRuntime.jsx("p", {
-                                children: issue.description,
-                                className: "mt-2 line-clamp-4 text-sm leading-6 text-zinc-400"
-                              })
-                            ],
-                            className: "rounded-md border border-zinc-800 bg-zinc-900 p-3"
-                          })),
+                          children: stateIssues.map(issue => {
+                            let message = issue.error;
+                            let tmp = message === "" ? null : JsxRuntime.jsx("div", {
+                                children: message,
+                                className: "mt-3 rounded-md border border-red-900 bg-red-950 px-3 py-2 text-xs leading-5 text-red-100"
+                              });
+                            return JsxRuntime.jsxs("article", {
+                              children: [
+                                JsxRuntime.jsxs("div", {
+                                  children: [
+                                    JsxRuntime.jsx("span", {
+                                      children: issue.identifier,
+                                      className: "rounded-md border border-sky-800 bg-sky-950 px-2 py-0.5 text-xs font-medium text-sky-200"
+                                    }),
+                                    JsxRuntime.jsx("span", {
+                                      children: "read-only",
+                                      className: "text-xs text-zinc-500"
+                                    })
+                                  ],
+                                  className: "flex flex-wrap items-center gap-2"
+                                }),
+                                JsxRuntime.jsx("h3", {
+                                  children: issue.title,
+                                  className: "mt-2 text-sm font-semibold leading-5 text-zinc-100"
+                                }),
+                                JsxRuntime.jsx("p", {
+                                  children: issue.description,
+                                  className: "mt-2 line-clamp-4 text-sm leading-6 text-zinc-400"
+                                }),
+                                tmp
+                              ],
+                              className: "rounded-md border border-zinc-800 bg-zinc-900 p-3"
+                            }, issue.identifier);
+                          }),
                           className: "space-y-3 p-3"
                         })
                       ],
                       className: "min-h-48 rounded-lg border border-zinc-800 bg-zinc-950"
-                    });
+                    }, state);
                   }),
                   className: "grid min-w-[760px] auto-cols-[minmax(240px,1fr)] grid-flow-col gap-4"
                 }),
@@ -171,22 +139,34 @@ function Dashboard(props) {
       ]
     });
   } else {
-    content = JsxRuntime.jsxs(JsxRuntime.Fragment, {
-      children: [
-        JsxRuntime.jsxs("div", {
-          children: [
-            metric("Running", "-", "text-zinc-100"),
-            metric("Retrying", "-", "text-zinc-100"),
-            metric("Tokens", "-", "text-zinc-100")
-          ],
-          className: "grid gap-4 sm:grid-cols-3"
-        }),
-        JsxRuntime.jsx("div", {
-          children: "Loading runtime state...",
-          className: "mt-6 rounded-lg border border-zinc-800 bg-zinc-900 p-6 text-zinc-300"
-        })
-      ]
-    });
+    content = error !== undefined ? JsxRuntime.jsxs("div", {
+        children: [
+          JsxRuntime.jsx("div", {
+            children: "Backend unavailable",
+            className: "text-sm font-semibold uppercase tracking-wide text-red-300"
+          }),
+          JsxRuntime.jsx("p", {
+            children: error,
+            className: "mt-2 text-sm"
+          })
+        ],
+        className: "rounded-lg border border-red-900 bg-red-950 p-5 text-red-100"
+      }) : JsxRuntime.jsxs(JsxRuntime.Fragment, {
+        children: [
+          JsxRuntime.jsxs("div", {
+            children: [
+              metric("Running", "-", "text-zinc-100"),
+              metric("Retrying", "-", "text-zinc-100"),
+              metric("Tokens", "-", "text-zinc-100")
+            ],
+            className: "grid gap-4 sm:grid-cols-3"
+          }),
+          JsxRuntime.jsx("div", {
+            children: "Loading runtime state...",
+            className: "mt-6 rounded-lg border border-zinc-800 bg-zinc-900 p-6 text-zinc-300"
+          })
+        ]
+      });
   }
   return JsxRuntime.jsxs("section", {
     children: [
@@ -205,12 +185,42 @@ function Dashboard(props) {
                 })
               ]
             }),
-            JsxRuntime.jsx("span", {
-              children: "OCaml API",
-              className: "rounded-md border border-emerald-700/60 bg-emerald-950 px-3 py-1 text-xs font-medium text-emerald-200"
+            JsxRuntime.jsxs("div", {
+              children: [
+                snapshot !== undefined ? JsxRuntime.jsxs(JsxRuntime.Fragment, {
+                    children: [
+                      JsxRuntime.jsxs("div", {
+                        children: [
+                          JsxRuntime.jsx("span", {
+                            children: "Generated",
+                            className: "uppercase text-zinc-500"
+                          }),
+                          JsxRuntime.jsx("span", {
+                            children: snapshot.generatedAt,
+                            className: "ml-2 text-zinc-200"
+                          })
+                        ]
+                      }),
+                      JsxRuntime.jsxs("div", {
+                        children: [
+                          "State API: ",
+                          JsxRuntime.jsx("code", {
+                            children: "/api/v1/state",
+                            className: "text-sky-200"
+                          })
+                        ]
+                      })
+                    ]
+                  }) : null,
+                JsxRuntime.jsx("span", {
+                  children: "OCaml API",
+                  className: "rounded-md border border-emerald-700/60 bg-emerald-950 px-3 py-1 font-medium text-emerald-200"
+                })
+              ],
+              className: "flex flex-wrap items-center gap-3 text-xs text-zinc-400 sm:justify-end"
             })
           ],
-          className: "mx-auto flex max-w-6xl items-center justify-between px-5 py-4"
+          className: "mx-auto grid max-w-6xl gap-4 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
         }),
         className: "border-b border-zinc-800 bg-zinc-950/95"
       }),

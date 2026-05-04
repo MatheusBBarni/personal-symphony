@@ -17,7 +17,7 @@ agent:
   max_turns: 10
   max_retry_backoff_ms: 300000
 codex:
-  command: codex app-server
+  command: codex exec
   model: gpt-5.5
   reasoning_effort: medium
 server:
