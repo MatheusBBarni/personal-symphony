@@ -60,6 +60,11 @@ let test_config_parses_git_policy_and_stage_push () =
         "states": ["In progress"],
         "agent": "engineer",
         "commit": {"enabled": true, "type": "feat", "message": "<type>: work", "push": true}
+      },
+      {
+        "states": ["In review"],
+        "agent": "reviewer",
+        "commit": {"enabled": false, "type": "refactor", "message": "<type>: review"}
       }
     ]
   }
@@ -73,7 +78,9 @@ let test_config_parses_git_policy_and_stage_push () =
       Alcotest.(check string) "attention status" "Needs merge" config.git.merge_attention_status;
       Alcotest.(check bool) "cleanup worktree" false config.git.cleanup.remove_worktree_after_merge;
       match config.stage_agents.stages with
-      | [ { Config.commit = Some commit; _ } ] -> Alcotest.(check bool) "stage push" true commit.push
+      | [ { Config.commit = Some engineer_commit; _ }; { Config.commit = Some reviewer_commit; _ } ] ->
+          Alcotest.(check bool) "stage push" true engineer_commit.push;
+          Alcotest.(check bool) "stage push default" false reviewer_commit.push
       | _ -> Alcotest.fail "expected stage commit policy")
 
 let test_workflow_and_config () =
@@ -1256,6 +1263,89 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           Alcotest.(check int) "retry attempt" 1 retry.attempt
       | [] -> Alcotest.fail "expected retry row")
 
+let test_orchestrator_retries_push_failure_before_success_status () =
+  with_temp_dir "symphony-push-failure-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "In progress" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "In progress" ];
+                    agent = "engineer";
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = true };
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let commit_stage _ _ _ _ _ = Error "stage push failed: exit 1: remote rejected" in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~commit_stage ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      statuses := [];
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check (list string)) "retry status only" [ "Todo" ] (List.rev !statuses);
+      Alcotest.(check int) "retry queued" 1 (List.length state.retrying);
+      Alcotest.(check (option string)) "last error" (Some "stage push failed: exit 1: remote rejected") state.last_error)
+
 let test_stage_commit_requires_code_changes () =
   with_temp_dir "symphony-empty-commit-" (fun root ->
       Alcotest.(check int) "git init" 0 (Sys.command ("git init -q " ^ Util.shell_quote root));
@@ -1781,6 +1871,8 @@ let () =
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "retries when success status move fails" `Quick test_orchestrator_retries_when_success_status_move_fails;
+          Alcotest.test_case "retries push failure before success status"
+            `Quick test_orchestrator_retries_push_failure_before_success_status;
           Alcotest.test_case "stage commit requires code changes" `Quick test_stage_commit_requires_code_changes;
           Alcotest.test_case "does not retry empty required commits" `Quick test_orchestrator_does_not_retry_empty_commit;
           Alcotest.test_case "notifies repeated state mutations" `Quick test_orchestrator_notifies_each_state_mutation;
