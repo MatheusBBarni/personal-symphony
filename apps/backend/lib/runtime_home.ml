@@ -87,6 +87,8 @@ let settings_json =
   },
   "codex": {
     "command": "codex app-server",
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium",
     "turnTimeoutMs": 3600000,
     "readTimeoutMs": 5000,
     "stallTimeoutMs": 300000

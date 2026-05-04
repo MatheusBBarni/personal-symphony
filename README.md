@@ -88,6 +88,19 @@ and runtime commands. Secrets are referenced by environment variable name, not s
 }
 ```
 
+Choose the Codex model and reasoning effort in the same file. If omitted, Symphony uses `gpt-5.5`
+with `medium` reasoning:
+
+```json
+{
+  "codex": {
+    "command": "codex app-server",
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium"
+  }
+}
+```
+
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.
 
@@ -251,6 +264,10 @@ Symphony still reports repository or project access gaps, remove the stale `GITH
      project_status_on_dispatch: In progress
      project_status_on_success: In review
      project_status_on_retry: Todo
+   codex:
+     command: codex app-server
+     model: gpt-5.5
+     reasoning_effort: medium
    ```
 
 4. Configure the GitHub Project:

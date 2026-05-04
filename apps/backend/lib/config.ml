@@ -17,7 +17,14 @@ type tracker = {
 type polling = { interval_ms : int }
 type workspace = { root : string }
 type agent = { max_concurrent_agents : int; max_turns : int; max_retry_backoff_ms : int }
-type codex = { command : string; turn_timeout_ms : int; read_timeout_ms : int; stall_timeout_ms : int }
+type codex = {
+  command : string;
+  model : string;
+  reasoning_effort : string;
+  turn_timeout_ms : int;
+  read_timeout_ms : int;
+  stall_timeout_ms : int;
+}
 type server = { port : int option }
 type stage_commit = { enabled : bool; commit_type : string; message : string }
 type stage_agent = {
@@ -53,6 +60,8 @@ let default_dispatch_status = "In progress"
 let default_review_status = "In review"
 let default_retry_status = "To-Do"
 let default_commit_message = "<type>: <generated_message_max_90char>"
+let default_model = "gpt-5.5"
+let default_reasoning_effort = "medium"
 
 let default_stage_agents =
   [
@@ -186,6 +195,9 @@ let from_workflow workflow =
     codex =
       {
         command = Option.value (Simple_yaml.get_string "command" codex_raw) ~default:"codex app-server";
+        model = Option.value (Simple_yaml.get_string "model" codex_raw) ~default:default_model;
+        reasoning_effort =
+          Option.value (Simple_yaml.get_string "reasoning_effort" codex_raw) ~default:default_reasoning_effort;
         turn_timeout_ms = Option.value (Simple_yaml.get_int "turn_timeout_ms" codex_raw) ~default:3600000;
         read_timeout_ms = Option.value (Simple_yaml.get_int "read_timeout_ms" codex_raw) ~default:5000;
         stall_timeout_ms = Option.value (Simple_yaml.get_int "stall_timeout_ms" codex_raw) ~default:300000;
@@ -296,6 +308,8 @@ let from_settings_file ~workspace_root path =
     codex =
       {
         command = json_string "command" codex_raw ~default:"codex app-server";
+        model = json_string "model" codex_raw ~default:default_model;
+        reasoning_effort = json_string "reasoningEffort" codex_raw ~default:default_reasoning_effort;
         turn_timeout_ms = json_int "turnTimeoutMs" codex_raw ~default:3600000;
         read_timeout_ms = json_int "readTimeoutMs" codex_raw ~default:5000;
         stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
@@ -332,6 +346,9 @@ let readiness_gaps config =
       (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env);
   if Util.trim config.codex.command = "" then
     add "codex.command" "Set codex.command in .symphony/settings.json to the command that starts the Codex app server.";
+  if Util.trim config.codex.model = "" then add "codex.model" "Set codex.model to a Codex model, such as gpt-5.5.";
+  if Util.trim config.codex.reasoning_effort = "" then
+    add "codex.reasoningEffort" "Set codex.reasoningEffort to low, medium, high, or xhigh.";
   if config.tracker.active_states = [] then
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then

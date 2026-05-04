@@ -139,6 +139,10 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check int) "project number" 1 config.tracker.project_number;
       Alcotest.(check string) "workspace root" (Filename.concat (Unix.realpath root) ".symphony/workspaces") config.workspace.root;
       Alcotest.(check int) "server port" 8080 (Option.get config.server.port);
+      Alcotest.(check string) "codex model" "gpt-5.5" config.codex.model;
+      Alcotest.(check string) "codex reasoning" "medium" config.codex.reasoning_effort;
+      Alcotest.(check string) "codex launch command" "codex -m 'gpt-5.5' -c 'model_reasoning_effort=\"medium\"' app-server"
+        (Orchestrator.codex_command config);
       Alcotest.(check (option string)) "dispatch status" (Some "In progress") config.tracker.project_status_on_dispatch;
       Alcotest.(check (option string)) "review status" (Some "In review") config.tracker.project_status_on_success;
       Alcotest.(check (option string)) "retry status" (Some "To-Do") config.tracker.project_status_on_retry;
@@ -483,7 +487,7 @@ let test_orchestrator_dispatch_limits () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "cat"; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
@@ -536,7 +540,7 @@ let test_orchestrator_retries_failed_agent () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "false"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          codex = { command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
@@ -582,7 +586,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
@@ -638,7 +642,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           stage_agents =
             {
@@ -721,7 +725,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           stage_agents =
             {
@@ -799,7 +803,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
@@ -861,7 +865,7 @@ let test_stage_commit_requires_code_changes () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }

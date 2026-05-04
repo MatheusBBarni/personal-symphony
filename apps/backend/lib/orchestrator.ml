@@ -244,12 +244,38 @@ let git_commit_stage_changes config issue stage next_status =
                           Ok ()
                       | Error error -> Error error))
 
+let replace_first_word command replacement =
+  let command = Util.trim command in
+  match String.split_on_char ' ' command with
+  | [] -> replacement
+  | _ :: rest -> String.concat " " (replacement :: rest)
+
+let codex_command config =
+  let command = Util.trim config.Config.codex.command in
+  let model = Util.trim config.codex.model in
+  let reasoning = Util.trim config.codex.reasoning_effort in
+  let with_tokens =
+    command
+    |> replace_token ~token:"model" ~value:(Util.shell_quote model)
+    |> replace_token ~token:"reasoning" ~value:(Util.shell_quote reasoning)
+  in
+  if with_tokens <> command then with_tokens
+  else
+    match String.split_on_char ' ' command with
+    | "codex" :: _ ->
+        let overrides =
+          Printf.sprintf "codex -m %s -c %s" (Util.shell_quote model)
+            (Util.shell_quote (Printf.sprintf "model_reasoning_effort=%s" (Yojson.Safe.to_string (`String reasoning))))
+        in
+        replace_first_word command overrides
+    | _ -> command
+
 let shell_launch ~config ~workspace ~prompt ~issue =
   let prompt_path = write_prompt workspace prompt in
   let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
   let stderr_path = Filename.concat workspace.Workspace.path "stderr.log" in
   let command =
-    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.path) config.Config.codex.command
+    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.path) (codex_command config)
       (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path)
   in
   let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; command |] Unix.stdin Unix.stdout Unix.stderr in

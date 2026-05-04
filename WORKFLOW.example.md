@@ -18,6 +18,8 @@ agent:
   max_retry_backoff_ms: 300000
 codex:
   command: codex app-server
+  model: gpt-5.5
+  reasoning_effort: medium
 server:
   port: 8080
 ---
