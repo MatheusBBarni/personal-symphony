@@ -71,7 +71,9 @@ let symphoony_banner =
 
 let print_section title = Printf.printf "\n%s\n%!" (cyan title)
 
-let render_banner () = List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphoony_banner
+let render_banner () =
+  List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphoony_banner;
+  Printf.printf "\n%!"
 
 let render_terminal_console config state =
   render_banner ();

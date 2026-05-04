@@ -39,6 +39,7 @@ function Dashboard(props) {
         children: value,
         className: "mt-5 rounded-lg border border-amber-800 bg-amber-950 p-4 text-sm text-amber-100"
       });
+    let match = snapshot.issues.length;
     content = JsxRuntime.jsxs(JsxRuntime.Fragment, {
       children: [
         JsxRuntime.jsxs("div", {
@@ -50,6 +51,64 @@ function Dashboard(props) {
           className: "grid gap-4 sm:grid-cols-3"
         }),
         tmp,
+        JsxRuntime.jsxs("section", {
+          children: [
+            JsxRuntime.jsxs("div", {
+              children: [
+                JsxRuntime.jsx("div", {
+                  children: "Issues in progress",
+                  className: "text-sm font-medium text-zinc-200"
+                }),
+                JsxRuntime.jsx("div", {
+                  children: snapshot.running + " active",
+                  className: "text-xs text-zinc-500"
+                })
+              ],
+              className: "flex items-center justify-between border-b border-zinc-800 px-4 py-3"
+            }),
+            match !== 0 ? JsxRuntime.jsx("div", {
+                children: snapshot.issues.map(issue => JsxRuntime.jsxs("article", {
+                  children: [
+                    JsxRuntime.jsxs("div", {
+                      children: [
+                        JsxRuntime.jsxs("div", {
+                          children: [
+                            JsxRuntime.jsx("span", {
+                              children: issue.identifier,
+                              className: "rounded-md border border-sky-800 bg-sky-950 px-2 py-0.5 text-xs font-medium text-sky-200"
+                            }),
+                            JsxRuntime.jsx("h2", {
+                              children: issue.title,
+                              className: "text-sm font-semibold text-zinc-100"
+                            })
+                          ],
+                          className: "flex flex-wrap items-center gap-2"
+                        }),
+                        JsxRuntime.jsx("p", {
+                          children: issue.description,
+                          className: "mt-2 max-w-3xl text-sm leading-6 text-zinc-400"
+                        })
+                      ],
+                      className: "min-w-0"
+                    }),
+                    JsxRuntime.jsx("div", {
+                      children: JsxRuntime.jsx("span", {
+                        children: issue.state,
+                        className: "rounded-md border border-emerald-800 bg-emerald-950 px-2.5 py-1 text-xs font-medium text-emerald-200"
+                      }),
+                      className: "flex items-start md:justify-end"
+                    })
+                  ],
+                  className: "grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto]"
+                })),
+                className: "divide-y divide-zinc-800"
+              }) : JsxRuntime.jsx("div", {
+                children: "No issues are currently being worked.",
+                className: "p-4 text-sm text-zinc-400"
+              })
+          ],
+          className: "mt-6 rounded-lg border border-zinc-800 bg-zinc-900"
+        }),
         JsxRuntime.jsxs("section", {
           children: [
             JsxRuntime.jsx("div", {

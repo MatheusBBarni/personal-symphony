@@ -220,6 +220,40 @@ let test_cli_mode_selection () =
   Alcotest.(check string) "terminal default" "terminal_console" (Cli_mode.(select ~web:false |> to_string));
   Alcotest.(check string) "web flag" "web_dashboard" (Cli_mode.(select ~web:true |> to_string))
 
+let test_runtime_state_exposes_running_issue_details () =
+  let issue =
+    {
+      (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add dashboard issue list" ~state:"In progress") with
+      description = Some "Show the status, title, and a concise description for each running issue.";
+      url = Some "https://example.test/issues/1";
+    }
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      running =
+        [
+          {
+            Runtime_state.issue;
+            session_id = Some "pid:123";
+            turn_count = 0;
+            last_event = Some "launched";
+            last_message = None;
+            started_at = "2026-05-04T00:00:00Z";
+            last_event_at = None;
+            tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+          };
+        ];
+    }
+  in
+  let open Yojson.Safe.Util in
+  let row = Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd in
+  Alcotest.(check string) "identifier" "#1" (row |> member "issue_identifier" |> to_string);
+  Alcotest.(check string) "state" "In progress" (row |> member "state" |> to_string);
+  Alcotest.(check string) "title" "Add dashboard issue list" (row |> member "title" |> to_string);
+  Alcotest.(check string) "description" "Show the status, title, and a concise description for each running issue."
+    (row |> member "description" |> to_string)
+
 let test_ready_terminal_mode_runs_orchestrator () =
   Alcotest.(check bool) "ready terminal loops" true
     (Runtime_policy.action ~mode:Cli_mode.Terminal_console ~readiness_gaps:[] = Runtime_policy.Run_orchestrator);
@@ -660,6 +694,7 @@ let () =
           Alcotest.test_case "writes ignore rules" `Quick test_runtime_gitignore_contents;
         ] );
       ("config", [ Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind ]);
+      ("runtime-state", [ Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details ]);
       ( "cli",
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;

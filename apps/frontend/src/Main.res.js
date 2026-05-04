@@ -7,6 +7,13 @@ import * as JsxRuntime from "react/jsx-runtime";
 import "./styles.css";
 ;
 
+function shortDescription(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "No description provided.";
+  return text.length > 180 ? text.slice(0, 177) + "..." : text;
+}
+;
+
 function readinessText(state) {
   if (state.readiness_gaps.length !== 0) {
     return "Readiness Gaps: " + state.readiness_gaps.map(gap => gap.requirement + ": " + gap.remediation).join("; ");
@@ -46,7 +53,17 @@ function loadState(root) {
       retrying: state.counts.retrying.toString(),
       tokens: state.codex_totals.total_tokens.toString(),
       generatedAt: state.generated_at,
-      lastError: readinessText(state)
+      lastError: readinessText(state),
+      issues: state.running.map(issue => {
+        let value = issue.description;
+        let description = value !== undefined ? value : "";
+        return {
+          identifier: issue.issue_identifier,
+          title: issue.title,
+          state: issue.state,
+          description: shortDescription(description)
+        };
+      })
     }, undefined);
   });
   promise$2.catch(_error => {

@@ -1,9 +1,17 @@
+type issueItem = {
+  identifier: string,
+  title: string,
+  state: string,
+  description: string,
+}
+
 type snapshot = {
   running: string,
   retrying: string,
   tokens: string,
   generatedAt: string,
   lastError: string,
+  issues: array<issueItem>,
 }
 
 @react.component
@@ -36,6 +44,45 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
           {React.string(value)}
         </div>
       }}
+      <section className="mt-6 rounded-lg border border-zinc-800 bg-zinc-900">
+        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+          <div className="text-sm font-medium text-zinc-200"> {React.string("Issues in progress")} </div>
+          <div className="text-xs text-zinc-500"> {React.string(data.running ++ " active")} </div>
+        </div>
+        {switch Array.length(data.issues) {
+        | 0 =>
+          <div className="p-4 text-sm text-zinc-400">
+            {React.string("No issues are currently being worked.")}
+          </div>
+        | _ =>
+          <div className="divide-y divide-zinc-800">
+            {data.issues
+            ->Array.map(issue =>
+              <article className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto]">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-md border border-sky-800 bg-sky-950 px-2 py-0.5 text-xs font-medium text-sky-200">
+                      {React.string(issue.identifier)}
+                    </span>
+                    <h2 className="text-sm font-semibold text-zinc-100">
+                      {React.string(issue.title)}
+                    </h2>
+                  </div>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">
+                    {React.string(issue.description)}
+                  </p>
+                </div>
+                <div className="flex items-start md:justify-end">
+                  <span className="rounded-md border border-emerald-800 bg-emerald-950 px-2.5 py-1 text-xs font-medium text-emerald-200">
+                    {React.string(issue.state)}
+                  </span>
+                </div>
+              </article>
+            )
+            ->React.array}
+          </div>
+        }}
+      </section>
       <section className="mt-6 rounded-lg border border-zinc-800 bg-zinc-900">
         <div className="border-b border-zinc-800 px-4 py-3 text-sm font-medium text-zinc-200">
           {React.string("Runtime Snapshot")}

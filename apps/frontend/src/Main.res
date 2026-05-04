@@ -1,4 +1,11 @@
 %%raw(`import "./styles.css";`)
+%%raw(`
+function shortDescription(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "No description provided.";
+  return text.length > 180 ? text.slice(0, 177) + "..." : text;
+}
+`)
 
 type domElement
 type root
@@ -17,12 +24,20 @@ type readinessGap = {
   remediation: string,
 }
 
+type runningIssue = {
+  issue_identifier: string,
+  title: string,
+  state: string,
+  description: option<string>,
+}
+
 type runtimeState = {
   counts: counts,
   codex_totals: codexTotals,
   generated_at: string,
   last_error: option<string>,
   readiness_gaps: array<readinessGap>,
+  running: array<runningIssue>,
 }
 
 @val @scope("document") external getElementById: string => Nullable.t<domElement> = "getElementById"
@@ -45,6 +60,7 @@ external fetch: (
 @get external message: 'error => Nullable.t<string> = "message"
 @val @scope("Promise") external rejectError: jsError => promise<'value> = "reject"
 @val external setInterval: (unit => unit, int) => int = "setInterval"
+@val external shortDescription: string => string = "shortDescription"
 
 let readinessText = state =>
   if Array.length(state.readiness_gaps) > 0 {
@@ -92,6 +108,18 @@ let loadState = root => {
               tokens: state.codex_totals.total_tokens->Int.toString,
               generatedAt: state.generated_at,
               lastError: readinessText(state),
+              issues: state.running->Array.map(issue => {
+                let description = switch issue.description {
+                | Some(value) => value
+                | None => ""
+                }
+                {
+                  Dashboard.identifier: issue.issue_identifier,
+                  title: issue.title,
+                  state: issue.state,
+                  description: description->shortDescription,
+                }
+              }),
             }),
             ~error=None,
           )

@@ -48,6 +48,9 @@ let running_to_yojson row =
     [
       ("issue_id", `String row.issue.id);
       ("issue_identifier", `String row.issue.identifier);
+      ("title", `String row.issue.title);
+      ("description", (match row.issue.description with Some s -> `String s | None -> `Null));
+      ("url", (match row.issue.url with Some s -> `String s | None -> `Null));
       ("state", `String row.issue.state);
       ("session_id", (match row.session_id with Some s -> `String s | None -> `Null));
       ("turn_count", `Int row.turn_count);
