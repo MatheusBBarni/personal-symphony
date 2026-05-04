@@ -118,6 +118,7 @@ let render_server_ready ~port =
 
 let serve ~port ~get_state =
   let socket = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Unix.set_close_on_exec socket;
   Unix.setsockopt socket Unix.SO_REUSEADDR true;
   Unix.bind socket (Unix.ADDR_INET (Unix.inet_addr_any, port));
   Unix.listen socket 16;
@@ -127,6 +128,7 @@ let serve ~port ~get_state =
   render_server_ready ~port:actual_port;
   while true do
     let client, _ = Unix.accept socket in
+    Unix.set_close_on_exec client;
     let ic = Unix.in_channel_of_descr client in
     let oc = Unix.out_channel_of_descr client in
     Fun.protect

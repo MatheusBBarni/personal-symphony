@@ -210,7 +210,7 @@ function Dashboard(props) {
             JsxRuntime.jsxs("div", {
               children: [
                 JsxRuntime.jsx("h1", {
-                  children: "Personal Symphony",
+                  children: "Symphony",
                   className: "text-xl font-semibold tracking-normal"
                 }),
                 JsxRuntime.jsx("p", {

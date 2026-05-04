@@ -191,7 +191,7 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
     <header className="border-b border-zinc-800 bg-zinc-950/95">
       <div className="mx-auto grid max-w-6xl gap-4 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
         <div>
-          <h1 className="text-xl font-semibold tracking-normal"> {React.string("Personal Symphony")} </h1>
+          <h1 className="text-xl font-semibold tracking-normal"> {React.string("Symphony")} </h1>
           <p className="text-sm text-zinc-400">
             {React.string("GitHub Issues + Projects orchestration")}
           </p>

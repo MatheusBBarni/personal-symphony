@@ -203,11 +203,15 @@ let issue_project_status ~project_number ~status_field node =
 let status_is_active ~active_states status =
   List.exists (string_equal_ci status) active_states
 
+let status_is_visible ~config status =
+  status_is_active ~active_states:config.Config.active_states status
+  || List.exists (string_equal_ci status) config.terminal_states
+
 let issue_from_project_node ~(config : Config.tracker) node =
   let open Yojson.Safe.Util in
   match issue_project_status ~project_number:config.project_number ~status_field:config.project_status_field node with
   | None -> None
-  | Some state when not (status_is_active ~active_states:config.active_states state) -> None
+  | Some state when not (status_is_visible ~config state) -> None
   | Some state ->
       let number = node |> member "number" |> to_int in
       Some

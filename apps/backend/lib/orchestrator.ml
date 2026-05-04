@@ -402,6 +402,9 @@ let retry_status orchestrator issue =
   | Some stage -> stage.retry_status
   | None -> orchestrator.config.tracker.project_status_on_retry
 
+let issue_is_active orchestrator issue =
+  Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state
+
 let dispatch_issue orchestrator issue =
   let target_start_status = start_status orchestrator issue in
   let can_dispatch =
@@ -631,7 +634,8 @@ let poll_once orchestrator =
     let dispatchable =
       candidates
       |> List.filter (fun issue ->
-             (not (is_running orchestrator.state issue))
+             issue_is_active orchestrator issue
+             && (not (is_running orchestrator.state issue))
              && (not (is_blocked orchestrator issue))
              && retrying_due orchestrator issue)
     in

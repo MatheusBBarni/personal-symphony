@@ -480,8 +480,10 @@ let test_github_active_state_filtering () =
   in
   Alcotest.(check bool) "todo included" true
     (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node "Todo")));
-  Alcotest.(check bool) "done excluded" true
-    (Option.is_none (Github_tracker.issue_from_project_node ~config:base_config (node "Done")));
+  Alcotest.(check bool) "done visible" true
+    (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node "Done")));
+  Alcotest.(check bool) "unconfigured status excluded" true
+    (Option.is_none (Github_tracker.issue_from_project_node ~config:base_config (node "In review")));
   Alcotest.(check bool) "missing project excluded" true
     (Option.is_none
        (Github_tracker.issue_from_project_node
@@ -629,6 +631,55 @@ let test_orchestrator_dispatch_limits () =
       Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "still capped" 2 (List.length state.Runtime_state.running))
+
+let test_orchestrator_does_not_dispatch_terminal_issues () =
+  with_temp_dir "symphony-orchestrator-terminal-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "Done";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issues =
+        [
+          Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo";
+          Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Two" ~state:"Done";
+        ]
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.id :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let fetch _ = issues in
+      let set_status _ _ _ = Ok () in
+      let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "all board issues visible" 2 (List.length state.Runtime_state.issues);
+      Alcotest.(check (list string)) "only active issue launched" [ "I1" ] (List.rev !launched))
 
 let test_orchestrator_retries_failed_agent () =
   with_temp_dir "symphony-orchestrator-retry-" (fun root ->
@@ -1123,6 +1174,7 @@ let () =
       ( "orchestrator",
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
+          Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
