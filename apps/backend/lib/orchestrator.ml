@@ -299,7 +299,7 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     config;
     prompt_template;
     tracker = Github_tracker.make config.tracker;
-    state = Runtime_state.empty ();
+    state = Runtime_state.empty ~status_order:(Config.project_status_order config) ();
     children = [];
     retry_due = Hashtbl.create 16;
     attempts = Hashtbl.create 16;

@@ -379,3 +379,19 @@ let validate_for_dispatch config =
         |> String.concat "; "
       in
       Error message
+
+let project_status_order config =
+  let add_unique acc status =
+    let normalized = String.lowercase_ascii status in
+    if List.exists (fun existing -> String.lowercase_ascii existing = normalized) acc then acc else acc @ [ status ]
+  in
+  let transition_statuses =
+    [
+      config.tracker.project_status_on_retry;
+      config.tracker.project_status_on_dispatch;
+      config.tracker.project_status_on_success;
+      List.find_opt (fun _ -> true) config.tracker.terminal_states;
+    ]
+    |> List.filter_map Fun.id
+  in
+  transition_statuses |> List.fold_left add_unique []

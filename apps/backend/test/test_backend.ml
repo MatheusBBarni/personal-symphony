@@ -150,6 +150,48 @@ body
       let config = Config.from_workflow workflow in
       Alcotest.(check string) "legacy command" Config.default_codex_command config.codex.command)
 
+let test_project_status_order_uses_transition_flow () =
+  let tracker =
+    {
+      Config.kind = "github";
+      owner = "acme";
+      repo = "widgets";
+      project_number = 7;
+      api_key_env = "GITHUB_TOKEN";
+      api_key = Some "token";
+      active_states = [ "Backlog"; "Todo"; "To-Do"; "In progress"; "In Progress"; "In review" ];
+      terminal_states = [ "Done"; "Closed"; "Cancelled" ];
+      project_status_field = "Status";
+      project_status_on_dispatch = Some "In progress";
+      project_status_on_success = Some "In review";
+      project_status_on_retry = Some "To-Do";
+      ensure_project_statuses = true;
+    }
+  in
+  let config =
+    {
+      Config.workflow_path = "settings.json";
+      repository_root = "/tmp/widgets";
+      tracker;
+      polling = { interval_ms = 1000 };
+      workspace = { root = "/tmp/widgets/.symphony/workspaces" };
+      agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+      codex =
+        {
+          command = Config.default_codex_command;
+          model = Config.default_model;
+          reasoning_effort = Config.default_reasoning_effort;
+          turn_timeout_ms = 1000;
+          read_timeout_ms = 100;
+          stall_timeout_ms = 1000;
+        };
+      server = { port = None };
+      stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
+    }
+  in
+  Alcotest.(check (list string)) "kanban status order" [ "To-Do"; "In progress"; "In review"; "Done" ]
+    (Config.project_status_order config)
+
 let test_bootstrap_idempotency_preserves_user_files () =
   with_temp_dir "symphony-bootstrap-" (fun root ->
       let home, first = Runtime_home.bootstrap root in
@@ -338,7 +380,11 @@ let test_runtime_state_exposes_running_issue_details () =
   Alcotest.(check string) "description" "Show the status, title, and a concise description for each running issue."
     (row |> member "description" |> to_string);
   let issue_row = Runtime_state.to_yojson state |> member "issues" |> to_list |> List.hd in
-  Alcotest.(check string) "issue snapshot status" "In progress" (issue_row |> member "state" |> to_string)
+  Alcotest.(check string) "issue snapshot status" "In progress" (issue_row |> member "state" |> to_string);
+  let ordered_state = Runtime_state.empty ~status_order:[ "Todo"; "In progress"; "In review"; "Done" ] () in
+  Alcotest.(check (list string)) "status order"
+    [ "Todo"; "In progress"; "In review"; "Done" ]
+    (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
 
 let test_ready_terminal_mode_runs_orchestrator () =
   Alcotest.(check bool) "ready terminal loops" true
@@ -1059,6 +1105,7 @@ let () =
         [
           Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
+          Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
         ] );
       ("runtime-state", [ Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details ]);
       ( "cli",

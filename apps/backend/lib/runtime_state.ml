@@ -20,6 +20,7 @@ type t = {
   running : running list;
   retrying : retrying list;
   issue_errors : issue_error list;
+  status_order : string list;
   readiness_gaps : readiness_gap list;
   codex_totals : tokens;
   seconds_running : float;
@@ -27,12 +28,13 @@ type t = {
   last_error : string option;
 }
 
-let empty ?(readiness_gaps = []) ?last_error () =
+let empty ?(readiness_gaps = []) ?(status_order = []) ?last_error () =
   {
     running = [];
     issues = [];
     retrying = [];
     issue_errors = [];
+    status_order;
     readiness_gaps;
     codex_totals = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
     seconds_running = 0.;
@@ -109,6 +111,7 @@ let to_yojson state =
       ("running", `List (List.map running_to_yojson state.running));
       ("retrying", `List (List.map retrying_to_yojson state.retrying));
       ("issue_errors", `List (List.map issue_error_to_yojson state.issue_errors));
+      ("status_order", `List (List.map (fun status -> `String status) state.status_order));
       ("readiness_gaps", `List (List.map readiness_gap_to_yojson state.readiness_gaps));
       ( "codex_totals",
         `Assoc

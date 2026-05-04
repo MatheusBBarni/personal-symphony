@@ -5,6 +5,9 @@ function shortDescription(value) {
   if (!text) return "No description provided.";
   return text.length > 180 ? text.slice(0, 177) + "..." : text;
 }
+function arrayOrEmpty(value) {
+  return Array.isArray(value) ? value : [];
+}
 `)
 
 type domElement
@@ -41,6 +44,7 @@ type runningIssue = {
   issue_identifier: string,
   title: string,
   state: string,
+  url: option<string>,
   description: option<string>,
 }
 
@@ -54,6 +58,7 @@ type runtimeState = {
   running: array<runningIssue>,
   retrying: array<taskError>,
   issue_errors: array<blockedTaskError>,
+  status_order: array<string>,
 }
 
 @val @scope("document") external getElementById: string => Nullable.t<domElement> = "getElementById"
@@ -77,11 +82,12 @@ external fetch: (
 @val @scope("Promise") external rejectError: jsError => promise<'value> = "reject"
 @val external setInterval: (unit => unit, int) => int = "setInterval"
 @val external shortDescription: string => string = "shortDescription"
+@val external arrayOrEmpty: array<'value> => array<'value> = "arrayOrEmpty"
 
 let readinessText = state =>
-  if Array.length(state.readiness_gaps) > 0 {
+  if Array.length(arrayOrEmpty(state.readiness_gaps)) > 0 {
     "Readiness Gaps: " ++
-    (state.readiness_gaps
+    (arrayOrEmpty(state.readiness_gaps)
     ->Array.map(gap => gap.requirement ++ ": " ++ gap.remediation)
     ->Array.join("; "))
   } else {
@@ -89,10 +95,10 @@ let readinessText = state =>
   }
 
 let taskErrorForIssue = (state, issueId) => {
-  switch state.issue_errors->Array.find(error => error.issue_id == issueId) {
+  switch arrayOrEmpty(state.issue_errors)->Array.find(error => error.issue_id == issueId) {
   | Some(error) => error.error
   | None =>
-    switch state.retrying->Array.find(error => error.issue_id == issueId) {
+    switch arrayOrEmpty(state.retrying)->Array.find(error => error.issue_id == issueId) {
     | Some(error) =>
       switch error.error {
       | Some(message) => message
@@ -112,7 +118,8 @@ let snapshotFromState = state => {
   tokens: state.codex_totals.total_tokens->Int.toString,
   generatedAt: state.generated_at,
   lastError: readinessText(state),
-  issues: state.issues->Array.map(issue => {
+  statusOrder: arrayOrEmpty(state.status_order),
+  issues: arrayOrEmpty(state.issues)->Array.map(issue => {
     let description = switch issue.description {
     | Some(value) => value
     | None => ""
@@ -121,6 +128,10 @@ let snapshotFromState = state => {
       Dashboard.identifier: issue.issue_identifier,
       title: issue.title,
       state: issue.state,
+      url: switch issue.url {
+      | Some(value) => value
+      | None => ""
+      },
       description: description->shortDescription,
       error: taskErrorForIssue(state, issue.issue_id),
     }

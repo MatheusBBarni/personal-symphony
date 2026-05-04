@@ -2,6 +2,7 @@ type issueItem = {
   identifier: string,
   title: string,
   state: string,
+  url: string,
   description: string,
   error: string,
 }
@@ -12,12 +13,14 @@ type snapshot = {
   tokens: string,
   generatedAt: string,
   lastError: string,
+  statusOrder: array<string>,
   issues: array<issueItem>,
 }
 
 @send external arrayPush: (array<'a>, 'a) => int = "push"
 @send external arrayIncludes: (array<string>, string) => bool = "includes"
 @send external arrayFilter: (array<'a>, 'a => bool) => array<'a> = "filter"
+@send external toLowerCase: string => string = "toLowerCase"
 
 @react.component
 let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
@@ -27,17 +30,50 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
       <div className={"mt-2 text-3xl font-semibold " ++ tone}> {React.string(value)} </div>
     </article>
 
+  let sameState = (left, right) => left->toLowerCase == right->toLowerCase
+
+  let arrayIncludesState = (states, state) => {
+    let found = ref(false)
+    for i in 0 to Array.length(states) - 1 {
+      switch states[i] {
+      | Some(existing) =>
+        if sameState(existing, state) {
+          found := true
+        }
+      | None => ()
+      }
+    }
+    found.contents
+  }
+
   let issueStateColumns = issues => {
     let states = []
     for i in 0 to Array.length(issues) - 1 {
       switch issues[i] {
       | Some(issue) =>
-        if !arrayIncludes(states, issue.state) {
+        if !arrayIncludesState(states, issue.state) {
           ignore(arrayPush(states, issue.state))
         }
       | None => ()
       }
     }
+    states
+  }
+
+  let orderedIssueStateColumns = (statusOrder, issues) => {
+    let states = []
+    statusOrder->Array.forEach(state => {
+      if !arrayIncludesState(states, state) {
+        ignore(arrayPush(states, state))
+      }
+    })
+    issues
+    ->issueStateColumns
+    ->Array.forEach(state => {
+      if !arrayIncludesState(states, state) {
+        ignore(arrayPush(states, state))
+      }
+    })
     states
   }
 
@@ -75,18 +111,17 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
           <div className="text-sm font-medium text-zinc-200"> {React.string("Project board")} </div>
           <div className="text-xs text-zinc-500"> {React.string(Array.length(data.issues)->Int.toString ++ " tracked")} </div>
         </div>
-        {switch Array.length(data.issues) {
-        | 0 =>
+        {switch Array.length(data.issues) == 0 && Array.length(data.statusOrder) == 0 {
+        | true =>
           <div className="p-4 text-sm text-zinc-400">
             {React.string("No project issues were returned by the latest poll.")}
           </div>
-        | _ =>
+        | false =>
           <div className="overflow-x-auto p-4">
             <div className="grid min-w-[760px] auto-cols-[minmax(240px,1fr)] grid-flow-col gap-4">
-              {data.issues
-              ->issueStateColumns
+              {orderedIssueStateColumns(data.statusOrder, data.issues)
               ->Array.map(state => {
-                let stateIssues = arrayFilter(data.issues, issue => issue.state == state)
+                let stateIssues = arrayFilter(data.issues, issue => sameState(issue.state, state))
                 <section key=state className="min-h-48 rounded-lg border border-zinc-800 bg-zinc-950">
                   <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2.5">
                     <h2 className="text-sm font-semibold text-zinc-100"> {React.string(state)} </h2>
@@ -105,7 +140,17 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
                           <span className="text-xs text-zinc-500"> {React.string("read-only")} </span>
                         </div>
                         <h3 className="mt-2 text-sm font-semibold leading-5 text-zinc-100">
-                          {React.string(issue.title)}
+                          {switch issue.url {
+                          | "" => React.string(issue.title)
+                          | url =>
+                            <a
+                              className="transition-colors hover:text-sky-200"
+                              href=url
+                              target="_blank"
+                              rel="noreferrer">
+                              {React.string(issue.title)}
+                            </a>
+                          }}
                         </h3>
                         <p className="mt-2 line-clamp-4 text-sm leading-6 text-zinc-400">
                           {React.string(issue.description)}

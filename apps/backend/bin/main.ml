@@ -17,7 +17,7 @@ let readiness_state config =
         { Runtime_state.requirement = gap.requirement; remediation = gap.remediation })
       gaps
   in
-  Runtime_state.empty ?last_error ~readiness_gaps ()
+  Runtime_state.empty ?last_error ~status_order:(Config.project_status_order config) ~readiness_gaps ()
 
 let colors_enabled () =
   Sys.getenv_opt "NO_COLOR" = None

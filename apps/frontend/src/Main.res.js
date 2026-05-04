@@ -12,22 +12,25 @@ function shortDescription(value) {
   if (!text) return "No description provided.";
   return text.length > 180 ? text.slice(0, 177) + "..." : text;
 }
+function arrayOrEmpty(value) {
+  return Array.isArray(value) ? value : [];
+}
 ;
 
 function readinessText(state) {
-  if (state.readiness_gaps.length !== 0) {
-    return "Readiness Gaps: " + state.readiness_gaps.map(gap => gap.requirement + ": " + gap.remediation).join("; ");
+  if (arrayOrEmpty(state.readiness_gaps).length !== 0) {
+    return "Readiness Gaps: " + arrayOrEmpty(state.readiness_gaps).map(gap => gap.requirement + ": " + gap.remediation).join("; ");
   } else {
     return "";
   }
 }
 
 function taskErrorForIssue(state, issueId) {
-  let error = state.issue_errors.find(error => error.issue_id === issueId);
+  let error = arrayOrEmpty(state.issue_errors).find(error => error.issue_id === issueId);
   if (error !== undefined) {
     return error.error;
   }
-  let error$1 = state.retrying.find(error => error.issue_id === issueId);
+  let error$1 = arrayOrEmpty(state.retrying).find(error => error.issue_id === issueId);
   if (error$1 === undefined) {
     return "";
   }
@@ -53,13 +56,16 @@ function snapshotFromState(state) {
     tokens: state.codex_totals.total_tokens.toString(),
     generatedAt: state.generated_at,
     lastError: readinessText(state),
-    issues: state.issues.map(issue => {
+    statusOrder: arrayOrEmpty(state.status_order),
+    issues: arrayOrEmpty(state.issues).map(issue => {
       let value = issue.description;
       let description = value !== undefined ? value : "";
+      let value$1 = issue.url;
       return {
         identifier: issue.issue_identifier,
         title: issue.title,
         state: issue.state,
+        url: value$1 !== undefined ? value$1 : "",
         description: shortDescription(description),
         error: taskErrorForIssue(state, issue.issue_id)
       };
