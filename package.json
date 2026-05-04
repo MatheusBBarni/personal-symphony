@@ -7,6 +7,7 @@
   },
   "files": [
     "bin/",
+    "apps/frontend/dist/",
     "vendor/",
     "README.md"
   ],
@@ -14,7 +15,7 @@
   "scripts": {
     "build": "pnpm -r build && opam exec -- dune build @all",
     "test": "opam exec -- dune runtest",
-    "prepack": "pnpm backend:build && node scripts/package-binary.js",
+    "prepack": "pnpm frontend:build && pnpm backend:build && node scripts/package-binary.js",
     "backend:build": "opam exec -- dune build @all",
     "backend:test": "opam exec -- dune runtest",
     "backend:dev": "opam exec -- dune exec symphony -- --port 8080 --web WORKFLOW.example.md",
