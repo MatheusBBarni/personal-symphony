@@ -143,20 +143,35 @@ Configure or disable this in `.symphony/settings.json`:
         "states": ["Backlog"],
         "agent": "planner",
         "successStatus": "Todo",
-        "retryStatus": "Backlog"
+        "retryStatus": "Backlog",
+        "commit": {
+          "enabled": false,
+          "type": "feature",
+          "message": "<type>: <generated_message_max_90char>"
+        }
       },
       {
         "states": ["Todo", "To-Do", "In progress", "In Progress"],
         "agent": "engineer",
         "startStatus": "In progress",
         "successStatus": "In review",
-        "retryStatus": "Todo"
+        "retryStatus": "Todo",
+        "commit": {
+          "enabled": true,
+          "type": "feature",
+          "message": "<type>: <generated_message_max_90char>"
+        }
       },
       {
         "states": ["In review", "In Review"],
         "agent": "reviewer",
         "successStatus": "Done",
-        "retryStatus": "In progress"
+        "retryStatus": "In progress",
+        "commit": {
+          "enabled": false,
+          "type": "refactor",
+          "message": "<type>: <generated_message_max_90char>"
+        }
       }
     ]
   }
@@ -164,6 +179,12 @@ Configure or disable this in `.symphony/settings.json`:
 ```
 
 Set `"enabled": false` to use the single base `.symphony/prompt.md` for every issue.
+
+Stage commits run after an agent exits successfully and before Symphony moves the issue to the
+stage's `successStatus`. Set `commit.enabled` per stage to control which transitions create commits;
+for example, keep `Backlog -> Todo` uncommitted and commit `In progress -> In review`. The message
+template supports `<type>`, `<generated_message_max_90char>`, `<issue_identifier>`, `<issue_title>`,
+`<from_status>`, `<to_status>`, and `<agent>`.
 
 ## GitHub Token Permissions
 

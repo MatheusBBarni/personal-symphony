@@ -48,20 +48,35 @@ let settings_json =
         "states": ["Backlog"],
         "agent": "planner",
         "successStatus": "Todo",
-        "retryStatus": "Backlog"
+        "retryStatus": "Backlog",
+        "commit": {
+          "enabled": false,
+          "type": "feature",
+          "message": "<type>: <generated_message_max_90char>"
+        }
       },
       {
         "states": ["Todo", "To-Do", "In progress", "In Progress"],
         "agent": "engineer",
         "startStatus": "In progress",
         "successStatus": "In review",
-        "retryStatus": "Todo"
+        "retryStatus": "Todo",
+        "commit": {
+          "enabled": true,
+          "type": "feature",
+          "message": "<type>: <generated_message_max_90char>"
+        }
       },
       {
         "states": ["In review", "In Review"],
         "agent": "reviewer",
         "successStatus": "Done",
-        "retryStatus": "In progress"
+        "retryStatus": "In progress",
+        "commit": {
+          "enabled": false,
+          "type": "refactor",
+          "message": "<type>: <generated_message_max_90char>"
+        }
       }
     ]
   },

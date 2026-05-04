@@ -11,6 +11,7 @@ type launch =
 
 type fetch = Github_tracker.t -> Issue.t list
 type set_status = Github_tracker.t -> Issue.t -> string -> (unit, string) result
+type commit_stage = Config.t -> Issue.t -> Config.stage_agent option -> string option -> (unit, string) result
 
 type t = {
   config : Config.t;
@@ -23,6 +24,7 @@ type t = {
   launch : launch;
   fetch : fetch;
   set_status : set_status;
+  commit_stage : commit_stage;
 }
 
 and child = {
@@ -95,6 +97,17 @@ let render_status_failed issue_identifier status error =
   Printf.eprintf "%s%s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "status") (red "failed")
     issue_identifier status error
 
+let render_commit_completed issue_identifier message =
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "commit") (green "created")
+    issue_identifier message
+
+let render_commit_skipped issue_identifier =
+  Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "commit") (dim "skipped") issue_identifier
+
+let render_commit_failed issue_identifier error =
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "commit") (red "failed")
+    issue_identifier error
+
 let running_ids state = List.map (fun (row : Runtime_state.running) -> row.issue.id) state.Runtime_state.running
 let is_running state issue = List.exists (( = ) issue.Issue.id) (running_ids state)
 let string_equal_ci a b = String.lowercase_ascii a = String.lowercase_ascii b
@@ -146,6 +159,91 @@ let compose_prompt config issue base_prompt =
   | Some (agent, prompt) ->
       Printf.sprintf "%s\n\n---\n\nStage agent: %s\n\n%s\n" prompt agent base_prompt
 
+let replace_token ~token ~value text =
+  String.split_on_char '<' text
+  |> List.mapi (fun index part ->
+         if index = 0 then part
+         else
+           match String.split_on_char '>' part with
+           | key :: rest when key = token -> value ^ String.concat ">" rest
+           | _ -> "<" ^ part)
+  |> String.concat ""
+
+let truncate max_len text =
+  let text = Util.trim text in
+  if String.length text <= max_len then text else String.sub text 0 max_len |> Util.trim
+
+let render_commit_message issue (stage : Config.stage_agent option) next_status policy =
+  let agent = match stage with Some stage -> stage.agent | None -> "agent" in
+  let generated =
+    Printf.sprintf "complete %s %s" issue.Issue.identifier issue.title |> truncate 90
+  in
+  policy.Config.message
+  |> replace_token ~token:"type" ~value:policy.Config.commit_type
+  |> replace_token ~token:"generated_message_max_90char" ~value:generated
+  |> replace_token ~token:"issue_identifier" ~value:issue.identifier
+  |> replace_token ~token:"issue_title" ~value:issue.title
+  |> replace_token ~token:"from_status" ~value:issue.state
+  |> replace_token ~token:"to_status" ~value:(Option.value next_status ~default:"")
+  |> replace_token ~token:"agent" ~value:agent
+  |> Util.trim
+
+let run_shell_capture ~cwd command =
+  let command = Printf.sprintf "cd %s && %s 2>&1" (Util.shell_quote cwd) command in
+  let ic = Unix.open_process_in command in
+  let output =
+    Fun.protect ~finally:(fun () -> ()) (fun () ->
+        let buffer = Buffer.create 256 in
+        (try
+           while true do
+             Buffer.add_string buffer (input_line ic);
+             Buffer.add_char buffer '\n'
+           done
+         with End_of_file -> ());
+        Buffer.contents buffer |> Util.trim)
+  in
+  match Unix.close_process_in ic with
+  | Unix.WEXITED 0 -> Ok output
+  | Unix.WEXITED code -> Error (Printf.sprintf "exit %d: %s" code output)
+  | Unix.WSIGNALED signal -> Error (Printf.sprintf "signal %d: %s" signal output)
+  | Unix.WSTOPPED signal -> Error (Printf.sprintf "stopped %d: %s" signal output)
+
+let has_worktree_changes root =
+  match run_shell_capture ~cwd:root "git status --porcelain" with
+  | Ok output -> Ok (output <> "")
+  | Error error -> Error ("git status failed: " ^ error)
+
+let git_commit_stage_changes config issue stage next_status =
+  match stage with
+  | None -> Ok ()
+  | Some stage -> (
+      match stage.Config.commit with
+      | None -> Ok ()
+      | Some policy when not policy.enabled -> Ok ()
+      | Some policy ->
+          let root = config.Config.repository_root in
+          match has_worktree_changes root with
+          | Error error -> Error error
+          | Ok false ->
+              render_commit_skipped issue.Issue.identifier;
+              Ok ()
+          | Ok true ->
+              let message = render_commit_message issue (Some stage) next_status policy in
+              match run_shell_capture ~cwd:root "git add -A" with
+              | Error error -> Error ("git add failed: " ^ error)
+              | Ok _ -> (
+                  match run_shell_capture ~cwd:root "git diff --cached --quiet" with
+                  | Ok _ ->
+                      render_commit_skipped issue.Issue.identifier;
+                      Ok ()
+                  | Error _ ->
+                      let command = Printf.sprintf "git commit -m %s" (Util.shell_quote message) in
+                      match run_shell_capture ~cwd:root command with
+                      | Ok _ ->
+                          render_commit_completed issue.Issue.identifier message;
+                          Ok ()
+                      | Error error -> Error error))
+
 let shell_launch ~config ~workspace ~prompt ~issue =
   let prompt_path = write_prompt workspace prompt in
   let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
@@ -164,7 +262,7 @@ let shell_launch ~config ~workspace ~prompt ~issue =
   }
 
 let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ?(set_status = Github_tracker.update_issue_status)
-    ~config ~prompt_template () =
+    ?(commit_stage = git_commit_stage_changes) ~config ~prompt_template () =
   {
     config;
     prompt_template;
@@ -176,6 +274,7 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     launch;
     fetch;
     set_status;
+    commit_stage;
   }
 
 let get_state orchestrator = orchestrator.state
@@ -362,18 +461,26 @@ let mark_retrying orchestrator issue_id error =
 
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
-  (match success_status orchestrator child.issue with
-  | None -> ()
-  | Some status -> ignore (move_issue_status orchestrator child.issue status));
-  Hashtbl.remove orchestrator.attempts issue_id;
-  Hashtbl.remove orchestrator.retry_due issue_id;
-  orchestrator.state <-
-    {
-      orchestrator.state with
-      running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) orchestrator.state.running;
-      retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
-    };
-  render_dispatch_completed child.issue_identifier child.issue_title
+  let stage = stage_for_issue orchestrator.config child.issue in
+  let next_status = success_status orchestrator child.issue in
+  match orchestrator.commit_stage orchestrator.config child.issue stage next_status with
+  | Error error ->
+      set_error orchestrator error;
+      render_commit_failed child.issue_identifier error;
+      mark_retrying orchestrator issue_id error
+  | Ok () ->
+      (match next_status with
+      | None -> ()
+      | Some status -> ignore (move_issue_status orchestrator child.issue status));
+      Hashtbl.remove orchestrator.attempts issue_id;
+      Hashtbl.remove orchestrator.retry_due issue_id;
+      orchestrator.state <-
+        {
+          orchestrator.state with
+          running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) orchestrator.state.running;
+          retrying = List.filter (fun retry -> retry.Runtime_state.issue_id <> issue_id) orchestrator.state.retrying;
+        };
+      render_dispatch_completed child.issue_identifier child.issue_title
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()

@@ -19,18 +19,21 @@ type workspace = { root : string }
 type agent = { max_concurrent_agents : int; max_turns : int; max_retry_backoff_ms : int }
 type codex = { command : string; turn_timeout_ms : int; read_timeout_ms : int; stall_timeout_ms : int }
 type server = { port : int option }
+type stage_commit = { enabled : bool; commit_type : string; message : string }
 type stage_agent = {
   states : string list;
   agent : string;
   start_status : string option;
   success_status : string option;
   retry_status : string option;
+  commit : stage_commit option;
 }
 
 type stage_agents = { enabled : bool; root : string; default_agent : string option; stages : stage_agent list }
 
 type t = {
   workflow_path : string;
+  repository_root : string;
   tracker : tracker;
   polling : polling;
   workspace : workspace;
@@ -49,18 +52,34 @@ let default_terminal_states = [ "Done"; "Closed"; "Cancelled"; "Canceled"; "Dupl
 let default_dispatch_status = "In progress"
 let default_review_status = "In review"
 let default_retry_status = "Todo"
+let default_commit_message = "<type>: <generated_message_max_90char>"
 
 let default_stage_agents =
   [
-    { states = [ "Backlog" ]; agent = "planner"; start_status = None; success_status = Some "Todo"; retry_status = Some "Backlog" };
+    {
+      states = [ "Backlog" ];
+      agent = "planner";
+      start_status = None;
+      success_status = Some "Todo";
+      retry_status = Some "Backlog";
+      commit = Some { enabled = false; commit_type = "feature"; message = default_commit_message };
+    };
     {
       states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
       agent = "engineer";
       start_status = Some "In progress";
       success_status = Some "In review";
       retry_status = Some "Todo";
+      commit = Some { enabled = true; commit_type = "feature"; message = default_commit_message };
     };
-    { states = [ "In review"; "In Review" ]; agent = "reviewer"; start_status = None; success_status = Some "Done"; retry_status = Some "In progress" };
+    {
+      states = [ "In review"; "In Review" ];
+      agent = "reviewer";
+      start_status = None;
+      success_status = Some "Done";
+      retry_status = Some "In progress";
+      commit = Some { enabled = false; commit_type = "refactor"; message = default_commit_message };
+    };
   ]
 
 let resolve_secret = function
@@ -134,6 +153,7 @@ let from_workflow workflow =
   in
   {
     workflow_path = workflow.path;
+    repository_root = workflow.dir;
     tracker =
       {
         kind;
@@ -201,12 +221,25 @@ let json_object_list name json =
   match member name json with `List values -> values | _ -> []
 
 let json_stage_agent json =
+  let commit_raw = member "commit" json in
+  let commit =
+    match commit_raw with
+    | `Assoc _ ->
+        Some
+          {
+            enabled = json_bool "enabled" commit_raw ~default:false;
+            commit_type = json_string "type" commit_raw ~default:"feature";
+            message = json_string "message" commit_raw ~default:default_commit_message;
+          }
+    | _ -> None
+  in
   {
     states = json_string_list "states" json ~default:[];
     agent = json_string "agent" json ~default:"";
     start_status = json_optional_string "startStatus" json;
     success_status = json_optional_string "successStatus" json;
     retry_status = json_optional_string "retryStatus" json;
+    commit;
   }
 
 let from_settings_file ~workspace_root path =
@@ -230,6 +263,7 @@ let from_settings_file ~workspace_root path =
   in
   {
     workflow_path = path;
+    repository_root = workspace_root;
     tracker =
       {
         kind;

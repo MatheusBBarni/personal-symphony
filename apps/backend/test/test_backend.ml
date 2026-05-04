@@ -146,6 +146,15 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check bool) "stage agents enabled" true config.stage_agents.enabled;
       Alcotest.(check string) "stage agent root" (Filename.concat (Unix.realpath root) ".symphony/agents") config.stage_agents.root;
       Alcotest.(check int) "stage mappings" 3 (List.length config.stage_agents.stages);
+      (match config.stage_agents.stages with
+      | _planner :: engineer :: _ ->
+          (match engineer.Config.commit with
+          | Some commit ->
+              Alcotest.(check bool) "engineer commits enabled" true commit.enabled;
+              Alcotest.(check string) "engineer commit type" "feature" commit.commit_type;
+              Alcotest.(check string) "engineer commit message" Config.default_commit_message commit.message
+          | None -> Alcotest.fail "expected engineer commit policy")
+      | _ -> Alcotest.fail "expected default stage mappings");
       let prompt = Runtime_home.load_prompt home in
       let issue = Issue.empty ~id:"I" ~identifier:"#1" ~title:"Install CLI" ~state:"Todo" in
       let rendered = Prompt.render ~issue ~attempt:(Some 3) prompt in
@@ -450,6 +459,7 @@ let test_orchestrator_dispatch_limits () =
       let config =
         {
           Config.workflow_path = "settings.json";
+          repository_root = root;
           tracker =
             {
               kind = "github";
@@ -502,6 +512,7 @@ let test_orchestrator_retries_failed_agent () =
       let config =
         {
           Config.workflow_path = "settings.json";
+          repository_root = root;
           tracker =
             {
               kind = "github";
@@ -547,6 +558,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
       let config =
         {
           Config.workflow_path = "settings.json";
+          repository_root = root;
           tracker =
             {
               kind = "github";
@@ -602,6 +614,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
       let config =
         {
           Config.workflow_path = "settings.json";
+          repository_root = root;
           tracker =
             {
               kind = "github";
@@ -636,6 +649,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                     start_status = None;
                     success_status = Some "Done";
                     retry_status = Some "In progress";
+                    commit = None;
                   };
                 ];
             };
@@ -678,6 +692,84 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
         };
       Alcotest.(check (list (pair string string))) "review moves done" [ ("#1", "Done") ] (List.rev !statuses))
 
+let test_orchestrator_commits_stage_before_success_status () =
+  with_temp_dir "symphony-stage-commit-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "In progress" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "In progress" ];
+                    agent = "engineer";
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>" };
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
+      let events = ref [] in
+      let set_status _ _ status =
+        events := ("status:" ^ status) :: !events;
+        Ok ()
+      in
+      let commit_stage _ issue stage next_status =
+        let message =
+          match stage with
+          | Some { Config.commit = Some policy; _ } -> Orchestrator.render_commit_message issue stage next_status policy
+          | _ -> Alcotest.fail "expected stage commit policy"
+        in
+        events := ("commit:" ^ message) :: !events;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~set_status ~commit_stage ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Alcotest.(check (list string)) "commit before status" [ "commit:fixture: complete #1 One"; "status:In review" ] (List.rev !events))
+
 let () =
   Alcotest.run "symphony-backend"
     [
@@ -713,5 +805,6 @@ let () =
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
+          Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
         ] );
     ]
