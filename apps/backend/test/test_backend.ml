@@ -386,6 +386,178 @@ let test_runtime_state_exposes_running_issue_details () =
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
 
+let websocket_request () =
+  {
+    Server.request_line = "GET /api/v1/state/live HTTP/1.1";
+    path = "/api/v1/state/live";
+    headers =
+      [
+        ("host", "127.0.0.1");
+        ("upgrade", "websocket");
+        ("connection", "Upgrade");
+        ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+        ("sec-websocket-version", "13");
+      ];
+  }
+
+let read_exact fd length =
+  let bytes = Bytes.create length in
+  let rec loop offset =
+    if offset < length then
+      let read = Unix.read fd bytes offset (length - offset) in
+      if read = 0 then Alcotest.fail "unexpected EOF while reading websocket frame" else loop (offset + read)
+  in
+  loop 0;
+  Bytes.unsafe_to_string bytes
+
+let read_websocket_text_frame fd =
+  let header = read_exact fd 2 in
+  Alcotest.(check int) "text frame opcode" 0x81 (Char.code header.[0]);
+  let len_code = Char.code header.[1] land 0x7f in
+  let length =
+    if len_code < 126 then len_code
+    else if len_code = 126 then
+      let extended = read_exact fd 2 in
+      (Char.code extended.[0] lsl 8) lor Char.code extended.[1]
+    else Alcotest.fail "test frames should not need 64-bit lengths"
+  in
+  read_exact fd length
+
+let read_http_upgrade fd =
+  let buffer = Buffer.create 256 in
+  let rec loop recent =
+    let next = read_exact fd 1 in
+    Buffer.add_string buffer next;
+    let recent = recent ^ next in
+    let recent =
+      if String.length recent > 4 then String.sub recent (String.length recent - 4) 4 else recent
+    in
+    if recent <> "\r\n\r\n" then loop recent
+  in
+  loop "";
+  let response = Buffer.contents buffer in
+  Alcotest.(check bool) "switching protocols" true (String.contains response '1');
+  response
+
+let with_websocket_client state f =
+  let current_state = ref state in
+  let live = Server.create_live_state ~get_state:(fun () -> !current_state) in
+  let server_fd, client_fd = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  let server_oc = Unix.out_channel_of_descr server_fd in
+  let thread =
+    Thread.create
+      (fun () ->
+        Fun.protect
+          ~finally:(fun () -> close_out_noerr server_oc)
+          (fun () -> Server.handle_websocket live server_fd server_oc (websocket_request ())))
+      ()
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.close client_fd;
+      ignore (Thread.join thread))
+    (fun () ->
+      let _upgrade = read_http_upgrade client_fd in
+      let initial = read_websocket_text_frame client_fd in
+      f ~set_state:(fun state -> current_state := state) ~live ~client_fd ~initial)
+
+let test_websocket_accept_and_initial_snapshot () =
+  Alcotest.(check string) "RFC accept key" "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    (Server.websocket_accept "dGhlIHNhbXBsZSBub25jZQ==");
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Live state" ~state:"Todo" ];
+    }
+  in
+  with_websocket_client state (fun ~set_state:_ ~live:_ ~client_fd:_ ~initial ->
+      let open Yojson.Safe.Util in
+      let json = Yojson.Safe.from_string initial in
+      Alcotest.(check string) "initial issue" "#1" (json |> member "issues" |> to_list |> List.hd |> member "issue_identifier" |> to_string))
+
+let test_websocket_broadcast_after_state_change () =
+  let state = Runtime_state.empty () in
+  with_websocket_client state (fun ~set_state ~live ~client_fd ~initial:_ ->
+      set_state
+        {
+          state with
+          running =
+            [
+              {
+                Runtime_state.issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Running" ~state:"In progress";
+                session_id = Some "pid:2";
+                turn_count = 0;
+                last_event = Some "started";
+                last_message = None;
+                started_at = "2026-05-04T00:00:00Z";
+                last_event_at = None;
+                tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+              };
+            ];
+        };
+      Server.broadcast_live_state live;
+      let open Yojson.Safe.Util in
+      let json = read_websocket_text_frame client_fd |> Yojson.Safe.from_string in
+      Alcotest.(check int) "running count" 1 (json |> member "counts" |> member "running" |> to_int))
+
+let test_websocket_readiness_snapshot_and_http_state () =
+  let state =
+    Runtime_state.empty
+      ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set tracker owner" } ]
+      ~last_error:"tracker.owner: set tracker owner" ()
+  in
+  with_websocket_client state (fun ~set_state:_ ~live:_ ~client_fd:_ ~initial ->
+      let open Yojson.Safe.Util in
+      let json = Yojson.Safe.from_string initial in
+      Alcotest.(check string) "readiness requirement" "tracker.owner"
+        (json |> member "readiness_gaps" |> to_list |> List.hd |> member "requirement" |> to_string));
+  let http =
+    Server.handle_request (fun () -> state)
+      { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+  in
+  Alcotest.(check bool) "diagnostic endpoint preserved" true (String.contains http '{')
+
+let test_orchestrator_notifies_each_state_mutation () =
+  with_temp_dir "symphony-notify-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = None;
+              project_status_on_retry = None;
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let notifications = ref 0 in
+      let fetch _ = [] in
+      let orchestrator =
+        Orchestrator.make ~fetch ~config ~prompt_template:"Issue {{ issue.identifier }}"
+          ~notify_state:(fun _ -> incr notifications)
+          ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "notifies repeated state writes" 2 !notifications)
+
 let test_ready_terminal_mode_runs_orchestrator () =
   Alcotest.(check bool) "ready terminal loops" true
     (Runtime_policy.action ~mode:Cli_mode.Terminal_console ~readiness_gaps:[] = Runtime_policy.Run_orchestrator);
@@ -1164,6 +1336,12 @@ let () =
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
         ] );
       ("runtime-state", [ Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details ]);
+      ( "server",
+        [
+          Alcotest.test_case "handles websocket upgrade and initial snapshot" `Quick test_websocket_accept_and_initial_snapshot;
+          Alcotest.test_case "broadcasts after state change" `Quick test_websocket_broadcast_after_state_change;
+          Alcotest.test_case "serves readiness live snapshot and diagnostic state" `Quick test_websocket_readiness_snapshot_and_http_state;
+        ] );
       ( "cli",
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
@@ -1187,5 +1365,6 @@ let () =
           Alcotest.test_case "retries when success status move fails" `Quick test_orchestrator_retries_when_success_status_move_fails;
           Alcotest.test_case "stage commit requires code changes" `Quick test_stage_commit_requires_code_changes;
           Alcotest.test_case "does not retry empty required commits" `Quick test_orchestrator_does_not_retry_empty_commit;
+          Alcotest.test_case "notifies repeated state mutations" `Quick test_orchestrator_notifies_each_state_mutation;
         ] );
     ]

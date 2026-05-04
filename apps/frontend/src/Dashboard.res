@@ -114,7 +114,7 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
         {switch Array.length(data.issues) == 0 && Array.length(data.statusOrder) == 0 {
         | true =>
           <div className="p-4 text-sm text-zinc-400">
-            {React.string("No project issues were returned by the latest poll.")}
+            {React.string("No project issues were returned by the latest snapshot.")}
           </div>
         | false =>
           <div className="overflow-x-auto p-4">
@@ -205,14 +205,14 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) => {
                 <span className="ml-2 text-zinc-200"> {React.string(data.generatedAt)} </span>
               </div>
               <div>
-                {React.string("State API: ")}
-                <code className="text-sky-200"> {React.string("/api/v1/state")} </code>
+                {React.string("Live state: ")}
+                <code className="text-sky-200"> {React.string("/api/v1/state/live")} </code>
               </div>
             </>
           | None => React.null
           }}
           <span className="rounded-md border border-emerald-700/60 bg-emerald-950 px-3 py-1 font-medium text-emerald-200">
-            {React.string("OCaml API")}
+            {React.string("Live OCaml API")}
           </span>
         </div>
       </div>

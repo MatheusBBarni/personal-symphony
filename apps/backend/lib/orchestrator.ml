@@ -12,6 +12,7 @@ type launch =
 type fetch = Github_tracker.t -> Issue.t list
 type set_status = Github_tracker.t -> Issue.t -> string -> (unit, string) result
 type commit_stage = Config.t -> Issue.t -> Config.stage_agent option -> string option -> (unit, string) result
+type notify_state = Runtime_state.t -> unit
 
 type t = {
   config : Config.t;
@@ -26,6 +27,7 @@ type t = {
   fetch : fetch;
   set_status : set_status;
   commit_stage : commit_stage;
+  notify_state : notify_state;
 }
 
 and child = {
@@ -294,7 +296,7 @@ let shell_launch ~config ~workspace ~prompt ~issue =
   }
 
 let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ?(set_status = Github_tracker.update_issue_status)
-    ?(commit_stage = git_commit_stage_changes) ~config ~prompt_template () =
+    ?(commit_stage = git_commit_stage_changes) ?(notify_state = fun _ -> ()) ~config ~prompt_template () =
   {
     config;
     prompt_template;
@@ -308,12 +310,18 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     fetch;
     set_status;
     commit_stage;
+    notify_state;
   }
 
 let get_state orchestrator = orchestrator.state
 
-let set_error orchestrator msg =
-  orchestrator.state <- { orchestrator.state with Runtime_state.last_error = Some msg }
+let set_state orchestrator state =
+  orchestrator.state <- state;
+  orchestrator.notify_state state
+
+let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
+
+let set_error orchestrator msg = update_state orchestrator (fun state -> { state with Runtime_state.last_error = Some msg })
 
 let file_size = function
   | None -> 0
@@ -369,15 +377,15 @@ let max_tokens a b =
   }
 
 let update_running orchestrator issue_id f =
-  orchestrator.state <-
+  update_state orchestrator (fun state ->
     {
-      orchestrator.state with
+      state with
       running =
         List.map
           (fun (row : Runtime_state.running) ->
             if row.issue.id = issue_id then f row else row)
-          orchestrator.state.running;
-    }
+          state.running;
+    })
 
 let move_issue_status orchestrator issue status =
   match orchestrator.set_status orchestrator.tracker issue status with
@@ -433,16 +441,16 @@ let dispatch_issue orchestrator issue =
       }
     in
     Hashtbl.remove orchestrator.retry_due issue.id;
-    orchestrator.state <-
+    update_state orchestrator (fun state ->
       {
-        orchestrator.state with
-        issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) orchestrator.state.issues;
-        running = row :: orchestrator.state.running;
-        retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue.id) orchestrator.state.retrying;
+        state with
+        issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) state.issues;
+        running = row :: state.running;
+        retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue.id) state.retrying;
         issue_errors =
-          List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) orchestrator.state.issue_errors;
+          List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
         last_error = None;
-      };
+      });
     (match launched.pid with
     | Some pid ->
         let now_float = Unix.time () in
@@ -480,10 +488,10 @@ let mark_retrying orchestrator issue_id error =
         Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday tm.tm_hour
           tm.tm_min tm.tm_sec
       in
-      orchestrator.state <-
+      update_state orchestrator (fun state ->
         {
-          orchestrator.state with
-          running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) orchestrator.state.running;
+          state with
+          running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) state.running;
           retrying =
             {
               Runtime_state.issue_id;
@@ -492,11 +500,11 @@ let mark_retrying orchestrator issue_id error =
               due_at;
               error = Some error;
             }
-            :: List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) orchestrator.state.retrying;
+            :: List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
           issue_errors =
-            List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) orchestrator.state.issue_errors;
+            List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
           last_error = Some error;
-        };
+        });
       (match retry_status orchestrator row.issue with
       | None -> ()
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
@@ -518,33 +526,33 @@ let mark_blocked orchestrator issue_id error =
       | Some status ->
           if move_issue_status orchestrator row.issue status then
             Hashtbl.replace orchestrator.blocked (block_key { row.issue with Issue.state = status }) error);
-      orchestrator.state <-
+      update_state orchestrator (fun state ->
         {
-          orchestrator.state with
-          running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) orchestrator.state.running;
-          retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) orchestrator.state.retrying;
+          state with
+          running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) state.running;
+          retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
           issue_errors =
             {
               Runtime_state.issue_id;
               issue_identifier = row.issue.identifier;
               error;
             }
-            :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) orchestrator.state.issue_errors;
+            :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
           last_error = Some error;
-        }
+        })
 
 let complete_child orchestrator child =
   let issue_id = child.issue_id in
   Hashtbl.remove orchestrator.attempts issue_id;
   Hashtbl.remove orchestrator.retry_due issue_id;
-  orchestrator.state <-
+  update_state orchestrator (fun state ->
     {
-      orchestrator.state with
-      running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) orchestrator.state.running;
-      retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) orchestrator.state.retrying;
+      state with
+      running = List.filter (fun (row : Runtime_state.running) -> row.issue.id <> issue_id) state.running;
+      retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
       issue_errors =
-        List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) orchestrator.state.issue_errors;
-    };
+        List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
+    });
   render_dispatch_completed child.issue_identifier child.issue_title
 
 let mark_completed orchestrator child =
@@ -577,7 +585,7 @@ let refresh_child_output orchestrator child =
     child.last_output_at <- Unix.time ();
     let now = Util.now_iso8601 () in
     let tokens = parse_tokens child.stdout_path child.stderr_path in
-    orchestrator.state <- { orchestrator.state with codex_totals = max_tokens orchestrator.state.codex_totals tokens };
+    update_state orchestrator (fun state -> { state with codex_totals = max_tokens state.codex_totals tokens });
     update_running orchestrator child.issue_id (fun row ->
         {
           row with
@@ -629,7 +637,7 @@ let poll_once orchestrator =
   try
     let candidates = orchestrator.fetch orchestrator.tracker in
     let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
-    orchestrator.state <- { orchestrator.state with Runtime_state.issues = candidates; last_error };
+    update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
     let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
     let dispatchable =
       candidates

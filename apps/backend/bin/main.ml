@@ -112,7 +112,8 @@ let run_legacy workflow_path port once =
     if once then 0
     else
       let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-      Server.serve ~port ~get_state:(fun () -> state);
+      let live = Server.create_live_state ~get_state:(fun () -> state) in
+      Server.serve ~live ~port ~get_state:(fun () -> state) ();
       0
   with
   | Workflow.Error err ->
@@ -157,7 +158,8 @@ let run_runtime port once web =
               | Cli_mode.Web_dashboard ->
                   let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
                   render_web_dashboard_starting ~port;
-                  Server.serve ~port ~get_state:(fun () -> state);
+                  let live = Server.create_live_state ~get_state:(fun () -> state) in
+                  Server.serve ~live ~port ~get_state:(fun () -> state) ();
                   0
               | Cli_mode.Terminal_console ->
                   render_terminal_console config state;
@@ -166,15 +168,26 @@ let run_runtime port once web =
                   done;
                   0)
           | Runtime_policy.Run_orchestrator ->
-              let orchestrator = Orchestrator.make ~config ~prompt_template () in
               (match mode with
               | Cli_mode.Web_dashboard ->
                   let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
                   render_web_dashboard_starting ~port;
+                  let orchestrator_ref = ref None in
+                  let live =
+                    Server.create_live_state ~get_state:(fun () ->
+                        match !orchestrator_ref with
+                        | Some orchestrator -> Orchestrator.get_state orchestrator
+                        | None -> state)
+                  in
+                  let orchestrator =
+                    Orchestrator.make ~config ~prompt_template ~notify_state:(fun _ -> Server.broadcast_live_state live) ()
+                  in
+                  orchestrator_ref := Some orchestrator;
                   ignore (Thread.create Orchestrator.run_forever orchestrator);
-                  Server.serve ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator);
+                  Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ();
                   0
               | Cli_mode.Terminal_console ->
+                  let orchestrator = Orchestrator.make ~config ~prompt_template () in
                   render_terminal_console config state;
                   Orchestrator.run_forever orchestrator;
                   0)

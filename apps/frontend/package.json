@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "rescript build && vite --host 127.0.0.1",
     "build": "rescript build && vite build",
+    "test:live": "node test/liveState.test.mjs",
     "rescript:build": "rescript build",
     "rescript:clean": "rescript clean"
   },
