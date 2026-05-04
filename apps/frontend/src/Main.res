@@ -66,6 +66,7 @@ type runtimeState = {
 @val external shortDescription: string => string = "shortDescription"
 @val external arrayOrEmpty: array<'value> => array<'value> = "arrayOrEmpty"
 @module("./liveState.js") external connectLiveState: (runtimeState => unit, string => unit) => unit = "connectLiveState"
+external audioNotificationState: runtimeState => AudioNotifications.runtimeState = "%identity"
 
 let readinessText = state =>
   if Array.length(arrayOrEmpty(state.readiness_gaps)) > 0 {
@@ -92,8 +93,8 @@ let taskErrorForIssue = (state, issueId) => {
   }
 }
 
-let renderDashboard = (root, ~snapshot, ~error) =>
-  root->render(<Dashboard snapshot error />)
+let renderDashboard = (root, ~snapshot, ~error, ~audioEnabled, ~onAudioToggle) =>
+  root->render(<Dashboard snapshot error audioEnabled onAudioToggle />)
 
 let snapshotFromState = state => {
   Dashboard.running: state.counts.running->Int.toString,
@@ -125,14 +126,43 @@ switch getElementById("root")->Nullable.toOption {
 | Some(element) =>
   let root = createRoot(element)
   let latestSnapshot = ref(None)
-  renderDashboard(root, ~snapshot=None, ~error=None)
+  let latestState = ref(None)
+  let latestError = ref(None)
+  let audioEnabled = ref(AudioNotifications.readAudioNotificationsEnabled())
+  let rec rerender = () =>
+    renderDashboard(
+      root,
+      ~snapshot=latestSnapshot.contents,
+      ~error=latestError.contents,
+      ~audioEnabled=audioEnabled.contents,
+      ~onAudioToggle=enabled => {
+        audioEnabled := enabled
+        AudioNotifications.setAudioNotificationsEnabled(enabled)
+        rerender()
+      },
+    )
+  rerender()
   connectLiveState(
     state => {
+      let previousAudioState = switch latestState.contents {
+      | Some(previous) => Some(audioNotificationState(previous))
+      | None => None
+      }
+      AudioNotifications.maybeEmitAudioNotification(
+        audioEnabled.contents,
+        previousAudioState,
+        audioNotificationState(state),
+      )
       let snapshot = snapshotFromState(state)
+      latestState := Some(state)
       latestSnapshot := Some(snapshot)
-      renderDashboard(root, ~snapshot=Some(snapshot), ~error=None)
+      latestError := None
+      rerender()
     },
-    message => renderDashboard(root, ~snapshot=latestSnapshot.contents, ~error=Some(message)),
+    message => {
+      latestError := Some(message)
+      rerender()
+    },
   )
 | None => ()
 }

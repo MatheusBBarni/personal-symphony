@@ -6,12 +6,13 @@
   "scripts": {
     "dev": "rescript build && vite --host 127.0.0.1",
     "build": "rescript build && vite build",
-    "test:live": "node test/liveState.test.mjs",
+    "test:live": "rescript build && node test/liveState.test.mjs && node test/audioNotifications.test.mjs",
     "rescript:build": "rescript build",
     "rescript:clean": "rescript clean"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",
+    "@rescript/runtime": "^12.2.0",
     "@rescript/react": "^0.13.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
