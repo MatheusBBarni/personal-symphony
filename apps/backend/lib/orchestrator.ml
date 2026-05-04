@@ -12,6 +12,7 @@ type launch =
 type fetch = Github_tracker.t -> Issue.t list
 type set_status = Github_tracker.t -> Issue.t -> string -> (unit, string) result
 type commit_stage = Config.t -> Workspace.t -> Issue.t -> Config.stage_agent option -> string option -> (unit, string) result
+type batch_pull_request_handoff = Config.t -> head_branch:string -> (string option, string) result
 type notify_state = Runtime_state.t -> unit
 
 type t = {
@@ -27,8 +28,10 @@ type t = {
   fetch : fetch;
   set_status : set_status;
   commit_stage : commit_stage;
+  batch_pull_request_handoff : batch_pull_request_handoff;
   notify_state : notify_state;
   loop_start_branch : string;
+  mutable batch_pull_request_completed : bool;
 }
 
 and child = {
@@ -112,6 +115,14 @@ let render_commit_skipped issue_identifier =
 let render_commit_failed issue_identifier error =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "commit") (red "failed")
     issue_identifier error
+
+let render_pull_request_completed head base =
+  Printf.eprintf "%s%s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "pull-request") (green "ready")
+    head (dim "base") base
+
+let render_pull_request_failed head base error =
+  Printf.eprintf "%s%s %s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "pull-request") (red "failed")
+    head (dim "base") base error
 
 let running_ids state = List.map (fun (row : Runtime_state.running) -> row.issue.id) state.Runtime_state.running
 let is_running state issue = List.exists (( = ) issue.Issue.id) (running_ids state)
@@ -302,6 +313,65 @@ let push_current_branch root =
   | Error _ ->
       run_shell_capture ~cwd:root "git push -u origin HEAD"
 
+let render_pull_request_template config ~head_branch text =
+  text
+  |> replace_token ~token:"head_branch" ~value:head_branch
+  |> replace_token ~token:"base_branch" ~value:config.Config.pull_request.base_branch
+  |> Util.trim
+
+let batch_branch_push config ~head_branch =
+  if not (is_git_repository config.Config.repository_root) then Error "batch pull request requires a Git repository"
+  else
+    let command =
+      Printf.sprintf "git push -u origin refs/heads/%s:refs/heads/%s" (Util.shell_quote head_branch)
+        (Util.shell_quote head_branch)
+    in
+    match run_shell_capture ~cwd:config.repository_root command with
+    | Ok _ -> Ok ()
+    | Error error -> Error ("batch branch push failed: " ^ error)
+
+let existing_batch_pull_request config ~head_branch =
+  let repo_full_name = config.Config.tracker.owner ^ "/" ^ config.tracker.repo in
+  let head_filter = config.tracker.owner ^ ":" ^ head_branch in
+  let command =
+    Printf.sprintf "gh pr list --repo %s --state open --head %s --base %s --limit 1 --json url"
+      (Util.shell_quote repo_full_name) (Util.shell_quote head_filter)
+      (Util.shell_quote config.pull_request.base_branch)
+  in
+  match run_shell_capture ~cwd:config.repository_root command with
+  | Error error -> Error ("batch pull request lookup failed: " ^ error)
+  | Ok output -> (
+      try
+        match Yojson.Safe.from_string output with
+        | `List (`Assoc fields :: _) -> (
+            match List.assoc_opt "url" fields with Some (`String url) -> Ok (Some url) | _ -> Ok (Some ""))
+        | `List [] -> Ok None
+        | _ -> Ok None
+      with Yojson.Json_error msg -> Error ("batch pull request lookup returned invalid JSON: " ^ msg))
+
+let create_batch_pull_request config ~head_branch =
+  let repo_full_name = config.Config.tracker.owner ^ "/" ^ config.tracker.repo in
+  let title = render_pull_request_template config ~head_branch config.pull_request.title in
+  let body = render_pull_request_template config ~head_branch config.pull_request.body in
+  let command =
+    Printf.sprintf "gh pr create --repo %s --head %s --base %s --title %s --body %s" (Util.shell_quote repo_full_name)
+      (Util.shell_quote head_branch)
+      (Util.shell_quote config.pull_request.base_branch)
+      (Util.shell_quote title) (Util.shell_quote body)
+  in
+  match run_shell_capture ~cwd:config.repository_root command with
+  | Ok output -> Ok (Some (Util.trim output))
+  | Error error -> Error ("batch pull request creation failed: " ^ error)
+
+let gh_batch_pull_request_handoff config ~head_branch =
+  match batch_branch_push config ~head_branch with
+  | Error _ as error -> error
+  | Ok () -> (
+      match existing_batch_pull_request config ~head_branch with
+      | Error _ as error -> error
+      | Ok (Some url) -> Ok (if Util.trim url = "" then None else Some url)
+      | Ok None -> create_batch_pull_request config ~head_branch)
+
 let git_commit_stage_changes _config workspace issue stage next_status =
   match stage with
   | None -> Ok ()
@@ -383,7 +453,8 @@ let shell_launch ~config ~workspace ~prompt ~issue =
   }
 
 let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ?(set_status = Github_tracker.update_issue_status)
-    ?(commit_stage = git_commit_stage_changes) ?(notify_state = fun _ -> ()) ~config ~prompt_template () =
+    ?(commit_stage = git_commit_stage_changes) ?(batch_pull_request_handoff = gh_batch_pull_request_handoff)
+    ?(notify_state = fun _ -> ()) ~config ~prompt_template () =
   {
     config;
     prompt_template;
@@ -397,8 +468,10 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     fetch;
     set_status;
     commit_stage;
+    batch_pull_request_handoff;
     notify_state;
     loop_start_branch = current_branch config.repository_root;
+    batch_pull_request_completed = false;
   }
 
 let get_state orchestrator = orchestrator.state
@@ -500,6 +573,50 @@ let retry_status orchestrator issue =
 
 let issue_is_active orchestrator issue =
   Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state
+
+let issue_needs_attention orchestrator issue =
+  string_equal_ci issue.Issue.state orchestrator.config.git.merge_attention_status || is_blocked orchestrator issue
+
+let set_pull_request_handoff orchestrator status ?url ?error () =
+  let policy = orchestrator.config.Config.pull_request in
+  update_state orchestrator (fun state ->
+    {
+      state with
+      pull_request =
+        Some
+          {
+            Runtime_state.enabled = policy.enabled;
+            head_branch = Some orchestrator.loop_start_branch;
+            base_branch = Some policy.base_branch;
+            status;
+            url;
+            error;
+          };
+      last_error = (match error with Some error -> Some error | None -> state.last_error);
+    })
+
+let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
+  let policy = orchestrator.config.Config.pull_request in
+  if policy.enabled && not orchestrator.batch_pull_request_completed then
+    let has_attention = List.exists (issue_needs_attention orchestrator) candidates || orchestrator.state.issue_errors <> [] in
+    let idle =
+      dispatchable_count = 0
+      && orchestrator.state.running = []
+      && orchestrator.state.retrying = []
+      && Hashtbl.length orchestrator.retry_due = 0
+      && orchestrator.children = []
+      && not has_attention
+    in
+    if idle then (
+      set_pull_request_handoff orchestrator "attempting" ();
+      match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
+      | Ok url ->
+          orchestrator.batch_pull_request_completed <- true;
+          set_pull_request_handoff orchestrator "completed" ?url ();
+          render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
+      | Error error ->
+          set_pull_request_handoff orchestrator "retryable_failure" ~error ();
+          render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error)
 
 let dispatch_issue orchestrator issue =
   let target_start_status = start_status orchestrator issue in
@@ -791,6 +908,7 @@ let poll_once orchestrator =
              && retrying_due orchestrator issue)
     in
     if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
+    maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
     render_poll_completed orchestrator (List.length dispatchable)
   with exn ->
     let msg = Printexc.to_string exn in
