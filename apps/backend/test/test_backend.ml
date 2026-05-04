@@ -831,6 +831,53 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           Alcotest.(check int) "retry attempt" 1 retry.attempt
       | [] -> Alcotest.fail "expected retry row")
 
+let test_stage_commit_requires_code_changes () =
+  with_temp_dir "symphony-empty-commit-" (fun root ->
+      Alcotest.(check int) "git init" 0 (Sys.command ("git init -q " ^ Util.shell_quote root));
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "In progress" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
+      let stage =
+        Some
+          {
+            Config.states = [ "In progress" ];
+            agent = "engineer";
+            start_status = None;
+            success_status = Some "In review";
+            retry_status = Some "Todo";
+            commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message };
+          }
+      in
+      match Orchestrator.git_commit_stage_changes config issue stage (Some "In review") with
+      | Ok () -> Alcotest.fail "empty commit-required stages must fail"
+      | Error error -> Alcotest.(check string) "empty commit error" "commit required but agent produced no code changes" error)
+
 let () =
   Alcotest.run "symphony-backend"
     [
@@ -868,5 +915,6 @@ let () =
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "retries when success status move fails" `Quick test_orchestrator_retries_when_success_status_move_fails;
+          Alcotest.test_case "stage commit requires code changes" `Quick test_stage_commit_requires_code_changes;
         ] );
     ]

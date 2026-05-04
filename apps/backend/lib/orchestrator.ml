@@ -226,7 +226,7 @@ let git_commit_stage_changes config issue stage next_status =
           | Error error -> Error error
           | Ok false ->
               render_commit_skipped issue.Issue.identifier;
-              Ok ()
+              Error "commit required but agent produced no code changes"
           | Ok true ->
               let message = render_commit_message issue (Some stage) next_status policy in
               match run_shell_capture ~cwd:root "git add -A" with
@@ -235,7 +235,7 @@ let git_commit_stage_changes config issue stage next_status =
                   match run_shell_capture ~cwd:root "git diff --cached --quiet" with
                   | Ok _ ->
                       render_commit_skipped issue.Issue.identifier;
-                      Ok ()
+                      Error "commit required but no staged changes were found"
                   | Error _ ->
                       let command = Printf.sprintf "git commit -m %s" (Util.shell_quote message) in
                       match run_shell_capture ~cwd:root command with
