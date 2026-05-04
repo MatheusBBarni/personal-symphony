@@ -93,7 +93,7 @@ function Dashboard(props) {
               className: "flex items-center justify-between border-b border-zinc-800 px-4 py-3"
             }),
             snapshot.issues.length === 0 && snapshot.statusOrder.length === 0 ? JsxRuntime.jsx("div", {
-                children: "No project issues were returned by the latest poll.",
+                children: "No project issues were returned by the latest snapshot.",
                 className: "p-4 text-sm text-zinc-400"
               }) : JsxRuntime.jsx("div", {
                 children: JsxRuntime.jsx("div", {
@@ -237,9 +237,9 @@ function Dashboard(props) {
                       }),
                       JsxRuntime.jsxs("div", {
                         children: [
-                          "State API: ",
+                          "Live state: ",
                           JsxRuntime.jsx("code", {
-                            children: "/api/v1/state",
+                            children: "/api/v1/state/live",
                             className: "text-sky-200"
                           })
                         ]
@@ -247,7 +247,7 @@ function Dashboard(props) {
                     ]
                   }) : null,
                 JsxRuntime.jsx("span", {
-                  children: "OCaml API",
+                  children: "Live OCaml API",
                   className: "rounded-md border border-emerald-700/60 bg-emerald-950 px-3 py-1 font-medium text-emerald-200"
                 })
               ],

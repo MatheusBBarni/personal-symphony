@@ -20,6 +20,7 @@
     "backend:test": "opam exec -- dune runtest",
     "backend:dev": "opam exec -- dune exec symphony -- --port 8080 --web WORKFLOW.example.md",
     "frontend:dev": "pnpm --filter @personal-symphony/frontend dev",
-    "frontend:build": "pnpm --filter @personal-symphony/frontend build"
+    "frontend:build": "pnpm --filter @personal-symphony/frontend build",
+    "frontend:test": "pnpm --filter @personal-symphony/frontend test:live"
   }
 }

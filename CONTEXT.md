@@ -243,11 +243,16 @@ _Avoid_: reinitialize, reset
 - Personal Symphony starts the **Web Dashboard** when requested with `--web`.
 - A **Web Dashboard Refactor** may change how Runtime State is presented in the **Web Dashboard**.
 - A **Web Dashboard Refactor** must preserve the semantics of **Runtime State**.
+- The current **Web Dashboard Refactor** must not require backend API changes.
 - A **Web Dashboard Refactor** may follow a **Web Dashboard Mock** for visual structure.
 - A **Web Dashboard Mock** must not replace the established Personal Symphony domain language.
 - The **Web Dashboard** should derive its visible project board columns from Runtime State status order and issue states.
 - A **Web Dashboard Mock** must not hard-code project board columns that conflict with Runtime State.
 - The **Web Dashboard** should show issue metadata by default and expose task execution details only when they help the operator understand running, retrying, or attention-needed work.
+- The **Web Dashboard** should use Running, Retrying, and Total Tokens as its primary operational metrics.
+- The **Web Dashboard** should present Readiness Gaps and the Runtime State global last error as attention banners.
+- The **Web Dashboard** should not present rate limit data until there is a clear operator action attached to it.
+- The current **Web Dashboard Refactor** targets desktop Web Dashboard usage first.
 - A **Web Dashboard Refactor** may introduce **Web Dashboard Navigation**.
 - **Web Dashboard Navigation** belongs to the **Web Dashboard**, not to orchestration.
 - **Web Dashboard Navigation** should be lightweight browser routing for Web Dashboard sections.
@@ -255,6 +260,7 @@ _Avoid_: reinitialize, reset
 - **Audio Notification Configuration** changes browser-local preferences only.
 - **Audio Notification Configuration** does not change **Runtime Settings**.
 - In the current **Web Dashboard Refactor**, the Configuration section exists only for **Audio Notification Configuration**.
+- The current **Web Dashboard Refactor** follows the Audio Notification work that provides **Audio Notification Configuration** behavior.
 - A **Web Dashboard** may use one **Live Dashboard Connection** for Runtime State updates.
 - A **Live Dashboard Connection** sends a full **Runtime State** snapshot when it opens and after each Runtime State change.
 - A **Web Dashboard** may emit an **Audio Notification** after observing a Runtime State transition that needs user attention.
