@@ -1,3 +1,4 @@
+%%raw(`import "@heroui/react/styles";`)
 %%raw(`import "./styles.css";`)
 %%raw(`
 function shortDescription(value) {
@@ -65,7 +66,6 @@ type runtimeState = {
 
 @val external shortDescription: string => string = "shortDescription"
 @val external arrayOrEmpty: array<'value> => array<'value> = "arrayOrEmpty"
-@module("./liveState.js") external connectLiveState: (runtimeState => unit, string => unit) => unit = "connectLiveState"
 external audioNotificationState: runtimeState => AudioNotifications.runtimeState = "%identity"
 
 let readinessText = state =>
@@ -94,14 +94,22 @@ let taskErrorForIssue = (state, issueId) => {
 }
 
 let renderDashboard = (root, ~snapshot, ~error, ~audioEnabled, ~onAudioToggle) =>
-  root->render(<Dashboard snapshot error audioEnabled onAudioToggle />)
+  root->render(
+    <ReactRouter.HashRouter>
+      <Dashboard snapshot error audioEnabled onAudioToggle />
+    </ReactRouter.HashRouter>,
+  )
 
 let snapshotFromState = state => {
   Dashboard.running: state.counts.running->Int.toString,
   retrying: state.counts.retrying->Int.toString,
   tokens: state.codex_totals.total_tokens->Int.toString,
   generatedAt: state.generated_at,
-  lastError: readinessText(state),
+  readinessGaps: readinessText(state),
+  lastError: switch state.last_error {
+  | Some(value) => value
+  | None => ""
+  },
   statusOrder: arrayOrEmpty(state.status_order),
   issues: arrayOrEmpty(state.issues)->Array.map(issue => {
     let description = switch issue.description {
@@ -142,7 +150,7 @@ switch getElementById("root")->Nullable.toOption {
       },
     )
   rerender()
-  connectLiveState(
+  ignore(LiveState.connectLiveState(
     state => {
       let previousAudioState = switch latestState.contents {
       | Some(previous) => Some(audioNotificationState(previous))
@@ -163,6 +171,6 @@ switch getElementById("root")->Nullable.toOption {
       latestError := Some(message)
       rerender()
     },
-  )
+  ))
 | None => ()
 }
