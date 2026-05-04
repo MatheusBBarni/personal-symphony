@@ -98,6 +98,10 @@ let render_terminal_console config state =
       Printf.printf "  %s\n%!" (dim "Dispatch is disabled until readiness gaps are resolved.")
 
 let run_legacy workflow_path port once =
+  let run_until_stopped f =
+    f ();
+    0
+  in
   try
     let workflow, config = load_config workflow_path in
     let state = readiness_state config in
@@ -113,8 +117,7 @@ let run_legacy workflow_path port once =
     else
       let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
       let live = Server.create_live_state ~get_state:(fun () -> state) in
-      Server.serve ~live ~port ~get_state:(fun () -> state) ();
-      0
+      run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
   with
   | Workflow.Error err ->
       Printf.eprintf "event=startup outcome=failed reason=%s\n%!" (Workflow.string_of_error err);
@@ -135,6 +138,10 @@ let load_runtime_config home =
   (config, prompt_template)
 
 let run_runtime port once web =
+  let run_until_stopped f =
+    f ();
+    0
+  in
   try
     match Runtime_home.require_workspace_root () with
     | Error msg ->
@@ -159,14 +166,13 @@ let run_runtime port once web =
                   let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
                   render_web_dashboard_starting ~port;
                   let live = Server.create_live_state ~get_state:(fun () -> state) in
-                  Server.serve ~live ~port ~get_state:(fun () -> state) ();
-                  0
+                  run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
               | Cli_mode.Terminal_console ->
                   render_terminal_console config state;
-                  while true do
-                    Unix.sleep 60
-                  done;
-                  0)
+                  run_until_stopped (fun () ->
+                      while true do
+                        Unix.sleep 60
+                      done))
           | Runtime_policy.Run_orchestrator ->
               (match mode with
               | Cli_mode.Web_dashboard ->
@@ -184,13 +190,12 @@ let run_runtime port once web =
                   in
                   orchestrator_ref := Some orchestrator;
                   ignore (Thread.create Orchestrator.run_forever orchestrator);
-                  Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ();
-                  0
+                  run_until_stopped (fun () ->
+                      Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
               | Cli_mode.Terminal_console ->
                   let orchestrator = Orchestrator.make ~config ~prompt_template () in
                   render_terminal_console config state;
-                  Orchestrator.run_forever orchestrator;
-                  0)
+                  run_until_stopped (fun () -> Orchestrator.run_forever orchestrator))
   with
   | Runtime_home.Runtime_home_error msg | Config.Invalid_config msg | Prompt.Template_render_error msg
   | Workspace.Workspace_error msg ->
