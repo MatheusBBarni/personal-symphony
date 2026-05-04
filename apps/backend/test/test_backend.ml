@@ -1514,6 +1514,34 @@ let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launc
       Orchestrator.poll_once orchestrator;
       Alcotest.(check (option string)) "launched from reused task branch" (Some "symphony/task-11") !launched_branch)
 
+let test_orchestrator_rejects_existing_non_worktree_workspace () =
+  with_temp_dir "symphony-existing-non-worktree-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I10" ~identifier:"#12" ~title:"Twelve" ~state:"In progress" in
+      Util.mkdir_p config.workspace.root;
+      let stale_workspace = Filename.concat config.workspace.root "_12" in
+      Unix.mkdir stale_workspace 0o755;
+      let launches = ref 0 in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launches;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launches;
+      Alcotest.(check (list string)) "attention status" [ "Human attention" ] (List.rev !statuses);
+      Alcotest.(check (option string)) "last error"
+        (Some (stale_workspace ^ " exists but is not an Agent Worktree"))
+        (Orchestrator.get_state orchestrator).last_error)
+
 let test_stage_commit_pushes_task_branch () =
   with_temp_dir "symphony-stage-push-" (fun root ->
       let remote = Filename.concat root "remote.git" in
@@ -1761,6 +1789,7 @@ let () =
           Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
           Alcotest.test_case "reuses worktree for existing in-progress task"
             `Quick test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch;
+          Alcotest.test_case "rejects existing non-worktree workspace" `Quick test_orchestrator_rejects_existing_non_worktree_workspace;
           Alcotest.test_case "pushes task branch after stage commit" `Quick test_stage_commit_pushes_task_branch;
           Alcotest.test_case "fast-forwards task branch and removes worktree" `Quick test_auto_merge_fast_forwards_and_removes_worktree;
           Alcotest.test_case "can remove task branch after merge" `Quick test_cleanup_can_remove_task_branch_after_merge;

@@ -232,6 +232,13 @@ let git_ref_exists root refname =
   | Ok _ -> true
   | Error _ -> false
 
+let worktree_branch path =
+  if Sys.file_exists path && Sys.is_directory path then
+    match (run_shell_capture ~cwd:path "git rev-parse --show-toplevel", run_shell_capture ~cwd:path "git branch --show-current") with
+    | Ok top_level, Ok branch when Unix.realpath top_level = Unix.realpath path && Util.trim branch <> "" -> Some (Util.trim branch)
+    | _ -> None
+  else None
+
 let issue_branch_key issue =
   let digits =
     issue.Issue.identifier |> String.to_seq
@@ -255,9 +262,11 @@ let shell_prepare_workspace config ~loop_start_branch issue =
   else
     let workspace_key = Workspace.sanitize issue.Issue.identifier in
     let workspace_path = Filename.concat config.Config.workspace.root workspace_key in
-    if Sys.file_exists workspace_path then
-      Ok (Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier)
-    else
+    match worktree_branch workspace_path with
+    | Some existing when existing = branch -> Ok (Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier)
+    | Some existing -> Error (Printf.sprintf "agent worktree uses %s but expected %s" existing branch)
+    | None when Sys.file_exists workspace_path -> Error (workspace_path ^ " exists but is not an Agent Worktree")
+    | None ->
       match require_clean_loop_start config.repository_root with
       | Error _ as error -> error
       | Ok () ->
