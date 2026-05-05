@@ -58,9 +58,11 @@ pnpm npm:validate:release
 ```
 
 The GitHub Actions `Export npm package` workflow builds those binaries on Linux, macOS, and Windows,
-assembles the npm tarball, uploads the tarball and binaries as a GitHub workflow artifact, and uploads
-the same files to a GitHub Release when run from a `v*` tag. Manual runs can publish to npm when
-`publish_npm` is enabled and the repository has an `NPM_TOKEN` secret.
+assembles the npm tarball, uploads the tarball and binaries as a GitHub workflow artifact, and publishes
+the same files to a GitHub Release with the npm package URL. A `v*` tag uses that tag for the release;
+manual runs publish a `v<package.json version>` release when `publish_npm` is enabled and the repository
+has an `NPM_TOKEN` secret. The npm package is available at
+https://www.npmjs.com/package/symphony-orchestrator.
 
 ## Set Up In A Workspace Repository
 
