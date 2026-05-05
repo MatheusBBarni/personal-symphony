@@ -48,6 +48,10 @@ _Avoid_: main branch, default branch, protected branch
 The project status for a task whose agent work completed but whose Task Branch could not be auto-merged.
 _Avoid_: retry status, review status, failed status
 
+**Manual Task Merge**:
+A one-shot operator CLI action that integrates explicitly selected completed Agent Worktrees or Task Branches into the current Loop-Start Branch.
+_Avoid_: manual auto-merge, branch merge mode, raw git merge
+
 **Environment Template**:
 The committed `.symphony/.env.example` file that lists required runtime variables without secret values.
 _Avoid_: sample env, example secrets
@@ -226,6 +230,11 @@ _Avoid_: reinitialize, reset
 - Symphony may auto-merge a completed **Task Branch** into the **Loop-Start Branch** only when the **Loop-Start Branch** is not a **Protected Trunk Branch**.
 - Auto-merge of a **Task Branch** into the **Loop-Start Branch** is fast-forward only.
 - When auto-merge fails, Symphony may move the task to a **Merge Attention Status**.
+- **Manual Task Merge** integrates selected completed task work with `--merge` without running normal orchestration.
+- **Manual Task Merge** accepts issue identifiers such as `20` and `#20`; it does not accept raw **Task Branch** names.
+- **Manual Task Merge** preflights every selected task before merging anything, requires clean Loop-Start and Agent Worktrees, and uses fast-forward-only semantics.
+- **Manual Task Merge** may target a **Protected Trunk Branch** because explicit selected issue identifiers are the operator action.
+- **Manual Task Merge** does not push branches, run Startup Reconciliation, dispatch agents, or open a Batch Pull Request.
 - The default **Merge Attention Status** is `Human attention`.
 - The **Merge Attention Status** is paused and not dispatchable.
 - The default **Task Cleanup Policy** removes an **Agent Worktree** after its **Task Branch** is merged.
