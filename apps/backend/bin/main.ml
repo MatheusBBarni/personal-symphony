@@ -89,7 +89,39 @@ let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
 let colors_enabled () =
   Sys.getenv_opt "NO_COLOR" = None
 
-let version = "0.1.1"
+let version_from_package_json package_json =
+  try
+    match Yojson.Basic.from_file package_json |> Yojson.Basic.Util.member "version" with
+    | `String version when Util.trim version <> "" -> Some (Util.trim version)
+    | _ -> None
+  with _ -> None
+
+let rec package_json_in_parent ?(remaining = 8) dir =
+  if remaining < 0 then None
+  else
+    let package_json = Filename.concat dir "package.json" in
+    if Sys.file_exists package_json then Some package_json
+    else
+      let parent = Filename.dirname dir in
+      if parent = dir then None else package_json_in_parent ~remaining:(remaining - 1) parent
+
+let package_json_candidates () =
+  let from_env name =
+    match Sys.getenv_opt name with
+    | Some value when Util.trim value <> "" -> Some value
+    | _ -> None
+  in
+  let launcher_root =
+    from_env "SYMPHONY_LAUNCHER_PATH" |> Option.map (fun path -> path |> Filename.dirname |> Filename.dirname)
+  in
+  let executable_root =
+    Sys.executable_name |> Filename.dirname |> Filename.dirname |> fun root -> Some root
+  in
+  [ from_env "SYMPHONY_PACKAGE_ROOT"; launcher_root; executable_root; Some (Sys.getcwd ()) ]
+  |> List.filter_map (fun root -> Option.bind root package_json_in_parent)
+
+let version =
+  package_json_candidates () |> List.find_map version_from_package_json |> Option.value ~default:"unknown"
 
 let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
 let color code text = ansi code ^ text ^ ansi "0"
