@@ -638,6 +638,184 @@ let test_cli_mode_selection () =
   Alcotest.(check string) "terminal default" "terminal_console" (Cli_mode.(select ~web:false |> to_string));
   Alcotest.(check string) "web flag" "web_dashboard" (Cli_mode.(select ~web:true |> to_string))
 
+let make_fake_npm_install root =
+  let prefix = Filename.concat root "prefix" in
+  let package_root = Filename.concat prefix "lib/node_modules/symphony-orchestrator" in
+  let bin_dir = Filename.concat prefix "bin" in
+  Util.mkdir_p (Filename.concat package_root "bin");
+  Util.mkdir_p bin_dir;
+  Util.write_file (Filename.concat package_root "package.json") {|{"name":"symphony-orchestrator"}|};
+  let launcher_target = Filename.concat package_root "bin/symphony.js" in
+  Util.write_file launcher_target "#!/usr/bin/env node\n";
+  Unix.chmod launcher_target 0o755;
+  let launcher = Filename.concat bin_dir "symphony" in
+  Unix.symlink launcher_target launcher;
+  (prefix, launcher, launcher_target)
+
+let test_update_detects_npm_install_prefix () =
+  with_temp_dir "symphony-update-prefix-" (fun root ->
+      let prefix, launcher, launcher_target = make_fake_npm_install root in
+      match Update_cli.detect_install_shape ~launcher_path:launcher with
+      | Update_cli.Npm_package shape ->
+          Alcotest.(check string) "launcher realpath" (Unix.realpath launcher_target) shape.launcher_path;
+          Alcotest.(check string) "install prefix" (Unix.realpath prefix) (Unix.realpath shape.install_prefix)
+      | Update_cli.Source_checkout path -> Alcotest.fail ("unexpected source checkout: " ^ path)
+      | Update_cli.Unsupported reason -> Alcotest.fail reason)
+
+let test_update_detects_prefix_from_package_launcher () =
+  with_temp_dir "symphony-update-package-launcher-" (fun root ->
+      let prefix, _, launcher_target = make_fake_npm_install root in
+      match Update_cli.detect_install_shape ~launcher_path:launcher_target with
+      | Update_cli.Npm_package shape ->
+          Alcotest.(check string) "launcher realpath" (Unix.realpath launcher_target) shape.launcher_path;
+          Alcotest.(check string) "install prefix" (Unix.realpath prefix) (Unix.realpath shape.install_prefix)
+      | Update_cli.Source_checkout path -> Alcotest.fail ("unexpected source checkout: " ^ path)
+      | Update_cli.Unsupported reason -> Alcotest.fail reason)
+
+let test_update_rejects_source_checkout_launcher () =
+  with_temp_dir "symphony-update-source-" (fun root ->
+      Util.write_file (Filename.concat root "dune-project") "(lang dune 3.0)\n";
+      Util.mkdir_p (Filename.concat root "bin");
+      let launcher = Filename.concat root "bin/symphony.js" in
+      Util.write_file launcher "#!/usr/bin/env node\n";
+      Unix.chmod launcher 0o755;
+      match Update_cli.detect_install_shape ~launcher_path:launcher with
+      | Update_cli.Source_checkout source_root -> Alcotest.(check string) "source root" (Unix.realpath root) source_root
+      | Update_cli.Npm_package _ -> Alcotest.fail "source checkout must not be treated as npm install"
+      | Update_cli.Unsupported reason -> Alcotest.fail reason)
+
+let test_update_prefers_launcher_env () =
+  let original = Sys.getenv_opt "SYMPHONY_LAUNCHER_PATH" in
+  Fun.protect
+    ~finally:(fun () ->
+      match original with
+      | Some value -> Unix.putenv "SYMPHONY_LAUNCHER_PATH" value
+      | None -> Unix.putenv "SYMPHONY_LAUNCHER_PATH" "")
+    (fun () ->
+      Unix.putenv "SYMPHONY_LAUNCHER_PATH" "/tmp/current-symphony";
+      match Update_cli.find_callable () with
+      | Ok path -> Alcotest.(check string) "launcher env" "/tmp/current-symphony" path
+      | Error error -> Alcotest.fail error)
+
+let test_update_noninteractive_requires_yes_before_install () =
+  with_temp_dir "symphony-update-noninteractive-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:false ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
+let test_update_already_current_does_not_require_yes () =
+  with_temp_dir "symphony-update-current-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.1.1"|} }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:false ()
+      in
+      Alcotest.(check int) "exit code" 0 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
+let test_update_discovery_failure_does_not_install () =
+  with_temp_dir "symphony-update-discovery-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 1; output = "offline" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
+let test_update_installs_and_validates_with_yes () =
+  with_temp_dir "symphony-update-yes-" (fun root ->
+      let prefix, launcher, launcher_target = make_fake_npm_install root in
+      let launcher_real = Unix.realpath launcher_target in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else if
+          command
+          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+        then { Update_cli.code = 0; output = "installed" }
+        else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
+        else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
+          { Update_cli.code = 0; output = "0.2.0" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 0 code;
+      Alcotest.(check int) "command count" 4 (List.length !commands))
+
+let test_update_install_failure_does_not_validate () =
+  with_temp_dir "symphony-update-install-failure-" (fun root ->
+      let prefix, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else if
+          command
+          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+        then { Update_cli.code = 1; output = "EACCES" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check int) "discovery and install only" 2 (List.length !commands))
+
+let test_update_validation_failure_is_not_success () =
+  with_temp_dir "symphony-update-validation-" (fun root ->
+      let prefix, launcher, launcher_target = make_fake_npm_install root in
+      let launcher_real = Unix.realpath launcher_target in
+      let runner command =
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else if
+          command
+          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+        then { Update_cli.code = 0; output = "installed" }
+        else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
+        else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
+          { Update_cli.code = 0; output = "0.1.1" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code)
+
 let test_runtime_state_exposes_running_issue_details () =
   let issue =
     {
@@ -679,6 +857,106 @@ let test_runtime_state_exposes_running_issue_details () =
   Alcotest.(check (list string)) "status order"
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
+
+let test_ordered_queue_parses_cli_identifiers () =
+  match Ordered_queue.parse "19,#22,31" with
+  | Error _ -> Alcotest.fail "expected ordered queue parse success"
+  | Ok queue ->
+      Alcotest.(check (list int)) "numbers" [ 19; 22; 31 ] (Ordered_queue.numbers queue);
+      Alcotest.(check (list string)) "identifiers" [ "#19"; "#22"; "#31" ] (Ordered_queue.identifiers queue);
+      (match Ordered_queue.parse "19,,abc,#19" with
+      | Ok _ -> Alcotest.fail "expected ordered queue parse problems"
+      | Error problems ->
+          Alcotest.(check int) "problem count" 3 (List.length problems);
+          Alcotest.(check string) "duplicate" "duplicate issue identifier" (List.hd (List.rev problems)).Ordered_queue.reason)
+
+let test_runtime_state_exposes_ordered_queue () =
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "running"; skip_reason = None };
+          {
+            Runtime_state.issue_identifier = "#2";
+            title = Some "Two";
+            state = "skipped";
+            skip_reason = Some "Issue is no longer in a dispatchable project state.";
+          };
+        ];
+    }
+  in
+  let open Yojson.Safe.Util in
+  let json = Runtime_state.empty ~ordered_queue:queue () |> Runtime_state.to_yojson in
+  let entries = json |> member "ordered_queue" |> member "entries" |> to_list in
+  Alcotest.(check int) "entry count" 2 (List.length entries);
+  Alcotest.(check string) "first state" "running" (List.hd entries |> member "state" |> to_string);
+  Alcotest.(check string) "skip reason" "Issue is no longer in a dispatchable project state."
+    (List.nth entries 1 |> member "skip_reason" |> to_string)
+
+let test_orchestrator_resumes_same_ordered_queue_state () =
+  with_temp_dir "symphony-queue-resume-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [
+              { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "completed"; skip_reason = None };
+              { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "pending"; skip_reason = None };
+            ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let same_queue =
+        match Ordered_queue.parse "#2,#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let same = Orchestrator.make ~ordered_queue:same_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      (match (Orchestrator.get_state same).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "resumed states" [ "completed"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected resumed ordered queue");
+      let different_queue =
+        match Ordered_queue.parse "#1,#2" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let different =
+        Orchestrator.make ~ordered_queue:different_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      match (Orchestrator.get_state different).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "different queue resets" [ "pending"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected new ordered queue")
 
 let test_runtime_state_exposes_goal_usage_when_available () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add goal usage" ~state:"In progress" in
@@ -1464,6 +1742,75 @@ let test_orchestrator_dispatch_limits () =
       Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "still capped" 2 (List.length state.Runtime_state.running))
+
+let test_orchestrator_dispatches_ordered_queue_only_in_order () =
+  with_temp_dir "symphony-orchestrator-queue-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "cat";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 1000;
+              read_timeout_ms = 1000;
+              stall_timeout_ms = 1000;
+            };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issues =
+        [
+          Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Three" ~state:"Todo";
+          Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo";
+          Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Two" ~state:"Todo";
+        ]
+      in
+      let ordered_queue =
+        match Ordered_queue.parse "#2,#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "launch order" [ "#2"; "#1" ] (List.rev !launched);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "only queued running" 2 (List.length state.Runtime_state.running);
+      match state.Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected ordered queue state"
+      | Some queue ->
+          Alcotest.(check (list string)) "queue states" [ "running"; "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries))
 
 let test_orchestrator_pauses_tracker_after_rate_limit () =
   with_temp_dir "symphony-orchestrator-rate-limit-" (fun root ->
@@ -2829,6 +3176,9 @@ let () =
       ( "runtime-state",
         [
           Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
+          Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
+          Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
+          Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
         ] );
       ( "server",
@@ -2840,6 +3190,17 @@ let () =
       ( "cli",
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
+          Alcotest.test_case "detects update Install Prefix" `Quick test_update_detects_npm_install_prefix;
+          Alcotest.test_case "detects prefix from package launcher" `Quick
+            test_update_detects_prefix_from_package_launcher;
+          Alcotest.test_case "rejects source checkout updates" `Quick test_update_rejects_source_checkout_launcher;
+          Alcotest.test_case "prefers launcher environment" `Quick test_update_prefers_launcher_env;
+          Alcotest.test_case "requires --yes when non-interactive" `Quick test_update_noninteractive_requires_yes_before_install;
+          Alcotest.test_case "already current skips confirmation" `Quick test_update_already_current_does_not_require_yes;
+          Alcotest.test_case "discovery failure does not install" `Quick test_update_discovery_failure_does_not_install;
+          Alcotest.test_case "installs and validates update" `Quick test_update_installs_and_validates_with_yes;
+          Alcotest.test_case "install failure does not validate" `Quick test_update_install_failure_does_not_validate;
+          Alcotest.test_case "fails validation mismatch" `Quick test_update_validation_failure_is_not_success;
           Alcotest.test_case "ready terminal mode runs orchestrator" `Quick test_ready_terminal_mode_runs_orchestrator;
         ] );
       ( "github-tracker",
@@ -2853,6 +3214,7 @@ let () =
       ( "orchestrator",
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
+          Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;

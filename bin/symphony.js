@@ -18,7 +18,11 @@ function executableCandidate() {
 }
 
 function run(command, args, options = {}) {
-  const child = spawn(command, args, { stdio: "inherit", ...options });
+  const child = spawn(command, args, {
+    stdio: "inherit",
+    env: { ...process.env, SYMPHONY_LAUNCHER_PATH: process.argv[1] },
+    ...options
+  });
   child.on("exit", (code, signal) => {
     if (signal) {
       process.kill(process.pid, signal);
