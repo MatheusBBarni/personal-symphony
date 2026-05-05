@@ -227,7 +227,7 @@ let init () =
 
 open Cmdliner
 
-let version = "0.1.0"
+let version = "0.1.1"
 
 let workflow_arg =
   Arg.(value & pos 0 (some string) None & info [] ~docv:"WORKFLOW" ~doc:"Optional legacy WORKFLOW.md path.")
