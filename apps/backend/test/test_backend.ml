@@ -662,6 +662,16 @@ let test_update_detects_npm_install_prefix () =
       | Update_cli.Source_checkout path -> Alcotest.fail ("unexpected source checkout: " ^ path)
       | Update_cli.Unsupported reason -> Alcotest.fail reason)
 
+let test_update_detects_prefix_from_package_launcher () =
+  with_temp_dir "symphony-update-package-launcher-" (fun root ->
+      let prefix, _, launcher_target = make_fake_npm_install root in
+      match Update_cli.detect_install_shape ~launcher_path:launcher_target with
+      | Update_cli.Npm_package shape ->
+          Alcotest.(check string) "launcher realpath" (Unix.realpath launcher_target) shape.launcher_path;
+          Alcotest.(check string) "install prefix" (Unix.realpath prefix) (Unix.realpath shape.install_prefix)
+      | Update_cli.Source_checkout path -> Alcotest.fail ("unexpected source checkout: " ^ path)
+      | Update_cli.Unsupported reason -> Alcotest.fail reason)
+
 let test_update_rejects_source_checkout_launcher () =
   with_temp_dir "symphony-update-source-" (fun root ->
       Util.write_file (Filename.concat root "dune-project") "(lang dune 3.0)\n";
@@ -3009,6 +3019,8 @@ let () =
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
           Alcotest.test_case "detects update Install Prefix" `Quick test_update_detects_npm_install_prefix;
+          Alcotest.test_case "detects prefix from package launcher" `Quick
+            test_update_detects_prefix_from_package_launcher;
           Alcotest.test_case "rejects source checkout updates" `Quick test_update_rejects_source_checkout_launcher;
           Alcotest.test_case "prefers launcher environment" `Quick test_update_prefers_launcher_env;
           Alcotest.test_case "requires --yes when non-interactive" `Quick test_update_noninteractive_requires_yes_before_install;

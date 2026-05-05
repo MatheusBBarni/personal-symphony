@@ -43,6 +43,17 @@ let infer_prefix_from_package_root package_root =
     let lib_dir = Filename.dirname node_modules in
     if Filename.basename lib_dir = "lib" then Some (Filename.dirname lib_dir) else None
 
+let is_symlink path =
+  try (Unix.lstat path).st_kind = Unix.S_LNK with Unix.Unix_error _ -> false
+
+let infer_prefix ~raw_launcher_path ~resolved_launcher_path ~package_root =
+  if is_symlink raw_launcher_path then
+    match realpath_opt raw_launcher_path with
+    | Some raw_real when raw_real = resolved_launcher_path ->
+      infer_prefix_from_launcher raw_launcher_path
+    | _ -> infer_prefix_from_package_root package_root
+  else infer_prefix_from_package_root package_root
+
 let detect_install_shape ~launcher_path =
   let raw_launcher_path = launcher_path in
   let resolved_launcher_path =
@@ -53,11 +64,7 @@ let detect_install_shape ~launcher_path =
   | None ->
       let package_root = Filename.dirname (Filename.dirname resolved_launcher_path) in
       if read_package_name package_root = Some package_name then
-        let install_prefix =
-          match infer_prefix_from_launcher raw_launcher_path with
-          | Some prefix -> Some prefix
-          | None -> infer_prefix_from_package_root package_root
-        in
+        let install_prefix = infer_prefix ~raw_launcher_path ~resolved_launcher_path ~package_root in
         match install_prefix with
         | Some install_prefix -> Npm_package { launcher_path = resolved_launcher_path; package_root; install_prefix }
         | None -> Unsupported ("could not identify the Install Prefix that owns " ^ resolved_launcher_path)
