@@ -638,6 +638,184 @@ let test_cli_mode_selection () =
   Alcotest.(check string) "terminal default" "terminal_console" (Cli_mode.(select ~web:false |> to_string));
   Alcotest.(check string) "web flag" "web_dashboard" (Cli_mode.(select ~web:true |> to_string))
 
+let make_fake_npm_install root =
+  let prefix = Filename.concat root "prefix" in
+  let package_root = Filename.concat prefix "lib/node_modules/symphony-orchestrator" in
+  let bin_dir = Filename.concat prefix "bin" in
+  Util.mkdir_p (Filename.concat package_root "bin");
+  Util.mkdir_p bin_dir;
+  Util.write_file (Filename.concat package_root "package.json") {|{"name":"symphony-orchestrator"}|};
+  let launcher_target = Filename.concat package_root "bin/symphony.js" in
+  Util.write_file launcher_target "#!/usr/bin/env node\n";
+  Unix.chmod launcher_target 0o755;
+  let launcher = Filename.concat bin_dir "symphony" in
+  Unix.symlink launcher_target launcher;
+  (prefix, launcher, launcher_target)
+
+let test_update_detects_npm_install_prefix () =
+  with_temp_dir "symphony-update-prefix-" (fun root ->
+      let prefix, launcher, launcher_target = make_fake_npm_install root in
+      match Update_cli.detect_install_shape ~launcher_path:launcher with
+      | Update_cli.Npm_package shape ->
+          Alcotest.(check string) "launcher realpath" (Unix.realpath launcher_target) shape.launcher_path;
+          Alcotest.(check string) "install prefix" (Unix.realpath prefix) (Unix.realpath shape.install_prefix)
+      | Update_cli.Source_checkout path -> Alcotest.fail ("unexpected source checkout: " ^ path)
+      | Update_cli.Unsupported reason -> Alcotest.fail reason)
+
+let test_update_detects_prefix_from_package_launcher () =
+  with_temp_dir "symphony-update-package-launcher-" (fun root ->
+      let prefix, _, launcher_target = make_fake_npm_install root in
+      match Update_cli.detect_install_shape ~launcher_path:launcher_target with
+      | Update_cli.Npm_package shape ->
+          Alcotest.(check string) "launcher realpath" (Unix.realpath launcher_target) shape.launcher_path;
+          Alcotest.(check string) "install prefix" (Unix.realpath prefix) (Unix.realpath shape.install_prefix)
+      | Update_cli.Source_checkout path -> Alcotest.fail ("unexpected source checkout: " ^ path)
+      | Update_cli.Unsupported reason -> Alcotest.fail reason)
+
+let test_update_rejects_source_checkout_launcher () =
+  with_temp_dir "symphony-update-source-" (fun root ->
+      Util.write_file (Filename.concat root "dune-project") "(lang dune 3.0)\n";
+      Util.mkdir_p (Filename.concat root "bin");
+      let launcher = Filename.concat root "bin/symphony.js" in
+      Util.write_file launcher "#!/usr/bin/env node\n";
+      Unix.chmod launcher 0o755;
+      match Update_cli.detect_install_shape ~launcher_path:launcher with
+      | Update_cli.Source_checkout source_root -> Alcotest.(check string) "source root" (Unix.realpath root) source_root
+      | Update_cli.Npm_package _ -> Alcotest.fail "source checkout must not be treated as npm install"
+      | Update_cli.Unsupported reason -> Alcotest.fail reason)
+
+let test_update_prefers_launcher_env () =
+  let original = Sys.getenv_opt "SYMPHONY_LAUNCHER_PATH" in
+  Fun.protect
+    ~finally:(fun () ->
+      match original with
+      | Some value -> Unix.putenv "SYMPHONY_LAUNCHER_PATH" value
+      | None -> Unix.putenv "SYMPHONY_LAUNCHER_PATH" "")
+    (fun () ->
+      Unix.putenv "SYMPHONY_LAUNCHER_PATH" "/tmp/current-symphony";
+      match Update_cli.find_callable () with
+      | Ok path -> Alcotest.(check string) "launcher env" "/tmp/current-symphony" path
+      | Error error -> Alcotest.fail error)
+
+let test_update_noninteractive_requires_yes_before_install () =
+  with_temp_dir "symphony-update-noninteractive-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:false ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
+let test_update_already_current_does_not_require_yes () =
+  with_temp_dir "symphony-update-current-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.1.1"|} }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:false ()
+      in
+      Alcotest.(check int) "exit code" 0 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
+let test_update_discovery_failure_does_not_install () =
+  with_temp_dir "symphony-update-discovery-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 1; output = "offline" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
+let test_update_installs_and_validates_with_yes () =
+  with_temp_dir "symphony-update-yes-" (fun root ->
+      let prefix, launcher, launcher_target = make_fake_npm_install root in
+      let launcher_real = Unix.realpath launcher_target in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else if
+          command
+          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+        then { Update_cli.code = 0; output = "installed" }
+        else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
+        else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
+          { Update_cli.code = 0; output = "0.2.0" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 0 code;
+      Alcotest.(check int) "command count" 4 (List.length !commands))
+
+let test_update_install_failure_does_not_validate () =
+  with_temp_dir "symphony-update-install-failure-" (fun root ->
+      let prefix, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else if
+          command
+          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+        then { Update_cli.code = 1; output = "EACCES" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check int) "discovery and install only" 2 (List.length !commands))
+
+let test_update_validation_failure_is_not_success () =
+  with_temp_dir "symphony-update-validation-" (fun root ->
+      let prefix, launcher, launcher_target = make_fake_npm_install root in
+      let launcher_real = Unix.realpath launcher_target in
+      let runner command =
+        if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
+        else if
+          command
+          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+        then { Update_cli.code = 0; output = "installed" }
+        else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
+        else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
+          { Update_cli.code = 0; output = "0.1.1" }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code)
+
 let test_runtime_state_exposes_running_issue_details () =
   let issue =
     {
@@ -3012,6 +3190,17 @@ let () =
       ( "cli",
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
+          Alcotest.test_case "detects update Install Prefix" `Quick test_update_detects_npm_install_prefix;
+          Alcotest.test_case "detects prefix from package launcher" `Quick
+            test_update_detects_prefix_from_package_launcher;
+          Alcotest.test_case "rejects source checkout updates" `Quick test_update_rejects_source_checkout_launcher;
+          Alcotest.test_case "prefers launcher environment" `Quick test_update_prefers_launcher_env;
+          Alcotest.test_case "requires --yes when non-interactive" `Quick test_update_noninteractive_requires_yes_before_install;
+          Alcotest.test_case "already current skips confirmation" `Quick test_update_already_current_does_not_require_yes;
+          Alcotest.test_case "discovery failure does not install" `Quick test_update_discovery_failure_does_not_install;
+          Alcotest.test_case "installs and validates update" `Quick test_update_installs_and_validates_with_yes;
+          Alcotest.test_case "install failure does not validate" `Quick test_update_install_failure_does_not_validate;
+          Alcotest.test_case "fails validation mismatch" `Quick test_update_validation_failure_is_not_success;
           Alcotest.test_case "ready terminal mode runs orchestrator" `Quick test_ready_terminal_mode_runs_orchestrator;
         ] );
       ( "github-tracker",
