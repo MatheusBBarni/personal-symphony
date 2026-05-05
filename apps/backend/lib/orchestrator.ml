@@ -22,6 +22,7 @@ type t = {
   mutable state : Runtime_state.t;
   mutable children : child list;
   retry_due : (string, float) Hashtbl.t;
+  mutable tracker_retry_due : float option;
   attempts : (string, int) Hashtbl.t;
   blocked : (string, string) Hashtbl.t;
   launch : launch;
@@ -88,6 +89,10 @@ let render_poll_completed orchestrator candidate_count =
 
 let render_poll_failed msg =
   Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (blue "poll") (red "failed") msg
+
+let render_poll_paused seconds_remaining msg =
+  Printf.eprintf "%s%s %s %s %s %s %ds\n%!" clear_line (dim (clock_time ())) (blue "poll") (yellow "waiting")
+    msg (dim "retry_in") seconds_remaining
 
 let render_dispatch_started issue =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "started")
@@ -500,6 +505,7 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     state = Runtime_state.empty ~status_order:(Config.project_status_order config) ();
     children = [];
     retry_due = Hashtbl.create 16;
+    tracker_retry_due = None;
     attempts = Hashtbl.create 16;
     blocked = Hashtbl.create 16;
     launch;
@@ -521,6 +527,12 @@ let set_state orchestrator state =
 let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
 
 let set_error orchestrator msg = update_state orchestrator (fun state -> { state with Runtime_state.last_error = Some msg })
+
+let seconds_until timestamp =
+  max 1 (int_of_float (ceil (timestamp -. Unix.time ())))
+
+let tracker_retry_pause_message seconds =
+  Printf.sprintf "GitHub API rate limit exceeded; retrying tracker poll in %d seconds" seconds
 
 let file_size = function
   | None -> 0
@@ -1040,26 +1052,43 @@ let reap_children orchestrator =
 let poll_once orchestrator =
   reap_children orchestrator;
   render_poll_started orchestrator;
-  try
-    let candidates = orchestrator.fetch orchestrator.tracker in
-    let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
-    update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
-    let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
-    let dispatchable =
-      candidates
-      |> List.filter (fun issue ->
-             issue_is_active orchestrator issue
-             && (not (is_running orchestrator.state issue))
-             && (not (is_blocked orchestrator issue))
-             && retrying_due orchestrator issue)
-    in
-    if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
-    maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
-    render_poll_completed orchestrator (List.length dispatchable)
-  with exn ->
-    let msg = Printexc.to_string exn in
-    set_error orchestrator msg;
-    render_poll_failed msg
+  match orchestrator.tracker_retry_due with
+  | Some due when Unix.time () < due ->
+      let seconds = seconds_until due in
+      let msg = tracker_retry_pause_message seconds in
+      set_error orchestrator msg;
+      render_poll_paused seconds msg
+  | _ -> (
+      orchestrator.tracker_retry_due <- None;
+      try
+        let candidates = orchestrator.fetch orchestrator.tracker in
+        let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
+        update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
+        let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
+        let dispatchable =
+          candidates
+          |> List.filter (fun issue ->
+                 issue_is_active orchestrator issue
+                 && (not (is_running orchestrator.state issue))
+                 && (not (is_blocked orchestrator issue))
+                 && retrying_due orchestrator issue)
+        in
+        if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
+        maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
+        render_poll_completed orchestrator (List.length dispatchable)
+      with
+      | Github_tracker.Tracker_rate_limited (msg, retry_after_ms) ->
+          let retry_after_ms = max 1 retry_after_ms in
+          let due = Unix.time () +. (float_of_int retry_after_ms /. 1000.) in
+          orchestrator.tracker_retry_due <- Some due;
+          let seconds = seconds_until due in
+          let pause_msg = tracker_retry_pause_message seconds ^ ": " ^ msg in
+          set_error orchestrator pause_msg;
+          render_poll_paused seconds msg
+      | exn ->
+          let msg = Printexc.to_string exn in
+          set_error orchestrator msg;
+          render_poll_failed msg)
 
 let run_forever orchestrator =
   while true do

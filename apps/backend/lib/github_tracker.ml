@@ -1,6 +1,9 @@
 type t = { config : Config.tracker }
 
 exception Tracker_error of string
+exception Tracker_rate_limited of string * int
+
+let rate_limit_retry_delay_ms = 300000
 
 let make config = { config }
 
@@ -138,22 +141,37 @@ let run_gh_graphql ~query ~variables =
            Printf.sprintf "%s %s=%s" flag (Util.shell_quote k) (Util.shell_quote v))
     |> String.concat " "
   in
-  let command = Printf.sprintf "gh api graphql %s -f query=%s 2>/dev/null" variable_flags (Util.shell_quote query) in
+  let command = Printf.sprintf "gh api graphql %s -f query=%s 2>&1" variable_flags (Util.shell_quote query) in
   let ic = Unix.open_process_in command in
-  let output =
-    Fun.protect
-      ~finally:(fun () -> ignore (Unix.close_process_in ic))
-      (fun () ->
-        let buf = Buffer.create 4096 in
-        (try
-           while true do
-             Buffer.add_string buf (input_line ic);
-             Buffer.add_char buf '\n'
-           done
-         with End_of_file -> ());
-        Buffer.contents buf)
+  let buf = Buffer.create 4096 in
+  let read_output () =
+    try
+      while true do
+        Buffer.add_string buf (input_line ic);
+        Buffer.add_char buf '\n'
+      done
+    with End_of_file -> ()
   in
-  Yojson.Safe.from_string output
+  let status =
+    try
+      read_output ();
+      Unix.close_process_in ic
+    with exn ->
+      ignore (Unix.close_process_in ic);
+      raise exn
+  in
+  let output = Buffer.contents buf |> Util.trim in
+  match Yojson.Safe.from_string output with
+  | json -> json
+  | exception Yojson.Json_error _ ->
+      let status_text =
+        match status with
+        | Unix.WEXITED code -> Printf.sprintf "exit code %d" code
+        | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+        | Unix.WSTOPPED signal -> Printf.sprintf "stopped by signal %d" signal
+      in
+      let detail = if output = "" then status_text else output in
+      raise (Tracker_error ("GitHub API request failed: " ^ detail))
 
 let member name = function
   | `Assoc fields -> List.assoc_opt name fields |> Option.value ~default:`Null
@@ -166,6 +184,43 @@ let graphql_error_messages json =
       |> List.filter_map (fun error ->
              match member "message" error with `String message -> Some message | _ -> None)
   | _ -> []
+
+let contains_substring ~needle text =
+  let needle_len = String.length needle in
+  let text_len = String.length text in
+  let rec loop index =
+    if needle_len = 0 then true
+    else if index + needle_len > text_len then false
+    else if String.sub text index needle_len = needle then true
+    else loop (index + 1)
+  in
+  loop 0
+
+let rate_limit_message message =
+  contains_substring ~needle:"rate limit" (String.lowercase_ascii message)
+
+let github_api_error_messages json =
+  let graphql_messages = graphql_error_messages json in
+  let rest_messages =
+    match member "message" json with
+    | `String message -> [ message ]
+    | _ -> []
+  in
+  graphql_messages @ rest_messages
+
+let github_api_error_remediation messages =
+  let message = String.concat "; " messages in
+  if List.exists rate_limit_message messages then
+    "GitHub API rate limit exceeded. Wait for the GitHub rate-limit window to reset, or authenticate gh with GH_TOKEN/GITHUB_TOKEN that has available quota. Original message: "
+    ^ message
+  else "GitHub API returned: " ^ message
+
+let github_api_error json =
+  match github_api_error_messages json with
+  | [] -> None
+  | messages ->
+      let remediation = github_api_error_remediation messages in
+      if List.exists rate_limit_message messages then Some (`Rate_limited remediation) else Some (`Error remediation)
 
 let has_data path json =
   let value = List.fold_left (fun current name -> member name current) json path in
@@ -331,8 +386,8 @@ let ensure_status_option tracker metadata status =
       let new_option = { id = None; name = status; color = "GRAY"; description = "Created by Personal Symphony" } in
       let query = update_field_options_mutation ~field_id:metadata.field_id ~options:(metadata.options @ [ new_option ]) in
       let json = run_gh_graphql ~query ~variables:[] in
-      let errors = graphql_error_messages json in
-      if errors <> [] then Error ("GitHub API returned: " ^ String.concat "; " errors)
+      let errors = github_api_error_messages json in
+      if errors <> [] then Error (github_api_error_remediation errors)
       else
         match find_option_id ~status (options_from_update_field_json json) with
         | Some option_id -> Ok option_id
@@ -348,9 +403,9 @@ let load_status_metadata tracker issue =
           ("issueId", issue.Issue.id);
         ]
   in
-  match graphql_error_messages json with
+  match github_api_error_messages json with
   | [] -> status_metadata_from_json ~config:tracker.config json
-  | errors -> Error ("GitHub API returned: " ^ String.concat "; " errors)
+  | errors -> Error (github_api_error_remediation errors)
 
 let update_issue_status tracker issue status =
   match tracker.config.api_key with
@@ -372,9 +427,9 @@ let update_issue_status tracker issue status =
                       ("optionId", option_id);
                     ]
               in
-              match graphql_error_messages json with
+              match github_api_error_messages json with
               | [] -> Ok ()
-              | errors -> Error ("GitHub API returned: " ^ String.concat "; " errors)))
+              | errors -> Error (github_api_error_remediation errors)))
 
 let remote_readiness_gaps config =
   match config.Config.tracker.api_key with
@@ -390,7 +445,7 @@ let remote_readiness_gaps config =
                 ("projectNumber", string_of_int config.tracker.project_number);
               ]
         in
-        let errors = graphql_error_messages json in
+        let errors = github_api_error_messages json in
         let data = member "data" json in
         let gaps = ref [] in
         let add requirement remediation = gaps := { Config.requirement; remediation } :: !gaps in
@@ -410,9 +465,17 @@ let remote_readiness_gaps config =
         | [] -> ()
         | messages ->
             add "github.api"
-              ("GitHub API returned: " ^ String.concat "; " messages));
+              (github_api_error_remediation messages));
         List.rev !gaps
-      with exn ->
+      with
+      | Tracker_error msg ->
+        [
+          {
+            Config.requirement = "github.api";
+            remediation = msg;
+          };
+        ]
+      | exn ->
         [
           {
             Config.requirement = "github.api";
@@ -432,6 +495,10 @@ let fetch_candidate_issues tracker =
               ("repo", tracker.config.repo);
             ]
       in
+      (match github_api_error json with
+      | None -> ()
+      | Some (`Rate_limited message) -> raise (Tracker_rate_limited (message, rate_limit_retry_delay_ms))
+      | Some (`Error message) -> raise (Tracker_error message));
       let open Yojson.Safe.Util in
       json |> member "data" |> member "repository" |> member "issues" |> member "nodes" |> to_list
       |> List.filter_map (issue_from_project_node ~config:tracker.config)

@@ -1385,6 +1385,31 @@ let test_github_status_metadata_parsing () =
       Alcotest.(check string) "field id" "PVTSSF_status" metadata.field_id;
       Alcotest.(check int) "options" 2 (List.length metadata.options)
 
+let test_github_api_error_normalization () =
+  let graphql_json =
+    Yojson.Safe.from_string
+      {|{
+  "errors": [
+    { "message": "Could not resolve to a Repository" },
+    { "message": "GitHub API rate limit exceeded for user ID 29718530." }
+  ]
+}|}
+  in
+  let rest_json =
+    Yojson.Safe.from_string
+      {|{ "message": "API rate limit exceeded for user ID 29718530." }|}
+  in
+  let graphql_messages = Github_tracker.github_api_error_messages graphql_json in
+  let rest_messages = Github_tracker.github_api_error_messages rest_json in
+  Alcotest.(check (list string)) "graphql errors"
+    [ "Could not resolve to a Repository"; "GitHub API rate limit exceeded for user ID 29718530." ]
+    graphql_messages;
+  Alcotest.(check (list string)) "top-level message" [ "API rate limit exceeded for user ID 29718530." ] rest_messages;
+  Alcotest.(check bool) "rate remediation"
+    true
+    (String.starts_with ~prefix:"GitHub API rate limit exceeded."
+       (Github_tracker.github_api_error_remediation rest_messages))
+
 let test_orchestrator_dispatch_limits () =
   with_temp_dir "symphony-orchestrator-" (fun root ->
       let config =
@@ -1439,6 +1464,57 @@ let test_orchestrator_dispatch_limits () =
       Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "still capped" 2 (List.length state.Runtime_state.running))
+
+let test_orchestrator_pauses_tracker_after_rate_limit () =
+  with_temp_dir "symphony-orchestrator-rate-limit-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let calls = ref 0 in
+      let fetch _ =
+        incr calls;
+        raise
+          (Github_tracker.Tracker_rate_limited
+             ("GitHub API rate limit exceeded. Original message: API rate limit exceeded for user ID 29718530.", 300000))
+      in
+      let orchestrator =
+        Orchestrator.make ~fetch ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "fetch paused after rate limit" 1 !calls;
+      match (Orchestrator.get_state orchestrator).last_error with
+      | Some error ->
+          Alcotest.(check bool) "pause message" true
+            (String.starts_with ~prefix:"GitHub API rate limit exceeded; retrying tracker poll" error)
+      | None -> Alcotest.fail "expected tracker pause error")
 
 let test_orchestrator_does_not_dispatch_terminal_issues () =
   with_temp_dir "symphony-orchestrator-terminal-" (fun root ->
@@ -2772,10 +2848,12 @@ let () =
           Alcotest.test_case "filters active states" `Quick test_github_active_state_filtering;
           Alcotest.test_case "ignores empty project field values" `Quick test_github_empty_project_field_values_are_ignored;
           Alcotest.test_case "parses status update metadata" `Quick test_github_status_metadata_parsing;
+          Alcotest.test_case "normalizes API errors" `Quick test_github_api_error_normalization;
         ] );
       ( "orchestrator",
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
+          Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
