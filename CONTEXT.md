@@ -176,6 +176,14 @@ _Avoid_: retrying error, global error, any error
 The npm-distributed Personal Symphony package that provides the `symphony` command and carries platform binaries for supported operating systems.
 _Avoid_: npm wrapper, global install
 
+**Update Source**:
+The npm registry package metadata that `symphony update` uses to discover the latest released CLI Package version.
+_Avoid_: latest build, GitHub release lookup
+
+**Install Prefix**:
+The npm global prefix that owns the currently running `symphony` command.
+_Avoid_: global npm, current npm prefix
+
 **Idempotent Bootstrap**:
 A Bootstrap that creates missing Runtime Home files without overwriting user-edited files.
 _Avoid_: reinitialize, reset
@@ -328,6 +336,15 @@ _Avoid_: reinitialize, reset
 - The **Product Repository** provides the **CLI Package**.
 - The **CLI Package** provides the `symphony` command.
 - The **CLI Package** contains Linux x64, macOS x64, macOS arm64, and Windows x64 binaries under `vendor/`.
+- The **Update Source** for normal CLI updates is the npm registry, not GitHub Releases.
+- `symphony update` updates the installed **CLI Package** and does not require a **Workspace Repository**.
+- `symphony update` supports npm-installed **CLI Package** instances and does not update Product Repository source checkouts.
+- `symphony update` requires interactive confirmation before changing an installed **CLI Package** unless the operator passes an explicit non-interactive confirmation flag.
+- `symphony update` installs the latest **CLI Package** into the **Install Prefix** that owns the running command.
+- `symphony update` succeeds only after the updated `symphony` command reports the target version.
+- `symphony update` reports failed update phases and manual repair guidance instead of automatically rolling back partially completed package-manager changes.
+- `symphony update` requires fresh **Update Source** discovery and shows the underlying discovery error when the latest version cannot be resolved.
+- `symphony update` does not retry package installation with elevated privileges when the **Install Prefix** is not writable.
 
 ## Example Dialogue
 

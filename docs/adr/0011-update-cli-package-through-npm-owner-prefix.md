@@ -1,0 +1,3 @@
+# Update CLI Package through npm owner prefix
+
+Personal Symphony will treat npm registry package metadata as the canonical Update Source for `symphony update`, even though release builds may also publish GitHub Release assets. The command updates only npm-installed CLI Package instances by installing the latest package into the Install Prefix that owns the running `symphony` command, then validates that the callable command reports the target version. This avoids mixing package-manager updates with source checkout workflows or ad hoc binary replacement, and keeps permission, cache, and rollback behavior inside npm's normal ownership model.

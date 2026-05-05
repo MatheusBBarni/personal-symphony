@@ -22,6 +22,8 @@ let readiness_state config =
 let colors_enabled () =
   Sys.getenv_opt "NO_COLOR" = None
 
+let version = "0.1.1"
+
 let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
 let color code text = ansi code ^ text ^ ansi "0"
 let blue text = color "34;1" text
@@ -225,9 +227,9 @@ let init () =
     Printf.eprintf "event=init outcome=failed reason=%s\n%!" msg;
     1
 
-open Cmdliner
+let update yes = Update_cli.run ~current_version:version ~yes ()
 
-let version = "0.1.1"
+open Cmdliner
 
 let workflow_arg =
   Arg.(value & pos 0 (some string) None & info [] ~docv:"WORKFLOW" ~doc:"Optional legacy WORKFLOW.md path.")
@@ -241,13 +243,20 @@ let once_arg =
 let web_arg =
   Arg.(value & flag & info [ "web" ] ~doc:"Start the backend and Web Dashboard mode instead of the Terminal Console.")
 
+let yes_arg =
+  Arg.(value & flag & info [ "yes"; "y" ] ~doc:"Update without interactive confirmation.")
+
 let cmd =
   let doc = "Run Personal Symphony from a Git Workspace Repository root." in
   let default = Term.(const run $ workflow_arg $ port_arg $ once_arg $ web_arg) in
   let init_cmd =
     Cmd.v (Cmd.info "init" ~doc:"Create missing .symphony runtime files without overwriting edits.") Term.(const init $ const ())
   in
-  Cmd.group (Cmd.info "symphony" ~doc ~version) ~default [ init_cmd ]
+  let update_cmd =
+    Cmd.v (Cmd.info "update" ~doc:"Update the npm-installed CLI Package to the latest npm release.")
+      Term.(const update $ yes_arg)
+  in
+  Cmd.group (Cmd.info "symphony" ~doc ~version) ~default [ init_cmd; update_cmd ]
 
 let normalize_help_argv argv =
   Array.map
