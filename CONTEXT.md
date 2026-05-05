@@ -356,6 +356,7 @@ _Avoid_: reinitialize, reset
 - Duplicate issue identifiers make an **Ordered Queue** invalid.
 - If an **Ordered Queue Entry** becomes invalid after startup validation, Symphony reports the skipped entry in **Runtime State** and continues with later queue entries.
 - **Runtime State** records the original order and current progress of an active **Ordered Queue**.
+- The **Runtime Home** state directory stores the active **Ordered Queue** Runtime State projection for ordinary process restart resume.
 - The ordered issue sequence identifies an **Ordered Queue** run.
 - Restarting with the same **Ordered Queue** resumes queue progress from **Runtime State** when possible.
 - Restarting with a different **Ordered Queue** starts a new queue run after validation.

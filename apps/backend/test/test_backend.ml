@@ -680,6 +680,106 @@ let test_runtime_state_exposes_running_issue_details () =
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
 
+let test_ordered_queue_parses_cli_identifiers () =
+  match Ordered_queue.parse "19,#22,31" with
+  | Error _ -> Alcotest.fail "expected ordered queue parse success"
+  | Ok queue ->
+      Alcotest.(check (list int)) "numbers" [ 19; 22; 31 ] (Ordered_queue.numbers queue);
+      Alcotest.(check (list string)) "identifiers" [ "#19"; "#22"; "#31" ] (Ordered_queue.identifiers queue);
+      (match Ordered_queue.parse "19,,abc,#19" with
+      | Ok _ -> Alcotest.fail "expected ordered queue parse problems"
+      | Error problems ->
+          Alcotest.(check int) "problem count" 3 (List.length problems);
+          Alcotest.(check string) "duplicate" "duplicate issue identifier" (List.hd (List.rev problems)).Ordered_queue.reason)
+
+let test_runtime_state_exposes_ordered_queue () =
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "running"; skip_reason = None };
+          {
+            Runtime_state.issue_identifier = "#2";
+            title = Some "Two";
+            state = "skipped";
+            skip_reason = Some "Issue is no longer in a dispatchable project state.";
+          };
+        ];
+    }
+  in
+  let open Yojson.Safe.Util in
+  let json = Runtime_state.empty ~ordered_queue:queue () |> Runtime_state.to_yojson in
+  let entries = json |> member "ordered_queue" |> member "entries" |> to_list in
+  Alcotest.(check int) "entry count" 2 (List.length entries);
+  Alcotest.(check string) "first state" "running" (List.hd entries |> member "state" |> to_string);
+  Alcotest.(check string) "skip reason" "Issue is no longer in a dispatchable project state."
+    (List.nth entries 1 |> member "skip_reason" |> to_string)
+
+let test_orchestrator_resumes_same_ordered_queue_state () =
+  with_temp_dir "symphony-queue-resume-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [
+              { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "completed"; skip_reason = None };
+              { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "pending"; skip_reason = None };
+            ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let same_queue =
+        match Ordered_queue.parse "#2,#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let same = Orchestrator.make ~ordered_queue:same_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      (match (Orchestrator.get_state same).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "resumed states" [ "completed"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected resumed ordered queue");
+      let different_queue =
+        match Ordered_queue.parse "#1,#2" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let different =
+        Orchestrator.make ~ordered_queue:different_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      match (Orchestrator.get_state different).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "different queue resets" [ "pending"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected new ordered queue")
+
 let test_runtime_state_exposes_goal_usage_when_available () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add goal usage" ~state:"In progress" in
   let state =
@@ -1464,6 +1564,75 @@ let test_orchestrator_dispatch_limits () =
       Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "still capped" 2 (List.length state.Runtime_state.running))
+
+let test_orchestrator_dispatches_ordered_queue_only_in_order () =
+  with_temp_dir "symphony-orchestrator-queue-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "cat";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 1000;
+              read_timeout_ms = 1000;
+              stall_timeout_ms = 1000;
+            };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issues =
+        [
+          Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Three" ~state:"Todo";
+          Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo";
+          Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Two" ~state:"Todo";
+        ]
+      in
+      let ordered_queue =
+        match Ordered_queue.parse "#2,#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "launch order" [ "#2"; "#1" ] (List.rev !launched);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "only queued running" 2 (List.length state.Runtime_state.running);
+      match state.Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected ordered queue state"
+      | Some queue ->
+          Alcotest.(check (list string)) "queue states" [ "running"; "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries))
 
 let test_orchestrator_pauses_tracker_after_rate_limit () =
   with_temp_dir "symphony-orchestrator-rate-limit-" (fun root ->
@@ -2829,6 +2998,9 @@ let () =
       ( "runtime-state",
         [
           Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
+          Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
+          Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
+          Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
         ] );
       ( "server",
@@ -2853,6 +3025,7 @@ let () =
       ( "orchestrator",
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
+          Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;

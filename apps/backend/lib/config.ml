@@ -383,7 +383,9 @@ let codex_goal_stdin_supported config =
     let probe = "/goal Verify Codex goal stdin support.\n\nReturn ok.\n" in
     let command = codex_probe_command config in
     let shell_command =
-      Printf.sprintf "printf %%s %s | timeout 20s %s >/dev/null 2>&1" (Util.shell_quote probe) command
+      Printf.sprintf
+        "if command -v timeout >/dev/null 2>&1; then printf %%s %s | timeout 20s %s >/dev/null 2>&1; else printf %%s %s | %s >/dev/null 2>&1; fi"
+        (Util.shell_quote probe) command (Util.shell_quote probe) command
     in
     match Unix.system shell_command with Unix.WEXITED 0 -> true | _ -> false
 
