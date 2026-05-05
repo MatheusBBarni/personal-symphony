@@ -20,7 +20,7 @@ function executableCandidate() {
 function run(command, args, options = {}) {
   const child = spawn(command, args, {
     stdio: "inherit",
-    env: { ...process.env, SYMPHONY_LAUNCHER_PATH: process.argv[1] },
+    env: { ...process.env, SYMPHONY_LAUNCHER_PATH: process.argv[1], SYMPHONY_PACKAGE_ROOT: packageRoot },
     ...options
   });
   child.on("exit", (code, signal) => {
