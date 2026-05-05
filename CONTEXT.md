@@ -56,6 +56,10 @@ _Avoid_: sample env, example secrets
 The ignored `.symphony/.env` file that stores local secret values for a Workspace Repository.
 _Avoid_: env file, secrets file
 
+**Codex Home**:
+The user's local Codex configuration directory that may contain reusable skill definitions available to launched agents.
+_Avoid_: global skills folder, user codex folder
+
 **Runtime Contract**:
 The repository-owned files inside the Runtime Home that define Personal Symphony behavior for a Workspace Repository.
 _Avoid_: workflow file, harness config
@@ -92,6 +96,10 @@ _Avoid_: auto push, push every step
 A stage-specific Codex handoff that sets a Codex goal when Symphony launches an agent for that stage.
 _Avoid_: global goal mode, `/goal` setting, issue goal
 
+**Stage Skill Load**:
+A stage-specific skill requirement that Symphony includes whenever a matching Stage Agent runs.
+_Avoid_: global skill, agent skill file, prompt-only skill
+
 **Stage Goal Context**:
 The deterministic issue and stage data used as the Codex goal payload for a Stage Goal Handoff.
 _Avoid_: whole prompt, all context, goal message
@@ -103,6 +111,22 @@ _Avoid_: goal time, timer, duration
 **Orchestration Idle**:
 The orchestration condition where no active issue is running, retrying, or dispatchable.
 _Avoid_: queue empty, all tasks finished, done processing
+
+**Ordered Queue**:
+A CLI-provided sequence of issue identifiers that Personal Symphony uses as the dispatch order for eligible work.
+_Avoid_: project order, priority list, sorted candidates
+
+**Ordered Queue Entry**:
+One issue identifier and its current queue progress within an Ordered Queue.
+_Avoid_: queue item, queued issue, queue row
+
+**Startup Reconciliation**:
+The startup-time check that finds completed-stage Agent Worktree work not present on the Loop-Start Branch and decides whether it can be integrated, skipped, or moved to Merge Attention Status.
+_Avoid_: startup merge, recovery merge, branch cleanup
+
+**Manual Task Merge**:
+A one-shot operator action that explicitly integrates selected completed Task Branches into the Loop-Start Branch and then exits.
+_Avoid_: manual auto-merge, selected startup reconciliation, task import
 
 **Batch Pull Request**:
 A single pull request opened from the Loop-Start Branch after Symphony reaches Orchestration Idle.
@@ -176,6 +200,14 @@ _Avoid_: retrying error, global error, any error
 The npm-distributed Personal Symphony package that provides the `symphony` command and carries platform binaries for supported operating systems.
 _Avoid_: npm wrapper, global install
 
+**Update Source**:
+The npm registry package metadata that `symphony update` uses to discover the latest released CLI Package version.
+_Avoid_: latest build, GitHub release lookup
+
+**Install Prefix**:
+The npm global prefix that owns the currently running `symphony` command.
+_Avoid_: global npm, current npm prefix
+
 **Idempotent Bootstrap**:
 A Bootstrap that creates missing Runtime Home files without overwriting user-edited files.
 _Avoid_: reinitialize, reset
@@ -212,6 +244,46 @@ _Avoid_: reinitialize, reset
 - When auto-merge fails, Symphony may move the task to a **Merge Attention Status**.
 - The default **Merge Attention Status** is `Human attention`.
 - The **Merge Attention Status** is paused and not dispatchable.
+- A **Manual Task Merge** is separate from normal orchestration.
+- A **Manual Task Merge** does not dispatch agents, retry work, run **Startup Reconciliation**, or open a **Batch Pull Request**.
+- A **Manual Task Merge** uses explicit operator-selected tasks.
+- A **Manual Task Merge** selects tasks by issue identifier, with or without a leading `#`, not by raw **Task Branch** name.
+- A **Manual Task Merge** rejects duplicate selected issue identifiers during preflight.
+- A **Manual Task Merge** derives each selected task's expected **Task Branch** from existing **Task Branch** naming rules.
+- A **Manual Task Merge** requires each selected task to have an existing **Agent Worktree**.
+- A **Manual Task Merge** may integrate selected **Task Branch** work into a **Protected Trunk Branch** without an additional protected-trunk confirmation flag because explicit task selection is the operator action.
+- A **Manual Task Merge** requires a **Clean Loop-Start Worktree** before integrating any selected **Task Branch**.
+- When a **Manual Task Merge** finds uncommitted changes, its diagnostic names the dirty worktree path.
+- A **Manual Task Merge** requires each selected **Agent Worktree** to have no uncommitted changes before integrating its **Task Branch**.
+- A **Manual Task Merge** uses fast-forward-only merge semantics.
+- A **Manual Task Merge** preflights all selected tasks before merging any selected **Task Branch**.
+- If any selected task fails **Manual Task Merge** preflight, no selected **Task Branch** is merged and no **Task Cleanup Policy** is applied.
+- A **Manual Task Merge** preserves the operator-provided selection order when integrating multiple selected **Task Branches**.
+- A **Manual Task Merge** preflights multiple selected **Task Branches** against the projected **Loop-Start Branch** tip after each prior selected integration.
+- After a successful **Manual Task Merge**, Symphony advances a selected task's tracker status only when the task is currently in a configured review stage state.
+- A **Manual Task Merge** uses the matching configured review stage success status when advancing tracker status.
+- A **Manual Task Merge** rejects a selected terminal task when its **Task Branch** is not already present on the **Loop-Start Branch**.
+- A **Manual Task Merge** may treat a selected terminal task as already integrated when its **Task Branch** is already present on the **Loop-Start Branch**.
+- A **Manual Task Merge** applies the configured **Task Cleanup Policy** after a selected **Task Branch** is merged or found already present on the **Loop-Start Branch**.
+- If **Task Cleanup Policy** fails after a successful **Manual Task Merge** integration, Symphony reports the integrated task and exits with failure without rolling back the merge.
+- A **Manual Task Merge** does not move a task to **Merge Attention Status** when fast-forward preflight or integration fails.
+- A **Manual Task Merge** does not push **Task Branches** or the **Loop-Start Branch**.
+- A **Manual Task Merge** does not perform **Stage Push** or **Batch Branch Push** behavior.
+- A **Manual Task Merge** introduces no new **Runtime Settings** and reuses existing **Git Policy**, tracker, and stage configuration.
+- A **Manual Task Merge** reports line-oriented human-readable diagnostics and a final summary.
+- **Startup Reconciliation** evaluates existing **Task Branch** work against the **Loop-Start Branch** before normal orchestration proceeds.
+- **Startup Reconciliation** evaluates **Agent Worktrees** for tasks that are in a configured stage success status.
+- **Startup Reconciliation** runs before Symphony dispatches new tasks or launches agents for existing tasks.
+- **Startup Reconciliation** runs once per Symphony process startup.
+- **Startup Reconciliation** attempts all candidate **Agent Worktrees** in deterministic order.
+- **Startup Reconciliation** requires a **Clean Loop-Start Worktree** before integrating **Task Branch** work.
+- **Startup Reconciliation** may integrate committed **Task Branch** work, but does not create a **Stage Commit** from uncommitted **Agent Worktree** changes.
+- During **Startup Reconciliation**, committed **Task Branch** work targeting a **Protected Trunk Branch** moves to the **Merge Attention Status** instead of being silently skipped.
+- A successful **Startup Reconciliation** merge uses the configured **Task Cleanup Policy**.
+- If a completed-stage **Task Branch** is already present on the **Loop-Start Branch**, **Startup Reconciliation** treats it as reconciled and applies the configured **Task Cleanup Policy**.
+- **Startup Reconciliation** reports per-task operator-visible diagnostics for merged, already-reconciled, attention-needed, and skipped candidates.
+- **Startup Reconciliation** diagnostics persist in **Runtime State** until superseded by later orchestration state.
+- A task moved to **Merge Attention Status** during **Startup Reconciliation** is excluded from normal dispatch and retry.
 - The default **Task Cleanup Policy** removes an **Agent Worktree** after its **Task Branch** is merged.
 - The default **Task Cleanup Policy** keeps a merged **Task Branch**.
 - A **Stage Commit** may be created when a configured stage completes with code changes.
@@ -229,6 +301,20 @@ _Avoid_: reinitialize, reset
 - Symphony does not push the **Loop-Start Branch** after auto-merge.
 - A failed **Stage Push** prevents the stage from moving to its success project state.
 - A failed **Stage Push** is retryable.
+- A **Stage Skill Load** is configured per **Stage Agent**.
+- Runtime Settings configure **Stage Skill Load** with `skills` on a stage.
+- Bootstrapped Runtime Settings include `skills` as an empty array in each example stage.
+- A **Stage Skill Load** names skills by identifier without prompt markup in Runtime Settings.
+- Invalid or duplicate skill identifiers in a **Stage Skill Load** are **Readiness Gaps**.
+- A **Stage Skill Load** supplements the normal **Agent Prompt**.
+- A **Stage Skill Load** does not belong in **Stage Goal Context**.
+- A **Stage Skill Load** renders skill references in the **Agent Prompt**, not expanded skill content.
+- A **Stage Skill Load** renders skill references in Runtime Settings order.
+- Missing configured skills for a **Stage Skill Load** are **Readiness Gaps**.
+- Symphony surfaces missing configured skills for any **Stage Skill Load** before dispatching work.
+- Symphony validates every configured **Stage Skill Load** before dispatch, even when no current issue matches that stage.
+- Symphony resolves configured skills for a **Stage Skill Load** from the Workspace Repository and the **Codex Home**.
+- Workspace Repository skills take precedence over **Codex Home** skills with the same identifier.
 - A **Stage Goal Handoff** is configured per **Stage Agent**.
 - A **Stage Goal Handoff** is not a global Codex launch mode.
 - Runtime Settings configure **Stage Goal Handoff** with `goal.enabled` on a stage.
@@ -256,6 +342,31 @@ _Avoid_: reinitialize, reset
 - **Goal Usage** is not a primary **Web Dashboard** metric.
 - **Stage Goal Handoff** does not change retry, completion, status transition, commit, push, auto-merge, or Batch Pull Request behavior.
 - Missing or unparseable **Goal Usage** must not fail a task.
+- An **Ordered Queue** is provided by the operator at launch.
+- An **Ordered Queue** is named with issue identifiers from the Workspace Repository issue tracker.
+- An **Ordered Queue** does not use issue URLs or cross-repository issue references.
+- An **Ordered Queue** is not inferred from GitHub Project item order.
+- `--queue` is the CLI expression of an **Ordered Queue**.
+- An **Ordered Queue** controls dispatch admission order but does not override the configured maximum concurrent agents.
+- An **Ordered Queue** limits dispatch to the issues named in the sequence.
+- An **Ordered Queue** controls first admission into work; retrying admitted issues does not block later queue entries.
+- An invalid **Ordered Queue** is a **Readiness Gap** and must identify the queue entries that prevent dispatch.
+- **Ordered Queue** validation contributes to the same readiness report as other **Readiness Gaps**.
+- An **Ordered Queue Entry** is invalid when it is malformed, missing from the Workspace Repository issue tracker, absent from the configured GitHub Project, terminal, or not dispatchable.
+- Duplicate issue identifiers make an **Ordered Queue** invalid.
+- If an **Ordered Queue Entry** becomes invalid after startup validation, Symphony reports the skipped entry in **Runtime State** and continues with later queue entries.
+- **Runtime State** records the original order and current progress of an active **Ordered Queue**.
+- The ordered issue sequence identifies an **Ordered Queue** run.
+- Restarting with the same **Ordered Queue** resumes queue progress from **Runtime State** when possible.
+- Restarting with a different **Ordered Queue** starts a new queue run after validation.
+- An **Ordered Queue Entry** can be pending, running, retrying, completed, or skipped.
+- An **Ordered Queue Entry** is completed only after the configured task completion behavior finishes.
+- A skipped **Ordered Queue Entry** must be reported to the operator.
+- When all **Ordered Queue Entries** complete without skips, Symphony stops the run and summarizes the completed work.
+- When remaining **Ordered Queue Entries** finish after one or more skips, Symphony stops the run and summarizes completed and skipped entries.
+- Ordered Queue completion may trigger existing **Batch Pull Request** behavior for completed queued work.
+- The **Terminal Console** should show compact **Ordered Queue** progress and explicit skip and completion events.
+- The **Web Dashboard** should show active **Ordered Queue Entries** in their original order with current progress and skipped-entry reasons.
 - Symphony reaches **Orchestration Idle** when no active issue is running, retrying, or dispatchable.
 - A **Batch Pull Request** represents the combined task work already integrated into the **Loop-Start Branch**.
 - Symphony may open a **Batch Pull Request** after reaching **Orchestration Idle**.
@@ -328,6 +439,15 @@ _Avoid_: reinitialize, reset
 - The **Product Repository** provides the **CLI Package**.
 - The **CLI Package** provides the `symphony` command.
 - The **CLI Package** contains Linux x64, macOS x64, macOS arm64, and Windows x64 binaries under `vendor/`.
+- The **Update Source** for normal CLI updates is the npm registry, not GitHub Releases.
+- `symphony update` updates the installed **CLI Package** and does not require a **Workspace Repository**.
+- `symphony update` supports npm-installed **CLI Package** instances and does not update Product Repository source checkouts.
+- `symphony update` requires interactive confirmation before changing an installed **CLI Package** unless the operator passes an explicit non-interactive confirmation flag.
+- `symphony update` installs the latest **CLI Package** into the **Install Prefix** that owns the running command.
+- `symphony update` succeeds only after the updated `symphony` command reports the target version.
+- `symphony update` reports failed update phases and manual repair guidance instead of automatically rolling back partially completed package-manager changes.
+- `symphony update` requires fresh **Update Source** discovery and shows the underlying discovery error when the latest version cannot be resolved.
+- `symphony update` does not retry package installation with elevated privileges when the **Install Prefix** is not writable.
 
 ## Example Dialogue
 
