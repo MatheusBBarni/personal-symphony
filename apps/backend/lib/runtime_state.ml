@@ -23,6 +23,13 @@ type retrying = {
 }
 type issue_error = { issue_id : string; issue_identifier : string; error : string; goal_usage : goal_usage option }
 type readiness_gap = { requirement : string; remediation : string }
+type ordered_queue_entry = {
+  issue_identifier : string;
+  title : string option;
+  state : string;
+  skip_reason : string option;
+}
+type ordered_queue = { entries : ordered_queue_entry list }
 type pull_request_handoff = {
   enabled : bool;
   head_branch : string option;
@@ -43,10 +50,11 @@ type t = {
   seconds_running : float;
   rate_limits : Yojson.Safe.t option;
   pull_request : pull_request_handoff option;
+  ordered_queue : ordered_queue option;
   last_error : string option;
 }
 
-let empty ?(readiness_gaps = []) ?(status_order = []) ?last_error () =
+let empty ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue ?last_error () =
   {
     running = [];
     issues = [];
@@ -58,6 +66,7 @@ let empty ?(readiness_gaps = []) ?(status_order = []) ?last_error () =
     seconds_running = 0.;
     rate_limits = None;
     pull_request = None;
+    ordered_queue;
     last_error;
   }
 
@@ -132,6 +141,42 @@ let issue_error_to_yojson (row : issue_error) =
 let readiness_gap_to_yojson row =
   `Assoc [ ("requirement", `String row.requirement); ("remediation", `String row.remediation) ]
 
+let ordered_queue_entry_to_yojson row =
+  `Assoc
+    [
+      ("issue_identifier", `String row.issue_identifier);
+      ("title", (match row.title with Some s -> `String s | None -> `Null));
+      ("state", `String row.state);
+      ("skip_reason", (match row.skip_reason with Some s -> `String s | None -> `Null));
+    ]
+
+let ordered_queue_to_yojson row =
+  `Assoc [ ("entries", `List (List.map ordered_queue_entry_to_yojson row.entries)) ]
+
+let json_member name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let json_string_member name json =
+  match json_member name json with Some (`String value) when Util.trim value <> "" -> Some value | _ -> None
+
+let ordered_queue_entry_of_yojson json =
+  match json_string_member "issue_identifier" json with
+  | None -> None
+  | Some issue_identifier ->
+      Some
+        {
+          issue_identifier;
+          title = json_string_member "title" json;
+          state = Option.value (json_string_member "state" json) ~default:"pending";
+          skip_reason = json_string_member "skip_reason" json;
+        }
+
+let ordered_queue_of_yojson json =
+  match json_member "entries" json with
+  | Some (`List entries) -> Some { entries = List.filter_map ordered_queue_entry_of_yojson entries }
+  | _ -> None
+
 let pull_request_handoff_to_yojson row =
   `Assoc
     [
@@ -164,5 +209,6 @@ let to_yojson state =
           ] );
       ("rate_limits", Option.value state.rate_limits ~default:`Null);
       ("pull_request", (match state.pull_request with Some row -> pull_request_handoff_to_yojson row | None -> `Null));
+      ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
       ("last_error", (match state.last_error with Some s -> `String s | None -> `Null));
     ]

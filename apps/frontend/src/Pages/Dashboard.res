@@ -8,6 +8,13 @@ type issueItem = {
   goalUsage: string,
 }
 
+type queueEntry = {
+  identifier: string,
+  title: string,
+  state: string,
+  skipReason: string,
+}
+
 type snapshot = {
   running: string,
   retrying: string,
@@ -17,6 +24,7 @@ type snapshot = {
   lastError: string,
   statusOrder: array<string>,
   issues: array<issueItem>,
+  orderedQueue: array<queueEntry>,
 }
 
 @send external arrayPush: (array<'a>, 'a) => int = "push"
@@ -39,7 +47,7 @@ let arrayIncludesState = (states, state) => {
   found.contents
 }
 
-let issueStateColumns = issues => {
+let issueStateColumns = (issues: array<issueItem>) => {
   let states = []
   for i in 0 to Array.length(issues) - 1 {
     switch issues[i] {
@@ -53,7 +61,7 @@ let issueStateColumns = issues => {
   states
 }
 
-let orderedIssueStateColumns = (statusOrder, issues) => {
+let orderedIssueStateColumns = (statusOrder: array<string>, issues: array<issueItem>) => {
   let states = []
   statusOrder->Array.forEach(state => {
     if !arrayIncludesState(states, state) {
@@ -95,7 +103,7 @@ let banner = (tone, label, message) => {
   </div>
 }
 
-let issueCard = issue =>
+let issueCard = (issue: issueItem) =>
   <article key=issue.identifier className="border-b border-neutral-800 px-3 py-3 last:border-b-0">
     <div className="flex items-center gap-2">
       <HeroUI.Chip
@@ -136,6 +144,54 @@ let issueCard = issue =>
       </div>
     }}
   </article>
+
+let queueStateTone = state =>
+  switch state {
+  | "completed" => "border-emerald-800 bg-emerald-950/70 text-emerald-100"
+  | "running" => "border-teal-800 bg-teal-950/70 text-teal-100"
+  | "retrying" => "border-amber-800 bg-amber-950/70 text-amber-100"
+  | "skipped" => "border-red-900 bg-red-950/70 text-red-100"
+  | _ => "border-neutral-700 bg-neutral-900 text-neutral-300"
+  }
+
+let queueEntryRow = (entry: queueEntry) =>
+  <li key=entry.identifier className="flex items-start justify-between gap-3 border-b border-neutral-800 px-3 py-3 last:border-b-0">
+    <div className="min-w-0">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-xs text-neutral-300"> {React.string(entry.identifier)} </span>
+        <span className={"rounded border px-2 py-0.5 text-[11px] " ++ queueStateTone(entry.state)}>
+          {React.string(entry.state)}
+        </span>
+      </div>
+      <div className="mt-1 truncate text-sm text-neutral-100">
+        {React.string(if entry.title == "" { "Pending issue details" } else { entry.title })}
+      </div>
+      {switch entry.skipReason {
+      | "" => React.null
+      | reason => <div className="mt-2 text-xs leading-5 text-red-200"> {React.string(reason)} </div>
+      }}
+    </div>
+  </li>
+
+let orderedQueuePanel = entries =>
+  switch Array.length(entries) {
+  | 0 => React.null
+  | _ =>
+    <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
+      <HeroUI.CardHeader className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
+        <div className="text-sm font-semibold text-neutral-100"> {React.string("Ordered Queue")} </div>
+        <HeroUI.Chip
+          size="sm"
+          variant="flat"
+          className="rounded border border-neutral-700 bg-neutral-900 px-3 text-neutral-200">
+          {React.string(entries->Array.length->Int.toString ++ " entries")}
+        </HeroUI.Chip>
+      </HeroUI.CardHeader>
+      <HeroUI.CardContent className="p-0">
+        <ol> {entries->Array.map(queueEntryRow)->React.array} </ol>
+      </HeroUI.CardContent>
+    </HeroUI.Card>
+  }
 
 let emptyOrchestrator = error =>
   <>
@@ -187,6 +243,7 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
         | "" => React.null
         | value => banner("error", "Runtime State Error", value)
         }}
+        {orderedQueuePanel(data.orderedQueue)}
         <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
           <HeroUI.CardHeader className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
             <div>

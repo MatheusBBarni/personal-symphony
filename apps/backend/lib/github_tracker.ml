@@ -1,4 +1,5 @@
 type t = { config : Config.tracker }
+type project_issue = { issue : Issue.t; project_status : string option; closed : bool }
 
 exception Tracker_error of string
 exception Tracker_rate_limited of string * int
@@ -64,6 +65,46 @@ query($owner:String!, $repo:String!) {
     }
   }
 }|}
+
+let queue_issue_query numbers =
+  let fields =
+    numbers
+    |> List.map (fun number ->
+           Printf.sprintf
+             {|issue_%d: issue(number:%d) {
+        id
+        number
+        state
+        title
+        body
+        url
+        createdAt
+        updatedAt
+        labels(first:20) { nodes { name } }
+        projectItems(first:20) {
+          nodes {
+            project { number }
+            fieldValues(first:20) {
+              nodes {
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  name
+                  field { ... on ProjectV2SingleSelectField { name } }
+                }
+              }
+            }
+          }
+        }
+      }|}
+             number number)
+    |> String.concat "\n"
+  in
+  Printf.sprintf
+    {|query($owner:String!, $repo:String!) {
+  repository(owner:$owner, name:$repo) {
+    %s
+  }
+}|}
+    fields
 
 let status_metadata_query =
   {|
@@ -270,6 +311,31 @@ let issue_is_closed node =
   match node |> member "state" |> safe_to_string_option with
   | Some state -> string_equal_ci state "CLOSED"
   | None -> false
+
+let project_issue_from_node ~(config : Config.tracker) node =
+  let number = node |> member "number" |> safe_to_int_option in
+  match number with
+  | None -> None
+  | Some number ->
+      let project_status = issue_project_status ~project_number:config.project_number ~status_field:config.project_status_field node in
+      let state = Option.value project_status ~default:(node |> member "state" |> safe_to_string) in
+      let issue =
+        {
+          (Issue.empty ~id:(node |> member "id" |> safe_to_string)
+             ~identifier:("#" ^ string_of_int number)
+             ~title:(node |> member "title" |> safe_to_string) ~state)
+          with
+          description = node |> member "body" |> safe_to_string_option;
+          url = node |> member "url" |> safe_to_string_option;
+          created_at = node |> member "createdAt" |> safe_to_string_option;
+          updated_at = node |> member "updatedAt" |> safe_to_string_option;
+          labels =
+            node |> member "labels" |> member "nodes" |> safe_to_list
+            |> List.filter_map (fun label -> label |> member "name" |> safe_to_string_option)
+            |> List.map String.lowercase_ascii;
+        }
+      in
+      Some { issue; project_status; closed = issue_is_closed node }
 
 let issue_from_project_node ~(config : Config.tracker) node =
   let open Yojson.Safe.Util in
@@ -502,6 +568,29 @@ let fetch_candidate_issues tracker =
       let open Yojson.Safe.Util in
       json |> member "data" |> member "repository" |> member "issues" |> member "nodes" |> to_list
       |> List.filter_map (issue_from_project_node ~config:tracker.config)
+
+let fetch_project_issues_by_numbers tracker numbers =
+  match tracker.config.api_key with
+  | None -> raise (Tracker_error "missing GitHub token")
+  | Some _ ->
+      let numbers = List.sort_uniq compare numbers in
+      if numbers = [] then []
+      else
+        let json =
+          run_gh_graphql ~query:(queue_issue_query numbers)
+            ~variables:[ ("owner", tracker.config.owner); ("repo", tracker.config.repo) ]
+        in
+        (match github_api_error json with
+        | None -> ()
+        | Some (`Rate_limited message) -> raise (Tracker_rate_limited (message, rate_limit_retry_delay_ms))
+        | Some (`Error message) -> raise (Tracker_error message));
+        let repository = json |> member "data" |> member "repository" in
+        numbers
+        |> List.map (fun number ->
+               let node = repository |> member ("issue_" ^ string_of_int number) in
+               match node with
+               | `Null -> (number, None)
+               | _ -> (number, project_issue_from_node ~config:tracker.config node))
 
 let fetch_issues_by_states _tracker states = if states = [] then [] else []
 let fetch_issue_states_by_ids _tracker _ids = []

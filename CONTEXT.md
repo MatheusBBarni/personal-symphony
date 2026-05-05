@@ -104,6 +104,14 @@ _Avoid_: goal time, timer, duration
 The orchestration condition where no active issue is running, retrying, or dispatchable.
 _Avoid_: queue empty, all tasks finished, done processing
 
+**Ordered Queue**:
+A CLI-provided sequence of issue identifiers that Personal Symphony uses as the dispatch order for eligible work.
+_Avoid_: project order, priority list, sorted candidates
+
+**Ordered Queue Entry**:
+One issue identifier and its current queue progress within an Ordered Queue.
+_Avoid_: queue item, queued issue, queue row
+
 **Batch Pull Request**:
 A single pull request opened from the Loop-Start Branch after Symphony reaches Orchestration Idle.
 _Avoid_: per-task PR, task pull request, queue PR
@@ -264,6 +272,32 @@ _Avoid_: reinitialize, reset
 - **Goal Usage** is not a primary **Web Dashboard** metric.
 - **Stage Goal Handoff** does not change retry, completion, status transition, commit, push, auto-merge, or Batch Pull Request behavior.
 - Missing or unparseable **Goal Usage** must not fail a task.
+- An **Ordered Queue** is provided by the operator at launch.
+- An **Ordered Queue** is named with issue identifiers from the Workspace Repository issue tracker.
+- An **Ordered Queue** does not use issue URLs or cross-repository issue references.
+- An **Ordered Queue** is not inferred from GitHub Project item order.
+- `--queue` is the CLI expression of an **Ordered Queue**.
+- An **Ordered Queue** controls dispatch admission order but does not override the configured maximum concurrent agents.
+- An **Ordered Queue** limits dispatch to the issues named in the sequence.
+- An **Ordered Queue** controls first admission into work; retrying admitted issues does not block later queue entries.
+- An invalid **Ordered Queue** is a **Readiness Gap** and must identify the queue entries that prevent dispatch.
+- **Ordered Queue** validation contributes to the same readiness report as other **Readiness Gaps**.
+- An **Ordered Queue Entry** is invalid when it is malformed, missing from the Workspace Repository issue tracker, absent from the configured GitHub Project, terminal, or not dispatchable.
+- Duplicate issue identifiers make an **Ordered Queue** invalid.
+- If an **Ordered Queue Entry** becomes invalid after startup validation, Symphony reports the skipped entry in **Runtime State** and continues with later queue entries.
+- **Runtime State** records the original order and current progress of an active **Ordered Queue**.
+- The **Runtime Home** state directory stores the active **Ordered Queue** Runtime State projection for ordinary process restart resume.
+- The ordered issue sequence identifies an **Ordered Queue** run.
+- Restarting with the same **Ordered Queue** resumes queue progress from **Runtime State** when possible.
+- Restarting with a different **Ordered Queue** starts a new queue run after validation.
+- An **Ordered Queue Entry** can be pending, running, retrying, completed, or skipped.
+- An **Ordered Queue Entry** is completed only after the configured task completion behavior finishes.
+- A skipped **Ordered Queue Entry** must be reported to the operator.
+- When all **Ordered Queue Entries** complete without skips, Symphony stops the run and summarizes the completed work.
+- When remaining **Ordered Queue Entries** finish after one or more skips, Symphony stops the run and summarizes completed and skipped entries.
+- Ordered Queue completion may trigger existing **Batch Pull Request** behavior for completed queued work.
+- The **Terminal Console** should show compact **Ordered Queue** progress and explicit skip and completion events.
+- The **Web Dashboard** should show active **Ordered Queue Entries** in their original order with current progress and skipped-entry reasons.
 - Symphony reaches **Orchestration Idle** when no active issue is running, retrying, or dispatchable.
 - A **Batch Pull Request** represents the combined task work already integrated into the **Loop-Start Branch**.
 - Symphony may open a **Batch Pull Request** after reaching **Orchestration Idle**.

@@ -3,9 +3,74 @@ let load_config workflow_path =
   let config = Config.from_workflow workflow in
   (workflow, config)
 
-let readiness_state config =
+let queue_parse_gaps = function
+  | [] -> []
+  | problems ->
+      problems
+      |> List.map (fun (problem : Ordered_queue.parse_problem) ->
+             {
+               Config.requirement = "orderedQueue." ^ (if problem.value = "" then "<empty>" else problem.value);
+               remediation = problem.reason;
+             })
+
+let queue_validation_gaps config queue =
+  let tracker = Github_tracker.make config.Config.tracker in
+  let issues = Github_tracker.fetch_project_issues_by_numbers tracker (Ordered_queue.numbers queue) in
+  queue.Ordered_queue.entries
+  |> List.filter_map (fun (entry : Ordered_queue.entry) ->
+         match List.assoc_opt entry.issue_number issues |> Option.join with
+         | None ->
+             Some
+               {
+                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
+                 remediation = "Issue is missing from the Workspace Repository issue tracker.";
+               }
+         | Some row when row.Github_tracker.project_status = None ->
+             Some
+               {
+                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
+                 remediation = Printf.sprintf "Issue is absent from GitHub Project #%d." config.tracker.project_number;
+               }
+         | Some row when row.closed ->
+             Some
+               {
+                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
+                 remediation = "Issue is closed in the Workspace Repository issue tracker.";
+               }
+         | Some row when Github_tracker.status_is_terminal ~config:config.tracker row.issue.Issue.state ->
+             Some
+               {
+                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
+                 remediation = Printf.sprintf "Issue is terminal in project state %S." row.issue.state;
+               }
+         | Some row when not (Github_tracker.status_is_active ~active_states:config.tracker.active_states row.issue.Issue.state) ->
+             Some
+               {
+                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
+                 remediation = Printf.sprintf "Issue is not dispatchable in project state %S." row.issue.state;
+               }
+         | Some _ -> None)
+
+let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
   let local_gaps = Config.readiness_gaps config in
-  let gaps = match local_gaps with [] -> Github_tracker.remote_readiness_gaps config | gaps -> gaps in
+  let queue_gaps = queue_parse_gaps queue_parse_problems in
+  let gaps =
+    match local_gaps @ queue_gaps with
+    | [] -> (
+        let remote_gaps = Github_tracker.remote_readiness_gaps config in
+        match (remote_gaps, ordered_queue) with
+        | [], Some queue -> (
+            try queue_validation_gaps config queue
+            with exn ->
+              [
+                {
+                  Config.requirement = "orderedQueue.validation";
+                  remediation = "Ordered Queue validation failed: " ^ Printexc.to_string exn;
+                };
+              ])
+        | gaps, _ -> gaps)
+    | gaps -> gaps
+  in
   let last_error =
     match gaps with
     | [] -> None
@@ -17,7 +82,9 @@ let readiness_state config =
         { Runtime_state.requirement = gap.requirement; remediation = gap.remediation })
       gaps
   in
-  Runtime_state.empty ?last_error ~status_order:(Config.project_status_order config) ~readiness_gaps ()
+  Runtime_state.empty ?last_error ~status_order:(Config.project_status_order config)
+    ?ordered_queue:(Option.map Orchestrator.ordered_queue_state ordered_queue)
+    ~readiness_gaps ()
 
 let colors_enabled () =
   Sys.getenv_opt "NO_COLOR" = None
@@ -87,6 +154,18 @@ let render_terminal_console config state =
   Printf.printf "  %s %d running, %d retrying\n%!" (dim "Agents") (List.length state.Runtime_state.running)
     (List.length state.retrying);
   Printf.printf "  %s %d total\n%!" (dim "Tokens") state.codex_totals.total_tokens;
+  (match state.Runtime_state.ordered_queue with
+  | None -> ()
+  | Some queue ->
+      let count status =
+        queue.entries |> List.filter (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = status) |> List.length
+      in
+      print_section "Ordered Queue";
+      Printf.printf "  %s %d total, %d running, %d retrying, %d completed, %d skipped\n%!" (dim "Entries")
+        (List.length queue.entries) (count "running") (count "retrying") (count "completed") (count "skipped");
+      (match List.find_opt (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = "pending") queue.entries with
+      | Some entry -> Printf.printf "  %s %s\n%!" (dim "Next") entry.issue_identifier
+      | None -> ()));
   print_section "Readiness";
   match state.Runtime_state.readiness_gaps with
   | [] -> Printf.printf "  %s ready\n%!" (green "OK")
@@ -139,7 +218,14 @@ let load_runtime_config home =
   let _rendered = Prompt.render ~issue:example_issue ~attempt:None prompt_template in
   (config, prompt_template)
 
-let run_runtime port once web =
+let parse_ordered_queue_arg = function
+  | None -> (None, [])
+  | Some text -> (
+      match Ordered_queue.parse text with
+      | Ok queue -> (Some queue, [])
+      | Error problems -> (None, problems))
+
+let run_runtime port once web queue_arg =
   let run_until_stopped f =
     f ();
     0
@@ -153,8 +239,9 @@ let run_runtime port once web =
         let home, report = Runtime_home.bootstrap workspace_root in
         render_bootstrap_report report;
         let config, prompt_template = load_runtime_config home in
+        let ordered_queue, queue_parse_problems = parse_ordered_queue_arg queue_arg in
         let mode = Cli_mode.select ~web in
-        let state = readiness_state config in
+        let state = readiness_state ?ordered_queue ~queue_parse_problems config in
         render_startup_completed ~mode:(Cli_mode.to_string mode) ~config ~runtime_home:home.runtime_dir;
         if mode = Cli_mode.Web_dashboard then render_banner ();
         if once then (
@@ -188,14 +275,16 @@ let run_runtime port once web =
                         | None -> state)
                   in
                   let orchestrator =
-                    Orchestrator.make ~config ~prompt_template ~notify_state:(fun _ -> Server.broadcast_live_state live) ()
+                    Orchestrator.make ?ordered_queue ~config ~prompt_template
+                      ~notify_state:(fun _ -> Server.broadcast_live_state live)
+                      ()
                   in
                   orchestrator_ref := Some orchestrator;
                   ignore (Thread.create Orchestrator.run_forever orchestrator);
                   run_until_stopped (fun () ->
                       Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
               | Cli_mode.Terminal_console ->
-                  let orchestrator = Orchestrator.make ~config ~prompt_template () in
+                  let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template () in
                   render_terminal_console config state;
                   run_until_stopped (fun () -> Orchestrator.run_forever orchestrator))
   with
@@ -207,10 +296,10 @@ let run_runtime port once web =
       Printf.eprintf "event=startup outcome=failed reason=%s\n%!" (Printexc.to_string exn);
       1
 
-let run workflow_path port once web =
+let run workflow_path port once web queue_arg =
   match workflow_path with
   | Some path -> run_legacy path port once
-  | None -> run_runtime port once web
+  | None -> run_runtime port once web queue_arg
 
 let init () =
   try
@@ -243,12 +332,20 @@ let once_arg =
 let web_arg =
   Arg.(value & flag & info [ "web" ] ~doc:"Start the backend and Web Dashboard mode instead of the Terminal Console.")
 
+let queue_arg =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "queue" ] ~docv:"ISSUES"
+        ~doc:
+          "Run an Ordered Queue from comma-separated Workspace Repository issue identifiers. Optional # prefixes are allowed. Only listed issues dispatch, in listed first-admission order, while still respecting agent.maxConcurrentAgents.")
+
 let yes_arg =
   Arg.(value & flag & info [ "yes"; "y" ] ~doc:"Update without interactive confirmation.")
 
 let cmd =
   let doc = "Run Personal Symphony from a Git Workspace Repository root." in
-  let default = Term.(const run $ workflow_arg $ port_arg $ once_arg $ web_arg) in
+  let default = Term.(const run $ workflow_arg $ port_arg $ once_arg $ web_arg $ queue_arg) in
   let init_cmd =
     Cmd.v (Cmd.info "init" ~doc:"Create missing .symphony runtime files without overwriting edits.") Term.(const init $ const ())
   in

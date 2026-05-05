@@ -58,6 +58,15 @@ type blockedTaskError = {
   goal_usage: option<goalUsage>,
 }
 
+type orderedQueueEntry = {
+  issue_identifier: string,
+  title: option<string>,
+  state: string,
+  skip_reason: option<string>,
+}
+
+type orderedQueue = {entries: array<orderedQueueEntry>}
+
 type runningIssue = {
   issue_id: string,
   issue_identifier: string,
@@ -79,6 +88,7 @@ type runtimeState = {
   retrying: array<taskError>,
   issue_errors: array<blockedTaskError>,
   status_order: array<string>,
+  ordered_queue: option<orderedQueue>,
 }
 
 @val @scope("document") external getElementById: string => Nullable.t<domElement> = "getElementById"
@@ -129,6 +139,24 @@ let goalUsageForIssue = (state, issueId) => {
     }
   }
 }
+
+let orderedQueueEntries = state =>
+  switch state.ordered_queue {
+  | Some(queue) =>
+    arrayOrEmpty(queue.entries)->Array.map(entry => {
+      Dashboard.identifier: entry.issue_identifier,
+      title: switch entry.title {
+      | Some(value) => value
+      | None => ""
+      },
+      state: entry.state,
+      skipReason: switch entry.skip_reason {
+      | Some(value) => value
+      | None => ""
+      },
+    })
+  | None => []
+  }
 
 let navItem = (href, label, isActive) =>
   <a
@@ -252,6 +280,7 @@ let snapshotFromState = state => {
   | None => ""
   },
   statusOrder: arrayOrEmpty(state.status_order),
+  orderedQueue: orderedQueueEntries(state),
   issues: arrayOrEmpty(state.issues)->Array.map(issue => {
     let description = switch issue.description {
     | Some(value) => value

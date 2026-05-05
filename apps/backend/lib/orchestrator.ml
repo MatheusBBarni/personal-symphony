@@ -33,6 +33,7 @@ type t = {
   notify_state : notify_state;
   loop_start_branch : string;
   mutable batch_pull_request_completed : bool;
+  ordered_queue : Ordered_queue.t option;
 }
 
 and child = {
@@ -129,11 +130,123 @@ let render_pull_request_failed head base error =
   Printf.eprintf "%s%s %s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "pull-request") (red "failed")
     head (dim "base") base error
 
+let render_ordered_queue_skipped issue_identifier reason =
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (yellow "skipped")
+    issue_identifier reason
+
+let render_ordered_queue_finished queue =
+  let completed =
+    queue.Runtime_state.entries
+    |> List.filter (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = "completed")
+    |> List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier)
+  in
+  let skipped =
+    queue.entries
+    |> List.filter (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = "skipped")
+    |> List.map (fun (entry : Runtime_state.ordered_queue_entry) ->
+           match entry.skip_reason with
+           | Some reason -> entry.issue_identifier ^ " (" ^ reason ^ ")"
+           | None -> entry.issue_identifier)
+  in
+  let outcome = if skipped = [] then green "completed" else yellow "completed-with-skips" in
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") outcome
+    (dim "completed") (String.concat "," completed);
+  if skipped <> [] then
+    Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (yellow "skipped")
+      (String.concat "; " skipped)
+
 let running_ids state = List.map (fun (row : Runtime_state.running) -> row.issue.id) state.Runtime_state.running
 let is_running state issue = List.exists (( = ) issue.Issue.id) (running_ids state)
 let string_equal_ci a b = String.lowercase_ascii a = String.lowercase_ascii b
 let block_key issue = issue.Issue.id ^ "\x00" ^ String.lowercase_ascii issue.Issue.state
 let is_blocked orchestrator issue = Hashtbl.mem orchestrator.blocked (block_key issue)
+
+let ordered_queue_state queue =
+  {
+    Runtime_state.entries =
+      List.map
+        (fun (entry : Ordered_queue.entry) ->
+          {
+            Runtime_state.issue_identifier = entry.issue_identifier;
+            title = None;
+            state = "pending";
+            skip_reason = None;
+          })
+        queue.Ordered_queue.entries;
+  }
+
+let ordered_queue_state_path config =
+  Filename.concat (Filename.concat config.Config.repository_root ".symphony/state") "ordered_queue.json"
+
+let ordered_queue_state_matches queue state =
+  let expected = Ordered_queue.identifiers queue in
+  let actual = List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) state.Runtime_state.entries in
+  expected = actual
+
+let load_ordered_queue_state config queue =
+  let path = ordered_queue_state_path config in
+  if Sys.file_exists path then
+    try
+      match Yojson.Safe.from_file path |> Runtime_state.ordered_queue_of_yojson with
+      | Some state when ordered_queue_state_matches queue state -> state
+      | _ -> ordered_queue_state queue
+    with _ -> ordered_queue_state queue
+  else ordered_queue_state queue
+
+let persist_ordered_queue_state config = function
+  | None -> ()
+  | Some queue ->
+      let path = ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson queue |> Yojson.Safe.pretty_to_string)
+
+let queue_issue_number issue =
+  match Util.drop_prefix ~prefix:"#" issue.Issue.identifier with
+  | Some number -> int_of_string_opt number
+  | None -> None
+
+let queue_contains_issue queue issue =
+  match queue_issue_number issue with
+  | None -> false
+  | Some number -> List.exists (fun (entry : Ordered_queue.entry) -> entry.issue_number = number) queue.Ordered_queue.entries
+
+let queue_index queue issue =
+  match queue_issue_number issue with
+  | None -> max_int
+  | Some number ->
+      queue.Ordered_queue.entries
+      |> List.mapi (fun index (entry : Ordered_queue.entry) -> (index, entry.issue_number))
+      |> List.find_map (fun (index, candidate_number) -> if candidate_number = number then Some index else None)
+      |> Option.value ~default:max_int
+
+let queue_entry_allows_dispatch state issue =
+  match state.Runtime_state.ordered_queue with
+  | None -> true
+  | Some queue -> (
+      match List.find_opt (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier = issue.Issue.identifier) queue.entries with
+      | Some entry when entry.state = "completed" || entry.state = "skipped" -> false
+      | _ -> true)
+
+let ordered_queue_finished orchestrator =
+  match orchestrator.state.Runtime_state.ordered_queue with
+  | None -> false
+  | Some queue ->
+      queue.entries <> []
+      && orchestrator.state.running = []
+      && orchestrator.state.retrying = []
+      && orchestrator.children = []
+      && List.for_all
+           (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = "completed" || entry.state = "skipped")
+           queue.entries
+
+let entry_state_for_issue state issue_identifier =
+  let is_issue row = row.Runtime_state.issue.Issue.identifier = issue_identifier in
+  let is_retry (row : Runtime_state.retrying) = row.issue_identifier = issue_identifier in
+  let is_error (row : Runtime_state.issue_error) = row.issue_identifier = issue_identifier in
+  if List.exists is_issue state.Runtime_state.running then Some "running"
+  else if List.exists is_retry state.retrying then Some "retrying"
+  else if List.exists is_error state.issue_errors then Some "skipped"
+  else None
 
 let retrying_due orchestrator issue =
   match Hashtbl.find_opt orchestrator.retry_due issue.Issue.id with
@@ -495,14 +608,17 @@ let shell_launch ~config ~workspace ~prompt ~issue =
     stderr_path = Some stderr_path;
   }
 
-let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ?(set_status = Github_tracker.update_issue_status)
+let make ?ordered_queue ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ?(set_status = Github_tracker.update_issue_status)
     ?(commit_stage = git_commit_stage_changes) ?(batch_pull_request_handoff = gh_batch_pull_request_handoff)
     ?(notify_state = fun _ -> ()) ~config ~prompt_template () =
   {
     config;
     prompt_template;
     tracker = Github_tracker.make config.tracker;
-    state = Runtime_state.empty ~status_order:(Config.project_status_order config) ();
+    state =
+      Runtime_state.empty ~status_order:(Config.project_status_order config)
+        ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
+        ();
     children = [];
     retry_due = Hashtbl.create 16;
     tracker_retry_due = None;
@@ -516,15 +632,70 @@ let make ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issue
     notify_state;
     loop_start_branch = current_branch config.repository_root;
     batch_pull_request_completed = false;
+    ordered_queue;
   }
 
 let get_state orchestrator = orchestrator.state
 
 let set_state orchestrator state =
   orchestrator.state <- state;
+  persist_ordered_queue_state orchestrator.config state.Runtime_state.ordered_queue;
   orchestrator.notify_state state
 
 let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
+
+let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(skip_missing = false) ~candidates () =
+  match orchestrator.state.Runtime_state.ordered_queue with
+  | None -> ()
+  | Some queue ->
+      let candidate_for identifier = List.find_opt (fun issue -> issue.Issue.identifier = identifier) candidates in
+      let candidate_not_dispatchable identifier =
+        match candidate_for identifier with
+        | Some issue -> not (Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state)
+        | None -> false
+      in
+      let candidate_missing identifier = candidate_for identifier = None in
+      let skipped_identifier, skipped_reason =
+        match skipped with Some (identifier, reason) -> (Some identifier, Some reason) | None -> (None, None)
+      in
+      let old_entries = queue.entries in
+      let next_entries state =
+        old_entries
+        |> List.map (fun (entry : Runtime_state.ordered_queue_entry) ->
+               let title = match candidate_for entry.issue_identifier with Some issue -> Some issue.Issue.title | None -> entry.title in
+               let state_name =
+                 match completed_identifier with
+                 | Some identifier when identifier = entry.issue_identifier -> "completed"
+                 | _ -> (
+                     match skipped_identifier with
+                     | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                     | _ -> (
+                         match entry_state_for_issue state entry.issue_identifier with
+                         | Some state -> state
+                         | None
+                           when skip_missing && entry.state = "pending"
+                                && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
+                             "skipped"
+                         | None -> entry.state))
+               in
+               let skip_reason =
+                 match skipped_identifier with
+                 | Some identifier when identifier = entry.issue_identifier -> skipped_reason
+                 | _ when skip_missing && entry.state = "pending" && candidate_missing entry.issue_identifier ->
+                     Some "Issue became unavailable or not dispatchable before admission."
+                 | _ when skip_missing && entry.state = "pending" && candidate_not_dispatchable entry.issue_identifier ->
+                     Some "Issue is no longer in a dispatchable project state."
+                 | _ -> entry.skip_reason
+               in
+               { entry with title; state = state_name; skip_reason })
+      in
+      let new_entries = next_entries orchestrator.state in
+      update_state orchestrator (fun state -> { state with ordered_queue = Some { Runtime_state.entries = next_entries state } });
+      List.iter2
+        (fun (old_entry : Runtime_state.ordered_queue_entry) (new_entry : Runtime_state.ordered_queue_entry) ->
+          if old_entry.state <> "skipped" && new_entry.state = "skipped" then
+            render_ordered_queue_skipped new_entry.issue_identifier (Option.value new_entry.skip_reason ~default:""))
+        old_entries new_entries
 
 let set_error orchestrator msg = update_state orchestrator (fun state -> { state with Runtime_state.last_error = Some msg })
 
@@ -805,6 +976,7 @@ let dispatch_issue orchestrator issue =
               List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
             last_error = None;
           });
+        update_ordered_queue_entries orchestrator ~candidates:[ issue ] ();
         (match launched.pid with
         | Some pid ->
             let now_float = Unix.time () in
@@ -864,7 +1036,8 @@ let mark_retrying orchestrator issue_id error =
       (match retry_status orchestrator row.issue with
       | None -> ()
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
-      render_dispatch_retrying row.issue.identifier next_attempt error
+      render_dispatch_retrying row.issue.identifier next_attempt error;
+      update_ordered_queue_entries orchestrator ~candidates:[ row.issue ] ()
 
 let non_retryable_completion_error = function
   | "commit required but agent produced no code changes" | "commit required but no staged changes were found" -> true
@@ -896,7 +1069,8 @@ let mark_blocked orchestrator issue_id error =
             }
             :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
           last_error = Some error;
-        })
+        });
+      update_ordered_queue_entries orchestrator ~skipped:(row.issue.identifier, error) ~candidates:[ row.issue ] ()
 
 let complete_child orchestrator child =
   let issue_id = child.issue_id in
@@ -910,6 +1084,7 @@ let complete_child orchestrator child =
       issue_errors =
         List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
     });
+  update_ordered_queue_entries orchestrator ~completed_identifier:child.issue_identifier ~candidates:[ child.issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
 let protected_loop_start orchestrator =
@@ -962,7 +1137,8 @@ let mark_merge_attention orchestrator child error =
         }
         :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> child.issue_id) state.issue_errors;
       last_error = Some error;
-    })
+    });
+  update_ordered_queue_entries orchestrator ~skipped:(child.issue_identifier, error) ~candidates:[ child.issue ] ()
 
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
@@ -1072,7 +1248,16 @@ let poll_once orchestrator =
                  && (not (is_running orchestrator.state issue))
                  && (not (is_blocked orchestrator issue))
                  && retrying_due orchestrator issue)
+          |> (fun issues ->
+               match orchestrator.ordered_queue with
+               | None -> issues
+               | Some queue ->
+                   issues
+                   |> List.filter (queue_contains_issue queue)
+                   |> List.filter (queue_entry_allows_dispatch orchestrator.state)
+                   |> List.sort (fun left right -> compare (queue_index queue left) (queue_index queue right)))
         in
+        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
         maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
         render_poll_completed orchestrator (List.length dispatchable)
@@ -1091,17 +1276,24 @@ let poll_once orchestrator =
           render_poll_failed msg)
 
 let run_forever orchestrator =
-  while true do
+  let finished_reported = ref false in
+  while not !finished_reported do
     poll_once orchestrator;
-    let interval_ms = max 1 orchestrator.config.polling.interval_ms in
-    let read_timeout_ms = max 1 orchestrator.config.codex.read_timeout_ms in
-    let rec sleep_and_reap elapsed_ms =
-      if elapsed_ms < interval_ms then (
-        let remaining_ms = interval_ms - elapsed_ms in
-        let chunk_ms = min read_timeout_ms remaining_ms in
-        Unix.sleepf (float_of_int chunk_ms /. 1000.);
-        reap_children orchestrator;
-        sleep_and_reap (elapsed_ms + chunk_ms))
-    in
-    sleep_and_reap 0
+    if ordered_queue_finished orchestrator then (
+      (match orchestrator.state.Runtime_state.ordered_queue with
+      | Some queue -> render_ordered_queue_finished queue
+      | None -> ());
+      finished_reported := true)
+    else
+      let interval_ms = max 1 orchestrator.config.polling.interval_ms in
+      let read_timeout_ms = max 1 orchestrator.config.codex.read_timeout_ms in
+      let rec sleep_and_reap elapsed_ms =
+        if elapsed_ms < interval_ms then (
+          let remaining_ms = interval_ms - elapsed_ms in
+          let chunk_ms = min read_timeout_ms remaining_ms in
+          Unix.sleepf (float_of_int chunk_ms /. 1000.);
+          reap_children orchestrator;
+          sleep_and_reap (elapsed_ms + chunk_ms))
+      in
+      sleep_and_reap 0
   done
