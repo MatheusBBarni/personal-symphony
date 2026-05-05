@@ -144,6 +144,10 @@ _Avoid_: setup error, config problem
 A Loop-Start Branch checkout with no uncommitted Workspace Repository changes.
 _Avoid_: clean repo, safe branch
 
+**Startup Reconciliation**:
+The startup-time recovery pass that checks completed-stage Agent Worktrees for Task Branch commits not present on the Loop-Start Branch.
+_Avoid_: startup merge, branch sweep, cleanup scan
+
 **Terminal Console**:
 The default terminal interface for operating Personal Symphony in a Workspace Repository.
 _Avoid_: TUI, terminal UI
@@ -235,6 +239,11 @@ _Avoid_: reinitialize, reset
 - **Manual Task Merge** preflights every selected task before merging anything, requires clean Loop-Start and Agent Worktrees, and uses fast-forward-only semantics.
 - **Manual Task Merge** may target a **Protected Trunk Branch** because explicit selected issue identifiers are the operator action.
 - **Manual Task Merge** does not push branches, run Startup Reconciliation, dispatch agents, or open a Batch Pull Request.
+- **Startup Reconciliation** runs once per process startup before normal dispatch or agent launch.
+- **Startup Reconciliation** evaluates completed-stage **Agent Worktrees** in deterministic issue order.
+- **Startup Reconciliation** integrates safe committed **Task Branch** work into the **Loop-Start Branch** by fast-forward only.
+- **Startup Reconciliation** does not create a **Stage Commit**, reconcile retained **Task Branches** without **Agent Worktrees**, or change tracker status after successful or already-contained reconciliation.
+- **Startup Reconciliation** moves unsafe, contradictory, non-fast-forward, or Protected Trunk Branch candidates to the **Merge Attention Status** and records Runtime State diagnostics.
 - The default **Merge Attention Status** is `Human attention`.
 - The **Merge Attention Status** is paused and not dispatchable.
 - The default **Task Cleanup Policy** removes an **Agent Worktree** after its **Task Branch** is merged.

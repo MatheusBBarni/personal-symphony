@@ -30,6 +30,14 @@ type ordered_queue_entry = {
   skip_reason : string option;
 }
 type ordered_queue = { entries : ordered_queue_entry list }
+type startup_reconciliation = {
+  issue_id : string option;
+  issue_identifier : string option;
+  task_branch : string option;
+  workspace_path : string option;
+  category : string;
+  message : string;
+}
 type pull_request_handoff = {
   enabled : bool;
   head_branch : string option;
@@ -51,6 +59,7 @@ type t = {
   rate_limits : Yojson.Safe.t option;
   pull_request : pull_request_handoff option;
   ordered_queue : ordered_queue option;
+  startup_reconciliation : startup_reconciliation list;
   last_error : string option;
 }
 
@@ -67,6 +76,7 @@ let empty ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue ?last_error
     rate_limits = None;
     pull_request = None;
     ordered_queue;
+    startup_reconciliation = [];
     last_error;
   }
 
@@ -141,7 +151,7 @@ let issue_error_to_yojson (row : issue_error) =
 let readiness_gap_to_yojson row =
   `Assoc [ ("requirement", `String row.requirement); ("remediation", `String row.remediation) ]
 
-let ordered_queue_entry_to_yojson row =
+let ordered_queue_entry_to_yojson (row : ordered_queue_entry) =
   `Assoc
     [
       ("issue_identifier", `String row.issue_identifier);
@@ -150,8 +160,19 @@ let ordered_queue_entry_to_yojson row =
       ("skip_reason", (match row.skip_reason with Some s -> `String s | None -> `Null));
     ]
 
-let ordered_queue_to_yojson row =
+let ordered_queue_to_yojson (row : ordered_queue) =
   `Assoc [ ("entries", `List (List.map ordered_queue_entry_to_yojson row.entries)) ]
+
+let startup_reconciliation_to_yojson (row : startup_reconciliation) =
+  `Assoc
+    [
+      ("issue_id", (match row.issue_id with Some s -> `String s | None -> `Null));
+      ("issue_identifier", (match row.issue_identifier with Some s -> `String s | None -> `Null));
+      ("task_branch", (match row.task_branch with Some s -> `String s | None -> `Null));
+      ("workspace_path", (match row.workspace_path with Some s -> `String s | None -> `Null));
+      ("category", `String row.category);
+      ("message", `String row.message);
+    ]
 
 let json_member name = function
   | `Assoc fields -> List.assoc_opt name fields
@@ -210,5 +231,6 @@ let to_yojson state =
       ("rate_limits", Option.value state.rate_limits ~default:`Null);
       ("pull_request", (match state.pull_request with Some row -> pull_request_handoff_to_yojson row | None -> `Null));
       ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
+      ("startup_reconciliation", `List (List.map startup_reconciliation_to_yojson state.startup_reconciliation));
       ("last_error", (match state.last_error with Some s -> `String s | None -> `Null));
     ]

@@ -67,6 +67,13 @@ type orderedQueueEntry = {
 
 type orderedQueue = {entries: array<orderedQueueEntry>}
 
+type startupReconciliation = {
+  issue_identifier: option<string>,
+  task_branch: option<string>,
+  category: string,
+  message: string,
+}
+
 type runningIssue = {
   issue_id: string,
   issue_identifier: string,
@@ -83,6 +90,7 @@ type runtimeState = {
   generated_at: string,
   last_error: option<string>,
   readiness_gaps: array<readinessGap>,
+  startup_reconciliation: array<startupReconciliation>,
   issues: array<runningIssue>,
   running: array<runningIssue>,
   retrying: array<taskError>,
@@ -106,6 +114,25 @@ let readinessText = state =>
     (arrayOrEmpty(state.readiness_gaps)
     ->Array.map(gap => gap.requirement ++ ": " ++ gap.remediation)
     ->Array.join("; "))
+  } else {
+    ""
+  }
+
+let startupReconciliationText = state =>
+  if Array.length(arrayOrEmpty(state.startup_reconciliation)) > 0 {
+    arrayOrEmpty(state.startup_reconciliation)
+    ->Array.map(row => {
+      let identifier = switch row.issue_identifier {
+      | Some(value) => value
+      | None => "startup"
+      }
+      let branch = switch row.task_branch {
+      | Some(value) => " " ++ value
+      | None => ""
+      }
+      identifier ++ branch ++ " " ++ row.category ++ ": " ++ row.message
+    })
+    ->Array.join("; ")
   } else {
     ""
   }
@@ -275,6 +302,7 @@ let snapshotFromState = state => {
   tokens: state.codex_totals.total_tokens->Int.toString,
   generatedAt: state.generated_at,
   readinessGaps: readinessText(state),
+  startupReconciliation: startupReconciliationText(state),
   lastError: switch state.last_error {
   | Some(value) => value
   | None => ""

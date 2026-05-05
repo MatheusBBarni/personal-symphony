@@ -21,6 +21,7 @@ type snapshot = {
   tokens: string,
   generatedAt: string,
   readinessGaps: string,
+  startupReconciliation: string,
   lastError: string,
   statusOrder: array<string>,
   issues: array<issueItem>,
@@ -238,6 +239,10 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
         {switch data.readinessGaps {
         | "" => React.null
         | value => banner("warning", "Readiness Gaps", value)
+        }}
+        {switch data.startupReconciliation {
+        | "" => React.null
+        | value => banner("warning", "Startup Reconciliation", value)
         }}
         {switch data.lastError {
         | "" => React.null

@@ -39,6 +39,10 @@ let init_repo root branch =
   Util.write_file (Filename.concat root "README.md") "initial\n";
   ignore (run_ok ~cwd:root "initial commit" "git add README.md && git commit -q -m initial")
 
+let ignore_runtime_home root =
+  Util.write_file (Filename.concat root ".gitignore") ".symphony/\n";
+  ignore (run_ok ~cwd:root "ignore runtime home" "git add .gitignore && git commit -q -m ignore-runtime-home")
+
 let git_policy ?(auto_merge = false) ?(protected_trunk_branches = [ "main"; "master" ])
     ?(merge_attention_status = "Human attention") ?(remove_worktree_after_merge = true) () =
   {
@@ -2808,6 +2812,249 @@ let base_orchestrator_config root git =
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
+let completed_stage_config root git =
+  {
+    (base_orchestrator_config root git) with
+    Config.stage_agents =
+      {
+        enabled = true;
+        root = Filename.concat root "agents";
+        default_agent = None;
+        stages =
+          [
+            {
+              Config.states = [ "In progress" ];
+              agent = "engineer";
+              skills = [];
+              start_status = Some "In progress";
+              success_status = Some "In review";
+              retry_status = Some "Todo";
+              goal = None;
+              commit = None;
+            };
+          ];
+      };
+  }
+
+let diagnostic_categories state =
+  List.map (fun (row : Runtime_state.startup_reconciliation) -> row.category) state.Runtime_state.startup_reconciliation
+
+let create_task_worktree config issue =
+  match Orchestrator.shell_prepare_workspace config ~loop_start_branch:(Orchestrator.current_branch config.Config.repository_root) issue with
+  | Ok workspace -> workspace
+  | Error error -> Alcotest.fail error
+
+let commit_file ~cwd file content message =
+  Util.write_file (Filename.concat cwd file) content;
+  ignore (run_ok ~cwd "commit file" (Printf.sprintf "git add %s && git commit -q -m %s" (Util.shell_quote file) (Util.shell_quote message)))
+
+let test_startup_reconciliation_merges_completed_worktrees_in_order () =
+  with_temp_dir "symphony-startup-reconcile-order-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = completed_stage_config root (git_policy ~auto_merge:true ()) in
+      let issue_22 = Issue.empty ~id:"I22" ~identifier:"#22" ~title:"Twenty two" ~state:"In review" in
+      let issue_21 = Issue.empty ~id:"I21" ~identifier:"#21" ~title:"Twenty one" ~state:"In review" in
+      let workspace_21 = create_task_worktree config issue_21 in
+      commit_file ~cwd:workspace_21.path "a.txt" "a\n" "task 21";
+      ignore (run_ok ~cwd:root "create second task branch" "git branch symphony/task-22 symphony/task-21");
+      let workspace_22 = create_task_worktree config issue_22 in
+      commit_file ~cwd:workspace_22.path "b.txt" "b\n" "task 22";
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue_22; issue_21 ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "first file merged" true (Sys.file_exists (Filename.concat root "a.txt"));
+      Alcotest.(check bool) "second file merged" true (Sys.file_exists (Filename.concat root "b.txt"));
+      Alcotest.(check (list string)) "diagnostic order" [ "merged"; "merged" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      let log = run_ok ~cwd:root "log" "git log --reverse --format=%s" |> Util.split_lines in
+      Alcotest.(check (list string)) "merge order" [ "initial"; "ignore-runtime-home"; "task 21"; "task 22" ] log;
+      Alcotest.(check (list (pair string string))) "no status changes after success" [] (List.rev !statuses))
+
+let test_startup_reconciliation_already_contained_applies_cleanup_without_status_change () =
+  with_temp_dir "symphony-startup-reconcile-contained-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = completed_stage_config root (git_policy ~auto_merge:true ()) in
+      let issue = Issue.empty ~id:"I23" ~identifier:"#23" ~title:"Twenty three" ~state:"In review" in
+      let workspace = create_task_worktree config issue in
+      commit_file ~cwd:workspace.path "contained.txt" "contained\n" "task 23";
+      ignore (run_ok ~cwd:root "manual merge" "git merge --ff-only symphony/task-23");
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "diagnostics" [ "already_reconciled" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path);
+      Alcotest.(check bool) "task branch kept" true
+        (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-23") = 0);
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "startup reconciliation runs once" 1
+        (List.length (Orchestrator.get_state orchestrator).Runtime_state.startup_reconciliation);
+      Alcotest.(check (list (pair string string))) "no status changes" [] (List.rev !statuses))
+
+let test_startup_reconciliation_moves_unsafe_candidates_to_attention () =
+  with_temp_dir "symphony-startup-reconcile-attention-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = completed_stage_config root (git_policy ~auto_merge:true ()) in
+      let protected_issue = Issue.empty ~id:"I24" ~identifier:"#24" ~title:"Protected" ~state:"In review" in
+      let uncommitted_issue = Issue.empty ~id:"I25" ~identifier:"#25" ~title:"Uncommitted" ~state:"In review" in
+      let protected_workspace = create_task_worktree config protected_issue in
+      commit_file ~cwd:protected_workspace.path "protected.txt" "protected\n" "task 24";
+      let uncommitted_workspace = create_task_worktree config uncommitted_issue in
+      Util.write_file (Filename.concat uncommitted_workspace.path "dirty.txt") "dirty\n";
+      let protected_config =
+        {
+          config with
+          Config.git = { config.git with protected_trunk_branches = [ "feature/start" ] };
+        }
+      in
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ protected_issue; uncommitted_issue ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config:protected_config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "protected not merged" false (Sys.file_exists (Filename.concat root "protected.txt"));
+      Alcotest.(check int) "no stage commit created for uncommitted changes" 2
+        (List.length (run_ok ~cwd:uncommitted_workspace.path "log" "git log --format=%s" |> Util.split_lines));
+      Alcotest.(check (list string)) "diagnostics"
+        [ "attention_protected_trunk"; "attention_uncommitted_changes" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      Alcotest.(check (list (pair string string))) "attention statuses"
+        [ ("#24", "Human attention"); ("#25", "Human attention") ]
+        (List.rev !statuses);
+      Alcotest.(check int) "issue errors" 2 (List.length (Orchestrator.get_state orchestrator).issue_errors))
+
+let test_startup_reconciliation_continues_after_non_fast_forward () =
+  with_temp_dir "symphony-startup-reconcile-nonff-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = completed_stage_config root (git_policy ~auto_merge:true ()) in
+      let nonff_issue = Issue.empty ~id:"I26" ~identifier:"#26" ~title:"Non fast forward" ~state:"In review" in
+      let later_issue = Issue.empty ~id:"I27" ~identifier:"#27" ~title:"Later" ~state:"In review" in
+      let nonff_workspace = create_task_worktree config nonff_issue in
+      commit_file ~cwd:nonff_workspace.path "nonff.txt" "task\n" "task 26";
+      commit_file ~cwd:root "loop.txt" "loop\n" "loop advance";
+      let later_workspace = create_task_worktree config later_issue in
+      commit_file ~cwd:later_workspace.path "later.txt" "later\n" "task 27";
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ nonff_issue; later_issue ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "non fast forward not merged" false (Sys.file_exists (Filename.concat root "nonff.txt"));
+      Alcotest.(check bool) "later candidate still merged" true (Sys.file_exists (Filename.concat root "later.txt"));
+      Alcotest.(check (list string)) "diagnostics" [ "attention_non_fast_forward"; "merged" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      Alcotest.(check (list (pair string string))) "only nonff moved to attention" [ ("#26", "Human attention") ]
+        (List.rev !statuses))
+
+let test_startup_reconciliation_detects_wrong_and_missing_task_branch () =
+  with_temp_dir "symphony-startup-reconcile-branch-state-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = completed_stage_config root (git_policy ~auto_merge:true ()) in
+      let wrong_issue = Issue.empty ~id:"I28" ~identifier:"#28" ~title:"Wrong branch" ~state:"In review" in
+      let missing_issue = Issue.empty ~id:"I29" ~identifier:"#29" ~title:"Missing branch" ~state:"In review" in
+      let stale_issue = Issue.empty ~id:"I32" ~identifier:"#32" ~title:"Stale workspace" ~state:"In review" in
+      ignore (run_ok ~cwd:root "wrong branch" "git branch symphony/task-other feature/start");
+      Util.mkdir_p config.workspace.root;
+      let wrong_path = Filename.concat config.workspace.root "_28" in
+      ignore
+        (run_ok ~cwd:root "wrong worktree"
+           (Printf.sprintf "git worktree add %s symphony/task-other" (Util.shell_quote wrong_path)));
+      let missing_workspace = create_task_worktree config missing_issue in
+      ignore (run_ok ~cwd:root "delete expected branch" "git update-ref -d refs/heads/symphony/task-29");
+      let stale_path = Filename.concat config.workspace.root "_32" in
+      Unix.mkdir stale_path 0o755;
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ wrong_issue; missing_issue; stale_issue ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "missing worktree kept" true (Sys.file_exists missing_workspace.path);
+      Alcotest.(check (list string)) "diagnostics"
+        [ "attention_wrong_branch"; "attention_missing_task_branch"; "skipped_not_git_worktree" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      Alcotest.(check (list (pair string string))) "attention statuses"
+        [ ("#28", "Human attention"); ("#29", "Human attention"); ("#32", "Human attention") ]
+        (List.rev !statuses))
+
+let test_startup_reconciliation_blocks_when_loop_start_dirty () =
+  with_temp_dir "symphony-startup-reconcile-dirty-loop-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = completed_stage_config root (git_policy ~auto_merge:true ()) in
+      let issue = Issue.empty ~id:"I30" ~identifier:"#30" ~title:"Dirty loop" ~state:"In review" in
+      let workspace = create_task_worktree config issue in
+      commit_file ~cwd:workspace.path "dirty-loop-task.txt" "task\n" "task 30";
+      Util.write_file (Filename.concat root "dirty-loop.txt") "dirty\n";
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "not merged" false (Sys.file_exists (Filename.concat root "dirty-loop-task.txt"));
+      Alcotest.(check (list string)) "startup-level diagnostic" [ "startup_blocked_dirty_loop_start" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      Alcotest.(check (list (pair string string))) "no candidate status changes" [] (List.rev !statuses);
+      match (Orchestrator.get_state orchestrator).last_error with
+      | Some error ->
+          Alcotest.(check bool) "last error names startup reconciliation" true
+            (Util.starts_with ~prefix:"Startup Reconciliation blocked:" error)
+      | None -> Alcotest.fail "expected startup reconciliation error")
+
+let test_startup_reconciliation_ignores_retained_branch_without_worktree () =
+  with_temp_dir "symphony-startup-reconcile-no-worktree-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = completed_stage_config root (git_policy ~auto_merge:true ()) in
+      let issue = Issue.empty ~id:"I31" ~identifier:"#31" ~title:"No worktree" ~state:"In review" in
+      ignore (run_ok ~cwd:root "branch" "git branch symphony/task-31 feature/start");
+      let external_worktree = Filename.concat (Filename.dirname root) "external-task-31" in
+      ignore
+        (run_ok ~cwd:root "external worktree"
+           (Printf.sprintf "git worktree add %s symphony/task-31" (Util.shell_quote external_worktree)));
+      commit_file ~cwd:external_worktree "retained.txt" "retained\n" "task 31";
+      ignore (run_ok ~cwd:root "remove external worktree" (Printf.sprintf "git worktree remove %s" (Util.shell_quote external_worktree)));
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Alcotest.fail "unexpected status change")
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "retained branch not merged" false (Sys.file_exists (Filename.concat root "retained.txt"));
+      Alcotest.(check (list string)) "no diagnostics for branch without worktree" []
+        (diagnostic_categories (Orchestrator.get_state orchestrator)))
+
 let test_orchestrator_creates_task_worktree_and_branch () =
   with_temp_dir "symphony-task-worktree-" (fun root ->
       init_repo root "feature/start";
@@ -3258,6 +3505,7 @@ let manual_merge_config ?(keep_task_branch = true) root =
               success_status = Some "Done";
               retry_status = None;
               agent = "reviewer";
+              skills = [];
               goal = None;
               commit = None;
             };
@@ -3486,6 +3734,20 @@ let () =
             `Quick test_orchestrator_parses_final_output_before_timeout_retry;
           Alcotest.test_case "preserves goal usage on blocked issue error"
             `Quick test_orchestrator_preserves_goal_usage_on_blocked_issue_error;
+          Alcotest.test_case "startup reconciliation merges completed worktrees in order"
+            `Quick test_startup_reconciliation_merges_completed_worktrees_in_order;
+          Alcotest.test_case "startup reconciliation cleans already-contained task branches"
+            `Quick test_startup_reconciliation_already_contained_applies_cleanup_without_status_change;
+          Alcotest.test_case "startup reconciliation moves unsafe candidates to attention"
+            `Quick test_startup_reconciliation_moves_unsafe_candidates_to_attention;
+          Alcotest.test_case "startup reconciliation continues after non-fast-forward"
+            `Quick test_startup_reconciliation_continues_after_non_fast_forward;
+          Alcotest.test_case "startup reconciliation detects wrong and missing branches"
+            `Quick test_startup_reconciliation_detects_wrong_and_missing_task_branch;
+          Alcotest.test_case "startup reconciliation blocks when loop-start is dirty"
+            `Quick test_startup_reconciliation_blocks_when_loop_start_dirty;
+          Alcotest.test_case "startup reconciliation ignores branches without worktrees"
+            `Quick test_startup_reconciliation_ignores_retained_branch_without_worktree;
           Alcotest.test_case "creates task worktree and branch" `Quick test_orchestrator_creates_task_worktree_and_branch;
           Alcotest.test_case "opens batch pull request once when idle" `Quick test_orchestrator_opens_batch_pull_request_once_when_idle;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
