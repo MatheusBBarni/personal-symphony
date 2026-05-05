@@ -31,14 +31,14 @@ function run(command, args, options = {}) {
 }
 
 function parsePackJson(stdout) {
-  const start = stdout.indexOf("[");
-  const end = stdout.lastIndexOf("]");
+  const lines = stdout.split(/\r?\n/);
+  const startLine = lines.findLastIndex((line) => line.trim() === "[");
 
-  if (start === -1 || end === -1 || end < start) {
+  if (startLine === -1) {
     throw new Error(`npm pack did not return JSON output:\n${stdout}`);
   }
 
-  const packages = JSON.parse(stdout.slice(start, end + 1));
+  const packages = JSON.parse(lines.slice(startLine).join("\n"));
   if (!Array.isArray(packages) || packages.length !== 1 || !packages[0].filename) {
     throw new Error(`npm pack returned unexpected metadata:\n${stdout}`);
   }
