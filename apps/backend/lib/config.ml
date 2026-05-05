@@ -40,6 +40,7 @@ type stage_goal = { enabled : bool }
 type stage_agent = {
   states : string list;
   agent : string;
+  skills : string list;
   start_status : string option;
   success_status : string option;
   retry_status : string option;
@@ -98,6 +99,7 @@ let default_stage_agents =
     {
       states = [ "Backlog" ];
       agent = "planner";
+      skills = [];
       start_status = None;
       success_status = Some "To-Do";
       retry_status = Some "Backlog";
@@ -107,6 +109,7 @@ let default_stage_agents =
     {
       states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
       agent = "engineer";
+      skills = [];
       start_status = Some "In progress";
       success_status = Some "In review";
       retry_status = Some "To-Do";
@@ -116,6 +119,7 @@ let default_stage_agents =
     {
       states = [ "In review"; "In Review" ];
       agent = "reviewer";
+      skills = [];
       start_status = None;
       success_status = Some "Done";
       retry_status = Some "In progress";
@@ -292,6 +296,7 @@ let json_stage_agent json =
   {
     states = json_string_list "states" json ~default:[];
     agent = json_string "agent" json ~default:"";
+    skills = json_string_list "skills" json ~default:[];
     start_status = json_optional_string "startStatus" json;
     success_status = json_optional_string "successStatus" json;
     retry_status = json_optional_string "retryStatus" json;
@@ -498,6 +503,136 @@ let from_settings_file ~workspace_root path =
 let is_placeholder = function "" | "your-org" | "your-repo" -> true | _ -> false
 let is_repository_name value = not (String.contains value '/')
 
+let codex_home () =
+  match Sys.getenv_opt "CODEX_HOME" with
+  | Some home when Util.trim home <> "" -> home
+  | _ -> (
+      match Sys.getenv_opt "HOME" with
+      | Some home when Util.trim home <> "" -> Filename.concat home ".codex"
+      | _ -> Filename.concat (Unix.getcwd ()) ".codex")
+
+let contains_whitespace value =
+  String.exists
+    (function ' ' | '\t' | '\n' | '\r' | '\012' -> true | _ -> false)
+    value
+
+let contains_dot_segment value =
+  String.contains value '.'
+  &&
+  let parts = String.split_on_char ':' value |> List.concat_map (String.split_on_char '.') in
+  List.exists (( = ) "") parts || List.exists (( = ) "..") (String.split_on_char '/' value)
+
+let valid_skill_identifier identifier =
+  let identifier = Util.trim identifier in
+  let valid_colons =
+    match String.split_on_char ':' identifier with
+    | [ value ] -> value <> ""
+    | [ prefix; name ] -> prefix <> "" && name <> ""
+    | _ -> false
+  in
+  identifier <> ""
+  && valid_colons
+  && not (String.contains identifier '$')
+  && not (contains_whitespace identifier)
+  && not (String.contains identifier '/')
+  && not (String.contains identifier '\\')
+  && not (contains_dot_segment identifier)
+
+let skill_candidates roots identifier =
+  let prefixed_candidates root =
+    match String.split_on_char ':' identifier with
+    | [ prefix; name ] when prefix <> "" && name <> "" ->
+        [
+          Filename.concat (Filename.concat root prefix) name;
+          Filename.concat
+            (Filename.concat
+               (Filename.concat (Filename.concat (Filename.concat root "plugins") "cache") "openai-curated")
+               prefix)
+            name;
+        ]
+    | _ -> []
+  in
+  roots
+  |> List.concat_map (fun root ->
+         [
+           Filename.concat (Filename.concat root identifier) "SKILL.md";
+           Filename.concat (Filename.concat (Filename.concat root "skills") identifier) "SKILL.md";
+           Filename.concat (Filename.concat (Filename.concat (Filename.concat root "skills") ".system") identifier) "SKILL.md";
+         ]
+         @ (prefixed_candidates root |> List.map (fun dir -> Filename.concat dir "SKILL.md")))
+
+let path_exists path = Sys.file_exists path && not (Sys.is_directory path)
+
+let path_has_dir path dir =
+  String.split_on_char '/' path |> List.exists (( = ) dir)
+
+let rec find_skill_by_scan ?plugin_prefix ~root identifier =
+  if not (Sys.file_exists root && Sys.is_directory root) then None
+  else
+    let entries = Sys.readdir root |> Array.to_list in
+    List.find_map
+      (fun name ->
+        let path = Filename.concat root name in
+        if Sys.is_directory path then
+          let skill_md = Filename.concat path "SKILL.md" in
+          if
+            path_exists skill_md
+            &&
+            match plugin_prefix with
+            | Some prefix -> name = identifier && path_has_dir path prefix
+            | None -> name = identifier
+          then Some skill_md
+          else find_skill_by_scan ?plugin_prefix ~root:path identifier
+        else None)
+      entries
+
+let resolve_stage_skill_path config identifier =
+  let workspace_skills = Filename.concat config.repository_root ".agents/skills" in
+  let home = codex_home () in
+  let home_skills = Filename.concat home "skills" in
+  let home_plugins = Filename.concat (Filename.concat home "plugins") "cache" in
+  let plugin_prefix, unqualified_identifier =
+    match String.split_on_char ':' identifier with
+    | [ prefix; name ] when prefix <> "" && name <> "" -> (Some prefix, name)
+    | _ -> (None, identifier)
+  in
+  match List.find_opt path_exists (skill_candidates [ workspace_skills ] identifier) with
+  | Some path -> Some path
+  | None -> (
+      match find_skill_by_scan ~root:workspace_skills identifier with
+      | Some _ as path -> path
+      | None -> (
+          match List.find_opt path_exists (skill_candidates [ home ] identifier) with
+          | Some _ as path -> path
+          | None -> (
+              match find_skill_by_scan ~root:home_skills identifier with
+              | Some _ as path -> path
+              | None -> find_skill_by_scan ?plugin_prefix ~root:home_plugins unqualified_identifier)))
+
+let skill_exists config identifier = Option.is_some (resolve_stage_skill_path config identifier)
+
+let validate_stage_skill_load config add =
+  if config.stage_agents.enabled then
+    List.iter
+      (fun (stage : stage_agent) ->
+        let seen = Hashtbl.create 8 in
+        List.iter
+          (fun skill ->
+            let skill = Util.trim skill in
+            let requirement = "stageAgents." ^ stage.agent ^ ".skills." ^ skill in
+            if not (valid_skill_identifier skill) then
+              add requirement
+                "Use skill identifiers without $, whitespace, path separators, dot segments, or empty values."
+            else if Hashtbl.mem seen skill then
+              add requirement "Remove duplicate skill identifiers from the Stage Skill Load."
+            else (
+              Hashtbl.add seen skill ();
+              if not (skill_exists config skill) then
+                add requirement
+                  "Install the skill in the Workspace Repository .agents/skills directory or in the Codex Home."))
+          stage.skills)
+      config.stage_agents.stages
+
 let readiness_gaps config =
   let gaps = ref [] in
   let add requirement remediation = gaps := { requirement; remediation } :: !gaps in
@@ -540,6 +675,7 @@ let readiness_gaps config =
         if not (Sys.file_exists path) then
           add ("stageAgents." ^ stage.agent) (Printf.sprintf "Create the stage agent prompt file: %s" path))
       config.stage_agents.stages);
+  validate_stage_skill_load config add;
   List.rev !gaps
 
 let validate_for_dispatch config =

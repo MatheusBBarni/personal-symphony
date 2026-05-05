@@ -174,6 +174,7 @@ Configure or disable this in `.symphony/settings.json`:
       {
         "states": ["Backlog"],
         "agent": "planner",
+        "skills": [],
         "successStatus": "To-Do",
         "retryStatus": "Backlog",
         "goal": {
@@ -189,6 +190,7 @@ Configure or disable this in `.symphony/settings.json`:
       {
         "states": ["Todo", "To-Do", "In progress", "In Progress"],
         "agent": "engineer",
+        "skills": [],
         "startStatus": "In progress",
         "successStatus": "In review",
         "retryStatus": "To-Do",
@@ -205,6 +207,7 @@ Configure or disable this in `.symphony/settings.json`:
       {
         "states": ["In review", "In Review"],
         "agent": "reviewer",
+        "skills": [],
         "successStatus": "Done",
         "retryStatus": "In progress",
         "goal": {
@@ -223,6 +226,14 @@ Configure or disable this in `.symphony/settings.json`:
 ```
 
 Set `"enabled": false` to use the single base `.symphony/prompt.md` for every issue.
+
+Set `skills` to an ordered list of skill identifiers when a stage requires reusable Codex workflows.
+Runtime Settings store identifiers without `$`, for example `"to-prd"` or `"github:gh-fix-ci"`.
+When a matching Stage Agent runs, Symphony renders those as `$to-prd` style references in the normal
+Agent Prompt after the Stage Agent instructions and before the base Agent Prompt. It does not expand
+skill files and does not include Stage Skill Load in Stage Goal Context. Missing, malformed, or
+duplicate skill identifiers are Readiness Gaps; Symphony checks all configured stages before
+dispatch, resolving Workspace Repository skills before Codex Home skills.
 
 Set `goal.enabled` to `true` on a specific stage to enable Stage Goal Handoff for that stage only.
 When enabled, Symphony sends `/goal` with deterministic Stage Goal Context before the normal Agent

@@ -63,6 +63,7 @@ let settings_json =
       {
         "states": ["Backlog"],
         "agent": "planner",
+        "skills": [],
         "successStatus": "To-Do",
         "retryStatus": "Backlog",
         "goal": {
@@ -78,6 +79,7 @@ let settings_json =
       {
         "states": ["Todo", "To-Do", "In progress", "In Progress"],
         "agent": "engineer",
+        "skills": [],
         "startStatus": "In progress",
         "successStatus": "In review",
         "retryStatus": "To-Do",
@@ -94,6 +96,7 @@ let settings_json =
       {
         "states": ["In review", "In Review"],
         "agent": "reviewer",
+        "skills": [],
         "successStatus": "Done",
         "retryStatus": "In progress",
         "goal": {

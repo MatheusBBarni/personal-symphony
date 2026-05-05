@@ -276,11 +276,19 @@ let stage_for_issue config issue =
 let agent_file config agent =
   Filename.concat config.Config.stage_agents.root (agent ^ ".md")
 
+let stage_skill_load_prompt (stage : Config.stage_agent option) =
+  match stage with
+  | Some stage when stage.skills <> [] ->
+      let skills = stage.skills |> List.map (fun skill -> "$" ^ Util.trim skill) |> String.concat "\n" in
+      Some (Printf.sprintf "Stage Skill Load:\n%s" skills)
+  | _ -> None
+
 let agent_prompt config issue =
   if not config.Config.stage_agents.enabled then None
   else
+    let stage = stage_for_issue config issue in
     let agent =
-      match stage_for_issue config issue with
+      match stage with
       | Some stage -> Some stage.agent
       | None -> config.stage_agents.default_agent
     in
@@ -288,13 +296,16 @@ let agent_prompt config issue =
     | None -> None
     | Some agent ->
         let path = agent_file config agent in
-        if Sys.file_exists path then Some (agent, Util.read_file path |> Util.trim) else None
+        if Sys.file_exists path then Some (agent, stage, Util.read_file path |> Util.trim) else None
 
 let normal_prompt config issue base_prompt =
   match agent_prompt config issue with
   | None -> base_prompt
-  | Some (agent, prompt) ->
-      Printf.sprintf "%s\n\n---\n\nStage agent: %s\n\n%s\n" prompt agent base_prompt
+  | Some (agent, stage, prompt) ->
+      let stage_skill_load =
+        match stage_skill_load_prompt stage with Some prompt -> "\n\n" ^ prompt | None -> ""
+      in
+      Printf.sprintf "%s%s\n\n---\n\nStage agent: %s\n\n%s\n" prompt stage_skill_load agent base_prompt
 
 let stage_goal_handoff_stage config issue =
   match stage_for_issue config issue with

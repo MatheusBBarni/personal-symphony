@@ -21,6 +21,17 @@ let run_ok ?(cwd = ".") label command =
   | Ok output -> output
   | Error error -> Alcotest.fail (label ^ ": " ^ error)
 
+let contains_substring text substring =
+  let text_len = String.length text in
+  let substring_len = String.length substring in
+  let rec loop index =
+    if substring_len = 0 then true
+    else if index + substring_len > text_len then false
+    else if String.sub text index substring_len = substring then true
+    else loop (index + 1)
+  in
+  loop 0
+
 let init_repo root branch =
   ignore (run_ok ~cwd:root "git init" (Printf.sprintf "git init -q -b %s" (Util.shell_quote branch)));
   ignore (run_ok ~cwd:root "git user email" "git config user.email test@example.com");
@@ -165,6 +176,69 @@ let test_disabled_stage_goal_does_not_require_codex_goals () =
             (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goals") gaps);
           Alcotest.(check bool) "no stdin gap" false
             (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
+
+let test_config_parses_stage_skill_load_and_readiness () =
+  let original_codex_home = Sys.getenv_opt "CODEX_HOME" in
+  Fun.protect
+    ~finally:(fun () ->
+      match original_codex_home with
+      | Some value -> Unix.putenv "CODEX_HOME" value
+      | None -> Unix.putenv "CODEX_HOME" "")
+    (fun () ->
+      with_temp_dir "symphony-stage-skills-" (fun root ->
+          Unix.putenv "GITHUB_TOKEN" "token";
+          let codex_home = Filename.concat root "codex-home" in
+          Unix.putenv "CODEX_HOME" codex_home;
+          let agents_root = Filename.concat root ".symphony/agents" in
+          let workspace_skills = Filename.concat root ".agents/skills" in
+          let codex_skills = Filename.concat codex_home "skills" in
+          Util.mkdir_p agents_root;
+          Util.mkdir_p (Filename.concat workspace_skills "to-prd");
+          Util.mkdir_p (Filename.concat workspace_skills "shared-skill");
+          Util.mkdir_p (Filename.concat codex_skills "imagegen");
+          Util.mkdir_p (Filename.concat codex_skills "shared-skill");
+          Util.write_file (Filename.concat agents_root "planner.md") "Planner";
+          Util.write_file (Filename.concat (Filename.concat workspace_skills "to-prd") "SKILL.md") "workspace skill";
+          Util.write_file (Filename.concat (Filename.concat workspace_skills "shared-skill") "SKILL.md") "workspace shared";
+          Util.write_file (Filename.concat (Filename.concat codex_skills "imagegen") "SKILL.md") "home skill";
+          Util.write_file (Filename.concat (Filename.concat codex_skills "shared-skill") "SKILL.md") "home shared";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Backlog"], "agent": "planner", "skills": ["to-prd", "imagegen", "shared-skill"]}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          (match config.stage_agents.stages with
+          | [ stage ] -> Alcotest.(check (list string)) "ordered skills" [ "to-prd"; "imagegen"; "shared-skill" ] stage.skills
+          | _ -> Alcotest.fail "expected one stage");
+          Alcotest.(check int) "no readiness gaps" 0 (List.length (Config.readiness_gaps config));
+          Alcotest.(check string) "workspace wins"
+            (Filename.concat (Filename.concat workspace_skills "shared-skill") "SKILL.md")
+            (Option.value (Config.resolve_stage_skill_path config "shared-skill") ~default:"missing");
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Backlog"], "agent": "planner", "skills": ["to-prd", "to-prd", "$bad", "missing-skill"]}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let requirements = Config.readiness_gaps config |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement) in
+          Alcotest.(check bool) "duplicate gap" true (List.exists (( = ) "stageAgents.planner.skills.to-prd") requirements);
+          Alcotest.(check bool) "malformed gap" true (List.exists (( = ) "stageAgents.planner.skills.$bad") requirements);
+          Alcotest.(check bool) "missing gap" true
+            (List.exists (( = ) "stageAgents.planner.skills.missing-skill") requirements)))
 
 let test_stage_goal_requires_codex_exec_stdin_support () =
   let original_home = Sys.getenv_opt "HOME" in
@@ -554,6 +628,8 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check int) "stage mappings" 3 (List.length config.stage_agents.stages);
       (match config.stage_agents.stages with
       | planner :: engineer :: _ ->
+          Alcotest.(check (list string)) "planner skills default empty" [] planner.skills;
+          Alcotest.(check (list string)) "engineer skills default empty" [] engineer.skills;
           Alcotest.(check (option string)) "planner success status" (Some "To-Do") planner.success_status;
           Alcotest.(check bool) "planner goal disabled" false (Config.stage_goal_enabled planner);
           Alcotest.(check bool) "engineer goal disabled" false (Config.stage_goal_enabled engineer);
@@ -2059,6 +2135,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                   {
                     Config.states = [ "In review" ];
                     agent = "reviewer";
+                    skills = [];
                     start_status = None;
                     success_status = Some "Done";
                     retry_status = Some "In progress";
@@ -2149,6 +2226,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    skills = [ "to-prd"; "github:gh-fix-ci" ];
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
@@ -2180,6 +2258,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
       Alcotest.(check bool) "stage agent included" true (String.contains !captured_prompt 'E');
       Alcotest.(check bool) "normal prompt included" true (String.contains !captured_prompt '#');
+      Alcotest.(check bool) "skill load preserves order" true
+        (contains_substring !captured_prompt "Stage Skill Load:\n$to-prd\n$github:gh-fix-ci");
       let goal_line =
         match String.split_on_char '\n' !captured_prompt with
         | first :: _ -> first
@@ -2198,7 +2278,9 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check bool) "created timestamp omitted" true
         (match goal_json |> member "created_at" with `Null -> true | _ -> false);
       Alcotest.(check bool) "updated timestamp omitted" true
-        (match goal_json |> member "updated_at" with `Null -> true | _ -> false))
+        (match goal_json |> member "updated_at" with `Null -> true | _ -> false);
+      Alcotest.(check bool) "skill load omitted from goal context" true
+        (match goal_json |> member "skills" with `Null -> true | _ -> false))
 
 let test_orchestrator_skips_stage_goal_when_disabled () =
   with_temp_dir "symphony-stage-goal-disabled-prompt-" (fun root ->
@@ -2242,6 +2324,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    skills = [];
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
@@ -2352,6 +2435,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    skills = [];
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
@@ -2498,6 +2582,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    skills = [];
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
@@ -2583,6 +2668,7 @@ let test_stage_commit_requires_code_changes () =
           {
             Config.states = [ "In progress" ];
             agent = "engineer";
+            skills = [];
             start_status = None;
             success_status = Some "In review";
             retry_status = Some "Todo";
@@ -2634,6 +2720,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    skills = [];
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
@@ -2977,6 +3064,7 @@ let test_stage_commit_pushes_task_branch () =
           {
             Config.states = [ "In progress" ];
             agent = "engineer";
+            skills = [];
             start_status = None;
             success_status = Some "In review";
             retry_status = Some "Todo";
@@ -3169,6 +3257,7 @@ let () =
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
           Alcotest.test_case "disabled stage goal does not require codex goals" `Quick test_disabled_stage_goal_does_not_require_codex_goals;
+          Alcotest.test_case "parses stage skill load and readiness" `Quick test_config_parses_stage_skill_load_and_readiness;
           Alcotest.test_case "stage goal requires codex exec stdin support" `Quick test_stage_goal_requires_codex_exec_stdin_support;
           Alcotest.test_case "stage goal live stdin probe" `Quick test_stage_goal_live_stdin_probe;
           Alcotest.test_case "requires pull request base branch when enabled" `Quick test_pull_request_base_branch_readiness_gap;
