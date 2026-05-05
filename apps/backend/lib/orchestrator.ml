@@ -32,6 +32,7 @@ type t = {
   batch_pull_request_handoff : batch_pull_request_handoff;
   notify_state : notify_state;
   loop_start_branch : string;
+  mutable startup_reconciliation_done : bool;
   mutable batch_pull_request_completed : bool;
   ordered_queue : Ordered_queue.t option;
 }
@@ -155,6 +156,17 @@ let render_ordered_queue_finished queue =
     Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (yellow "skipped")
       (String.concat "; " skipped)
 
+let render_startup_reconciliation category issue_identifier message =
+  let label =
+    match category with
+    | "merged" | "already_reconciled" -> green category
+    | category when Util.starts_with ~prefix:"attention_" category -> yellow category
+    | category when Util.starts_with ~prefix:"skipped_" category -> dim category
+    | category -> category
+  in
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "startup-reconcile") label
+    issue_identifier message
+
 let running_ids state = List.map (fun (row : Runtime_state.running) -> row.issue.id) state.Runtime_state.running
 let is_running state issue = List.exists (( = ) issue.Issue.id) (running_ids state)
 let string_equal_ci a b = String.lowercase_ascii a = String.lowercase_ascii b
@@ -204,6 +216,8 @@ let queue_issue_number issue =
   match Util.drop_prefix ~prefix:"#" issue.Issue.identifier with
   | Some number -> int_of_string_opt number
   | None -> None
+
+let issue_numeric_key issue = Option.value (queue_issue_number issue) ~default:max_int
 
 let queue_contains_issue queue issue =
   match queue_issue_number issue with
@@ -411,6 +425,16 @@ let git_ref_exists root refname =
   | Ok _ -> true
   | Error _ -> false
 
+let git_ref_contained_in_head root refname =
+  match run_shell_capture ~cwd:root (Printf.sprintf "git merge-base --is-ancestor %s HEAD" (Util.shell_quote refname)) with
+  | Ok _ -> true
+  | Error _ -> false
+
+let git_head_can_fast_forward_to root refname =
+  match run_shell_capture ~cwd:root (Printf.sprintf "git merge-base --is-ancestor HEAD %s" (Util.shell_quote refname)) with
+  | Ok _ -> true
+  | Error _ -> false
+
 let worktree_branch path =
   if Sys.file_exists path && Sys.is_directory path then
     match (run_shell_capture ~cwd:path "git rev-parse --show-toplevel", run_shell_capture ~cwd:path "git branch --show-current") with
@@ -427,6 +451,9 @@ let issue_branch_key issue =
   if digits <> "" then digits else Workspace.sanitize issue.id
 
 let task_branch config issue = config.Config.git.task_branch_prefix ^ issue_branch_key issue
+
+let task_workspace_path config issue =
+  Filename.concat config.Config.workspace.root (Workspace.sanitize issue.Issue.identifier)
 
 let require_clean_loop_start root =
   match run_shell_capture ~cwd:root "git status --porcelain" with
@@ -642,6 +669,7 @@ let make ?ordered_queue ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_
     batch_pull_request_handoff;
     notify_state;
     loop_start_branch = current_branch config.repository_root;
+    startup_reconciliation_done = false;
     batch_pull_request_completed = false;
     ordered_queue;
   }
@@ -902,6 +930,129 @@ let issue_is_active orchestrator issue =
 let issue_needs_attention orchestrator issue =
   string_equal_ci issue.Issue.state orchestrator.config.git.merge_attention_status || is_blocked orchestrator issue
 
+let protected_loop_start orchestrator =
+  List.exists
+    (fun branch -> String.lowercase_ascii branch = String.lowercase_ascii orchestrator.loop_start_branch)
+    orchestrator.config.git.protected_trunk_branches
+
+let completed_stage_success_statuses config =
+  if not config.Config.stage_agents.enabled then []
+  else
+    config.stage_agents.stages
+    |> List.filter_map (fun (stage : Config.stage_agent) -> stage.success_status)
+
+let issue_is_completed_stage config issue =
+  completed_stage_success_statuses config
+  |> List.exists (fun status -> string_equal_ci status issue.Issue.state)
+
+let startup_candidate_order config left right =
+  match compare (issue_numeric_key left) (issue_numeric_key right) with
+  | 0 -> compare (task_branch config left) (task_branch config right)
+  | result -> result
+
+let record_startup_reconciliation orchestrator ?issue ?task_branch ?workspace_path category message =
+  let row =
+    {
+      Runtime_state.issue_id = Option.map (fun issue -> issue.Issue.id) issue;
+      issue_identifier = Option.map (fun issue -> issue.Issue.identifier) issue;
+      task_branch;
+      workspace_path;
+      category;
+      message;
+    }
+  in
+  update_state orchestrator (fun state ->
+    { state with startup_reconciliation = state.startup_reconciliation @ [ row ] });
+  let issue_identifier = match issue with Some issue -> issue.Issue.identifier | None -> "-" in
+  render_startup_reconciliation category issue_identifier message
+
+let record_startup_attention orchestrator issue branch workspace_path category message =
+  record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path category message;
+  ignore (move_issue_status orchestrator issue orchestrator.config.git.merge_attention_status);
+  Hashtbl.replace orchestrator.blocked (block_key issue) message;
+  Hashtbl.replace orchestrator.blocked (block_key { issue with Issue.state = orchestrator.config.git.merge_attention_status }) message;
+  update_state orchestrator (fun state ->
+    {
+      state with
+      issue_errors =
+        {
+          Runtime_state.issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          error = message;
+          goal_usage = None;
+        }
+        :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
+      last_error = Some message;
+    })
+
+let cleanup_task_worktree_for_issue config issue workspace_path =
+  if config.Config.git.cleanup.remove_worktree_after_merge then
+    ignore
+      (run_shell_capture ~cwd:config.repository_root
+         (Printf.sprintf "git worktree remove %s" (Util.shell_quote workspace_path)));
+  if not config.git.cleanup.keep_task_branch then
+    ignore
+      (run_shell_capture ~cwd:config.repository_root
+         (Printf.sprintf "git branch -d %s" (Util.shell_quote (task_branch config issue))))
+
+let reconcile_startup_candidate orchestrator issue =
+  let workspace_path = task_workspace_path orchestrator.config issue in
+  let branch = task_branch orchestrator.config issue in
+  match worktree_branch workspace_path with
+  | None ->
+      record_startup_attention orchestrator issue branch workspace_path "skipped_not_git_worktree"
+        (workspace_path ^ " exists but is not an Agent Worktree")
+  | Some existing_branch when existing_branch <> branch ->
+      record_startup_attention orchestrator issue branch workspace_path "attention_wrong_branch"
+        (Printf.sprintf "Agent Worktree is on %s but expected %s" existing_branch branch)
+  | Some _ when not (git_ref_exists orchestrator.config.repository_root branch) ->
+      record_startup_attention orchestrator issue branch workspace_path "attention_missing_task_branch"
+        ("expected Task Branch is missing: " ^ branch)
+  | Some _ -> (
+      match has_worktree_changes workspace_path with
+      | Error error -> record_startup_attention orchestrator issue branch workspace_path "attention_uncommitted_changes" error
+      | Ok true ->
+          record_startup_attention orchestrator issue branch workspace_path "attention_uncommitted_changes"
+            "Agent Worktree has uncommitted changes"
+      | Ok false ->
+          let root = orchestrator.config.repository_root in
+          if git_ref_contained_in_head root branch then (
+            cleanup_task_worktree_for_issue orchestrator.config issue workspace_path;
+            record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path "already_reconciled"
+              "Task Branch is already contained in the Loop-Start Branch")
+          else if protected_loop_start orchestrator then
+            record_startup_attention orchestrator issue branch workspace_path "attention_protected_trunk"
+              "committed Task Branch work exists but Loop-Start Branch is protected"
+          else if git_head_can_fast_forward_to root branch then
+            match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
+            | Ok _ ->
+                cleanup_task_worktree_for_issue orchestrator.config issue workspace_path;
+                record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path "merged"
+                  "Task Branch fast-forwarded into the Loop-Start Branch"
+            | Error error ->
+                record_startup_attention orchestrator issue branch workspace_path "attention_non_fast_forward"
+                  ("Task Branch could not fast-forward: " ^ error)
+          else
+            record_startup_attention orchestrator issue branch workspace_path "attention_non_fast_forward"
+              "Task Branch could not fast-forward")
+
+let reconcile_startup orchestrator candidates =
+  if not orchestrator.startup_reconciliation_done then (
+    orchestrator.startup_reconciliation_done <- true;
+    let candidates =
+      candidates
+      |> List.filter (issue_is_completed_stage orchestrator.config)
+      |> List.filter (fun issue -> Sys.file_exists (task_workspace_path orchestrator.config issue))
+      |> List.sort (startup_candidate_order orchestrator.config)
+    in
+    if candidates <> [] then
+      match require_clean_loop_start orchestrator.config.repository_root with
+      | Error error ->
+          let message = "Startup Reconciliation blocked: " ^ error in
+          record_startup_reconciliation orchestrator "startup_blocked_dirty_loop_start" message;
+          set_error orchestrator message
+      | Ok () -> List.iter (reconcile_startup_candidate orchestrator) candidates)
+
 let set_pull_request_handoff orchestrator status ?url ?error () =
   let policy = orchestrator.config.Config.pull_request in
   update_state orchestrator (fun state ->
@@ -1098,20 +1249,8 @@ let complete_child orchestrator child =
   update_ordered_queue_entries orchestrator ~completed_identifier:child.issue_identifier ~candidates:[ child.issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
-let protected_loop_start orchestrator =
-  List.exists
-    (fun branch -> String.lowercase_ascii branch = String.lowercase_ascii orchestrator.loop_start_branch)
-    orchestrator.config.git.protected_trunk_branches
-
 let cleanup_task_worktree orchestrator child =
-  if orchestrator.config.git.cleanup.remove_worktree_after_merge then
-    ignore
-      (run_shell_capture ~cwd:orchestrator.config.repository_root
-         (Printf.sprintf "git worktree remove %s" (Util.shell_quote child.workspace.path)));
-  if not orchestrator.config.git.cleanup.keep_task_branch then
-    ignore
-      (run_shell_capture ~cwd:orchestrator.config.repository_root
-         (Printf.sprintf "git branch -d %s" (Util.shell_quote (task_branch orchestrator.config child.issue))))
+  cleanup_task_worktree_for_issue orchestrator.config child.issue child.workspace.path
 
 let auto_merge_child orchestrator child =
   if (not (is_git_repository orchestrator.config.repository_root)) || (not orchestrator.config.git.auto_merge) || protected_loop_start orchestrator then Ok ()
@@ -1251,6 +1390,7 @@ let poll_once orchestrator =
         let candidates = orchestrator.fetch orchestrator.tracker in
         let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
         update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
+        reconcile_startup orchestrator candidates;
         let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
         let dispatchable =
           candidates
