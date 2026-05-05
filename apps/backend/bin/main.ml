@@ -225,7 +225,37 @@ let parse_ordered_queue_arg = function
       | Ok queue -> (Some queue, [])
       | Error problems -> (None, problems))
 
-let run_runtime port once web queue_arg =
+let render_manual_merge_report report =
+  List.iter
+    (fun (outcome : Manual_merge.outcome) ->
+      let action =
+        match outcome.integration with Manual_merge.Merged -> "merged" | Manual_merge.Already_integrated -> "already-integrated"
+      in
+      let status =
+        match outcome.status_update with None -> "" | Some status -> Printf.sprintf " status=%s" status
+      in
+      let cleanup =
+        match outcome.cleanup_error with None -> "" | Some error -> Printf.sprintf " cleanup=failed reason=%s" error
+      in
+      Printf.printf "merge %s branch=%s action=%s%s%s\n%!" outcome.issue.Issue.identifier outcome.branch action status
+        cleanup)
+    report.Manual_merge.outcomes;
+  Printf.printf "summary selected=%d merged=%d already_integrated=%d cleanup_failures=%d\n%!"
+    (List.length report.outcomes) report.merged report.already_integrated report.cleanup_failures
+
+let run_manual_merge config merge_args =
+  let tracker = Github_tracker.make config.Config.tracker in
+  let fetch_issues numbers = Github_tracker.fetch_project_issues_by_numbers tracker numbers in
+  let set_status issue status = Github_tracker.update_issue_status tracker issue status in
+  match Manual_merge.run ~fetch_issues ~set_status config merge_args with
+  | Ok report ->
+      render_manual_merge_report report;
+      if report.cleanup_failures = 0 then 0 else 1
+  | Error errors ->
+      List.iter (fun error -> Printf.eprintf "merge failed: %s\n%!" error) errors;
+      1
+
+let run_runtime port once web queue_arg merge_args =
   let run_until_stopped f =
     f ();
     0
@@ -241,52 +271,54 @@ let run_runtime port once web queue_arg =
         let config, prompt_template = load_runtime_config home in
         let ordered_queue, queue_parse_problems = parse_ordered_queue_arg queue_arg in
         let mode = Cli_mode.select ~web in
-        let state = readiness_state ?ordered_queue ~queue_parse_problems config in
         render_startup_completed ~mode:(Cli_mode.to_string mode) ~config ~runtime_home:home.runtime_dir;
-        if mode = Cli_mode.Web_dashboard then render_banner ();
-        if once then (
-          if mode = Cli_mode.Terminal_console then render_terminal_console config state;
-          0)
-        else
-          match Runtime_policy.action ~mode ~readiness_gaps:state.Runtime_state.readiness_gaps with
-          | Runtime_policy.Serve_readiness_state -> (
-              match mode with
-              | Cli_mode.Web_dashboard ->
-                  let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-                  render_web_dashboard_starting ~port;
-                  let live = Server.create_live_state ~get_state:(fun () -> state) in
-                  run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
-              | Cli_mode.Terminal_console ->
-                  render_terminal_console config state;
-                  run_until_stopped (fun () ->
-                      while true do
-                        Unix.sleep 60
-                      done))
-          | Runtime_policy.Run_orchestrator ->
-              (match mode with
-              | Cli_mode.Web_dashboard ->
-                  let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-                  render_web_dashboard_starting ~port;
-                  let orchestrator_ref = ref None in
-                  let live =
-                    Server.create_live_state ~get_state:(fun () ->
-                        match !orchestrator_ref with
-                        | Some orchestrator -> Orchestrator.get_state orchestrator
-                        | None -> state)
-                  in
-                  let orchestrator =
-                    Orchestrator.make ?ordered_queue ~config ~prompt_template
-                      ~notify_state:(fun _ -> Server.broadcast_live_state live)
-                      ()
-                  in
-                  orchestrator_ref := Some orchestrator;
-                  ignore (Thread.create Orchestrator.run_forever orchestrator);
-                  run_until_stopped (fun () ->
-                      Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
-              | Cli_mode.Terminal_console ->
-                  let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template () in
-                  render_terminal_console config state;
-                  run_until_stopped (fun () -> Orchestrator.run_forever orchestrator))
+        if merge_args <> [] then run_manual_merge config merge_args
+        else (
+          let state = readiness_state ?ordered_queue ~queue_parse_problems config in
+          if mode = Cli_mode.Web_dashboard then render_banner ();
+          if once then (
+            if mode = Cli_mode.Terminal_console then render_terminal_console config state;
+            0)
+          else
+            match Runtime_policy.action ~mode ~readiness_gaps:state.Runtime_state.readiness_gaps with
+            | Runtime_policy.Serve_readiness_state -> (
+                match mode with
+                | Cli_mode.Web_dashboard ->
+                    let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+                    render_web_dashboard_starting ~port;
+                    let live = Server.create_live_state ~get_state:(fun () -> state) in
+                    run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
+                | Cli_mode.Terminal_console ->
+                    render_terminal_console config state;
+                    run_until_stopped (fun () ->
+                        while true do
+                          Unix.sleep 60
+                        done))
+            | Runtime_policy.Run_orchestrator ->
+                (match mode with
+                | Cli_mode.Web_dashboard ->
+                    let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+                    render_web_dashboard_starting ~port;
+                    let orchestrator_ref = ref None in
+                    let live =
+                      Server.create_live_state ~get_state:(fun () ->
+                          match !orchestrator_ref with
+                          | Some orchestrator -> Orchestrator.get_state orchestrator
+                          | None -> state)
+                    in
+                    let orchestrator =
+                      Orchestrator.make ?ordered_queue ~config ~prompt_template
+                        ~notify_state:(fun _ -> Server.broadcast_live_state live)
+                        ()
+                    in
+                    orchestrator_ref := Some orchestrator;
+                    ignore (Thread.create Orchestrator.run_forever orchestrator);
+                    run_until_stopped (fun () ->
+                        Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
+                | Cli_mode.Terminal_console ->
+                    let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template () in
+                    render_terminal_console config state;
+                    run_until_stopped (fun () -> Orchestrator.run_forever orchestrator)))
   with
   | Runtime_home.Runtime_home_error msg | Config.Invalid_config msg | Prompt.Template_render_error msg
   | Workspace.Workspace_error msg ->
@@ -296,10 +328,10 @@ let run_runtime port once web queue_arg =
       Printf.eprintf "event=startup outcome=failed reason=%s\n%!" (Printexc.to_string exn);
       1
 
-let run workflow_path port once web queue_arg =
+let run workflow_path port once web queue_arg merge_args =
   match workflow_path with
   | Some path -> run_legacy path port once
-  | None -> run_runtime port once web queue_arg
+  | None -> run_runtime port once web queue_arg merge_args
 
 let init () =
   try
@@ -340,12 +372,20 @@ let queue_arg =
         ~doc:
           "Run an Ordered Queue from comma-separated Workspace Repository issue identifiers. Optional # prefixes are allowed. Only listed issues dispatch, in listed first-admission order, while still respecting agent.maxConcurrentAgents.")
 
+let merge_arg =
+  Arg.(
+    value
+    & opt_all string []
+    & info [ "merge" ] ~docv:"ISSUE"
+        ~doc:
+          "Run a one-shot Manual Task Merge for Workspace Repository issue identifiers. Optional # prefixes, comma-separated values, and repeated --merge flags are allowed.")
+
 let yes_arg =
   Arg.(value & flag & info [ "yes"; "y" ] ~doc:"Update without interactive confirmation.")
 
 let cmd =
   let doc = "Run Personal Symphony from a Git Workspace Repository root." in
-  let default = Term.(const run $ workflow_arg $ port_arg $ once_arg $ web_arg $ queue_arg) in
+  let default = Term.(const run $ workflow_arg $ port_arg $ once_arg $ web_arg $ queue_arg $ merge_arg) in
   let init_cmd =
     Cmd.v (Cmd.info "init" ~doc:"Create missing .symphony runtime files without overwriting edits.") Term.(const init $ const ())
   in

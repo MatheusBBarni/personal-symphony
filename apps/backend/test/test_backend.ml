@@ -3233,6 +3233,165 @@ let test_auto_merge_failure_moves_human_attention () =
       Alcotest.(check int) "issue error" 1 (List.length state.issue_errors);
       Alcotest.(check bool) "worktree kept for inspection" true (Sys.file_exists workspace.path))
 
+let manual_merge_config ?(keep_task_branch = true) root =
+  if not (Sys.file_exists (Filename.concat root ".gitignore")) then (
+    Util.write_file (Filename.concat root ".gitignore") ".symphony/\nagents/\n";
+    ignore (run_ok ~cwd:root "ignore runtime files" "git add .gitignore && git commit -q -m ignore-runtime-files"));
+  let git =
+    {
+      (git_policy ~auto_merge:false ()) with
+      cleanup = { Config.remove_worktree_after_merge = true; keep_task_branch };
+    }
+  in
+  {
+    (base_orchestrator_config root git) with
+    stage_agents =
+      {
+        enabled = true;
+        root = Filename.concat root "agents";
+        default_agent = None;
+        stages =
+          [
+            {
+              states = [ "In review" ];
+              start_status = None;
+              success_status = Some "Done";
+              retry_status = None;
+              agent = "reviewer";
+              goal = None;
+              commit = None;
+            };
+          ];
+      };
+  }
+
+let project_issue issue = Some { Github_tracker.issue; project_status = Some issue.Issue.state; closed = false }
+
+let run_manual_merge_test config issues selectors =
+  let fetch numbers =
+    List.map
+      (fun number ->
+        ( number,
+          match issues |> List.find_opt (fun issue -> issue.Issue.identifier = "#" ^ string_of_int number) with
+          | None -> None
+          | Some issue -> project_issue issue ))
+      numbers
+  in
+  let statuses = ref [] in
+  let set_status issue status =
+    statuses := (issue.Issue.identifier, status) :: !statuses;
+    Ok ()
+  in
+  (Manual_merge.run ~fetch_issues:fetch ~set_status config selectors, statuses)
+
+let test_manual_merge_rejects_invalid_and_duplicate_selectors () =
+  with_temp_dir "symphony-manual-merge-selectors-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_config root in
+      let result, _ = run_manual_merge_test config [] [ "20,#20"; "symphony/task-21" ] in
+      match result with
+      | Ok _ -> Alcotest.fail "expected selector preflight errors"
+      | Error errors ->
+          Alcotest.(check int) "two selector errors" 2 (List.length errors);
+          Alcotest.(check bool) "duplicate rejected" true
+            (List.exists (fun error -> String.contains error 'd') errors);
+          Alcotest.(check bool) "branch selector rejected" true
+            (List.exists (fun error -> String.contains error '/') errors))
+
+let test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status () =
+  with_temp_dir "symphony-manual-merge-protected-" (fun root ->
+      init_repo root "main";
+      let config = manual_merge_config root in
+      let issue = Issue.empty ~id:"I20" ~identifier:"#20" ~title:"Twenty" ~state:"In review" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"main" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "manual.txt") "manual\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add manual.txt && git commit -q -m task");
+      let result, statuses = run_manual_merge_test config [ issue ] [ "#20" ] in
+      let report = match result with Ok report -> report | Error errors -> Alcotest.fail (String.concat "; " errors) in
+      Alcotest.(check int) "merged" 1 report.merged;
+      Alcotest.(check int) "already integrated" 0 report.already_integrated;
+      Alcotest.(check bool) "merged file present" true (Sys.file_exists (Filename.concat root "manual.txt"));
+      Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path);
+      Alcotest.(check (list (pair string string))) "review status advanced" [ ("#20", "Done") ] (List.rev !statuses))
+
+let test_manual_merge_preflight_is_all_or_nothing () =
+  with_temp_dir "symphony-manual-merge-preflight-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_config root in
+      let issue20 = Issue.empty ~id:"I20" ~identifier:"#20" ~title:"Twenty" ~state:"In review" in
+      let issue21 = Issue.empty ~id:"I21" ~identifier:"#21" ~title:"Twenty one" ~state:"In review" in
+      let workspace20 =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue20 with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace20.path "twenty.txt") "twenty\n";
+      ignore (run_ok ~cwd:workspace20.path "task commit" "git add twenty.txt && git commit -q -m task");
+      let workspace21 =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue21 with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace21.path "dirty.txt") "dirty\n";
+      let result, statuses = run_manual_merge_test config [ issue20; issue21 ] [ "20,21" ] in
+      (match result with
+      | Ok _ -> Alcotest.fail "expected dirty Agent Worktree preflight failure"
+      | Error errors ->
+          Alcotest.(check int) "one preflight error" 1 (List.length errors);
+          Alcotest.(check bool) "diagnostic names dirty path" true (List.exists (fun error -> String.contains error '/') errors));
+      Alcotest.(check bool) "first branch not merged" false (Sys.file_exists (Filename.concat root "twenty.txt"));
+      Alcotest.(check (list (pair string string))) "no status updates" [] (List.rev !statuses))
+
+let test_manual_merge_accepts_cumulative_fast_forward_order () =
+  with_temp_dir "symphony-manual-merge-chain-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_config root in
+      let issue20 = Issue.empty ~id:"I20" ~identifier:"#20" ~title:"Twenty" ~state:"In review" in
+      let workspace20 =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue20 with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace20.path "twenty.txt") "twenty\n";
+      ignore (run_ok ~cwd:workspace20.path "task commit" "git add twenty.txt && git commit -q -m task");
+      let issue21 = Issue.empty ~id:"I21" ~identifier:"#21" ~title:"Twenty one" ~state:"In review" in
+      ignore (run_ok ~cwd:root "create dependent branch" "git branch symphony/task-21 symphony/task-20");
+      let workspace21 =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue21 with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace21.path "twenty-one.txt") "twenty-one\n";
+      ignore (run_ok ~cwd:workspace21.path "task commit" "git add twenty-one.txt && git commit -q -m task");
+      let result, _ = run_manual_merge_test config [ issue20; issue21 ] [ "#20"; "#21" ] in
+      let report = match result with Ok report -> report | Error errors -> Alcotest.fail (String.concat "; " errors) in
+      Alcotest.(check int) "merged both" 2 report.merged;
+      Alcotest.(check bool) "first file present" true (Sys.file_exists (Filename.concat root "twenty.txt"));
+      Alcotest.(check bool) "second file present" true (Sys.file_exists (Filename.concat root "twenty-one.txt")))
+
+let test_manual_merge_cleans_already_integrated_terminal_task () =
+  with_temp_dir "symphony-manual-merge-terminal-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_config root in
+      let issue = Issue.empty ~id:"I22" ~identifier:"#22" ~title:"Twenty two" ~state:"Done" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "done.txt") "done\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add done.txt && git commit -q -m task");
+      ignore (run_ok ~cwd:root "pre-integrate" "git merge --ff-only symphony/task-22");
+      let result, statuses = run_manual_merge_test config [ issue ] [ "22" ] in
+      let report = match result with Ok report -> report | Error errors -> Alcotest.fail (String.concat "; " errors) in
+      Alcotest.(check int) "already integrated" 1 report.already_integrated;
+      Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path);
+      Alcotest.(check (list (pair string string))) "terminal status unchanged" [] (List.rev !statuses))
+
 let () =
   Alcotest.run "symphony-backend"
     [
@@ -3342,5 +3501,17 @@ let () =
           Alcotest.test_case "can remove task branch after merge" `Quick test_cleanup_can_remove_task_branch_after_merge;
           Alcotest.test_case "skips auto-merge on protected trunk" `Quick test_auto_merge_skips_protected_trunk_branch;
           Alcotest.test_case "moves merge failures to human attention" `Quick test_auto_merge_failure_moves_human_attention;
+        ] );
+      ( "manual-merge",
+        [
+          Alcotest.test_case "rejects invalid and duplicate selectors" `Quick
+            test_manual_merge_rejects_invalid_and_duplicate_selectors;
+          Alcotest.test_case "fast-forwards protected trunk and updates review status" `Quick
+            test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status;
+          Alcotest.test_case "preflight is all or nothing" `Quick test_manual_merge_preflight_is_all_or_nothing;
+          Alcotest.test_case "accepts cumulative fast-forward order" `Quick
+            test_manual_merge_accepts_cumulative_fast_forward_order;
+          Alcotest.test_case "cleans already integrated terminal task" `Quick
+            test_manual_merge_cleans_already_integrated_terminal_task;
         ] );
     ]
