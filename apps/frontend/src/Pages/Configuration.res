@@ -1,5 +1,13 @@
 @react.component
-let make = (~audioEnabled: bool, ~onAudioToggle: bool => unit) =>
+let make = (~audioEnabled: bool, ~onAudioToggle: bool => unit) => {
+  let audioButtonClass =
+    "rounded border px-3 py-1 text-xs font-medium " ++
+    if audioEnabled {
+      "border-teal-700 bg-teal-950/60 text-teal-100"
+    } else {
+      "border-neutral-700 bg-neutral-900 text-neutral-300"
+    }
+
   <div className="space-y-5">
     <div>
       <h1 className="text-2xl font-semibold tracking-normal text-neutral-50">
@@ -30,14 +38,20 @@ let make = (~audioEnabled: bool, ~onAudioToggle: bool => unit) =>
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <HeroUI.Switch isSelected=audioEnabled onChange={enabled => onAudioToggle(enabled)}>
+          <HeroUI.Button
+            type_="button"
+            variant="bordered"
+            size="sm"
+            onClick={_ => onAudioToggle(!audioEnabled)}
+            className=audioButtonClass>
             {React.string(if audioEnabled {
               "Audio on"
             } else {
               "Audio off"
             })}
-          </HeroUI.Switch>
+          </HeroUI.Button>
         </div>
       </HeroUI.CardContent>
     </HeroUI.Card>
   </div>
+}

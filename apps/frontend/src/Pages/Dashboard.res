@@ -137,6 +137,17 @@ let renderBanner = (tone, label, message) =>
   | Some(message) => banner(tone, label, message)
   }
 
+let issueStateTone = state =>
+  switch state->toLowerCase {
+  | "backlog" => "border-sky-800 bg-sky-950/70 text-sky-200"
+  | "todo" => "border-violet-800 bg-violet-950/70 text-violet-200"
+  | "in progress" => "border-teal-800 bg-teal-950/70 text-teal-200"
+  | "in review" => "border-amber-800 bg-amber-950/70 text-amber-200"
+  | "done" | "completed" => "border-emerald-800 bg-emerald-950/70 text-emerald-200"
+  | "blocked" | "human attention" => "border-red-900 bg-red-950/70 text-red-200"
+  | _ => "border-neutral-700 bg-neutral-900 text-neutral-300"
+  }
+
 let issueCard = (issue: issueItem) =>
   <article
     key=issue.identifier
@@ -148,7 +159,9 @@ let issueCard = (issue: issueItem) =>
         className="h-6 rounded border border-neutral-700 bg-neutral-800 px-2 font-mono text-[11px] text-neutral-400">
         {React.string(issue.identifier)}
       </HeroUI.Chip>
-      <span className="truncate text-[11px] uppercase tracking-normal text-neutral-600">
+      <span
+        className={"max-w-[8rem] truncate rounded border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-normal " ++
+        issueStateTone(issue.state)}>
         {React.string(issue.state)}
       </span>
     </div>
