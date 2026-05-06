@@ -1,68 +1,23 @@
 # Personal Symphony
 
 Personal Symphony is an installable `symphony` CLI for the Symphony service described in
-[Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). The product repository keeps
-the OCaml backend, the ReScript React dashboard, and the npm launcher; each workspace repository gets
-its own repository-owned runtime contract under `.symphony/`.
-
-This implementation variant targets GitHub Issues plus GitHub Projects for issue tracking.
-
-## Repository Layout
-
-- `apps/backend`: OCaml service, workflow loader, GitHub tracker boundary, workspace manager, HTTP
-  state API, CLI, and tests.
-- `apps/frontend`: ReScript React/Vite dashboard that consumes the backend state API.
-- `.github/ISSUE_TEMPLATE`: issue template for work items Symphony can dispatch.
-- `.github/project-tracking.md`: required GitHub Project setup and workflow notes.
-- `WORKFLOW.example.md`: legacy/developer fixture for the earlier root workflow format.
-- `bin/symphony.js`: npm `bin` launcher that runs a packaged platform binary or the local dune
-  executable in product-repository development.
+[Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). The Product Repository keeps
+the OCaml backend, the ReScript React dashboard, and the npm launcher; each Workspace Repository gets
+its own repository-owned Runtime Contract under `.symphony/`.
 
 ## Prerequisites
 
-- `pnpm` 10.x
-- OCaml toolchain with `opam`, `dune`, `cmdliner`, `yojson`, and `alcotest` for product-repository
-  development only
 - GitHub CLI: `gh`
 - A GitHub personal access token available as `GITHUB_TOKEN` or `GH_TOKEN`
 - `codex` CLI available on `PATH` when running real agent sessions
-
-The local scripts run OCaml commands through `opam exec`, so make sure the active opam switch has
-the required packages installed.
 
 ## Install
 
 The npm package exposes a global `symphony` command:
 
 ```sh
-npm install -g symphony-orchestrator
+npm i -g symphony-orchestrator
 ```
-
-Published packages should include platform-specific binaries for Linux, macOS, and Windows:
-
-- `vendor/symphony-linux-x64`
-- `vendor/symphony-darwin-x64`
-- `vendor/symphony-darwin-arm64`
-- `vendor/symphony-win32-x64.exe`
-
-When running from this product repository, the Node launcher falls back to:
-
-```sh
-opam exec -- dune exec symphony --
-```
-
-Before publishing, run:
-
-```sh
-pnpm npm:validate:release
-```
-
-The GitHub Actions `Export npm package` workflow builds those binaries on Linux, macOS, and Windows,
-assembles the npm tarball, uploads the tarball and binaries as a GitHub workflow artifact, and publishes
-the same files to a GitHub Release with the npm package URL. A `v*` tag uses that tag for the release;
-manual runs publish a `v<package.json version>` release when `publish_npm` is enabled and the repository
-has an `NPM_TOKEN` secret. The npm package is available at
-https://www.npmjs.com/package/symphony-orchestrator.
 
 ## Set Up In A Workspace Repository
 
@@ -73,8 +28,9 @@ symphony init
 symphony
 ```
 
-`symphony init` and the first `symphony` run are idempotent. They create missing runtime files under
-`.symphony/` without overwriting user-edited files:
+`symphony init` and the first `symphony` run perform an Idempotent Bootstrap. They create missing
+Runtime Home files under `.symphony/` without overwriting user-edited Runtime Contract or Local
+Environment files:
 
 - `.symphony/settings.json`
 - `.symphony/prompt.md`
@@ -92,8 +48,9 @@ symphony
 /workspaces/
 ```
 
-Edit `.symphony/settings.json` to set the GitHub owner, repository, project number, project states,
-and runtime commands. Secrets are referenced by environment variable name, not stored in settings:
+Edit `.symphony/settings.json` to set the GitHub owner, Workspace Repository name, GitHub Project
+number, GitHub Project states, and runtime commands. Runtime Settings reference secrets by environment
+variable name; secret values belong only in the Local Environment:
 
 ```json
 {
@@ -237,7 +194,7 @@ dispatch, resolving Workspace Repository skills before Codex Home skills.
 
 Set `goal.enabled` to `true` on a specific stage to enable Stage Goal Handoff for that stage only.
 When enabled, Symphony sends `/goal` with deterministic Stage Goal Context before the normal Agent
-Prompt. Stage Goal Context includes issue identifier, title, description, URL, current project
+Prompt. Stage Goal Context includes issue identifier, title, description, URL, current GitHub Project
 status, labels, priority when present, blocker references when present, attempt, and stage agent
 name. It omits issue creation and update timestamps.
 
@@ -259,6 +216,31 @@ template supports `<type>`, `<generated_message_max_90char>`, `<issue_identifier
 `<from_status>`, `<to_status>`, and `<agent>`. Set `commit.push` to `true` to push the current task
 branch after a successful stage commit and before the status transition; omitted values default to
 `false`.
+
+## Git Policy
+
+The Git Policy controls Task Branch naming, Protected Trunk Branches, auto-merge behavior, the Human
+Attention Status used for merge problems, and cleanup of merged Agent Worktrees:
+
+```json
+{
+  "git": {
+    "taskBranchPrefix": "symphony/task-",
+    "protectedTrunkBranches": ["main", "master"],
+    "autoMerge": true,
+    "mergeAttentionStatus": "Human attention",
+    "cleanup": {
+      "removeWorktreeAfterMerge": true,
+      "keepTaskBranch": true
+    }
+  }
+}
+```
+
+Each dispatched issue runs in an Agent Worktree under `.symphony/workspaces/` on a Task Branch
+created from the Loop-Start Branch. Symphony may fast-forward a completed Task Branch into the
+Loop-Start Branch only when the Loop-Start Branch is not a Protected Trunk Branch. It never
+force-pushes, and Stage Push is disabled unless a stage sets `commit.push` to `true`.
 
 ## Batch Pull Requests
 
@@ -295,14 +277,14 @@ fine-grained personal access tokens currently cannot access Projects owned by a 
 Recommended classic PAT scopes:
 
 - `repo`: required for private Workspace Repositories and repository Issues.
-- `read:project`: enough for readiness checks and read-only project polling.
-- `project`: required instead of `read:project` when Symphony will move project cards, update
-  project fields, or otherwise write GitHub Projects data.
+- `read:project`: enough for readiness checks and read-only GitHub Project polling.
+- `project`: required instead of `read:project` when Symphony will move GitHub Project items,
+  update GitHub Project fields, or otherwise write GitHub Projects data.
 
-Classic PATs do **not** ask you to select individual repositories or projects. If GitHub shows a
-repository picker, project picker, "Resource owner", or "Repository access" section, you are creating
-a fine-grained token. Go back to **Personal access tokens > Tokens (classic) > Generate new token
-(classic)** for user-owned Projects.
+Classic PATs do **not** ask you to select individual repositories or GitHub Projects. If GitHub
+shows a repository picker, GitHub Project picker, "Resource owner", or "Repository access" section,
+you are creating a fine-grained token. Go back to **Personal access tokens > Tokens (classic) >
+Generate new token (classic)** for user-owned Projects.
 
 Fine-grained PATs are only suitable when the GitHub Project is owned by an organization and GitHub
 allows fine-grained tokens for that owner. Configure the token with:
@@ -315,75 +297,76 @@ allows fine-grained tokens for that owner. Configure the token with:
 Store the token in the Workspace Repository Local Environment:
 
 ```sh
-printf 'GITHUB_TOKEN=github_pat_...\n' > .symphony/.env
+$EDITOR .symphony/.env
 ```
 
 `GITHUB_TOKEN` takes precedence over `GH_TOKEN`. If `gh auth status` shows a working stored token but
-Symphony still reports repository or project access gaps, remove the stale `GITHUB_TOKEN` from
-`.symphony/.env` or replace it with a token that has the scopes above.
+Symphony still reports Workspace Repository or GitHub Project access gaps, remove the stale
+`GITHUB_TOKEN` from `.symphony/.env` or replace it with a token that has the scopes above.
+
+## Repository Layout
+
+- `apps/backend`: OCaml service, workflow loader, GitHub tracker boundary, workspace manager, HTTP
+  state API, CLI, and tests.
+- `apps/frontend`: ReScript React/Vite dashboard that consumes the backend state API.
+- `.github/ISSUE_TEMPLATE`: issue template for work items Symphony can dispatch.
+- `.github/project-tracking.md`: required GitHub Project setup and workflow notes.
+- `WORKFLOW.example.md`: legacy/developer fixture for the earlier root workflow format.
+- `bin/symphony.js`: npm `bin` launcher that runs a packaged platform binary or the local dune
+  executable in Product Repository development.
 
 ## Product Repository Development
 
-1. Install dependencies:
+Product Repository development is separate from Workspace Repository operation. Runtime files for
+actual orchestration belong in the Workspace Repository where `symphony init` is run; this source
+repository keeps code, tests, packaging scripts, fixtures, and documentation.
 
-   ```sh
-   pnpm install
-   ```
+Product Repository development requires `pnpm` 10.x and an OCaml toolchain with `opam`, `dune`,
+`cmdliner`, `yojson`, and `alcotest`. The local scripts run OCaml commands through `opam exec`, so
+make sure the active opam switch has the required packages installed.
 
-2. Optionally create a legacy workflow file for product-repository fixture runs:
+Install dependencies:
 
-   ```sh
-   cp WORKFLOW.example.md WORKFLOW.md
-   ```
+```sh
+pnpm install
+```
 
-3. Edit `WORKFLOW.md`:
-
-   ```yaml
-   tracker:
-     kind: github
-     owner: your-org
-     repo: your-repo
-     project_number: 1
-     api_key: $GITHUB_TOKEN
-     active_states: [Todo, In Progress]
-     terminal_states: [Done, Closed, Cancelled]
-     project_status_field: Status
-     project_status_on_dispatch: In progress
-     project_status_on_success: In review
-     project_status_on_retry: Todo
-   codex:
-     command: codex exec
-     model: gpt-5.5
-     reasoning_effort: medium
-   ```
-
-4. Configure the GitHub Project:
-
-   - Add a single-select `Status` field.
-   - Add active values matching `active_states`, usually `Todo` and `In Progress`.
-   - Add terminal values matching `terminal_states`, usually `Done`, `Closed`, and `Cancelled`.
-   - Add or let Symphony create transition values such as `In progress` and `In review`.
-   - Add repository issues to the project before expecting Symphony to pick them up.
-
-5. Authenticate GitHub access:
-
-   ```sh
-   gh auth status
-   export GITHUB_TOKEN=...
-   ```
-
-   See "GitHub Token Permissions" above for the exact PAT scopes and fine-grained permissions.
-
-## Run Locally
-
-Validate and build everything:
+Run the backend test suite:
 
 ```sh
 pnpm test
-pnpm build
 ```
 
-Start the OCaml backend:
+Run frontend live-state tests:
+
+```sh
+pnpm frontend:test
+```
+
+Build frontend assets:
+
+```sh
+pnpm frontend:build
+```
+
+Build the OCaml backend:
+
+```sh
+pnpm backend:build
+```
+
+Build the package payload:
+
+```sh
+pnpm prepack
+```
+
+`WORKFLOW.example.md` remains only as a legacy fixture/import compatibility file for earlier root
+workflow behavior. Do not use it as the active Workspace Repository Runtime Contract.
+
+## Run Locally
+
+Start the backend dev server from the Product Repository root:
 
 ```sh
 pnpm backend:dev
@@ -391,11 +374,11 @@ pnpm backend:dev
 
 The backend serves:
 
-- Dashboard placeholder/API root: `http://127.0.0.1:8080/`
+- Terminal Console/API root: `http://127.0.0.1:8080/`
 - Runtime state JSON: `http://127.0.0.1:8080/api/v1/state`
 - Tailscale/LAN access: `http://<machine-ip>:8080/` because the backend binds to `0.0.0.0`.
 
-Start the ReScript React frontend in another terminal:
+Start the Web Dashboard dev server in another terminal:
 
 ```sh
 pnpm frontend:dev
@@ -409,17 +392,60 @@ http://127.0.0.1:5173/
 
 The frontend proxies `/api/*` requests to the backend at `127.0.0.1:8080`.
 
+A packaged or dune-run CLI can also start the backend and Web Dashboard from a Workspace Repository:
+
+```sh
+symphony --web --port 8080
+```
+
 ## Useful Commands
 
 ```sh
-pnpm backend:build
-pnpm backend:test
+pnpm install
+pnpm test
+pnpm frontend:test
 pnpm frontend:build
+pnpm backend:build
+pnpm prepack
+pnpm backend:dev
+pnpm frontend:dev
+```
+
+For direct Product Repository CLI checks:
+
+```sh
 opam exec -- dune exec symphony -- --once
 opam exec -- dune exec symphony -- init
 opam exec -- dune exec symphony -- --web --port 8080
-opam exec -- dune exec symphony -- --once WORKFLOW.md
 ```
 
 If no GitHub token is configured, the runtime still starts, but readiness gaps report the missing
 token and live issue dispatch is disabled.
+
+## Package Distribution
+
+Published packages should include platform-specific binaries for Linux, macOS, and Windows:
+
+- `vendor/symphony-linux-x64`
+- `vendor/symphony-darwin-x64`
+- `vendor/symphony-darwin-arm64`
+- `vendor/symphony-win32-x64.exe`
+
+When running from this Product Repository, the Node launcher falls back to:
+
+```sh
+opam exec -- dune exec symphony --
+```
+
+Before publishing, run:
+
+```sh
+pnpm npm:validate:release
+```
+
+The GitHub Actions `Export npm package` workflow builds those binaries on Linux, macOS, and Windows,
+assembles the npm tarball, uploads the tarball and binaries as a GitHub workflow artifact, and
+publishes the same files to a GitHub Release with the npm package URL. A `v*` tag uses that tag for
+the release; manual runs publish a `v<package.json version>` release when `publish_npm` is enabled
+and the repository has an `NPM_TOKEN` secret. The npm package is available at
+https://www.npmjs.com/package/symphony-orchestrator.
