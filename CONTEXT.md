@@ -12,6 +12,10 @@ _Avoid_: project, target project
 The repository that contains the Personal Symphony source code.
 _Avoid_: project, source project
 
+**Self-Dogfooding Workspace Repository**:
+A Product Repository that also acts as a Workspace Repository for running Personal Symphony against its own work.
+_Avoid_: self-hosted project, dogfood repo
+
 **Bootstrap**:
 The first-time setup of Personal Symphony runtime files inside a Workspace Repository.
 _Avoid_: install, setup
@@ -44,8 +48,12 @@ _Avoid_: branch folder, branch category
 A configured branch, such as `main` or `master`, that Symphony must not auto-merge task work into.
 _Avoid_: main branch, default branch, protected branch
 
+**Human Attention Status**:
+A paused project status for task work that requires operator triage before Symphony should continue.
+_Avoid_: blocked status, manual review status, failed status
+
 **Merge Attention Status**:
-The project status for a task whose agent work completed but whose Task Branch could not be auto-merged.
+The Human Attention Status used when agent work completed but its Task Branch could not be auto-merged.
 _Avoid_: retry status, review status, failed status
 
 **Manual Task Merge**:
@@ -72,6 +80,14 @@ _Avoid_: config, preferences
 The Runtime Settings section that defines Task Branch and Protected Trunk Branch behavior.
 _Avoid_: branch config, git settings
 
+**Allowed Loop-Start Branch Policy**:
+A Runtime Settings rule that identifies which Loop-Start Branches may dispatch automated orchestration.
+_Avoid_: branch allowlist, dogfood branch guard, protected branch check
+
+**Protected Path Policy**:
+A repository-owned rule that identifies Workspace Repository paths agent work must not modify without explicit authorization.
+_Avoid_: symphony ignore, agent ignore, untouchable files
+
 **Task Cleanup Policy**:
 The Git Policy setting that controls whether completed task worktrees or branches are removed.
 _Avoid_: cleanup flag, delete option
@@ -88,9 +104,17 @@ _Avoid_: state files, generated data
 A commit created by Personal Symphony after an agent successfully completes a configured stage.
 _Avoid_: auto commit, every step commit
 
+**Stage Commit Classification**:
+Repository-owned metadata used to choose the commit type or tag for a Stage Commit.
+_Avoid_: commit label, stage tag, arbitrary prefix
+
 **Stage Push**:
 An optional push of a Stage Commit to the currently checked-out Task Branch after the Stage Commit is created.
 _Avoid_: auto push, push every step
+
+**Stage Concurrency Policy**:
+A Runtime Settings rule that limits how many agents may run for a specific Stage Agent.
+_Avoid_: agents per status, per-stage maxConcurrentAgents, worker pool
 
 **Stage Goal Handoff**:
 A stage-specific Codex handoff that sets a Codex goal when Symphony launches an agent for that stage.
@@ -147,6 +171,10 @@ _Avoid_: clean repo, safe branch
 **Startup Reconciliation**:
 The startup-time recovery pass that checks completed-stage Agent Worktrees for Task Branch commits not present on the Loop-Start Branch.
 _Avoid_: startup merge, branch sweep, cleanup scan
+
+**Task Branch Integration**:
+The act of bringing completed Task Branch commits into the Loop-Start Branch.
+_Avoid_: merge worktrees, copy workspace, finish branch
 
 **Terminal Console**:
 The default terminal interface for operating Personal Symphony in a Workspace Repository.
@@ -207,6 +235,21 @@ _Avoid_: reinitialize, reset
 ## Relationships
 
 - A **Workspace Repository** may receive a **Bootstrap** from Personal Symphony.
+- A **Self-Dogfooding Workspace Repository** is both a **Product Repository** and a **Workspace Repository**.
+- A **Self-Dogfooding Workspace Repository** may commit a real **Runtime Contract** for its own Personal Symphony runs.
+- A **Self-Dogfooding Workspace Repository** should use a dedicated GitHub Project as its dispatch board.
+- A **Self-Dogfooding Workspace Repository** may enable **Stage Goal Handoff** on every configured **Stage Agent**.
+- A **Self-Dogfooding Workspace Repository** may use its planner stage as a PRD review gate for already-refined issues.
+- A **Self-Dogfooding Workspace Repository** should use **Stage Commit** to create local engineer-stage commits before review.
+- A **Self-Dogfooding Workspace Repository** should keep **Stage Push** disabled unless remote branch publication is deliberately enabled.
+- A **Self-Dogfooding Workspace Repository** should use reviewer-stage comments and a **Human Attention Status** for review findings that require operator triage.
+- A **Self-Dogfooding Workspace Repository** should have the reviewer stage run focused verification when practical before moving work to `Done`.
+- A **Self-Dogfooding Workspace Repository** should use one concurrent agent until Personal Symphony can safely integrate multiple concurrently completed **Task Branches**.
+- A **Self-Dogfooding Workspace Repository** should use a dedicated non-trunk **Loop-Start Branch** so completed **Task Branches** do not auto-merge into the Product Repository trunk.
+- A **Self-Dogfooding Workspace Repository** may open a **Batch Pull Request** from its dedicated **Loop-Start Branch** to its **Protected Trunk Branch** after **Orchestration Idle**.
+- A **Self-Dogfooding Workspace Repository** should remove merged **Agent Worktrees** and delete merged **Task Branches** to avoid local branch buildup.
+- A **Self-Dogfooding Workspace Repository** should prevent accidental dogfood dispatch from the Product Repository trunk.
+- A **Self-Dogfooding Workspace Repository** should define a **Protected Path Policy** for release and package files once that policy exists.
 - An **Idempotent Bootstrap** must preserve existing Runtime Contract and Local Environment files.
 - A **Workspace Repository** contains at most one **Runtime Home**.
 - Personal Symphony commands must be run from the root of a **Workspace Repository**.
@@ -219,6 +262,8 @@ _Avoid_: reinitialize, reset
 - A **Runtime Home** may contain many **Agent Workspaces**.
 - An **Agent Worktree** is an **Agent Workspace**.
 - The **Runtime Settings** contain a **Git Policy**.
+- A **Git Policy** may contain an **Allowed Loop-Start Branch Policy**.
+- A **Workspace Repository** may define a **Protected Path Policy**.
 - The **Git Policy** contains a **Task Cleanup Policy**.
 - The **Local Environment**, **Runtime State**, and **Agent Workspaces** are ignored by version control.
 - Each **Agent Worktree** belongs to one dispatched task.
@@ -234,6 +279,8 @@ _Avoid_: reinitialize, reset
 - Symphony may auto-merge a completed **Task Branch** into the **Loop-Start Branch** only when the **Loop-Start Branch** is not a **Protected Trunk Branch**.
 - Auto-merge of a **Task Branch** into the **Loop-Start Branch** is fast-forward only.
 - When auto-merge fails, Symphony may move the task to a **Merge Attention Status**.
+- Auto-merge, **Startup Reconciliation**, and **Manual Task Merge** are **Task Branch Integration** paths.
+- An **Allowed Loop-Start Branch Policy** prevents dispatch from any Loop-Start Branch outside the configured branch set.
 - **Manual Task Merge** integrates selected completed task work with `--merge` without running normal orchestration.
 - **Manual Task Merge** accepts issue identifiers such as `20` and `#20`; it does not accept raw **Task Branch** names.
 - **Manual Task Merge** preflights every selected task before merging anything, requires clean Loop-Start and Agent Worktrees, and uses fast-forward-only semantics.
@@ -244,11 +291,13 @@ _Avoid_: reinitialize, reset
 - **Startup Reconciliation** integrates safe committed **Task Branch** work into the **Loop-Start Branch** by fast-forward only.
 - **Startup Reconciliation** does not create a **Stage Commit**, reconcile retained **Task Branches** without **Agent Worktrees**, or change tracker status after successful or already-contained reconciliation.
 - **Startup Reconciliation** moves unsafe, contradictory, non-fast-forward, or Protected Trunk Branch candidates to the **Merge Attention Status** and records Runtime State diagnostics.
+- A **Merge Attention Status** is a **Human Attention Status**.
 - The default **Merge Attention Status** is `Human attention`.
-- The **Merge Attention Status** is paused and not dispatchable.
+- A **Human Attention Status** is paused and not dispatchable.
 - The default **Task Cleanup Policy** removes an **Agent Worktree** after its **Task Branch** is merged.
 - The default **Task Cleanup Policy** keeps a merged **Task Branch**.
 - A **Stage Commit** may be created when a configured stage completes with code changes.
+- A **Stage Commit** may use a **Stage Commit Classification** when rendering its commit message.
 - A **Stage Push** happens only after a **Stage Commit** is successfully created.
 - A **Stage Push** happens before the stage moves to its success project state.
 - Runtime Settings enable a **Stage Push** with `commit.push` on a configured stage.
@@ -290,6 +339,7 @@ _Avoid_: reinitialize, reset
 - **Goal Usage** is not a primary **Web Dashboard** metric.
 - **Stage Goal Handoff** does not change retry, completion, status transition, commit, push, auto-merge, or Batch Pull Request behavior.
 - Missing or unparseable **Goal Usage** must not fail a task.
+- A **Stage Concurrency Policy** refines the global maximum concurrent agents without allowing total running agents to exceed that global limit.
 - An **Ordered Queue** is provided by the operator at launch.
 - An **Ordered Queue** is named with issue identifiers from the Workspace Repository issue tracker.
 - An **Ordered Queue** does not use issue URLs or cross-repository issue references.
@@ -460,3 +510,8 @@ _Avoid_: reinitialize, reset
 - "tasks in queue" was used to mean there is no remaining orchestration work; resolved: use **Orchestration Idle** for the condition where no active issue is running, retrying, or dispatchable.
 - "Open PR after finishing all the tasks" was used to mean opening one pull request for combined task work; resolved: use **Batch Pull Request**, opened from the **Loop-Start Branch** after **Orchestration Idle**.
 - "base branch" for automatic PR creation was ambiguous because the **Loop-Start Branch** is the head of the **Batch Pull Request**; resolved: use configured **Pull Request Base Branch** for the target branch.
+- "merge the worktrees" was used to mean integrating completed **Task Branches**; resolved: Symphony fast-forward merges **Task Branches** into the **Loop-Start Branch**, not Agent Worktrees.
+- ".symphonyignore" was used to mean a repository-owned rule for files agents must not modify; resolved: use **Protected Path Policy** until the storage format is decided.
+- "allowed branch" was used to mean restricting where orchestration may start; resolved: use **Allowed Loop-Start Branch Policy**.
+- "commit stage tags" was used to mean metadata that chooses a Stage Commit type or tag; resolved: use **Stage Commit Classification**.
+- "maxConcurrentAgents for each stage" was used to mean concurrency caps per Stage Agent; resolved: use **Stage Concurrency Policy**.
