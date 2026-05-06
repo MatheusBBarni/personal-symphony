@@ -24,7 +24,7 @@
   "git": {
     "taskBranchPrefix": "symphony/task-",
     "protectedTrunkBranches": ["main"],
-    "autoMerge": true,
+    "autoMerge": false,
     "mergeAttentionStatus": "Human attention",
     "cleanup": {
       "removeWorktreeAfterMerge": true,
