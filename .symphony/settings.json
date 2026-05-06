@@ -35,7 +35,7 @@
     "enabled": true,
     "openOnReview": true,
     "baseBranch": "main",
-    "title": "Symphony dogfood batch from <head_branch> into <base_branch>",
+    "title": "Symphony: <issue_identifier> from <head_branch> into <base_branch>",
     "body": "Automated Batch Pull Request opened by Symphony after Orchestration Idle.\n\nLoop-Start Branch: <head_branch>\nPull Request Base Branch: <base_branch>\n\nReview this batch before merging into the Protected Trunk Branch."
   },
   "stageAgents": {
@@ -73,7 +73,7 @@
           "enabled": true,
           "type": "feat",
           "message": "<type>: <generated_message_max_90char>",
-          "push": false
+          "push": true
         }
       },
       {
@@ -86,10 +86,10 @@
           "enabled": true
         },
         "commit": {
-          "enabled": false,
+          "enabled": true,
           "type": "refactor",
           "message": "<type>: <generated_message_max_90char>",
-          "push": false
+          "push": true
         }
       }
     ]
