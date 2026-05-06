@@ -1,6 +1,6 @@
-# Personal Symphony
+# Symphony Orchestrator
 
-Personal Symphony is an installable `symphony` CLI for the Symphony service described in
+Symphony Orchestrator is an installable `symphony` CLI for the Symphony service described in
 [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). The Product Repository keeps
 the OCaml backend, the ReScript React dashboard, and the npm launcher; each Workspace Repository gets
 its own repository-owned Runtime Contract under `.symphony/`.
@@ -202,11 +202,13 @@ skill files and does not include Stage Skill Load in Stage Goal Context. Missing
 duplicate skill identifiers are Readiness Gaps; Symphony checks all configured stages before
 dispatch, resolving Workspace Repository skills before Codex Home skills.
 
+Rendered Agent Prompts include GitHub issue comments as issue context in addition to the issue body.
+
 Set `goal.enabled` to `true` on a specific stage to enable Stage Goal Handoff for that stage only.
 When enabled, Symphony sends `/goal` with deterministic Stage Goal Context before the normal Agent
-Prompt. Stage Goal Context includes issue identifier, title, description, URL, current GitHub Project
-status, labels, priority when present, blocker references when present, attempt, and stage agent
-name. It omits issue creation and update timestamps.
+Prompt. Stage Goal Context includes issue identifier, title, description, comments, URL, current
+GitHub Project status, labels, priority when present, blocker references when present, attempt, and
+stage agent name. It omits issue creation and update timestamps.
 
 Stage Goal Handoff requires Codex goals in `~/.codex/config.toml`:
 
@@ -261,6 +263,7 @@ Branch as the PR head. Automatic PR creation is disabled by default:
 {
   "pullRequest": {
     "enabled": false,
+    "openOnReview": false,
     "baseBranch": "main",
     "title": "Symphony batch from <head_branch>",
     "body": "Opened automatically by Symphony after orchestration became idle."
@@ -275,12 +278,17 @@ Failed pushes or PR creation attempts are recorded in Runtime State as retryable
 are retried on later idle polls. Symphony does not attempt a Batch Pull Request while any issue is in
 the configured Merge Attention Status or has unresolved orchestration attention.
 
+Set `pullRequest.openOnReview` to `true` to open the same Batch Pull Request immediately after a
+successful agent run has been committed, integrated into the Loop-Start Branch, and moved to the
+configured review status. Later task integrations continue updating the same Loop-Start Branch and
+the existing PR is reused.
+
 The `title` and `body` fields are deterministic templates. They support `<head_branch>` and
 `<base_branch>`; Symphony does not generate PR prose with an agent.
 
 ## GitHub Token Permissions
 
-Personal Symphony reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
+Symphony Orchestrator reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
 when the GitHub Project is owned by a user account, such as `@your-user's Kanban`. GitHub
 fine-grained personal access tokens currently cannot access Projects owned by a user account.
 

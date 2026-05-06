@@ -8,3 +8,7 @@ apps/frontend/src/**/*.res.js
 .env
 .env.*
 !.env.example
+
+prompt.md
+stderr.log
+stdout.log

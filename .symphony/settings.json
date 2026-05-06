@@ -24,7 +24,7 @@
   "git": {
     "taskBranchPrefix": "symphony/task-",
     "protectedTrunkBranches": ["main"],
-    "autoMerge": true,
+    "autoMerge": false,
     "mergeAttentionStatus": "Human attention",
     "cleanup": {
       "removeWorktreeAfterMerge": true,
@@ -33,9 +33,59 @@
   },
   "pullRequest": {
     "enabled": true,
+    "openOnReview": true,
     "baseBranch": "main",
-    "title": "Symphony dogfood batch from <head_branch> into <base_branch>",
+    "title": "Symphony: <issue_identifier> from <head_branch> into <base_branch>",
     "body": "Automated Batch Pull Request opened by Symphony after Orchestration Idle.\n\nLoop-Start Branch: <head_branch>\nPull Request Base Branch: <base_branch>\n\nReview this batch before merging into the Protected Trunk Branch."
+  },
+  "paths": {
+    "protected": {
+      "patterns": [
+        {
+          "name": "cli-package-entrypoint",
+          "pattern": "bin/symphony.js",
+          "reason": "Package entrypoint changes require explicit human scope."
+        },
+        {
+          "name": "package-binary-script",
+          "pattern": "scripts/package-binary.js",
+          "reason": "Packaged binary assembly affects npm distribution."
+        },
+        {
+          "name": "package-platforms-script",
+          "pattern": "scripts/package-platforms.js",
+          "reason": "Platform package metadata affects npm distribution."
+        },
+        {
+          "name": "npm-export-validation",
+          "pattern": "scripts/validate-npm-export.js",
+          "reason": "Package export validation protects release payload correctness."
+        },
+        {
+          "name": "npm-export-workflow",
+          "pattern": ".github/workflows/export-npm.yml",
+          "reason": "Release workflow changes require explicit human scope."
+        },
+        {
+          "name": "package-manifest",
+          "pattern": "package.json",
+          "reason": "Package metadata changes affect the published CLI Package."
+        },
+        {
+          "name": "package-lockfile",
+          "pattern": "pnpm-lock.yaml",
+          "reason": "Dependency lockfile changes affect package build reproducibility."
+        },
+        {
+          "name": "platform-binary-payloads",
+          "pattern": "vendor/symphony-*",
+          "reason": "Packaged platform binaries are release payloads."
+        }
+      ],
+      "authorization": {
+        "issueSection": "Protected Path Authorization"
+      }
+    }
   },
   "stageAgents": {
     "enabled": true,
@@ -72,7 +122,7 @@
           "enabled": true,
           "type": "feat",
           "message": "<type>: <generated_message_max_90char>",
-          "push": false
+          "push": true
         }
       },
       {
@@ -85,10 +135,10 @@
           "enabled": true
         },
         "commit": {
-          "enabled": false,
+          "enabled": true,
           "type": "refactor",
           "message": "<type>: <generated_message_max_90char>",
-          "push": false
+          "push": true
         }
       }
     ]

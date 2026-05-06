@@ -72,9 +72,19 @@ let test_config_parses_git_policy_and_stage_push () =
   },
   "pullRequest": {
     "enabled": true,
+    "openOnReview": true,
     "baseBranch": "main",
     "title": "Symphony batch from <head_branch> into <base_branch>",
     "body": "Batch handoff for <head_branch>."
+  },
+  "paths": {
+    "protected": {
+      "patterns": [
+        {"name": "cli-entrypoint", "pattern": "bin/symphony.js"},
+        {"name": "package-scripts", "pattern": "scripts/package-*.js", "reason": "release-sensitive"}
+      ],
+      "authorization": {"issueSection": "Protected Path Authorization"}
+    }
   },
   "stageAgents": {
     "enabled": true,
@@ -89,7 +99,16 @@ let test_config_parses_git_policy_and_stage_push () =
       {
         "states": ["In review"],
         "agent": "reviewer",
-        "commit": {"enabled": false, "type": "refactor", "message": "<type>: review"}
+        "commit": {
+          "enabled": false,
+          "type": "refactor",
+          "message": "<type>: review",
+          "classification": {
+            "default": "docs",
+            "labelMap": {"documentation": "docs", "bug": "fix"},
+            "conflictBehavior": "human_attention"
+          }
+        }
       }
     ]
   }
@@ -107,14 +126,49 @@ let test_config_parses_git_policy_and_stage_push () =
         (List.exists (( = ) "Needs merge") config.tracker.terminal_states);
       Alcotest.(check bool) "cleanup worktree" false config.git.cleanup.remove_worktree_after_merge;
       Alcotest.(check bool) "pull request enabled" true config.pull_request.enabled;
+      Alcotest.(check bool) "pull request opens on review" true config.pull_request.open_on_review;
       Alcotest.(check string) "pull request base" "main" config.pull_request.base_branch;
       Alcotest.(check string) "pull request title" "Symphony batch from <head_branch> into <base_branch>" config.pull_request.title;
-      match config.stage_agents.stages with
+      Alcotest.(check int) "protected path patterns" 2 (List.length config.protected_paths.patterns);
+      Alcotest.(check string) "protected authorization section" "Protected Path Authorization"
+        config.protected_paths.authorization.issue_section;
+      (match config.stage_agents.stages with
       | [ { Config.commit = Some engineer_commit; _ } as engineer; { Config.commit = Some reviewer_commit; _ } ] ->
           Alcotest.(check (option int)) "stage max concurrent agents" (Some 2) engineer.max_concurrent_agents;
           Alcotest.(check bool) "stage push" true engineer_commit.push;
-          Alcotest.(check bool) "stage push default" false reviewer_commit.push
-      | _ -> Alcotest.fail "expected stage commit policy")
+          Alcotest.(check bool) "stage push default" false reviewer_commit.push;
+          (match reviewer_commit.classification with
+          | Some classification ->
+              Alcotest.(check string) "classification default" "docs" classification.default;
+              Alcotest.(check (list (pair string string))) "classification label map"
+                [ ("documentation", "docs"); ("bug", "fix") ]
+                classification.label_map;
+              Alcotest.(check string) "classification conflict behavior" "human_attention"
+                classification.conflict_behavior
+          | None -> Alcotest.fail "expected classification policy")
+      | _ -> Alcotest.fail "expected stage commit policy");
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {
+        "states": ["In progress"],
+        "agent": "engineer",
+        "commit": {
+          "enabled": true,
+          "type": "feat",
+          "classification": {"default": "", "labelMap": {"bug": "fix"}}
+        }
+      }
+    ]
+  }
+}|};
+      Alcotest.check_raises "empty classification default is invalid"
+        (Config.Invalid_config "stageAgents.stages[].commit.classification.default must not be empty")
+        (fun () -> ignore (Config.from_settings_file ~workspace_root:root settings)))
 
 let test_config_validates_stage_concurrency_policy () =
   with_temp_dir "symphony-settings-stage-cap-" (fun root ->
@@ -503,10 +557,27 @@ Issue {{ issue.identifier }}: {{ issue.title }}
       Alcotest.(check string) "prompt" "Issue {{ issue.identifier }}: {{ issue.title }}" workflow.prompt_template)
 
 let test_prompt_strict_rendering () =
-  let issue = Issue.empty ~id:"I_kw" ~identifier:"#42" ~title:"Fix build" ~state:"Todo" in
+  let issue =
+    {
+      (Issue.empty ~id:"I_kw" ~identifier:"#42" ~title:"Fix build" ~state:"Todo") with
+      comments =
+        [
+          {
+            Issue.author = Some "matheus";
+            body = "Please include issue comments.";
+            created_at = Some "2026-05-06T18:00:00Z";
+            url = Some "https://example.test/comment/1";
+          };
+        ];
+    }
+  in
   Alcotest.(check string)
     "rendered prompt" "Work on #42: Fix build attempt=2"
     (Prompt.render ~issue ~attempt:(Some 2) "Work on {{ issue.identifier }}: {{ issue.title }} attempt={{ attempt }}");
+  Alcotest.(check bool) "renders comments" true
+    (contains_substring
+       (Prompt.render ~issue ~attempt:None "Comments:\n{{ issue.comments }}")
+       "matheus at 2026-05-06T18:00:00Z:\nPlease include issue comments.");
   Alcotest.check_raises "unknown issue field fails"
     (Prompt.Template_render_error "unknown issue field: missing")
     (fun () -> ignore (Prompt.render ~issue ~attempt:None "{{ issue.missing }}"))
@@ -561,6 +632,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
             };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -649,6 +721,7 @@ let test_project_status_order_uses_transition_flow () =
       };
     server = { port = None };
     pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
     stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
     }
   in
@@ -1098,6 +1171,7 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1359,6 +1433,7 @@ let test_orchestrator_notifies_each_state_mutation () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1402,6 +1477,7 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1506,6 +1582,7 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1; read_timeout_ms = 1000; stall_timeout_ms = 100000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1618,6 +1695,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1689,6 +1767,14 @@ let test_github_project_field_parsing () =
   "url": "https://github.example/acme/widgets/issues/42",
   "createdAt": "2026-01-01T00:00:00Z",
   "updatedAt": "2026-01-02T00:00:00Z",
+  "comments": { "nodes": [
+    {
+      "body": "Needs the project comments in prompt.md",
+      "createdAt": "2026-05-06T18:00:00Z",
+      "url": "https://github.example/acme/widgets/issues/42#issuecomment-1",
+      "author": { "login": "matheus" }
+    }
+  ] },
   "labels": { "nodes": [{ "name": "Bug" }] },
   "projectItems": {
     "nodes": [
@@ -1709,6 +1795,8 @@ let test_github_project_field_parsing () =
   | Some issue ->
       Alcotest.(check string) "identifier" "#42" issue.identifier;
       Alcotest.(check string) "status" "In Progress" issue.state;
+      Alcotest.(check int) "comment count" 1 (List.length issue.comments);
+      Alcotest.(check string) "comment body" "Needs the project comments in prompt.md" (List.hd issue.comments).body;
       Alcotest.(check (list string)) "labels lowercased" [ "bug" ] issue.labels
 
 let test_github_active_state_filtering () =
@@ -1911,6 +1999,7 @@ let stage_capacity_config root ~global_cap =
       };
     server = { port = None };
     pull_request = Config.default_pull_request;
+    protected_paths = Config.default_protected_paths;
     stage_agents =
       {
         enabled = true;
@@ -1984,6 +2073,7 @@ let test_orchestrator_dispatch_limits () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -2168,6 +2258,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
             };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents =
             {
               enabled = true;
@@ -2275,6 +2366,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
             };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -2336,6 +2428,7 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -2387,6 +2480,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -2438,6 +2532,7 @@ let test_orchestrator_retries_failed_agent () =
           codex = { command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -2486,6 +2581,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -2544,6 +2640,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents =
             {
               enabled = true;
@@ -2637,6 +2734,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents =
             {
               enabled = true;
@@ -2663,6 +2761,15 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         {
           (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo") with
           description = Some "Build the feature";
+          comments =
+            [
+              {
+                Issue.author = Some "reviewer";
+                body = "Remember the edge case from the thread.";
+                created_at = Some "2026-05-06T18:30:00Z";
+                url = Some "https://example.test/issues/1#issuecomment-1";
+              };
+            ];
           url = Some "https://example.test/issues/1";
           labels = [ "enhancement"; "codex" ];
           priority = Some 2;
@@ -2680,6 +2787,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
       Alcotest.(check bool) "stage agent included" true (String.contains !captured_prompt 'E');
       Alcotest.(check bool) "normal prompt included" true (String.contains !captured_prompt '#');
+      Alcotest.(check bool) "normal prompt includes comments" true
+        (contains_substring !captured_prompt "Issue comments:\n\nreviewer at 2026-05-06T18:30:00Z:\nRemember the edge case from the thread.");
       Alcotest.(check bool) "skill load preserves order" true
         (contains_substring !captured_prompt "Stage Skill Load:\n$to-prd\n$github:gh-fix-ci");
       let goal_line =
@@ -2692,6 +2801,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check string) "goal kind" "Stage Goal Context" (goal_json |> member "kind" |> to_string);
       Alcotest.(check string) "goal issue" "#1" (goal_json |> member "issue_identifier" |> to_string);
       Alcotest.(check string) "goal description" "Build the feature" (goal_json |> member "description" |> to_string);
+      Alcotest.(check string) "goal comment" "Remember the edge case from the thread."
+        (goal_json |> member "comments" |> to_list |> List.hd |> member "body" |> to_string);
       Alcotest.(check (list string)) "goal labels" [ "enhancement"; "codex" ]
         (goal_json |> member "labels" |> to_list |> List.map to_string);
       Alcotest.(check int) "goal priority" 2 (goal_json |> member "priority" |> to_int);
@@ -2736,6 +2847,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents =
             {
               enabled = true;
@@ -2848,6 +2960,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents =
             {
               enabled = true;
@@ -2864,7 +2977,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                     success_status = Some "In review";
                     retry_status = Some "Todo";
                     goal = None;
-                    commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>"; push = false };
+                    commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>"; push = false; classification = None };
                   };
                 ];
             };
@@ -2904,6 +3017,57 @@ let test_orchestrator_commits_stage_before_success_status () =
         };
       Alcotest.(check (list string)) "commit before status" [ "commit:fixture: complete #1 One"; "status:In review" ] (List.rev !events))
 
+let test_stage_commit_classification_renders_messages () =
+  let policy =
+    {
+      Config.enabled = true;
+      commit_type = "feat";
+      message = "<type>: <generated_message_max_90char>";
+      push = false;
+      classification =
+        Some
+          {
+            default = "feat";
+            label_map = [ ("bug", "fix"); ("documentation", "docs"); ("docs", "docs") ];
+            conflict_behavior = "human_attention";
+          };
+    }
+  in
+  let stage =
+    Some
+      {
+        Config.states = [ "In progress" ];
+        agent = "engineer";
+        max_concurrent_agents = None;
+        skills = [];
+        start_status = None;
+        success_status = Some "In review";
+        retry_status = Some "Todo";
+        goal = None;
+        commit = Some policy;
+      }
+  in
+  let issue ?(labels = []) identifier title =
+    { (Issue.empty ~id:identifier ~identifier ~title ~state:"In progress") with labels }
+  in
+  Alcotest.(check string) "fallback classification" "feat: complete #1 Fallback"
+    (Orchestrator.render_commit_message (issue "#1" "Fallback") stage (Some "In review") policy);
+  Alcotest.(check string) "label-derived classification" "fix: complete #2 Bug"
+    (Orchestrator.render_commit_message (issue ~labels:[ "Bug" ] "#2" "Bug") stage (Some "In review") policy);
+  Alcotest.(check string) "tag token classification" "fix: complete #2 Bug"
+    (Orchestrator.render_commit_message (issue ~labels:[ "Bug" ] "#2" "Bug") stage (Some "In review")
+       { policy with message = "<tag>: <generated_message_max_90char>" });
+  Alcotest.(check string) "same classification labels" "docs: complete #3 Docs"
+    (Orchestrator.render_commit_message (issue ~labels:[ "documentation"; "docs" ] "#3" "Docs") stage
+       (Some "In review") policy);
+  match Orchestrator.render_commit_message_result (issue ~labels:[ "bug"; "documentation" ] "#4" "Conflict") stage
+          (Some "In review") policy with
+  | Ok message -> Alcotest.fail ("expected conflict, got " ^ message)
+  | Error error ->
+      Alcotest.(check string) "conflict diagnostic"
+        "stage commit classification conflict: bug -> fix, documentation -> docs"
+        error
+
 let test_orchestrator_retries_when_success_status_move_fails () =
   with_temp_dir "symphony-status-failure-" (fun root ->
       let config =
@@ -2933,6 +3097,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -2998,6 +3163,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents =
             {
               enabled = true;
@@ -3014,7 +3180,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                     success_status = Some "In review";
                     retry_status = Some "Todo";
                     goal = None;
-                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = true };
+                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = true; classification = None };
                   };
                 ];
             };
@@ -3087,6 +3253,7 @@ let test_stage_commit_requires_code_changes () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -3102,7 +3269,7 @@ let test_stage_commit_requires_code_changes () =
             success_status = Some "In review";
             retry_status = Some "Todo";
             goal = None;
-            commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
+            commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
           }
       in
       let workspace = { Workspace.path = root; workspace_key = "test"; created_now = false } in
@@ -3139,6 +3306,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           server = { port = None };
           pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
           stage_agents =
             {
               enabled = true;
@@ -3155,7 +3323,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                     success_status = Some "In review";
                     retry_status = Some "Todo";
                     goal = None;
-                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
+                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
                   };
                 ];
             };
@@ -3236,8 +3404,193 @@ let base_orchestrator_config root git =
     };
     server = { port = None };
     pull_request = Config.default_pull_request;
+    protected_paths = Config.default_protected_paths;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
+
+let protected_path_policy patterns =
+  {
+    Config.patterns = patterns;
+    authorization = { Config.issue_section = "Protected Path Authorization" };
+  }
+
+let with_protected_paths patterns config = { config with Config.protected_paths = protected_path_policy patterns }
+
+let protected_stage =
+  Some
+    {
+      Config.states = [ "In progress" ];
+      agent = "engineer";
+      max_concurrent_agents = None;
+      skills = [];
+      start_status = None;
+      success_status = Some "In review";
+      retry_status = Some "Todo";
+      goal = None;
+      commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
+    }
+
+let protected_patterns =
+  [
+    { Config.name = "cli-entrypoint"; pattern = "bin/symphony.js"; reason = None };
+    { Config.name = "release-workflows"; pattern = ".github/workflows/"; reason = None };
+    { Config.name = "package-scripts"; pattern = "scripts/package-*.js"; reason = None };
+  ]
+
+let test_protected_path_policy_matches_files_directories_and_globs () =
+  let config = base_orchestrator_config (Unix.getcwd ()) (git_policy ()) |> with_protected_paths protected_patterns in
+  let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
+  let paths =
+    [
+      "bin/symphony.js";
+      ".github/workflows/export-npm.yml";
+      "scripts/package-binary.js";
+      "apps/backend/lib/config.ml";
+    ]
+  in
+  let matches = Orchestrator.unauthorized_protected_path_matches config issue paths in
+  Alcotest.(check (list string)) "matched paths"
+    [ "bin/symphony.js"; ".github/workflows/export-npm.yml"; "scripts/package-binary.js" ]
+    (List.map (fun (match_ : Orchestrator.protected_path_match) -> match_.path) matches)
+
+let test_stage_commit_blocks_unauthorized_protected_path_change () =
+  with_temp_dir "symphony-protected-stage-block-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) |> with_protected_paths protected_patterns in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
+      Util.mkdir_p (Filename.concat root "bin");
+      Util.write_file (Filename.concat root "bin/symphony.js") "changed\n";
+      let workspace = { Workspace.path = root; workspace_key = "test"; created_now = false } in
+      match Orchestrator.git_commit_stage_changes config workspace issue protected_stage (Some "In review") with
+      | Ok () -> Alcotest.fail "expected Protected Path Policy block"
+      | Error error ->
+          Alcotest.(check bool) "diagnostic names path" true (contains_substring error "bin/symphony.js");
+          Alcotest.(check bool) "diagnostic names pattern" true (contains_substring error "cli-entrypoint");
+          Alcotest.(check int) "no stage commit" 1
+            (run_ok ~cwd:root "commit count" "git rev-list --count HEAD" |> int_of_string))
+
+let test_stage_commit_blocks_deleted_and_renamed_protected_paths () =
+  with_temp_dir "symphony-protected-stage-delete-rename-" (fun root ->
+      init_repo root "feature/start";
+      Util.mkdir_p (Filename.concat root "bin");
+      Util.mkdir_p (Filename.concat root "scripts");
+      Util.write_file (Filename.concat root "bin/symphony.js") "entrypoint\n";
+      Util.write_file (Filename.concat root "scripts/package-binary.js") "package\n";
+      ignore
+        (run_ok ~cwd:root "seed protected files"
+           "git add bin/symphony.js scripts/package-binary.js && git commit -q -m protected-files");
+      let config = base_orchestrator_config root (git_policy ()) |> with_protected_paths protected_patterns in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
+      Sys.remove (Filename.concat root "bin/symphony.js");
+      ignore (run_ok ~cwd:root "rename protected script" "git mv scripts/package-binary.js scripts/ordinary.js");
+      let workspace = { Workspace.path = root; workspace_key = "test"; created_now = false } in
+      match Orchestrator.git_commit_stage_changes config workspace issue protected_stage (Some "In review") with
+      | Ok () -> Alcotest.fail "expected Protected Path Policy block"
+      | Error error ->
+          Alcotest.(check bool) "diagnostic names deleted path" true (contains_substring error "bin/symphony.js");
+          Alcotest.(check bool) "diagnostic names renamed path" true
+            (contains_substring error "scripts/package-binary.js");
+          Alcotest.(check int) "no stage commit" 2
+            (run_ok ~cwd:root "commit count" "git rev-list --count HEAD" |> int_of_string))
+
+let test_stage_commit_allows_authorized_protected_path_change () =
+  with_temp_dir "symphony-protected-stage-authorized-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) |> with_protected_paths protected_patterns in
+      let issue =
+        {
+          (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress") with
+          description = Some "## Protected Path Authorization\n\n- `cli-entrypoint`\n";
+        }
+      in
+      Util.mkdir_p (Filename.concat root "bin");
+      Util.write_file (Filename.concat root "bin/symphony.js") "changed\n";
+      let workspace = { Workspace.path = root; workspace_key = "test"; created_now = false } in
+      match Orchestrator.git_commit_stage_changes config workspace issue protected_stage (Some "In review") with
+      | Error error -> Alcotest.fail error
+      | Ok () ->
+          Alcotest.(check int) "stage commit created" 2
+            (run_ok ~cwd:root "commit count" "git rev-list --count HEAD" |> int_of_string))
+
+let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
+  with_temp_dir "symphony-protected-stage-attention-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config =
+        {
+          (base_orchestrator_config root (git_policy ())) with
+          Config.protected_paths = protected_path_policy protected_patterns;
+          stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "In progress" ];
+                    agent = "engineer";
+                    max_concurrent_agents = None;
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit =
+                      Some
+                        {
+                          enabled = true;
+                          commit_type = "feat";
+                          message = Config.default_commit_message;
+                          push = false;
+                          classification = None;
+                        };
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I33" ~identifier:"#33" ~title:"Protected" ~state:"In progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.mkdir_p (Filename.concat workspace.path "bin");
+      Util.write_file (Filename.concat workspace.path "bin/symphony.js") "changed\n";
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.mark_completed orchestrator
+        {
+          Orchestrator.pid = 0;
+          issue;
+          stage = None;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        };
+      Alcotest.(check (list (pair string string))) "attention status" [ ("#33", "Human attention") ]
+        (List.rev !statuses);
+      Alcotest.(check int) "no stage commit" 2
+        (run_ok ~cwd:workspace.path "commit count" "git rev-list --count HEAD" |> int_of_string);
+      Alcotest.(check bool) "worktree kept for inspection" true (Sys.file_exists workspace.path);
+      Alcotest.(check bool) "diagnostic names path" true
+        (contains_substring
+           (Option.value (Orchestrator.get_state orchestrator).Runtime_state.last_error ~default:"")
+           "bin/symphony.js"))
 
 let test_allowed_loop_start_branch_readiness () =
   with_temp_dir "symphony-loop-start-ready-" (fun root ->
@@ -3309,6 +3662,191 @@ let completed_child issue workspace =
     stdout_size = 0;
     stderr_size = 0;
   }
+
+let test_conflicting_stage_commit_classification_moves_attention_without_commit () =
+  with_temp_dir "symphony-stage-commit-classification-attention-" (fun root ->
+      init_repo root "symphony/dogfood";
+      let config =
+        {
+          (base_orchestrator_config root (git_policy ~auto_merge:false ())) with
+          Config.stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "In progress" ];
+                    agent = "engineer";
+                    max_concurrent_agents = None;
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit =
+                      Some
+                        {
+                          enabled = true;
+                          commit_type = "feat";
+                          message = Config.default_commit_message;
+                          push = false;
+                          classification =
+                            Some
+                              {
+                                default = "feat";
+                                label_map = [ ("bug", "fix"); ("documentation", "docs") ];
+                                conflict_behavior = "human_attention";
+                              };
+                        };
+                  };
+                ];
+            };
+        }
+      in
+      let issue =
+        {
+          (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Conflicting labels" ~state:"In progress") with
+          labels = [ "bug"; "documentation" ];
+        }
+      in
+      Util.write_file (Filename.concat root "change.txt") "change\n";
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator
+        (completed_child issue { Workspace.path = root; workspace_key = "test"; created_now = false });
+      Alcotest.(check (list string)) "moves to attention" [ "Human attention" ] (List.rev !statuses);
+      Alcotest.(check int) "no stage commit created" 1
+        (List.length (run_ok ~cwd:root "log" "git log --format=%s" |> Util.split_lines));
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "not retrying" 0 (List.length state.retrying);
+      Alcotest.(check (option string)) "last error"
+        (Some "stage commit classification conflict: bug -> fix, documentation -> docs")
+        state.last_error)
+
+let test_ordered_queue_keeps_stage_handoffs_pending () =
+  with_temp_dir "symphony-orchestrator-queue-stage-" (fun root ->
+      let current_status = ref "Backlog" in
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              active_states = [ "Backlog"; "Todo" ];
+              project_status_on_dispatch = None;
+              project_status_on_success = Some "Done";
+            };
+          pull_request = { Config.default_pull_request with enabled = false };
+          stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Backlog" ];
+                    agent = "planner";
+                    max_concurrent_agents = None;
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "Todo";
+                    retry_status = Some "Backlog";
+                    goal = None;
+                    commit = None;
+                  };
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "engineer";
+                    max_concurrent_agents = None;
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "Done";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issue () = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:!current_status in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.state :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let set_status _ _ status =
+        current_status := status;
+        Ok ()
+      in
+      let commit_stage _ _ _ _ _ = Ok () in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue () ]) ~set_status ~commit_stage ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "first launch" [ "Backlog" ] (List.rev !launched);
+      let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root "#1" in
+      Orchestrator.mark_completed orchestrator (completed_child (issue ()) workspace);
+      (match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "stage handoff remains pending" [ "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state");
+      Alcotest.(check string) "moved to next active stage" "Todo" !current_status;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "second launch" [ "Backlog"; "Todo" ] (List.rev !launched))
+
+let test_ordered_queue_revives_persisted_completed_active_entries () =
+  with_temp_dir "symphony-orchestrator-queue-revive-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "completed"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "revived active entry launches" [ "#1" ] (List.rev !launched);
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "revived state is running" [ "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state")
 
 let commit_file ~cwd file content message =
   Util.write_file (Filename.concat cwd file) content;
@@ -3407,6 +3945,32 @@ let test_startup_reconciliation_moves_unsafe_candidates_to_attention () =
         [ ("#24", "Human attention"); ("#25", "Human attention") ]
         (List.rev !statuses);
       Alcotest.(check int) "issue errors" 2 (List.length (Orchestrator.get_state orchestrator).issue_errors))
+
+let test_startup_reconciliation_blocks_unauthorized_protected_path_change () =
+  with_temp_dir "symphony-startup-reconcile-protected-path-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config =
+        completed_stage_config root (git_policy ~auto_merge:true ()) |> with_protected_paths protected_patterns
+      in
+      let issue = Issue.empty ~id:"I32" ~identifier:"#32" ~title:"Protected path" ~state:"In review" in
+      let workspace = create_task_worktree config issue in
+      Util.mkdir_p (Filename.concat workspace.path "bin");
+      commit_file ~cwd:workspace.path "bin/symphony.js" "changed\n" "task 32";
+      let statuses = ref [] in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "protected file not merged" false (Sys.file_exists (Filename.concat root "bin/symphony.js"));
+      Alcotest.(check (list string)) "diagnostics" [ "attention_protected_paths" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      Alcotest.(check (list (pair string string))) "attention status" [ ("#32", "Human attention") ]
+        (List.rev !statuses))
 
 let test_startup_reconciliation_updates_task_branch_before_fast_forward () =
   with_temp_dir "symphony-startup-reconcile-nonff-" (fun root ->
@@ -3554,11 +4118,15 @@ let pull_request_config config =
     Config.pull_request =
       {
         enabled = true;
+        open_on_review = false;
         base_branch = "main";
         title = "Symphony batch from <head_branch>";
         body = "Opened automatically by Symphony after orchestration became idle.";
       };
   }
+
+let open_on_review_pull_request_config config =
+  { config with Config.pull_request = { config.Config.pull_request with enabled = true; open_on_review = true } }
 
 let test_orchestrator_opens_batch_pull_request_once_when_idle () =
   with_temp_dir "symphony-batch-pr-idle-" (fun root ->
@@ -3579,6 +4147,46 @@ let test_orchestrator_opens_batch_pull_request_once_when_idle () =
       | Some handoff ->
           Alcotest.(check string) "status" "completed" handoff.status;
           Alcotest.(check (option string)) "url" (Some "https://github.example/acme/widgets/pull/1") handoff.url
+      | None -> Alcotest.fail "expected pull request handoff state")
+
+let test_orchestrator_opens_batch_pull_request_on_review_status () =
+  with_temp_dir "symphony-batch-pr-review-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let config = base_orchestrator_config root (git_policy ~auto_merge:true ()) |> open_on_review_pull_request_config in
+      let issue = Issue.empty ~id:"I33" ~identifier:"#33" ~title:"Thirty three" ~state:"Todo" in
+      let attempts = ref [] in
+      let current_status = ref "Todo" in
+      let launch ~config:_ ~workspace ~prompt:_ ~issue =
+        commit_file ~cwd:workspace.Workspace.path "review-pr.txt" "ready\n" "task 33";
+        let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "true" |] Unix.stdin Unix.stdout Unix.stderr in
+        { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let fetch _ =
+        if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
+        then [ { issue with state = !current_status } ]
+        else []
+      in
+      let set_status _ _ status =
+        current_status := status;
+        Ok ()
+      in
+      let batch_pull_request_handoff _config ~head_branch =
+        attempts := head_branch :: !attempts;
+        Ok (Some "https://github.example/acme/widgets/pull/33")
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch ~set_status ~batch_pull_request_handoff ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "handoff attempted after review status" [ "feature/start" ] (List.rev !attempts);
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "status" "completed" handoff.status;
+          Alcotest.(check (option string)) "url" (Some "https://github.example/acme/widgets/pull/33") handoff.url
       | None -> Alcotest.fail "expected pull request handoff state")
 
 let test_orchestrator_retries_batch_pull_request_handoff_failure () =
@@ -3755,6 +4363,21 @@ let test_orchestrator_reuses_existing_task_branch_on_restart () =
       Alcotest.(check string) "reused branch checked out" "symphony/task-8"
         (run_ok ~cwd:workspace.path "branch" "git branch --show-current"))
 
+let test_orchestrator_prunes_missing_registered_worktree () =
+  with_temp_dir "symphony-missing-registered-worktree-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I13" ~identifier:"#13" ~title:"Thirteen" ~state:"In progress" in
+      let workspace = create_task_worktree config issue in
+      ignore (run_ok ~cwd:root "delete worktree directory" (Printf.sprintf "rm -rf %s" (Util.shell_quote workspace.path)));
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Alcotest.(check string) "recreated branch checked out" "symphony/task-13"
+        (run_ok ~cwd:workspace.path "branch" "git branch --show-current"))
+
 let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch () =
   with_temp_dir "symphony-existing-progress-" (fun root ->
       init_repo root "feature/start";
@@ -3828,7 +4451,7 @@ let test_stage_commit_pushes_task_branch () =
             success_status = Some "In review";
             retry_status = Some "Todo";
             goal = None;
-            commit = Some { enabled = true; commit_type = "feat"; message = Config.default_commit_message; push = true };
+            commit = Some { enabled = true; commit_type = "feat"; message = Config.default_commit_message; push = true; classification = None };
           }
       in
       (match Orchestrator.git_commit_stage_changes config workspace issue stage (Some "In review") with
@@ -4129,6 +4752,28 @@ let test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status ()
       Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path);
       Alcotest.(check (list (pair string string))) "review status advanced" [ ("#20", "Done") ] (List.rev !statuses))
 
+let test_manual_merge_blocks_unauthorized_protected_path_change () =
+  with_temp_dir "symphony-manual-merge-protected-path-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_config root |> with_protected_paths protected_patterns in
+      let issue = Issue.empty ~id:"I20" ~identifier:"#20" ~title:"Twenty" ~state:"In review" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.mkdir_p (Filename.concat workspace.path "bin");
+      commit_file ~cwd:workspace.path "bin/symphony.js" "changed\n" "task";
+      let result, statuses = run_manual_merge_test config [ issue ] [ "#20" ] in
+      (match result with
+      | Ok _ -> Alcotest.fail "expected protected path preflight failure"
+      | Error errors ->
+          Alcotest.(check int) "one error" 1 (List.length errors);
+          Alcotest.(check bool) "diagnostic names path" true
+            (List.exists (fun error -> contains_substring error "bin/symphony.js") errors));
+      Alcotest.(check bool) "protected file not merged" false (Sys.file_exists (Filename.concat root "bin/symphony.js"));
+      Alcotest.(check (list (pair string string))) "no status updates" [] (List.rev !statuses))
+
 let test_manual_merge_preflight_is_all_or_nothing () =
   with_temp_dir "symphony-manual-merge-preflight-" (fun root ->
       init_repo root "feature/start";
@@ -4289,6 +4934,10 @@ let () =
           Alcotest.test_case "skips full stage capacity in ordered queue" `Quick
             test_orchestrator_stage_capacity_skips_full_ordered_stage;
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
+          Alcotest.test_case "keeps ordered queue stage handoffs pending" `Quick
+            test_ordered_queue_keeps_stage_handoffs_pending;
+          Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
+            test_ordered_queue_revives_persisted_completed_active_entries;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
@@ -4300,10 +4949,22 @@ let () =
           Alcotest.test_case "parses goal usage variants" `Quick test_parse_goal_usage_variants_and_ignores_invalid;
           Alcotest.test_case "parses nested goal usage fields" `Quick test_parse_goal_usage_nested_usage_fields;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
+          Alcotest.test_case "renders stage commit classification messages" `Quick
+            test_stage_commit_classification_renders_messages;
           Alcotest.test_case "retries when success status move fails" `Quick test_orchestrator_retries_when_success_status_move_fails;
           Alcotest.test_case "retries push failure before success status"
             `Quick test_orchestrator_retries_push_failure_before_success_status;
           Alcotest.test_case "stage commit requires code changes" `Quick test_stage_commit_requires_code_changes;
+          Alcotest.test_case "protected path policy matches files directories and globs" `Quick
+            test_protected_path_policy_matches_files_directories_and_globs;
+          Alcotest.test_case "stage commit blocks unauthorized protected paths" `Quick
+            test_stage_commit_blocks_unauthorized_protected_path_change;
+          Alcotest.test_case "stage commit blocks deleted and renamed protected paths" `Quick
+            test_stage_commit_blocks_deleted_and_renamed_protected_paths;
+          Alcotest.test_case "stage commit allows authorized protected paths" `Quick
+            test_stage_commit_allows_authorized_protected_path_change;
+          Alcotest.test_case "moves unauthorized protected path work to attention" `Quick
+            test_orchestrator_moves_unauthorized_protected_stage_to_attention;
           Alcotest.test_case "does not retry empty required commits" `Quick test_orchestrator_does_not_retry_empty_commit;
           Alcotest.test_case "notifies repeated state mutations" `Quick test_orchestrator_notifies_each_state_mutation;
           Alcotest.test_case "parses final output when size was already seen"
@@ -4318,6 +4979,8 @@ let () =
             `Quick test_startup_reconciliation_already_contained_applies_cleanup_without_status_change;
           Alcotest.test_case "startup reconciliation moves unsafe candidates to attention"
             `Quick test_startup_reconciliation_moves_unsafe_candidates_to_attention;
+          Alcotest.test_case "startup reconciliation blocks unauthorized protected paths"
+            `Quick test_startup_reconciliation_blocks_unauthorized_protected_path_change;
           Alcotest.test_case "startup reconciliation updates task branch before fast-forward"
             `Quick test_startup_reconciliation_updates_task_branch_before_fast_forward;
           Alcotest.test_case "startup reconciliation detects wrong and missing branches"
@@ -4328,13 +4991,19 @@ let () =
             `Quick test_startup_reconciliation_ignores_retained_branch_without_worktree;
           Alcotest.test_case "creates task worktree and branch" `Quick test_orchestrator_creates_task_worktree_and_branch;
           Alcotest.test_case "opens batch pull request once when idle" `Quick test_orchestrator_opens_batch_pull_request_once_when_idle;
+          Alcotest.test_case "opens batch pull request on review status" `Quick
+            test_orchestrator_opens_batch_pull_request_on_review_status;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
           Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
           Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;
           Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
           Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
             test_orchestrator_blocks_disallowed_loop_start_before_side_effects;
+          Alcotest.test_case "moves conflicting stage commit classification to attention" `Quick
+            test_conflicting_stage_commit_classification_moves_attention_without_commit;
           Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
+          Alcotest.test_case "prunes missing registered worktree" `Quick
+            test_orchestrator_prunes_missing_registered_worktree;
           Alcotest.test_case "reuses worktree for existing in-progress task"
             `Quick test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch;
           Alcotest.test_case "rejects existing non-worktree workspace" `Quick test_orchestrator_rejects_existing_non_worktree_workspace;
@@ -4352,6 +5021,8 @@ let () =
             test_manual_merge_rejects_invalid_and_duplicate_selectors;
           Alcotest.test_case "fast-forwards protected trunk and updates review status" `Quick
             test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status;
+          Alcotest.test_case "blocks unauthorized protected paths" `Quick
+            test_manual_merge_blocks_unauthorized_protected_path_change;
           Alcotest.test_case "preflight is all or nothing" `Quick test_manual_merge_preflight_is_all_or_nothing;
           Alcotest.test_case "accepts cumulative fast-forward order" `Quick
             test_manual_merge_accepts_cumulative_fast_forward_order;

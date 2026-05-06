@@ -128,19 +128,27 @@ let preflight_one config ~projected_tip row selector =
                   is_ancestor ~cwd:config.repository_root ~ancestor:branch ~descendant:projected_tip
                 in
                 if already_integrated then Ok ({ selector; issue; branch; workspace; already_integrated }, projected_tip)
-                else if terminal then
-                  Error
-                    (Printf.sprintf "%s is terminal in project state %S but %s is not on the Loop-Start Branch"
-                       selector.identifier issue.state branch)
-                else if is_ancestor ~cwd:config.repository_root ~ancestor:projected_tip ~descendant:branch then (
-                  match rev_parse ~cwd:config.repository_root branch with
-                  | Ok next_tip -> Ok ({ selector; issue; branch; workspace; already_integrated }, next_tip)
-                  | Error error ->
-                      Error (Printf.sprintf "%s Task Branch tip could not be resolved: %s" selector.identifier error))
                 else
-                  Error
-                    (Printf.sprintf "%s Task Branch %s cannot fast-forward from projected Loop-Start Branch tip"
-                       selector.identifier branch))
+                  match
+                    Orchestrator.unauthorized_protected_task_branch_changes config issue ~base_ref:projected_tip
+                      ~head_ref:branch
+                  with
+                  | Error error -> Error (Printf.sprintf "%s %s" selector.identifier error)
+                  | Ok () ->
+                      if terminal then
+                        Error
+                          (Printf.sprintf "%s is terminal in project state %S but %s is not on the Loop-Start Branch"
+                             selector.identifier issue.state branch)
+                      else if is_ancestor ~cwd:config.repository_root ~ancestor:projected_tip ~descendant:branch then (
+                        match rev_parse ~cwd:config.repository_root branch with
+                        | Ok next_tip -> Ok ({ selector; issue; branch; workspace; already_integrated }, next_tip)
+                        | Error error ->
+                            Error
+                              (Printf.sprintf "%s Task Branch tip could not be resolved: %s" selector.identifier error))
+                      else
+                        Error
+                          (Printf.sprintf "%s Task Branch %s cannot fast-forward from projected Loop-Start Branch tip"
+                             selector.identifier branch))
 
 let preflight config ~fetch_issues selectors =
   if not (Orchestrator.is_git_repository config.Config.repository_root) then Error [ "Manual Task Merge requires a Git Workspace Repository" ]
