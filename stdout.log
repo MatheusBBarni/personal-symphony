@@ -1,15 +1,14 @@
-Implemented the PRD refinement in [spec/spec-process-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/spec/spec-process-protected-path-policy.md).
+Implemented issue #32.
 
-What changed:
-- Chose `Protected Path Policy` as the canonical term.
-- Decided the Runtime Contract shape: `git.protectedPaths` in Runtime Settings, not `.symphonyignore`.
-- Defined exact matching semantics for files, directories, globs, generated changed paths, deletes, and renames.
-- Defined issue authorization markers: `path:<path>` and `pattern:<pattern-name>`.
-- Defined enforcement order before success status transition, Stage Commit, Stage Push, Task Branch Integration, Batch Branch Push, and Batch Pull Request handoff.
-- Added recommended protected paths and names for this Self-Dogfooding Workspace Repository.
+Changed:
+- [config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/config.ml): parses `paths.protected.patterns` and authorization section from Runtime Settings.
+- [orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/orchestrator.ml): matches protected paths, parses issue authorization, blocks unauthorized changes before Stage Commit, auto-merge, and Startup Reconciliation.
+- [manual_merge.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/manual_merge.ml): blocks Manual Task Merge before Loop-Start changes when committed Task Branch work touches unauthorized protected paths.
+- [test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/test/test_backend.ml): added coverage for parsing, file/dir/glob matching, added/deleted/renamed changes, authorization, Human Attention behavior, Startup Reconciliation, and Manual Task Merge.
 
-Verification run:
-- `git diff --check -- spec/spec-process-protected-path-policy.md`
-- Secret scan on the edited PRD; only hit was the PRD’s own “do not include webhook URLs” requirement, no secret values.
+Verification:
+- `opam exec -- dune build --root . @all` passed.
+- `opam exec -- dune runtest --root .` passed: 103 tests.
+- `pnpm test` was attempted but failed before running scripts with `[ERROR] fetch failed`; the underlying test command passed via `opam`.
 
-Note: `stdout.log` and `stderr.log` were already modified before my work and I left them untouched. I attempted to publish a GitHub issue comment, but the MCP call was cancelled, so the tracker was not updated. Goal usage: 138 seconds.
+Note: `prompt.md`, `stdout.log`, and `stderr.log` were already dirty runtime/log files in the worktree and remain outside the scoped code changes. Goal usage: 1213 seconds.
