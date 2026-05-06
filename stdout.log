@@ -1,12 +1,15 @@
-Implemented the remaining issue #37 documentation cleanup in [docs/agent-context/codex-loop-context-management-issues.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/docs/agent-context/codex-loop-context-management-issues.md:21).
+**Blocking Finding**
 
-Changes:
-- Marked the #37 acceptance checklist complete.
-- Aligned Context Command wording so stdout supplements the Agent Context Snapshot, not a separate Agent Prompt path.
+- [prompt.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/prompt.md:1), [stderr.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stderr.log:14), and [stdout.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stdout.log:1) are included in task commit `207c021`. These are launch/runtime artifacts, not #37 documentation deliverables. `prompt.md` contains the rendered Stage Goal Handoff/Agent Prompt payload, and `stderr.log` contains captured Codex transcript output. That conflicts with the issue’s context-safety intent to avoid persisting full rendered Agent Prompts or full Codex transcripts.
 
-Verification:
-- Ran focused `rg` checks for stale issue #37 checklist wording and conflicting Context Command phrasing.
-- Ran `git diff --check` on the touched docs/spec files.
-- Did not run `pnpm test`; this slice is documentation-only.
+- `git diff --check HEAD^..HEAD` fails because those committed artifacts contain whitespace errors: `prompt.md:197` and multiple trailing-whitespace lines in `stderr.log`.
 
-Note: the worktree still has pre-existing uncommitted changes in `prompt.md`, `stdout.log`, `stderr.log`, and the spec ordering example. I left those intact.
+The accepted docs themselves look aligned: `CONTEXT.md` and ADR 0019 already define Agent Context Snapshot and Context Command, and the remaining docs/spec cleanup uses the accepted terminology.
+
+Checks run:
+- `git diff --name-status HEAD^..HEAD`
+- `git diff --check HEAD^..HEAD` failed as above
+- protected-path/generated `.res.js` check over changed paths: clean
+- terminology scan for stale “Context Command stdout supplements the Agent Prompt” wording: clean
+
+I attempted to post the blocking review comment to GitHub issue #37, but the connector call was canceled. The issue should not move to Done until the committed launch artifacts are removed or otherwise handled.
