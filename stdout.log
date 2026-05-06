@@ -1,0 +1,14 @@
+Implemented per-Stage Agent concurrency.
+
+Changed:
+- `apps/backend/lib/config.ml`: parses optional `stageAgents.stages[].maxConcurrentAgents`.
+- `apps/backend/lib/orchestrator.ml`: enforces per-stage capacity while keeping `agent.maxConcurrentAgents` as the global hard cap; captures the selected Stage Agent before `startStatus` transitions.
+- `apps/backend/lib/runtime_state.ml`: exposes selected stage identity on running rows.
+- `apps/backend/test/test_backend.ml`: added parsing coverage and an Ordered Queue test proving a full stage does not block later stages with capacity.
+
+Verification:
+- `git diff --check`
+- `DUNE_BUILD_DIR=/private/tmp/symphony-dune-build opam exec -- dune build @all --root .`
+- `DUNE_BUILD_DIR=/private/tmp/symphony-dune-build opam exec -- dune runtest --root .` passed: 97 tests.
+
+Note: `pnpm backend:build` was blocked by `[ERROR] fetch failed`, so I used the direct Dune route under `opam exec`. Existing untracked `prompt.md`, `stdout.log`, and `stderr.log` remain untouched.

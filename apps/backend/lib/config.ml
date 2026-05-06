@@ -41,6 +41,7 @@ type stage_goal = { enabled : bool }
 type stage_agent = {
   states : string list;
   agent : string;
+  max_concurrent_agents : int option;
   skills : string list;
   start_status : string option;
   success_status : string option;
@@ -101,6 +102,7 @@ let default_stage_agents =
     {
       states = [ "Backlog" ];
       agent = "planner";
+      max_concurrent_agents = None;
       skills = [];
       start_status = None;
       success_status = Some "To-Do";
@@ -111,6 +113,7 @@ let default_stage_agents =
     {
       states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
       agent = "engineer";
+      max_concurrent_agents = None;
       skills = [];
       start_status = Some "In progress";
       success_status = Some "In review";
@@ -121,6 +124,7 @@ let default_stage_agents =
     {
       states = [ "In review"; "In Review" ];
       agent = "reviewer";
+      max_concurrent_agents = None;
       skills = [];
       start_status = None;
       success_status = Some "Done";
@@ -161,6 +165,8 @@ let expand_path ~base_dir path =
 let positive name value =
   if value <= 0 then raise (Invalid_config (name ^ " must be positive"));
   value
+
+let positive_option name = function None -> None | Some value -> Some (positive name value)
 
 let from_workflow workflow =
   let root = workflow.Workflow.config in
@@ -309,6 +315,11 @@ let json_stage_agent json =
   {
     states = json_string_list "states" json ~default:[];
     agent = json_string "agent" json ~default:"";
+    max_concurrent_agents =
+      (match member "maxConcurrentAgents" json with
+      | `Null -> None
+      | _ -> Some (json_int "maxConcurrentAgents" json ~default:0))
+      |> positive_option "stageAgents.stages.maxConcurrentAgents";
     skills = json_string_list "skills" json ~default:[];
     start_status = json_optional_string "startStatus" json;
     success_status = json_optional_string "successStatus" json;
