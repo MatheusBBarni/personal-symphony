@@ -1,0 +1,112 @@
+{
+  "tracker": {
+    "kind": "github",
+    "owner": "MatheusBBarni",
+    "repo": "symphony-orchestrator",
+    "projectNumber": 3,
+    "apiKeyEnv": "GITHUB_TOKEN"
+  },
+  "project": {
+    "statusField": "Status",
+    "activeStates": ["Backlog", "To-Do", "In progress", "In review"],
+    "terminalStates": ["Human attention", "Done", "Closed", "Cancelled"],
+    "startStatus": "In progress",
+    "reviewStatus": "In review",
+    "retryStatus": "To-Do",
+    "ensureStatuses": true
+  },
+  "polling": {
+    "intervalMs": 30000
+  },
+  "workspace": {
+    "root": ".symphony/workspaces"
+  },
+  "git": {
+    "taskBranchPrefix": "symphony/task-",
+    "protectedTrunkBranches": ["main"],
+    "autoMerge": true,
+    "mergeAttentionStatus": "Human attention",
+    "cleanup": {
+      "removeWorktreeAfterMerge": true,
+      "keepTaskBranch": false
+    }
+  },
+  "pullRequest": {
+    "enabled": true,
+    "baseBranch": "main",
+    "title": "Symphony dogfood batch from <head_branch> into <base_branch>",
+    "body": "Automated Batch Pull Request opened by Symphony after Orchestration Idle.\n\nLoop-Start Branch: <head_branch>\nPull Request Base Branch: <base_branch>\n\nReview this batch before merging into the Protected Trunk Branch."
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "defaultAgent": "engineer",
+    "stages": [
+      {
+        "states": ["Backlog"],
+        "agent": "planner",
+        "skills": [],
+        "successStatus": "To-Do",
+        "retryStatus": "Backlog",
+        "goal": {
+          "enabled": true
+        },
+        "commit": {
+          "enabled": false,
+          "type": "docs",
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
+        }
+      },
+      {
+        "states": ["To-Do", "In progress"],
+        "agent": "engineer",
+        "skills": [],
+        "startStatus": "In progress",
+        "successStatus": "In review",
+        "retryStatus": "To-Do",
+        "goal": {
+          "enabled": true
+        },
+        "commit": {
+          "enabled": true,
+          "type": "feat",
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
+        }
+      },
+      {
+        "states": ["In review"],
+        "agent": "reviewer",
+        "skills": [],
+        "successStatus": "Done",
+        "retryStatus": "Human attention",
+        "goal": {
+          "enabled": true
+        },
+        "commit": {
+          "enabled": false,
+          "type": "refactor",
+          "message": "<type>: <generated_message_max_90char>",
+          "push": false
+        }
+      }
+    ]
+  },
+  "agent": {
+    "maxConcurrentAgents": 1,
+    "maxTurns": 10,
+    "maxRetryBackoffMs": 300000
+  },
+  "codex": {
+    "command": "codex exec",
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium",
+    "turnTimeoutMs": 3600000,
+    "readTimeoutMs": 5000,
+    "stallTimeoutMs": 300000
+  },
+  "server": {
+    "port": 8080
+  }
+}
