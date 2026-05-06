@@ -149,7 +149,7 @@ One issue identifier and its current queue progress within an Ordered Queue.
 _Avoid_: queue item, queued issue, queue row
 
 **Batch Pull Request**:
-A single pull request opened from the Loop-Start Branch after Symphony reaches Orchestration Idle.
+A single pull request opened from the Loop-Start Branch either after Symphony reaches Orchestration Idle or, when configured, after task work moves to the review status.
 _Avoid_: per-task PR, task pull request, queue PR
 
 **Batch Branch Push**:
@@ -163,6 +163,10 @@ _Avoid_: inferred base, default branch, protected branch
 **Pull Request Policy**:
 The Runtime Settings section that controls automatic Batch Pull Request creation.
 _Avoid_: PR config, GitHub settings, git policy
+
+**Review Pull Request Handoff**:
+An opt-in Pull Request Policy trigger that opens the Batch Pull Request immediately after task work is integrated and its issue moves to the review status.
+_Avoid_: per-task PR, review PR, agent PR
 
 **Pull Request Template**:
 The configured title or body pattern used when opening a Batch Pull Request.
@@ -528,7 +532,8 @@ _Avoid_: reinitialize, reset
 - "queue finished" was used without a queue concept in the Runtime State model; resolved: use **Work Became Idle** for the transition from running or retrying work to zero running and zero retrying work.
 - "error happens" was used broadly; resolved: use **Task Needs Attention** only when a new Runtime State issue error appears.
 - "tasks in queue" was used to mean there is no remaining orchestration work; resolved: use **Orchestration Idle** for the condition where no active issue is running, retrying, or dispatchable.
-- "Open PR after finishing all the tasks" was used to mean opening one pull request for combined task work; resolved: use **Batch Pull Request**, opened from the **Loop-Start Branch** after **Orchestration Idle**.
+- "Open PR after finishing all the tasks" was used to mean opening one pull request for combined task work; resolved: use **Batch Pull Request**, opened from the **Loop-Start Branch** after **Orchestration Idle** by default.
+- "Open PR after the agent reaches In review" means opening the same **Batch Pull Request** early through **Review Pull Request Handoff**, not creating a separate per-task pull request.
 - "base branch" for automatic PR creation was ambiguous because the **Loop-Start Branch** is the head of the **Batch Pull Request**; resolved: use configured **Pull Request Base Branch** for the target branch.
 - "merge the worktrees" was used to mean integrating completed **Task Branches**; resolved: Symphony fast-forward merges **Task Branches** into the **Loop-Start Branch**, not Agent Worktrees.
 - ".symphonyignore" was used to mean a repository-owned rule for files agents must not modify; resolved: use **Protected Path Policy** until the storage format is decided.

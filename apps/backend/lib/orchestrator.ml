@@ -1236,6 +1236,29 @@ let set_pull_request_handoff orchestrator status ?url ?error () =
       last_error = (match error with Some error -> Some error | None -> state.last_error);
     })
 
+let attempt_batch_pull_request orchestrator =
+  let policy = orchestrator.config.Config.pull_request in
+  set_pull_request_handoff orchestrator "attempting" ();
+  match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
+  | Ok url ->
+      orchestrator.batch_pull_request_completed <- true;
+      set_pull_request_handoff orchestrator "completed" ?url ();
+      render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
+  | Error error ->
+      set_pull_request_handoff orchestrator "retryable_failure" ~error ();
+      render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
+
+let status_is_review_status config status =
+  match config.Config.tracker.project_status_on_success with
+  | Some review_status -> string_equal_ci status review_status
+  | None -> false
+
+let maybe_open_review_pull_request orchestrator status =
+  let policy = orchestrator.config.Config.pull_request in
+  if policy.enabled && policy.open_on_review && (not orchestrator.batch_pull_request_completed)
+     && status_is_review_status orchestrator.config status
+  then attempt_batch_pull_request orchestrator
+
 let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
   let policy = orchestrator.config.Config.pull_request in
   if policy.enabled && not orchestrator.batch_pull_request_completed then
@@ -1249,15 +1272,7 @@ let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
       && not has_attention
     in
     if idle then (
-      set_pull_request_handoff orchestrator "attempting" ();
-      match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
-      | Ok url ->
-          orchestrator.batch_pull_request_completed <- true;
-          set_pull_request_handoff orchestrator "completed" ?url ();
-          render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
-      | Error error ->
-          set_pull_request_handoff orchestrator "retryable_failure" ~error ();
-          render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error)
+      attempt_batch_pull_request orchestrator)
 
 let dispatch_issue orchestrator issue =
   let target_start_status = start_status orchestrator issue in
@@ -1506,7 +1521,9 @@ let mark_completed orchestrator child =
           | Some status ->
               if not (move_issue_status orchestrator child.issue status) then
                 mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
-              else complete_child ~next_status:status orchestrator child))
+              else (
+                maybe_open_review_pull_request orchestrator status;
+                complete_child ~next_status:status orchestrator child)))
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()

@@ -253,6 +253,7 @@ Branch as the PR head. Automatic PR creation is disabled by default:
 {
   "pullRequest": {
     "enabled": false,
+    "openOnReview": false,
     "baseBranch": "main",
     "title": "Symphony batch from <head_branch>",
     "body": "Opened automatically by Symphony after orchestration became idle."
@@ -266,6 +267,11 @@ then checks for an existing open PR with the same head/base pair before creating
 Failed pushes or PR creation attempts are recorded in Runtime State as retryable handoff failures and
 are retried on later idle polls. Symphony does not attempt a Batch Pull Request while any issue is in
 the configured Merge Attention Status or has unresolved orchestration attention.
+
+Set `pullRequest.openOnReview` to `true` to open the same Batch Pull Request immediately after a
+successful agent run has been committed, integrated into the Loop-Start Branch, and moved to the
+configured review status. Later task integrations continue updating the same Loop-Start Branch and
+the existing PR is reused.
 
 The `title` and `body` fields are deterministic templates. They support `<head_branch>` and
 `<base_branch>`; Symphony does not generate PR prose with an agent.

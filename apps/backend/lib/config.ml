@@ -35,7 +35,7 @@ type codex = {
   stall_timeout_ms : int;
 }
 type server = { port : int option }
-type pull_request = { enabled : bool; base_branch : string; title : string; body : string }
+type pull_request = { enabled : bool; open_on_review : bool; base_branch : string; title : string; body : string }
 type stage_commit_classification = {
   default : string;
   label_map : (string * string) list;
@@ -92,7 +92,8 @@ let default_reasoning_effort = "medium"
 let default_codex_command = "codex exec"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
-let default_pull_request = { enabled = false; base_branch = "main"; title = default_pull_request_title; body = default_pull_request_body }
+let default_pull_request =
+  { enabled = false; open_on_review = false; base_branch = "main"; title = default_pull_request_title; body = default_pull_request_body }
 let default_conflict_behavior = "human_attention"
 
 let default_git =
@@ -559,6 +560,7 @@ let from_settings_file ~workspace_root path =
     pull_request =
       {
         enabled = json_bool "enabled" pull_request_raw ~default:default_pull_request.enabled;
+        open_on_review = json_bool "openOnReview" pull_request_raw ~default:default_pull_request.open_on_review;
         base_branch = json_string "baseBranch" pull_request_raw ~default:default_pull_request.base_branch;
         title = json_string "title" pull_request_raw ~default:default_pull_request.title;
         body = json_string "body" pull_request_raw ~default:default_pull_request.body;

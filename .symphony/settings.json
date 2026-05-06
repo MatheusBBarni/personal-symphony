@@ -33,6 +33,7 @@
   },
   "pullRequest": {
     "enabled": true,
+    "openOnReview": true,
     "baseBranch": "main",
     "title": "Symphony dogfood batch from <head_branch> into <base_branch>",
     "body": "Automated Batch Pull Request opened by Symphony after Orchestration Idle.\n\nLoop-Start Branch: <head_branch>\nPull Request Base Branch: <base_branch>\n\nReview this batch before merging into the Protected Trunk Branch."
