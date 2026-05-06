@@ -93,6 +93,7 @@ let test_config_parses_git_policy_and_stage_push () =
       {
         "states": ["In progress"],
         "agent": "engineer",
+        "maxConcurrentAgents": 2,
         "commit": {"enabled": true, "type": "feat", "message": "<type>: work", "push": true}
       },
       {
@@ -132,7 +133,8 @@ let test_config_parses_git_policy_and_stage_push () =
       Alcotest.(check string) "protected authorization section" "Protected Path Authorization"
         config.protected_paths.authorization.issue_section;
       (match config.stage_agents.stages with
-      | [ { Config.commit = Some engineer_commit; _ }; { Config.commit = Some reviewer_commit; _ } ] ->
+      | [ { Config.commit = Some engineer_commit; _ } as engineer; { Config.commit = Some reviewer_commit; _ } ] ->
+          Alcotest.(check (option int)) "stage max concurrent agents" (Some 2) engineer.max_concurrent_agents;
           Alcotest.(check bool) "stage push" true engineer_commit.push;
           Alcotest.(check bool) "stage push default" false reviewer_commit.push;
           (match reviewer_commit.classification with
@@ -167,6 +169,45 @@ let test_config_parses_git_policy_and_stage_push () =
       Alcotest.check_raises "empty classification default is invalid"
         (Config.Invalid_config "stageAgents.stages[].commit.classification.default must not be empty")
         (fun () -> ignore (Config.from_settings_file ~workspace_root:root settings)))
+
+let test_config_validates_stage_concurrency_policy () =
+  with_temp_dir "symphony-settings-stage-cap-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      Util.write_file (Filename.concat root ".symphony/agents/engineer.md") "Engineer";
+      Unix.putenv "GITHUB_TOKEN" "token";
+      let write_settings stage_field =
+        let settings = Filename.concat root ("settings-" ^ string_of_int (Random.bits ()) ^ ".json") in
+        Util.write_file settings
+          (Printf.sprintf
+             {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer"%s}
+    ]
+  }
+}|}
+             stage_field);
+        settings
+      in
+      let omitted = Config.from_settings_file ~workspace_root:root (write_settings "") in
+      let valid = Config.from_settings_file ~workspace_root:root (write_settings {js|, "maxConcurrentAgents": 2|js}) in
+      (match (omitted.stage_agents.stages, valid.stage_agents.stages) with
+      | [ omitted_stage ], [ valid_stage ] ->
+          Alcotest.(check (option int)) "omitted stage cap" None omitted_stage.max_concurrent_agents;
+          Alcotest.(check (option int)) "valid stage cap" (Some 2) valid_stage.max_concurrent_agents
+      | _ -> Alcotest.fail "expected one configured stage");
+      let assert_invalid label stage_field =
+        match Config.from_settings_file ~workspace_root:root (write_settings stage_field) with
+        | _ -> Alcotest.fail (label ^ " should be invalid")
+        | exception Config.Invalid_config message ->
+            Alcotest.(check string) label "stageAgents.stages.maxConcurrentAgents must be positive" message
+      in
+      assert_invalid "zero stage cap" {js|, "maxConcurrentAgents": 0|js};
+      assert_invalid "negative stage cap" {js|, "maxConcurrentAgents": -1|js};
+      assert_invalid "non-integer stage cap" {js|, "maxConcurrentAgents": "two"|js})
 
 let test_config_parses_allowed_loop_start_branch_policy () =
   with_temp_dir "symphony-loop-start-policy-" (fun root ->
@@ -1038,6 +1079,8 @@ let test_runtime_state_exposes_running_issue_details () =
         [
           {
             Runtime_state.issue;
+            stage_agent = None;
+            stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
             last_event = Some "launched";
@@ -1174,6 +1217,8 @@ let test_runtime_state_exposes_goal_usage_when_available () =
         [
           {
             Runtime_state.issue;
+            stage_agent = None;
+            stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
             last_event = Some "agent_output";
@@ -1324,6 +1369,8 @@ let test_websocket_broadcast_after_state_change () =
             [
               {
                 Runtime_state.issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Running" ~state:"In progress";
+                stage_agent = None;
+                stage_states = [];
                 session_id = Some "pid:2";
                 turn_count = 0;
                 last_event = Some "started";
@@ -1458,6 +1505,8 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
             [
               {
                 Runtime_state.issue;
+                stage_agent = None;
+                stage_states = [];
                 session_id = Some "pid:test";
                 turn_count = 0;
                 last_event = Some "launched";
@@ -1474,6 +1523,7 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
           {
             Orchestrator.pid;
             issue;
+            stage = None;
             issue_id = issue.id;
             issue_identifier = issue.identifier;
             issue_title = issue.title;
@@ -1559,6 +1609,8 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
             [
               {
                 Runtime_state.issue;
+                stage_agent = None;
+                stage_states = [];
                 session_id = Some "pid:timeout";
                 turn_count = 0;
                 last_event = Some "launched";
@@ -1575,6 +1627,7 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
           {
             Orchestrator.pid;
             issue;
+            stage = None;
             issue_id = issue.id;
             issue_identifier = issue.identifier;
             issue_title = issue.title;
@@ -1655,6 +1708,8 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
             [
               {
                 Runtime_state.issue;
+                stage_agent = None;
+                stage_states = [];
                 session_id = Some "pid:block";
                 turn_count = 0;
                 last_event = Some "agent_output";
@@ -1909,6 +1964,86 @@ let test_github_api_error_normalization () =
     (String.starts_with ~prefix:"GitHub API rate limit exceeded."
        (Github_tracker.github_api_error_remediation rest_messages))
 
+let stage_capacity_config root ~global_cap =
+  {
+    Config.workflow_path = "settings.json";
+    repository_root = root;
+    tracker =
+      {
+        kind = "github";
+        owner = "acme";
+        repo = "widgets";
+        project_number = 7;
+        api_key_env = "GITHUB_TOKEN";
+        api_key = Some "token";
+        active_states = [ "Backlog"; "Todo"; "In progress"; "In review" ];
+        terminal_states = [ "Done"; "Human attention" ];
+        project_status_field = "Status";
+        project_status_on_dispatch = Some "In progress";
+        project_status_on_success = Some "Done";
+        project_status_on_retry = Some "Todo";
+        ensure_project_statuses = true;
+      };
+    polling = { interval_ms = 1000 };
+    workspace = { root = Filename.concat root "workspaces" };
+    git = Config.default_git;
+    agent = { max_concurrent_agents = global_cap; max_turns = 10; max_retry_backoff_ms = 1000 };
+    codex =
+      {
+        command = "cat";
+        model = Config.default_model;
+        reasoning_effort = Config.default_reasoning_effort;
+        turn_timeout_ms = 1000;
+        read_timeout_ms = 1000;
+        stall_timeout_ms = 1000;
+      };
+    server = { port = None };
+    pull_request = Config.default_pull_request;
+    protected_paths = Config.default_protected_paths;
+    stage_agents =
+      {
+        enabled = true;
+        root = Filename.concat root "agents";
+        default_agent = None;
+        stages =
+          [
+            {
+              Config.states = [ "Backlog" ];
+              agent = "planner";
+              max_concurrent_agents = Some 1;
+              skills = [];
+              start_status = None;
+              success_status = Some "Todo";
+              retry_status = Some "Backlog";
+              goal = None;
+              commit = None;
+            };
+            {
+              Config.states = [ "Todo"; "In progress" ];
+              agent = "engineer";
+              max_concurrent_agents = Some 2;
+              skills = [];
+              start_status = Some "In progress";
+              success_status = Some "In review";
+              retry_status = Some "Todo";
+              goal = None;
+              commit = None;
+            };
+            {
+              Config.states = [ "In review" ];
+              agent = "reviewer";
+              max_concurrent_agents = Some 2;
+              skills = [];
+              start_status = None;
+              success_status = Some "Done";
+              retry_status = Some "In progress";
+              goal = None;
+              commit = None;
+            };
+          ];
+      };
+  }
+
 let test_orchestrator_dispatch_limits () =
   with_temp_dir "symphony-orchestrator-" (fun root ->
       let config =
@@ -1964,6 +2099,235 @@ let test_orchestrator_dispatch_limits () =
       Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "still capped" 2 (List.length state.Runtime_state.running))
+
+let test_orchestrator_stage_capacity_dispatches_all_available_slots () =
+  with_temp_dir "symphony-orchestrator-stage-slots-" (fun root ->
+      let config = stage_capacity_config root ~global_cap:5 in
+      let issues =
+        [
+          Issue.empty ~id:"P1" ~identifier:"#1" ~title:"Plan one" ~state:"Backlog";
+          Issue.empty ~id:"E1" ~identifier:"#2" ~title:"Engineer one" ~state:"Todo";
+          Issue.empty ~id:"E2" ~identifier:"#3" ~title:"Engineer two" ~state:"In progress";
+          Issue.empty ~id:"R1" ~identifier:"#4" ~title:"Review one" ~state:"In review";
+          Issue.empty ~id:"R2" ~identifier:"#5" ~title:"Review two" ~state:"In review";
+        ]
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "all configured slots used" 5 (List.length state.Runtime_state.running);
+      Alcotest.(check (list string)) "launches across stages" [ "#1"; "#2"; "#3"; "#4"; "#5" ] (List.rev !launched))
+
+let test_orchestrator_stage_capacity_does_not_spawn_idle_agents () =
+  with_temp_dir "symphony-orchestrator-stage-idle-" (fun root ->
+      let config = stage_capacity_config root ~global_cap:5 in
+      let issues = [ Issue.empty ~id:"E1" ~identifier:"#1" ~title:"Engineer one" ~state:"Todo" ] in
+      let launch_count = ref 0 in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launch_count;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "one issue launched" 1 !launch_count;
+      Alcotest.(check int) "no idle running rows" 1 (List.length state.Runtime_state.running))
+
+let test_orchestrator_stage_capacity_respects_lower_global_cap () =
+  with_temp_dir "symphony-orchestrator-stage-global-cap-" (fun root ->
+      let config = stage_capacity_config root ~global_cap:3 in
+      let issues =
+        [
+          Issue.empty ~id:"P1" ~identifier:"#1" ~title:"Plan one" ~state:"Backlog";
+          Issue.empty ~id:"E1" ~identifier:"#2" ~title:"Engineer one" ~state:"Todo";
+          Issue.empty ~id:"E2" ~identifier:"#3" ~title:"Engineer two" ~state:"In progress";
+          Issue.empty ~id:"R1" ~identifier:"#4" ~title:"Review one" ~state:"In review";
+          Issue.empty ~id:"R2" ~identifier:"#5" ~title:"Review two" ~state:"In review";
+        ]
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "global cap wins" 3 (List.length state.Runtime_state.running);
+      Alcotest.(check (list string)) "only first global slots launch" [ "#1"; "#2"; "#3" ] (List.rev !launched))
+
+let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
+  with_temp_dir "symphony-orchestrator-stage-duplicates-" (fun root ->
+      let config = stage_capacity_config root ~global_cap:5 in
+      let issues =
+        [
+          Issue.empty ~id:"running" ~identifier:"#1" ~title:"Already running" ~state:"Todo";
+          Issue.empty ~id:"retrying" ~identifier:"#2" ~title:"Retry later" ~state:"Todo";
+          Issue.empty ~id:"blocked" ~identifier:"#3" ~title:"Blocked" ~state:"Todo";
+          Issue.empty ~id:"attention" ~identifier:"#4" ~title:"Needs attention" ~state:"Human attention";
+          Issue.empty ~id:"ready" ~identifier:"#5" ~title:"Ready" ~state:"Todo";
+        ]
+      in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      let running_issue = List.nth issues 0 in
+      let retrying_issue = List.nth issues 1 in
+      let blocked_issue = List.nth issues 2 in
+      let ready_issue = List.nth issues 4 in
+      let running_row issue =
+        {
+          Runtime_state.issue;
+          stage_agent = Some "engineer";
+          stage_states = [ "Todo"; "In progress" ];
+          session_id = Some issue.Issue.id;
+          turn_count = 0;
+          last_event = Some "test";
+          last_message = None;
+          started_at = Util.now_iso8601 ();
+          last_event_at = None;
+          tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+          goal_usage = None;
+        }
+      in
+      Orchestrator.update_state orchestrator (fun state ->
+          {
+            state with
+            running = [ running_row running_issue; running_row retrying_issue; running_row blocked_issue ];
+          });
+      Orchestrator.mark_retrying orchestrator retrying_issue.id "retry later";
+      Orchestrator.mark_blocked orchestrator blocked_issue.id "blocked";
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      let running_identifiers = List.map (fun (row : Runtime_state.running) -> row.issue.identifier) state.running in
+      Alcotest.(check (list string)) "running and ready issues only" [ ready_issue.identifier; running_issue.identifier ]
+        running_identifiers)
+
+let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
+  with_temp_dir "symphony-orchestrator-stage-cap-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo"; "In progress"; "In review" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "Done";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 3; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "cat";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 1000;
+              read_timeout_ms = 1000;
+              stall_timeout_ms = 1000;
+            };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "engineer";
+                    max_concurrent_agents = Some 1;
+                    skills = [];
+                    start_status = Some "In progress";
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit = None;
+                  };
+                  {
+                    Config.states = [ "In review" ];
+                    agent = "reviewer";
+                    max_concurrent_agents = Some 2;
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "Done";
+                    retry_status = Some "In progress";
+                    goal = None;
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issues =
+        [
+          Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Todo one" ~state:"Todo";
+          Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Todo two" ~state:"Todo";
+          Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Review one" ~state:"In review";
+          Issue.empty ~id:"I4" ~identifier:"#4" ~title:"Review two" ~state:"In review";
+        ]
+      in
+      let ordered_queue =
+        match Ordered_queue.parse "#1,#2,#3,#4" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "launch skips full todo stage" [ "#1"; "#3"; "#4" ] (List.rev !launched);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "global cap used by admissible stages" 3 (List.length state.Runtime_state.running);
+      let todo_running =
+        state.running
+        |> List.filter (fun (row : Runtime_state.running) -> row.stage_agent = Some "engineer" && row.stage_states = [ "Todo" ])
+        |> List.length
+      in
+      let review_running =
+        state.running
+        |> List.filter (fun (row : Runtime_state.running) -> row.stage_agent = Some "reviewer" && row.stage_states = [ "In review" ])
+        |> List.length
+      in
+      Alcotest.(check int) "todo stage cap" 1 todo_running;
+      Alcotest.(check int) "review stage cap" 2 review_running)
 
 let test_orchestrator_dispatches_ordered_queue_only_in_order () =
   with_temp_dir "symphony-orchestrator-queue-" (fun root ->
@@ -2287,6 +2651,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                   {
                     Config.states = [ "In review" ];
                     agent = "reviewer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -2323,6 +2688,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -2379,6 +2745,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [ "to-prd"; "github:gh-fix-ci" ];
                     start_status = None;
                     success_status = Some "In review";
@@ -2491,6 +2858,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -2603,6 +2971,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -2634,6 +3003,7 @@ let test_orchestrator_commits_stage_before_success_status () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -2668,6 +3038,7 @@ let test_stage_commit_classification_renders_messages () =
       {
         Config.states = [ "In progress" ];
         agent = "engineer";
+        max_concurrent_agents = None;
         skills = [];
         start_status = None;
         success_status = Some "In review";
@@ -2742,6 +3113,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -2802,6 +3174,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -2833,6 +3206,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -2889,6 +3263,7 @@ let test_stage_commit_requires_code_changes () =
           {
             Config.states = [ "In progress" ];
             agent = "engineer";
+            max_concurrent_agents = None;
             skills = [];
             start_status = None;
             success_status = Some "In review";
@@ -2942,6 +3317,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -2973,6 +3349,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -3044,6 +3421,7 @@ let protected_stage =
     {
       Config.states = [ "In progress" ];
       agent = "engineer";
+      max_concurrent_agents = None;
       skills = [];
       start_status = None;
       success_status = Some "In review";
@@ -3152,6 +3530,7 @@ let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3191,6 +3570,7 @@ let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -3246,6 +3626,7 @@ let completed_stage_config root git =
             {
               Config.states = [ "In progress" ];
               agent = "engineer";
+              max_concurrent_agents = None;
               skills = [];
               start_status = Some "In progress";
               success_status = Some "In review";
@@ -3269,6 +3650,7 @@ let completed_child issue workspace =
   {
     Orchestrator.pid = 0;
     issue;
+    stage = None;
     issue_id = issue.Issue.id;
     issue_identifier = issue.identifier;
     issue_title = issue.title;
@@ -3297,6 +3679,7 @@ let test_conflicting_stage_commit_classification_moves_attention_without_commit 
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3371,6 +3754,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                   {
                     Config.states = [ "Backlog" ];
                     agent = "planner";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Todo";
@@ -3381,6 +3765,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    max_concurrent_agents = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -4060,6 +4445,7 @@ let test_stage_commit_pushes_task_branch () =
           {
             Config.states = [ "In progress" ];
             agent = "engineer";
+            max_concurrent_agents = None;
             skills = [];
             start_status = None;
             success_status = Some "In review";
@@ -4098,6 +4484,7 @@ let test_auto_merge_fast_forwards_and_removes_worktree () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -4138,6 +4525,7 @@ let test_cleanup_can_remove_task_branch_after_merge () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -4174,6 +4562,7 @@ let test_auto_merge_skips_protected_trunk_branch () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -4255,6 +4644,7 @@ let test_auto_merge_failure_moves_human_attention () =
         {
           Orchestrator.pid = 0;
           issue;
+          stage = None;
           issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
@@ -4300,6 +4690,7 @@ let manual_merge_config ?(keep_task_branch = true) root =
               success_status = Some "Done";
               retry_status = None;
               agent = "reviewer";
+              max_concurrent_agents = None;
               skills = [];
               goal = None;
               commit = None;
@@ -4479,6 +4870,7 @@ let () =
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
+          Alcotest.test_case "validates stage concurrency policy" `Quick test_config_validates_stage_concurrency_policy;
           Alcotest.test_case "parses allowed loop-start branch policy" `Quick
             test_config_parses_allowed_loop_start_branch_policy;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
@@ -4531,6 +4923,16 @@ let () =
       ( "orchestrator",
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
+          Alcotest.test_case "dispatches all available stage slots" `Quick
+            test_orchestrator_stage_capacity_dispatches_all_available_slots;
+          Alcotest.test_case "does not spawn idle stage agents" `Quick
+            test_orchestrator_stage_capacity_does_not_spawn_idle_agents;
+          Alcotest.test_case "respects lower global cap with stage caps" `Quick
+            test_orchestrator_stage_capacity_respects_lower_global_cap;
+          Alcotest.test_case "prevents duplicate stage dispatch" `Quick
+            test_orchestrator_stage_capacity_prevents_duplicate_dispatch;
+          Alcotest.test_case "skips full stage capacity in ordered queue" `Quick
+            test_orchestrator_stage_capacity_skips_full_ordered_stage;
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
           Alcotest.test_case "keeps ordered queue stage handoffs pending" `Quick
             test_ordered_queue_keeps_stage_handoffs_pending;

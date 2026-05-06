@@ -40,6 +40,7 @@ type t = {
 and child = {
   pid : int;
   issue : Issue.t;
+  stage : Config.stage_agent option;
   issue_id : string;
   issue_identifier : string;
   issue_title : string;
@@ -420,6 +421,22 @@ let stage_for_issue config issue =
     |> List.find_opt (fun (stage : Config.stage_agent) ->
            List.exists (fun state -> string_equal_ci state issue.Issue.state) stage.states)
 
+let stage_key (stage : Config.stage_agent) = stage.agent ^ "\000" ^ String.concat "\000" stage.states
+
+let running_stage_key config (row : Runtime_state.running) =
+  match (row.stage_agent, row.stage_states) with
+  | Some agent, states -> Some (agent ^ "\000" ^ String.concat "\000" states)
+  | None, _ -> Option.map stage_key (stage_for_issue config row.issue)
+
+let stage_from_running config row =
+  match running_stage_key config row with
+  | None -> None
+  | Some key -> List.find_opt (fun (stage : Config.stage_agent) -> stage_key stage = key) config.Config.stage_agents.stages
+
+let selected_stage_fields = function
+  | None -> (None, [])
+  | Some (stage : Config.stage_agent) -> (Some stage.agent, stage.states)
+
 let agent_file config agent =
   Filename.concat config.Config.stage_agents.root (agent ^ ".md")
 
@@ -430,10 +447,10 @@ let stage_skill_load_prompt (stage : Config.stage_agent option) =
       Some (Printf.sprintf "Stage Skill Load:\n%s" skills)
   | _ -> None
 
-let agent_prompt config issue =
+let agent_prompt ?stage config issue =
   if not config.Config.stage_agents.enabled then None
   else
-    let stage = stage_for_issue config issue in
+    let stage = match stage with Some _ -> stage | None -> stage_for_issue config issue in
     let agent =
       match stage with
       | Some stage -> Some stage.agent
@@ -445,14 +462,14 @@ let agent_prompt config issue =
         let path = agent_file config agent in
         if Sys.file_exists path then Some (agent, stage, Util.read_file path |> Util.trim) else None
 
-let normal_prompt config issue base_prompt =
+let normal_prompt ?stage config issue base_prompt =
   let comments_section =
     match Issue.field issue "comments" with
     | Some comments when Util.trim comments <> "" -> Printf.sprintf "\n\n---\n\nIssue comments:\n\n%s" comments
     | _ -> ""
   in
   let base_prompt = base_prompt ^ comments_section in
-  match agent_prompt config issue with
+  match agent_prompt ?stage config issue with
   | None -> base_prompt
   | Some (agent, stage, prompt) ->
       let stage_skill_load =
@@ -460,8 +477,8 @@ let normal_prompt config issue base_prompt =
       in
       Printf.sprintf "%s%s\n\n---\n\nStage agent: %s\n\n%s\n" prompt stage_skill_load agent base_prompt
 
-let stage_goal_handoff_stage config issue =
-  match stage_for_issue config issue with
+let stage_goal_handoff_stage ?stage config issue =
+  match match stage with Some _ -> stage | None -> stage_for_issue config issue with
   | Some stage when Config.stage_goal_enabled stage -> Some stage
   | _ -> None
 
@@ -503,9 +520,9 @@ let stage_goal_context issue attempt (stage : Config.stage_agent) =
     ]
   |> Yojson.Safe.to_string
 
-let compose_prompt config issue attempt base_prompt =
-  let prompt = normal_prompt config issue base_prompt in
-  match stage_goal_handoff_stage config issue with
+let compose_prompt ?stage config issue attempt base_prompt =
+  let prompt = normal_prompt ?stage config issue base_prompt in
+  match stage_goal_handoff_stage ?stage config issue with
   | None -> prompt
   | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
 
@@ -1154,18 +1171,18 @@ let move_issue_status orchestrator issue status =
       render_status_failed issue.Issue.identifier status error;
       false
 
-let start_status orchestrator issue =
-  match stage_for_issue orchestrator.config issue with
+let start_status ?stage orchestrator issue =
+  match match stage with Some _ -> stage | None -> stage_for_issue orchestrator.config issue with
   | Some stage -> stage.start_status
   | None -> orchestrator.config.tracker.project_status_on_dispatch
 
-let success_status orchestrator issue =
-  match stage_for_issue orchestrator.config issue with
+let success_status ?stage orchestrator issue =
+  match match stage with Some _ -> stage | None -> stage_for_issue orchestrator.config issue with
   | Some stage -> stage.success_status
   | None -> orchestrator.config.tracker.project_status_on_success
 
-let retry_status orchestrator issue =
-  match stage_for_issue orchestrator.config issue with
+let retry_status ?stage orchestrator issue =
+  match match stage with Some _ -> stage | None -> stage_for_issue orchestrator.config issue with
   | Some stage -> stage.retry_status
   | None -> orchestrator.config.tracker.project_status_on_retry
 
@@ -1444,8 +1461,49 @@ let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
     if idle then (
       attempt_batch_pull_request orchestrator)
 
+let stage_running_counts config running =
+  let counts = Hashtbl.create 8 in
+  List.iter
+    (fun row ->
+      match running_stage_key config row with
+      | None -> ()
+      | Some key -> Hashtbl.replace counts key (Option.value (Hashtbl.find_opt counts key) ~default:0 + 1))
+    running;
+  counts
+
+let stage_has_capacity counts = function
+  | None -> true
+  | Some (stage : Config.stage_agent) -> (
+      match stage.max_concurrent_agents with
+      | None -> true
+      | Some cap -> Option.value (Hashtbl.find_opt counts (stage_key stage)) ~default:0 < cap)
+
+let reserve_stage_capacity counts = function
+  | None -> ()
+  | Some (stage : Config.stage_agent) -> (
+      match stage.max_concurrent_agents with
+      | None -> ()
+      | Some _ ->
+          let key = stage_key stage in
+          Hashtbl.replace counts key (Option.value (Hashtbl.find_opt counts key) ~default:0 + 1))
+
+let take_admissible_by_stage orchestrator available issues =
+  let counts = stage_running_counts orchestrator.config orchestrator.state.running in
+  let rec loop remaining selected = function
+    | [] -> List.rev selected
+    | _ when remaining <= 0 -> List.rev selected
+    | issue :: rest ->
+        let stage = stage_for_issue orchestrator.config issue in
+        if stage_has_capacity counts stage then (
+          reserve_stage_capacity counts stage;
+          loop (remaining - 1) (issue :: selected) rest)
+        else loop remaining selected rest
+  in
+  loop available [] issues
+
 let dispatch_issue orchestrator issue =
-  let target_start_status = start_status orchestrator issue in
+  let stage = stage_for_issue orchestrator.config issue in
+  let target_start_status = start_status ?stage orchestrator issue in
   match shell_prepare_workspace orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch issue with
   | Error error ->
       set_error orchestrator error;
@@ -1461,12 +1519,15 @@ let dispatch_issue orchestrator issue =
         let issue = match target_start_status with Some state -> { issue with Issue.state } | None -> issue in
         let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
         let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
-        let prompt = compose_prompt orchestrator.config issue attempt rendered in
+        let prompt = compose_prompt ?stage orchestrator.config issue attempt rendered in
         let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
         let now = Util.now_iso8601 () in
+        let stage_agent, stage_states = selected_stage_fields stage in
         let row =
           {
             Runtime_state.issue;
+            stage_agent;
+            stage_states;
             session_id = launched.session_id;
             turn_count = 0;
             last_event = Some launched.event;
@@ -1496,6 +1557,7 @@ let dispatch_issue orchestrator issue =
               {
                 pid;
                 issue;
+                stage;
                 issue_id = issue.id;
                 issue_identifier = issue.identifier;
                 issue_title = issue.title;
@@ -1545,7 +1607,8 @@ let mark_retrying orchestrator issue_id error =
             List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
           last_error = Some error;
         });
-      (match retry_status orchestrator row.issue with
+      let stage = stage_from_running orchestrator.config row in
+      (match retry_status ?stage orchestrator row.issue with
       | None -> ()
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
       render_dispatch_retrying row.issue.identifier next_attempt error;
@@ -1569,7 +1632,8 @@ let mark_blocked orchestrator issue_id error =
       Hashtbl.remove orchestrator.attempts issue_id;
       Hashtbl.remove orchestrator.retry_due issue_id;
       Hashtbl.replace orchestrator.blocked (block_key row.issue) error;
-      (match retry_status orchestrator row.issue with
+      let stage = stage_from_running orchestrator.config row in
+      (match retry_status ?stage orchestrator row.issue with
       | None -> ()
       | Some status ->
           if move_issue_status orchestrator row.issue status then
@@ -1682,8 +1746,8 @@ let mark_merge_attention orchestrator child error =
 
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
-  let stage = stage_for_issue orchestrator.config child.issue in
-  let next_status = success_status orchestrator child.issue in
+  let stage = match child.stage with Some _ -> child.stage | None -> stage_for_issue orchestrator.config child.issue in
+  let next_status = success_status ?stage orchestrator child.issue in
   match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
   | Error error ->
       render_commit_failed child.issue_identifier error;
@@ -1827,7 +1891,8 @@ let poll_once orchestrator =
                    |> List.filter (queue_entry_allows_dispatch orchestrator.state)
                    |> List.sort (fun left right -> compare (queue_index queue left) (queue_index queue right)))
         in
-        if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
+        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
+        if available > 0 then dispatchable |> take_admissible_by_stage orchestrator available |> List.iter (dispatch_issue orchestrator);
         maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
         render_poll_completed orchestrator (List.length dispatchable)
       with

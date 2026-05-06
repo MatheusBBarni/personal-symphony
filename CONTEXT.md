@@ -375,6 +375,10 @@ _Avoid_: reinitialize, reset
 - **Stage Goal Handoff** does not change retry, completion, status transition, commit, push, auto-merge, or Batch Pull Request behavior.
 - Missing or unparseable **Goal Usage** must not fail a task.
 - A **Stage Concurrency Policy** refines the global maximum concurrent agents without allowing total running agents to exceed that global limit.
+- A **Stage Concurrency Policy** is configured on a **Stage Agent** mapping.
+- A missing **Stage Concurrency Policy** preserves global-only dispatch admission for that **Stage Agent** mapping.
+- A **Stage Concurrency Policy** counts running work against the **Stage Agent** mapping selected when the agent launched.
+- A full **Stage Concurrency Policy** does not block later **Ordered Queue** entries whose selected **Stage Agent** mapping still has capacity.
 - An **Ordered Queue** is provided by the operator at launch.
 - An **Ordered Queue** is named with issue identifiers from the Workspace Repository issue tracker.
 - An **Ordered Queue** does not use issue URLs or cross-repository issue references.

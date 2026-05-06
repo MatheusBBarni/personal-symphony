@@ -1,0 +1,13 @@
+Issue #35 is already implemented in this workspace on the current branch.
+
+Relevant files in the completed changes:
+- [apps/backend/lib/config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/config.ml): parses/validates per-stage `maxConcurrentAgents`.
+- [apps/backend/lib/orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/orchestrator.ml): enforces Stage Concurrency Policy with the global cap.
+- [apps/backend/test/test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/test/test_backend.ml): covers parsing, stage/global capacity, idle prevention, ordered queue behavior, and duplicate dispatch.
+- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/CONTEXT.md), [docs/adr/0016-stage-concurrency-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/docs/adr/0016-stage-concurrency-policy.md), [README.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/README.md): document the Runtime Settings semantics.
+
+Verification:
+- `opam exec -- dune runtest --root . --build-dir /private/tmp/symphony-35-dune-build` passed: 102 tests.
+- `pnpm test` could not run here because `pnpm` failed before tests with `[ERROR] fetch failed`.
+
+Worktree note: only `stdout.log` and `stderr.log` are dirty, and they were already unrelated runtime log changes.

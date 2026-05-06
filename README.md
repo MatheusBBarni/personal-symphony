@@ -131,6 +131,7 @@ Configure or disable this in `.symphony/settings.json`:
       {
         "states": ["Backlog"],
         "agent": "planner",
+        "maxConcurrentAgents": 1,
         "skills": [],
         "successStatus": "To-Do",
         "retryStatus": "Backlog",
@@ -147,6 +148,7 @@ Configure or disable this in `.symphony/settings.json`:
       {
         "states": ["Todo", "To-Do", "In progress", "In Progress"],
         "agent": "engineer",
+        "maxConcurrentAgents": 2,
         "skills": [],
         "startStatus": "In progress",
         "successStatus": "In review",
@@ -164,6 +166,7 @@ Configure or disable this in `.symphony/settings.json`:
       {
         "states": ["In review", "In Review"],
         "agent": "reviewer",
+        "maxConcurrentAgents": 2,
         "skills": [],
         "successStatus": "Done",
         "retryStatus": "In progress",
@@ -183,6 +186,13 @@ Configure or disable this in `.symphony/settings.json`:
 ```
 
 Set `"enabled": false` to use the single base `.symphony/prompt.md` for every issue.
+
+Set `maxConcurrentAgents` on a stage to configure a Stage Concurrency Policy for that Stage Agent.
+The value is an optional positive integer. When omitted, that stage keeps global-only dispatch
+admission. Stage caps share the global `agent.maxConcurrentAgents` ceiling, so the scheduler never
+runs more total agents than the global cap permits. Stage caps are capacity limits only: Symphony
+does not keep idle agents alive, and a stage with one dispatchable issue launches one agent even if
+its stage cap is higher.
 
 Set `skills` to an ordered list of skill identifiers when a stage requires reusable Codex workflows.
 Runtime Settings store identifiers without `$`, for example `"to-prd"` or `"github:gh-fix-ci"`.

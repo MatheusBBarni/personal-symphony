@@ -3,6 +3,8 @@ type goal_usage = { status : string option; time_used_seconds : float option; to
 
 type running = {
   issue : Issue.t;
+  stage_agent : string option;
+  stage_states : string list;
   session_id : string option;
   turn_count : int;
   last_event : string option;
@@ -133,6 +135,8 @@ let running_to_yojson row =
       ("comments", `List (List.map Issue.comment_to_yojson row.issue.comments));
       ("url", (match row.issue.url with Some s -> `String s | None -> `Null));
       ("state", `String row.issue.state);
+      ("stage_agent", (match row.stage_agent with Some s -> `String s | None -> `Null));
+      ("stage_states", `List (List.map (fun state -> `String state) row.stage_states));
       ("session_id", (match row.session_id with Some s -> `String s | None -> `Null));
       ("turn_count", `Int row.turn_count);
       ("last_event", (match row.last_event with Some s -> `String s | None -> `Null));
