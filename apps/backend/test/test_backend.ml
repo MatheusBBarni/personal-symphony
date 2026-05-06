@@ -3536,6 +3536,21 @@ let test_orchestrator_reuses_existing_task_branch_on_restart () =
       Alcotest.(check string) "reused branch checked out" "symphony/task-8"
         (run_ok ~cwd:workspace.path "branch" "git branch --show-current"))
 
+let test_orchestrator_prunes_missing_registered_worktree () =
+  with_temp_dir "symphony-missing-registered-worktree-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I13" ~identifier:"#13" ~title:"Thirteen" ~state:"In progress" in
+      let workspace = create_task_worktree config issue in
+      ignore (run_ok ~cwd:root "delete worktree directory" (Printf.sprintf "rm -rf %s" (Util.shell_quote workspace.path)));
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Alcotest.(check string) "recreated branch checked out" "symphony/task-13"
+        (run_ok ~cwd:workspace.path "branch" "git branch --show-current"))
+
 let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch () =
   with_temp_dir "symphony-existing-progress-" (fun root ->
       init_repo root "feature/start";
@@ -4103,6 +4118,8 @@ let () =
           Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
             test_orchestrator_blocks_disallowed_loop_start_before_side_effects;
           Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
+          Alcotest.test_case "prunes missing registered worktree" `Quick
+            test_orchestrator_prunes_missing_registered_worktree;
           Alcotest.test_case "reuses worktree for existing in-progress task"
             `Quick test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch;
           Alcotest.test_case "rejects existing non-worktree workspace" `Quick test_orchestrator_rejects_existing_non_worktree_workspace;
