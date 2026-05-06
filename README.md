@@ -1,6 +1,6 @@
-# Personal Symphony
+# Symphony Orchestrator
 
-Personal Symphony is an installable `symphony` CLI for the Symphony service described in
+Symphony Orchestrator is an installable `symphony` CLI for the Symphony service described in
 [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). The Product Repository keeps
 the OCaml backend, the ReScript React dashboard, and the npm launcher; each Workspace Repository gets
 its own repository-owned Runtime Contract under `.symphony/`.
@@ -270,7 +270,7 @@ The `title` and `body` fields are deterministic templates. They support `<head_b
 
 ## GitHub Token Permissions
 
-Personal Symphony reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
+Symphony Orchestrator reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
 when the GitHub Project is owned by a user account, such as `@your-user's Kanban`. GitHub
 fine-grained personal access tokens currently cannot access Projects owned by a user account.
 

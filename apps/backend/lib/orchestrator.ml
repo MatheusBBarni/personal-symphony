@@ -697,6 +697,11 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
         | Some issue -> not (Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state)
         | None -> false
       in
+      let candidate_dispatchable identifier =
+        match candidate_for identifier with
+        | Some issue -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state
+        | None -> false
+      in
       let candidate_missing identifier = candidate_for identifier = None in
       let skipped_identifier, skipped_reason =
         match skipped with Some (identifier, reason) -> (Some identifier, Some reason) | None -> (None, None)
@@ -722,6 +727,8 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                                when skip_missing && entry.state = "pending"
                                     && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
                                  "skipped"
+                             | None when skip_missing && entry.state = "completed" && candidate_dispatchable entry.issue_identifier ->
+                                 "pending"
                              | None -> entry.state)))
                in
                let skip_reason =
@@ -1519,6 +1526,7 @@ let poll_once orchestrator =
         let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
         update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
         reconcile_startup orchestrator candidates;
+        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
         let dispatchable =
           candidates
@@ -1536,7 +1544,6 @@ let poll_once orchestrator =
                    |> List.filter (queue_entry_allows_dispatch orchestrator.state)
                    |> List.sort (fun left right -> compare (queue_index queue left) (queue_index queue right)))
         in
-        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
         maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
         render_poll_completed orchestrator (List.length dispatchable)

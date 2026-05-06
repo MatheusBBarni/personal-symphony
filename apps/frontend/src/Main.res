@@ -1,6 +1,8 @@
 %%raw(`import "@heroui/react/styles";`)
 %%raw(`import "./styles.css";`)
+%%raw(`import productPackage from "../../../package.json";`)
 %%raw(`
+const symphonyPackageVersion = productPackage.version;
 function shortDescription(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "No description provided.";
@@ -106,6 +108,7 @@ type runtimeState = {
 @val external shortDescription: string => string = "shortDescription"
 @val external arrayOrEmpty: array<'value> => array<'value> = "arrayOrEmpty"
 @val external goalUsageText: option<goalUsage> => string = "goalUsageText"
+@val external symphonyPackageVersion: string = "symphonyPackageVersion"
 external audioNotificationState: runtimeState => AudioNotifications.runtimeState = "%identity"
 
 let readinessText = state =>
@@ -185,17 +188,18 @@ let orderedQueueEntries = state =>
   | None => []
   }
 
-let navItem = (href, label, isActive) =>
+let navItem = (href, label, isActive, icon) =>
   <a
     href=href
     className={
-      "block rounded px-3 py-2 text-sm transition-colors " ++
+      "flex items-center gap-3 rounded px-3 py-2 text-sm font-medium transition-colors " ++
       if isActive {
         "bg-teal-950/80 text-teal-100"
       } else {
         "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-100"
       }
     }>
+    {icon}
     {React.string(label)}
   </a>
 
@@ -214,24 +218,35 @@ module App = {
       <div className="grid min-h-screen lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="border-b border-neutral-800 bg-neutral-950 px-4 py-4 lg:border-b-0 lg:border-r">
           <div className="flex items-center justify-between gap-4 lg:block">
-            <div>
-              <div className="text-lg font-semibold tracking-normal text-neutral-50">
-                {React.string("Symphony")}
-              </div>
-              <div className="mt-1 text-xs text-neutral-500">
-                {React.string("Workspace Repository control")}
+            <div className="flex items-center gap-3">
+              <img
+                src="/symphony-icon.svg"
+                alt=""
+                className="size-10 shrink-0 rounded border border-teal-900/60 bg-teal-500/10"
+              />
+              <div className="min-w-0">
+                <div className="text-lg font-semibold tracking-normal text-neutral-50">
+                  {React.string("Symphony")}
+                </div>
+                <div className="mt-1 text-xs text-neutral-500">
+                  {React.string("v" ++ symphonyPackageVersion)}
+                </div>
               </div>
             </div>
-            <HeroUI.Chip
-              size="sm"
-              variant="flat"
-              className="rounded border border-emerald-800 bg-emerald-950/70 px-3 text-emerald-100 lg:mt-4">
-              {React.string("Live OCaml API")}
-            </HeroUI.Chip>
           </div>
           <nav className="mt-5 grid grid-cols-2 gap-2 lg:grid-cols-1">
-            {navItem("#/", "Orchestrator", !isConfiguration)}
-            {navItem("#/configuration", "Configuration", isConfiguration)}
+            {navItem(
+              "#/",
+              "Orchestrator",
+              !isConfiguration,
+              <Iconoir.KanbanBoard className="size-5 shrink-0" ariaHidden=true />,
+            )}
+            {navItem(
+              "#/configuration",
+              "Configuration",
+              isConfiguration,
+              <Iconoir.Settings className="size-5 shrink-0" ariaHidden=true />,
+            )}
           </nav>
         </aside>
         <main className="min-w-0">
@@ -247,6 +262,12 @@ module App = {
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-500">
+                <HeroUI.Chip
+                  size="sm"
+                  variant="flat"
+                  className="rounded border border-emerald-800 bg-emerald-950/70 px-3 text-emerald-100">
+                  {React.string("Live OCaml API")}
+                </HeroUI.Chip>
                 <span>
                   {React.string("Live state: ")}
                   <code className="text-teal-200"> {React.string("/api/v1/state/live")} </code>
