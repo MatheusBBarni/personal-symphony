@@ -1,13 +1,12 @@
-Issue #35 is already implemented in this workspace on the current branch.
+Implemented the remaining issue #37 documentation cleanup in [docs/agent-context/codex-loop-context-management-issues.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/docs/agent-context/codex-loop-context-management-issues.md:21).
 
-Relevant files in the completed changes:
-- [apps/backend/lib/config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/config.ml): parses/validates per-stage `maxConcurrentAgents`.
-- [apps/backend/lib/orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/orchestrator.ml): enforces Stage Concurrency Policy with the global cap.
-- [apps/backend/test/test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/test/test_backend.ml): covers parsing, stage/global capacity, idle prevention, ordered queue behavior, and duplicate dispatch.
-- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/CONTEXT.md), [docs/adr/0016-stage-concurrency-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/docs/adr/0016-stage-concurrency-policy.md), [README.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/README.md): document the Runtime Settings semantics.
+Changes:
+- Marked the #37 acceptance checklist complete.
+- Aligned Context Command wording so stdout supplements the Agent Context Snapshot, not a separate Agent Prompt path.
 
 Verification:
-- `opam exec -- dune runtest --root . --build-dir /private/tmp/symphony-35-dune-build` passed: 102 tests.
-- `pnpm test` could not run here because `pnpm` failed before tests with `[ERROR] fetch failed`.
+- Ran focused `rg` checks for stale issue #37 checklist wording and conflicting Context Command phrasing.
+- Ran `git diff --check` on the touched docs/spec files.
+- Did not run `pnpm test`; this slice is documentation-only.
 
-Worktree note: only `stdout.log` and `stderr.log` are dirty, and they were already unrelated runtime log changes.
+Note: the worktree still has pre-existing uncommitted changes in `prompt.md`, `stdout.log`, `stderr.log`, and the spec ordering example. I left those intact.
