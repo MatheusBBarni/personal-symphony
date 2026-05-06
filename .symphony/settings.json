@@ -8,11 +8,11 @@
   },
   "project": {
     "statusField": "Status",
-    "activeStates": ["Backlog", "To-Do", "In progress", "In review"],
+    "activeStates": ["Backlog", "Todo", "In Progress", "In Review"],
     "terminalStates": ["Human attention", "Done", "Closed", "Cancelled"],
-    "startStatus": "In progress",
-    "reviewStatus": "In review",
-    "retryStatus": "To-Do",
+    "startStatus": "In Progress",
+    "reviewStatus": "In Review",
+    "retryStatus": "Todo",
     "ensureStatuses": true
   },
   "polling": {
@@ -46,7 +46,7 @@
         "states": ["Backlog"],
         "agent": "planner",
         "skills": [],
-        "successStatus": "To-Do",
+        "successStatus": "Todo",
         "retryStatus": "Backlog",
         "goal": {
           "enabled": true
@@ -59,12 +59,12 @@
         }
       },
       {
-        "states": ["To-Do", "In progress"],
+        "states": ["Todo", "In Progress"],
         "agent": "engineer",
         "skills": [],
-        "startStatus": "In progress",
-        "successStatus": "In review",
-        "retryStatus": "To-Do",
+        "startStatus": "In Progress",
+        "successStatus": "In Review",
+        "retryStatus": "Todo",
         "goal": {
           "enabled": true
         },
@@ -76,7 +76,7 @@
         }
       },
       {
-        "states": ["In review"],
+        "states": ["In Review"],
         "agent": "reviewer",
         "skills": [],
         "successStatus": "Done",
