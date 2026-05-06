@@ -1,16 +1,8 @@
-Implemented on `symphony/task-32` in existing stage commits, with the main source changes in:
+Implemented the repository-owned policy in [.symphony/settings.json](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/.symphony/settings.json), adding named Protected Path Policy patterns for the package/release-sensitive paths from issue #32 and keeping authorization under `Protected Path Authorization`.
 
-- [config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/config.ml)
-- [orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/orchestrator.ml)
-- [manual_merge.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/manual_merge.ml)
-- [test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/test/test_backend.ml)
-- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/CONTEXT.md)
-- [0016-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/docs/adr/0016-protected-path-policy.md)
+Verification:
+- `ruby -rjson -e 'JSON.parse(File.read(".symphony/settings.json")); puts "ok"'`
+- `DUNE_BUILD_DIR=/private/tmp/symphony-dune-build-32 opam exec -- dune runtest --root .` passed.
+- `pnpm test` could not run because pnpm failed early with `[ERROR] fetch failed`.
 
-What landed: Runtime Settings parsing for named protected patterns, gitignore-like matching without negation, issue-section authorization, Stage Commit blocking, Startup Reconciliation and auto-merge checks, Manual Task Merge preflight checks, and focused backend tests for the protected-path flows.
-
-Verification was blocked in this sandbox:
-- `pnpm test` failed with only `[ERROR] fetch failed`.
-- `opam exec -- dune runtest` failed with `Error: open(_build/.lock): Operation not permitted`.
-
-I removed the `.pnpm-store/` artifact created by the failed pnpm run. Current dirty files are only `prompt.md`, `stdout.log`, and `stderr.log`.
+Worktree note: `stdout.log` and `stderr.log` were already modified before my source edit and remain dirty. Only `.symphony/settings.json` is part of my scoped change.
