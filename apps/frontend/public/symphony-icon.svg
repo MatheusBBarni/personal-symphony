@@ -1,0 +1,48 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Symphony Orchestrator icon</title>
+  <desc id="desc">A cyan orchestration mark made of connected runtime nodes on a dark interface tile.</desc>
+  <defs>
+    <linearGradient id="bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D1514"/>
+      <stop offset="1" stop-color="#050807"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="226" y1="184" x2="838" y2="850" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22E6D1"/>
+      <stop offset="0.54" stop-color="#13C8B8"/>
+      <stop offset="1" stop-color="#079886"/>
+    </linearGradient>
+    <filter id="shadow" x="104" y="104" width="816" height="816" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="28" stdDeviation="38" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="#030504"/>
+  <rect x="96" y="96" width="832" height="832" rx="188" fill="url(#bg)" stroke="#1D302E" stroke-width="10"/>
+  <g filter="url(#shadow)">
+    <rect x="168" y="168" width="688" height="688" rx="104" fill="url(#teal)"/>
+  </g>
+
+  <g stroke="#062321" stroke-width="48" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M344 328H512V448H680"/>
+    <path d="M512 448V576H344V696"/>
+    <path d="M680 448V696H512"/>
+  </g>
+
+  <g fill="#062321">
+    <rect x="260" y="244" width="116" height="116" rx="10"/>
+    <rect x="456" y="244" width="116" height="116" rx="10"/>
+    <rect x="648" y="392" width="116" height="116" rx="10"/>
+    <rect x="456" y="516" width="116" height="116" rx="10"/>
+    <rect x="260" y="636" width="116" height="116" rx="10"/>
+    <rect x="648" y="636" width="116" height="116" rx="10"/>
+  </g>
+
+  <g fill="url(#teal)">
+    <rect x="296" y="280" width="44" height="44" rx="4"/>
+    <rect x="492" y="280" width="44" height="44" rx="4"/>
+    <rect x="684" y="428" width="44" height="44" rx="4"/>
+    <rect x="492" y="552" width="44" height="44" rx="4"/>
+    <rect x="296" y="672" width="44" height="44" rx="4"/>
+    <rect x="684" y="672" width="44" height="44" rx="4"/>
+  </g>
+</svg>

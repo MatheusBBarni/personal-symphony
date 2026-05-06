@@ -51,6 +51,53 @@ module Chip = {
   ) => React.element = "Chip"
 }
 
+module AccordionRoot = {
+  @module("@heroui/react/accordion") @react.component
+  external make: (
+    ~className: string=?,
+    ~variant: string=?,
+    ~hideSeparator: bool=?,
+    ~allowsMultipleExpanded: bool=?,
+    ~defaultExpandedKeys: array<string>=?,
+    ~children: React.element=?,
+    unit,
+  ) => React.element = "AccordionRoot"
+}
+
+module AccordionItem = {
+  @module("@heroui/react/accordion") @react.component
+  external make: (~className: string=?, ~id: string=?, ~children: React.element=?, unit) => React.element =
+    "AccordionItem"
+}
+
+module AccordionHeading = {
+  @module("@heroui/react/accordion") @react.component
+  external make: (~className: string=?, ~children: React.element=?, unit) => React.element =
+    "AccordionHeading"
+}
+
+module AccordionTrigger = {
+  @module("@heroui/react/accordion") @react.component
+  external make: (
+    ~className: string=?,
+    @as("aria-label") ~ariaLabel: string=?,
+    ~children: React.element=?,
+    unit,
+  ) => React.element = "AccordionTrigger"
+}
+
+module AccordionPanel = {
+  @module("@heroui/react/accordion") @react.component
+  external make: (~className: string=?, ~children: React.element=?, unit) => React.element =
+    "AccordionPanel"
+}
+
+module AccordionIndicator = {
+  @module("@heroui/react/accordion") @react.component
+  external make: (~className: string=?, ~children: React.element=?, unit) => React.element =
+    "AccordionIndicator"
+}
+
 module Switch = {
   @module("@heroui/react/switch") @react.component
   external make: (
