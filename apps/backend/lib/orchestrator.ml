@@ -316,6 +316,12 @@ let agent_prompt config issue =
         if Sys.file_exists path then Some (agent, stage, Util.read_file path |> Util.trim) else None
 
 let normal_prompt config issue base_prompt =
+  let comments_section =
+    match Issue.field issue "comments" with
+    | Some comments when Util.trim comments <> "" -> Printf.sprintf "\n\n---\n\nIssue comments:\n\n%s" comments
+    | _ -> ""
+  in
+  let base_prompt = base_prompt ^ comments_section in
   match agent_prompt config issue with
   | None -> base_prompt
   | Some (agent, stage, prompt) ->
@@ -340,6 +346,15 @@ let blocker_to_goal_json (blocker : Issue.blocker) =
       ("state", json_option_string blocker.state);
     ]
 
+let comment_to_goal_json (comment : Issue.comment) =
+  `Assoc
+    [
+      ("author", json_option_string comment.author);
+      ("body", `String comment.body);
+      ("created_at", json_option_string comment.created_at);
+      ("url", json_option_string comment.url);
+    ]
+
 let stage_goal_context issue attempt (stage : Config.stage_agent) =
   `Assoc
     [
@@ -347,6 +362,7 @@ let stage_goal_context issue attempt (stage : Config.stage_agent) =
       ("issue_identifier", `String issue.Issue.identifier);
       ("title", `String issue.title);
       ("description", json_option_string issue.description);
+      ("comments", `List (List.map comment_to_goal_json issue.comments));
       ("url", json_option_string issue.url);
       ("current_project_status", `String issue.state);
       ("labels", `List (List.map (fun label -> `String label) issue.labels));
@@ -1063,12 +1079,7 @@ let record_task_branch_integration_attention orchestrator issue ?workspace_path 
 
 let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
   let root = config.Config.repository_root in
-  if git_ref_contained_in_head root branch then Ok Already_contained
-  else if git_head_can_fast_forward_to root branch then
-    match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
-    | Ok _ -> Ok Direct_fast_forward
-    | Error error -> Error ("Task Branch could not fast-forward: " ^ error)
-  else
+  let update_task_branch_then_fast_forward () =
     let merge_command =
       Printf.sprintf "git merge --no-edit %s" (Util.shell_quote loop_start_branch)
     in
@@ -1078,6 +1089,13 @@ let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
         match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
         | Ok _ -> Ok Updated_task_branch_then_fast_forward
         | Error error -> Error ("updated Task Branch could not fast-forward: " ^ error))
+  in
+  if git_ref_contained_in_head root branch then Ok Already_contained
+  else if git_head_can_fast_forward_to root branch then
+    match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
+    | Ok _ -> Ok Direct_fast_forward
+    | Error _ -> update_task_branch_then_fast_forward ()
+  else update_task_branch_then_fast_forward ()
 
 let reconcile_startup_candidate orchestrator issue =
   let workspace_path = task_workspace_path orchestrator.config issue in

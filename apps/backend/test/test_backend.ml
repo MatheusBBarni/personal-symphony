@@ -462,10 +462,27 @@ Issue {{ issue.identifier }}: {{ issue.title }}
       Alcotest.(check string) "prompt" "Issue {{ issue.identifier }}: {{ issue.title }}" workflow.prompt_template)
 
 let test_prompt_strict_rendering () =
-  let issue = Issue.empty ~id:"I_kw" ~identifier:"#42" ~title:"Fix build" ~state:"Todo" in
+  let issue =
+    {
+      (Issue.empty ~id:"I_kw" ~identifier:"#42" ~title:"Fix build" ~state:"Todo") with
+      comments =
+        [
+          {
+            Issue.author = Some "matheus";
+            body = "Please include issue comments.";
+            created_at = Some "2026-05-06T18:00:00Z";
+            url = Some "https://example.test/comment/1";
+          };
+        ];
+    }
+  in
   Alcotest.(check string)
     "rendered prompt" "Work on #42: Fix build attempt=2"
     (Prompt.render ~issue ~attempt:(Some 2) "Work on {{ issue.identifier }}: {{ issue.title }} attempt={{ attempt }}");
+  Alcotest.(check bool) "renders comments" true
+    (contains_substring
+       (Prompt.render ~issue ~attempt:None "Comments:\n{{ issue.comments }}")
+       "matheus at 2026-05-06T18:00:00Z:\nPlease include issue comments.");
   Alcotest.check_raises "unknown issue field fails"
     (Prompt.Template_render_error "unknown issue field: missing")
     (fun () -> ignore (Prompt.render ~issue ~attempt:None "{{ issue.missing }}"))
@@ -1634,6 +1651,14 @@ let test_github_project_field_parsing () =
   "url": "https://github.example/acme/widgets/issues/42",
   "createdAt": "2026-01-01T00:00:00Z",
   "updatedAt": "2026-01-02T00:00:00Z",
+  "comments": { "nodes": [
+    {
+      "body": "Needs the project comments in prompt.md",
+      "createdAt": "2026-05-06T18:00:00Z",
+      "url": "https://github.example/acme/widgets/issues/42#issuecomment-1",
+      "author": { "login": "matheus" }
+    }
+  ] },
   "labels": { "nodes": [{ "name": "Bug" }] },
   "projectItems": {
     "nodes": [
@@ -1654,6 +1679,8 @@ let test_github_project_field_parsing () =
   | Some issue ->
       Alcotest.(check string) "identifier" "#42" issue.identifier;
       Alcotest.(check string) "status" "In Progress" issue.state;
+      Alcotest.(check int) "comment count" 1 (List.length issue.comments);
+      Alcotest.(check string) "comment body" "Needs the project comments in prompt.md" (List.hd issue.comments).body;
       Alcotest.(check (list string)) "labels lowercased" [ "bug" ] issue.labels
 
 let test_github_active_state_filtering () =
@@ -2298,6 +2325,15 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         {
           (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo") with
           description = Some "Build the feature";
+          comments =
+            [
+              {
+                Issue.author = Some "reviewer";
+                body = "Remember the edge case from the thread.";
+                created_at = Some "2026-05-06T18:30:00Z";
+                url = Some "https://example.test/issues/1#issuecomment-1";
+              };
+            ];
           url = Some "https://example.test/issues/1";
           labels = [ "enhancement"; "codex" ];
           priority = Some 2;
@@ -2315,6 +2351,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
       Alcotest.(check bool) "stage agent included" true (String.contains !captured_prompt 'E');
       Alcotest.(check bool) "normal prompt included" true (String.contains !captured_prompt '#');
+      Alcotest.(check bool) "normal prompt includes comments" true
+        (contains_substring !captured_prompt "Issue comments:\n\nreviewer at 2026-05-06T18:30:00Z:\nRemember the edge case from the thread.");
       Alcotest.(check bool) "skill load preserves order" true
         (contains_substring !captured_prompt "Stage Skill Load:\n$to-prd\n$github:gh-fix-ci");
       let goal_line =
@@ -2327,6 +2365,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check string) "goal kind" "Stage Goal Context" (goal_json |> member "kind" |> to_string);
       Alcotest.(check string) "goal issue" "#1" (goal_json |> member "issue_identifier" |> to_string);
       Alcotest.(check string) "goal description" "Build the feature" (goal_json |> member "description" |> to_string);
+      Alcotest.(check string) "goal comment" "Remember the edge case from the thread."
+        (goal_json |> member "comments" |> to_list |> List.hd |> member "body" |> to_string);
       Alcotest.(check (list string)) "goal labels" [ "enhancement"; "codex" ]
         (goal_json |> member "labels" |> to_list |> List.map to_string);
       Alcotest.(check int) "goal priority" 2 (goal_json |> member "priority" |> to_int);

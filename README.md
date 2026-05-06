@@ -192,11 +192,13 @@ skill files and does not include Stage Skill Load in Stage Goal Context. Missing
 duplicate skill identifiers are Readiness Gaps; Symphony checks all configured stages before
 dispatch, resolving Workspace Repository skills before Codex Home skills.
 
+Rendered Agent Prompts include GitHub issue comments as issue context in addition to the issue body.
+
 Set `goal.enabled` to `true` on a specific stage to enable Stage Goal Handoff for that stage only.
 When enabled, Symphony sends `/goal` with deterministic Stage Goal Context before the normal Agent
-Prompt. Stage Goal Context includes issue identifier, title, description, URL, current GitHub Project
-status, labels, priority when present, blocker references when present, attempt, and stage agent
-name. It omits issue creation and update timestamps.
+Prompt. Stage Goal Context includes issue identifier, title, description, comments, URL, current
+GitHub Project status, labels, priority when present, blocker references when present, attempt, and
+stage agent name. It omits issue creation and update timestamps.
 
 Stage Goal Handoff requires Codex goals in `~/.codex/config.toml`:
 

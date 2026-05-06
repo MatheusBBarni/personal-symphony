@@ -47,6 +47,14 @@ query($owner:String!, $repo:String!) {
         url
         createdAt
         updatedAt
+        comments(first:50) {
+          nodes {
+            body
+            createdAt
+            url
+            author { login }
+          }
+        }
         labels(first:20) { nodes { name } }
         projectItems(first:20) {
           nodes {
@@ -80,6 +88,14 @@ let queue_issue_query numbers =
         url
         createdAt
         updatedAt
+        comments(first:50) {
+          nodes {
+            body
+            createdAt
+            url
+            author { login }
+          }
+        }
         labels(first:20) { nodes { name } }
         projectItems(first:20) {
           nodes {
@@ -312,6 +328,23 @@ let issue_is_closed node =
   | Some state -> string_equal_ci state "CLOSED"
   | None -> false
 
+let comment_from_node node =
+  match node |> member "body" |> safe_to_string_option with
+  | None -> None
+  | Some body ->
+      Some
+        {
+          Issue.author = node |> member "author" |> member "login" |> safe_to_string_option;
+          body;
+          created_at = node |> member "createdAt" |> safe_to_string_option;
+          url = node |> member "url" |> safe_to_string_option;
+        }
+
+let comment_nodes node =
+  match node |> member "comments" with
+  | `Assoc _ as comments -> comments |> member "nodes" |> safe_to_list
+  | _ -> []
+
 let project_issue_from_node ~(config : Config.tracker) node =
   let number = node |> member "number" |> safe_to_int_option in
   match number with
@@ -326,6 +359,7 @@ let project_issue_from_node ~(config : Config.tracker) node =
              ~title:(node |> member "title" |> safe_to_string) ~state)
           with
           description = node |> member "body" |> safe_to_string_option;
+          comments = comment_nodes node |> List.filter_map comment_from_node;
           url = node |> member "url" |> safe_to_string_option;
           created_at = node |> member "createdAt" |> safe_to_string_option;
           updated_at = node |> member "updatedAt" |> safe_to_string_option;
@@ -352,6 +386,19 @@ let issue_from_project_node ~(config : Config.tracker) node =
              ~title:(node |> member "title" |> to_string) ~state)
           with
           description = node |> member "body" |> to_string_option;
+          comments =
+            comment_nodes node
+            |> List.filter_map (fun comment ->
+                   match comment |> member "body" |> to_string_option with
+                   | None -> None
+                   | Some body ->
+                       Some
+                         {
+                           Issue.author = comment |> member "author" |> member "login" |> to_string_option;
+                           body;
+                           created_at = comment |> member "createdAt" |> to_string_option;
+                           url = comment |> member "url" |> to_string_option;
+                         });
           url = node |> member "url" |> to_string_option;
           created_at = node |> member "createdAt" |> to_string_option;
           updated_at = node |> member "updatedAt" |> to_string_option;
