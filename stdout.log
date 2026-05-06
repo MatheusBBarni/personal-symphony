@@ -1,13 +1,13 @@
-Implemented the issue coverage/docs work.
+Issue #35 is already implemented in this workspace on the current branch.
 
-Changed:
-- [apps/backend/test/test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/test/test_backend.ml): added config validation tests for omitted/valid/zero/negative/non-integer stage caps, plus scheduler tests for stage slot dispatch, no idle agents, lower global cap, and duplicate-dispatch prevention.
-- [README.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/README.md): documented Stage Concurrency Policy and added `maxConcurrentAgents` examples on stage entries.
+Relevant files in the completed changes:
+- [apps/backend/lib/config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/config.ml): parses/validates per-stage `maxConcurrentAgents`.
+- [apps/backend/lib/orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/orchestrator.ml): enforces Stage Concurrency Policy with the global cap.
+- [apps/backend/test/test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/test/test_backend.ml): covers parsing, stage/global capacity, idle prevention, ordered queue behavior, and duplicate dispatch.
+- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/CONTEXT.md), [docs/adr/0016-stage-concurrency-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/docs/adr/0016-stage-concurrency-policy.md), [README.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/README.md): document the Runtime Settings semantics.
 
 Verification:
-- `pnpm test` could not run in this sandbox: `[ERROR] fetch failed`.
-- Direct `opam exec -- dune runtest` also hit `_build/.lock: Operation not permitted`.
-- Passed with an isolated build dir: `opam exec -- dune runtest --root . --build-dir ./_build_codex -j1 --verbose`  
-  Result: 102 tests passed.
+- `opam exec -- dune runtest --root . --build-dir /private/tmp/symphony-35-dune-build` passed: 102 tests.
+- `pnpm test` could not run here because `pnpm` failed before tests with `[ERROR] fetch failed`.
 
-Existing unrelated modified files remain in the worktree: `prompt.md`, `stderr.log`, `stdout.log`.
+Worktree note: only `stdout.log` and `stderr.log` are dirty, and they were already unrelated runtime log changes.
