@@ -462,10 +462,27 @@ Issue {{ issue.identifier }}: {{ issue.title }}
       Alcotest.(check string) "prompt" "Issue {{ issue.identifier }}: {{ issue.title }}" workflow.prompt_template)
 
 let test_prompt_strict_rendering () =
-  let issue = Issue.empty ~id:"I_kw" ~identifier:"#42" ~title:"Fix build" ~state:"Todo" in
+  let issue =
+    {
+      (Issue.empty ~id:"I_kw" ~identifier:"#42" ~title:"Fix build" ~state:"Todo") with
+      comments =
+        [
+          {
+            Issue.author = Some "matheus";
+            body = "Please include issue comments.";
+            created_at = Some "2026-05-06T18:00:00Z";
+            url = Some "https://example.test/comment/1";
+          };
+        ];
+    }
+  in
   Alcotest.(check string)
     "rendered prompt" "Work on #42: Fix build attempt=2"
     (Prompt.render ~issue ~attempt:(Some 2) "Work on {{ issue.identifier }}: {{ issue.title }} attempt={{ attempt }}");
+  Alcotest.(check bool) "renders comments" true
+    (contains_substring
+       (Prompt.render ~issue ~attempt:None "Comments:\n{{ issue.comments }}")
+       "matheus at 2026-05-06T18:00:00Z:\nPlease include issue comments.");
   Alcotest.check_raises "unknown issue field fails"
     (Prompt.Template_render_error "unknown issue field: missing")
     (fun () -> ignore (Prompt.render ~issue ~attempt:None "{{ issue.missing }}"))
@@ -1634,6 +1651,14 @@ let test_github_project_field_parsing () =
   "url": "https://github.example/acme/widgets/issues/42",
   "createdAt": "2026-01-01T00:00:00Z",
   "updatedAt": "2026-01-02T00:00:00Z",
+  "comments": { "nodes": [
+    {
+      "body": "Needs the project comments in prompt.md",
+      "createdAt": "2026-05-06T18:00:00Z",
+      "url": "https://github.example/acme/widgets/issues/42#issuecomment-1",
+      "author": { "login": "matheus" }
+    }
+  ] },
   "labels": { "nodes": [{ "name": "Bug" }] },
   "projectItems": {
     "nodes": [
@@ -1654,6 +1679,8 @@ let test_github_project_field_parsing () =
   | Some issue ->
       Alcotest.(check string) "identifier" "#42" issue.identifier;
       Alcotest.(check string) "status" "In Progress" issue.state;
+      Alcotest.(check int) "comment count" 1 (List.length issue.comments);
+      Alcotest.(check string) "comment body" "Needs the project comments in prompt.md" (List.hd issue.comments).body;
       Alcotest.(check (list string)) "labels lowercased" [ "bug" ] issue.labels
 
 let test_github_active_state_filtering () =
@@ -2298,6 +2325,15 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         {
           (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo") with
           description = Some "Build the feature";
+          comments =
+            [
+              {
+                Issue.author = Some "reviewer";
+                body = "Remember the edge case from the thread.";
+                created_at = Some "2026-05-06T18:30:00Z";
+                url = Some "https://example.test/issues/1#issuecomment-1";
+              };
+            ];
           url = Some "https://example.test/issues/1";
           labels = [ "enhancement"; "codex" ];
           priority = Some 2;
@@ -2315,6 +2351,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
       Alcotest.(check bool) "stage agent included" true (String.contains !captured_prompt 'E');
       Alcotest.(check bool) "normal prompt included" true (String.contains !captured_prompt '#');
+      Alcotest.(check bool) "normal prompt includes comments" true
+        (contains_substring !captured_prompt "Issue comments:\n\nreviewer at 2026-05-06T18:30:00Z:\nRemember the edge case from the thread.");
       Alcotest.(check bool) "skill load preserves order" true
         (contains_substring !captured_prompt "Stage Skill Load:\n$to-prd\n$github:gh-fix-ci");
       let goal_line =
@@ -2327,6 +2365,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check string) "goal kind" "Stage Goal Context" (goal_json |> member "kind" |> to_string);
       Alcotest.(check string) "goal issue" "#1" (goal_json |> member "issue_identifier" |> to_string);
       Alcotest.(check string) "goal description" "Build the feature" (goal_json |> member "description" |> to_string);
+      Alcotest.(check string) "goal comment" "Remember the edge case from the thread."
+        (goal_json |> member "comments" |> to_list |> List.hd |> member "body" |> to_string);
       Alcotest.(check (list string)) "goal labels" [ "enhancement"; "codex" ]
         (goal_json |> member "labels" |> to_list |> List.map to_string);
       Alcotest.(check int) "goal priority" 2 (goal_json |> member "priority" |> to_int);
@@ -2934,6 +2974,123 @@ let completed_child issue workspace =
     stderr_size = 0;
   }
 
+let test_ordered_queue_keeps_stage_handoffs_pending () =
+  with_temp_dir "symphony-orchestrator-queue-stage-" (fun root ->
+      let current_status = ref "Backlog" in
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              active_states = [ "Backlog"; "Todo" ];
+              project_status_on_dispatch = None;
+              project_status_on_success = Some "Done";
+            };
+          pull_request = { Config.default_pull_request with enabled = false };
+          stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Backlog" ];
+                    agent = "planner";
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "Todo";
+                    retry_status = Some "Backlog";
+                    goal = None;
+                    commit = None;
+                  };
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "engineer";
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "Done";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issue () = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:!current_status in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.state :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let set_status _ _ status =
+        current_status := status;
+        Ok ()
+      in
+      let commit_stage _ _ _ _ _ = Ok () in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue () ]) ~set_status ~commit_stage ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "first launch" [ "Backlog" ] (List.rev !launched);
+      let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root "#1" in
+      Orchestrator.mark_completed orchestrator (completed_child (issue ()) workspace);
+      (match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "stage handoff remains pending" [ "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state");
+      Alcotest.(check string) "moved to next active stage" "Todo" !current_status;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "second launch" [ "Backlog"; "Todo" ] (List.rev !launched))
+
+let test_ordered_queue_revives_persisted_completed_active_entries () =
+  with_temp_dir "symphony-orchestrator-queue-revive-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "completed"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "revived active entry launches" [ "#1" ] (List.rev !launched);
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "revived state is running" [ "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state")
+
 let commit_file ~cwd file content message =
   Util.write_file (Filename.concat cwd file) content;
   ignore (run_ok ~cwd "commit file" (Printf.sprintf "git add %s && git commit -q -m %s" (Util.shell_quote file) (Util.shell_quote message)))
@@ -3377,6 +3534,21 @@ let test_orchestrator_reuses_existing_task_branch_on_restart () =
         | Error error -> Alcotest.fail error
       in
       Alcotest.(check string) "reused branch checked out" "symphony/task-8"
+        (run_ok ~cwd:workspace.path "branch" "git branch --show-current"))
+
+let test_orchestrator_prunes_missing_registered_worktree () =
+  with_temp_dir "symphony-missing-registered-worktree-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) in
+      let issue = Issue.empty ~id:"I13" ~identifier:"#13" ~title:"Thirteen" ~state:"In progress" in
+      let workspace = create_task_worktree config issue in
+      ignore (run_ok ~cwd:root "delete worktree directory" (Printf.sprintf "rm -rf %s" (Util.shell_quote workspace.path)));
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Alcotest.(check string) "recreated branch checked out" "symphony/task-13"
         (run_ok ~cwd:workspace.path "branch" "git branch --show-current"))
 
 let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch () =
@@ -3896,6 +4068,10 @@ let () =
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
+          Alcotest.test_case "keeps ordered queue stage handoffs pending" `Quick
+            test_ordered_queue_keeps_stage_handoffs_pending;
+          Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
+            test_ordered_queue_revives_persisted_completed_active_entries;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
@@ -3942,6 +4118,8 @@ let () =
           Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
             test_orchestrator_blocks_disallowed_loop_start_before_side_effects;
           Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
+          Alcotest.test_case "prunes missing registered worktree" `Quick
+            test_orchestrator_prunes_missing_registered_worktree;
           Alcotest.test_case "reuses worktree for existing in-progress task"
             `Quick test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch;
           Alcotest.test_case "rejects existing non-worktree workspace" `Quick test_orchestrator_rejects_existing_non_worktree_workspace;

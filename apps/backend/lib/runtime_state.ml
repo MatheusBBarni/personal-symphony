@@ -116,6 +116,7 @@ let issue_to_yojson issue =
       ("issue_identifier", `String issue.identifier);
       ("title", `String issue.title);
       ("description", (match issue.description with Some s -> `String s | None -> `Null));
+      ("comments", `List (List.map Issue.comment_to_yojson issue.comments));
       ("url", (match issue.url with Some s -> `String s | None -> `Null));
       ("state", `String issue.state);
       ("created_at", (match issue.created_at with Some s -> `String s | None -> `Null));
@@ -129,6 +130,7 @@ let running_to_yojson row =
       ("issue_identifier", `String row.issue.identifier);
       ("title", `String row.issue.title);
       ("description", (match row.issue.description with Some s -> `String s | None -> `Null));
+      ("comments", `List (List.map Issue.comment_to_yojson row.issue.comments));
       ("url", (match row.issue.url with Some s -> `String s | None -> `Null));
       ("state", `String row.issue.state);
       ("session_id", (match row.session_id with Some s -> `String s | None -> `Null));

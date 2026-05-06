@@ -1,0 +1,16 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Symphony">
+  <rect width="64" height="64" rx="12" fill="#10CDBD"/>
+  <g stroke="#062321" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M21 19H32V28H43"/>
+    <path d="M32 28V36H21V45"/>
+    <path d="M43 28V45H32"/>
+  </g>
+  <g fill="#062321">
+    <rect x="15" y="13" width="10" height="10" rx="1"/>
+    <rect x="28" y="13" width="10" height="10" rx="1"/>
+    <rect x="39" y="24" width="10" height="10" rx="1"/>
+    <rect x="28" y="32" width="10" height="10" rx="1"/>
+    <rect x="15" y="41" width="10" height="10" rx="1"/>
+    <rect x="39" y="41" width="10" height="10" rx="1"/>
+  </g>
+</svg>

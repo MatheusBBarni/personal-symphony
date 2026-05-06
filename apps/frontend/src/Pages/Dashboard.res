@@ -31,8 +31,23 @@ type snapshot = {
 @send external arrayPush: (array<'a>, 'a) => int = "push"
 @send external arrayFilter: (array<'a>, 'a => bool) => array<'a> = "filter"
 @send external toLowerCase: string => string = "toLowerCase"
+@send external trim: string => string = "trim"
+external nullableString: string => Nullable.t<string> = "%identity"
 
 let sameState = (left, right) => left->toLowerCase == right->toLowerCase
+let backlogState = "Backlog"
+
+let normalizedRuntimeValue = value => {
+  switch value->nullableString->Nullable.toOption {
+  | None => None
+  | Some(value) =>
+    let normalized = value->trim
+    switch normalized->toLowerCase {
+    | "" | "null" | "undefined" => None
+    | _ => Some(normalized)
+    }
+  }
+}
 
 let arrayIncludesState = (states, state) => {
   let found = ref(false)
@@ -64,6 +79,12 @@ let issueStateColumns = (issues: array<issueItem>) => {
 
 let orderedIssueStateColumns = (statusOrder: array<string>, issues: array<issueItem>) => {
   let states = []
+  let hasBacklog =
+    arrayIncludesState(statusOrder, backlogState) ||
+    arrayIncludesState(issues->issueStateColumns, backlogState)
+  if hasBacklog {
+    ignore(arrayPush(states, backlogState))
+  }
   statusOrder->Array.forEach(state => {
     if !arrayIncludesState(states, state) {
       ignore(arrayPush(states, state))
@@ -79,14 +100,20 @@ let orderedIssueStateColumns = (statusOrder: array<string>, issues: array<issueI
   states
 }
 
-let metricPanel = (label, value, tone, detail) =>
-  <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950/80">
+let metricPanel = (label, value, tone, detail, icon) =>
+  <HeroUI.Card className="rounded border border-neutral-800 bg-[#1b1b1b]">
     <HeroUI.CardContent className="p-4">
-      <div className="text-[11px] font-medium uppercase tracking-normal text-neutral-500">
-        {React.string(label)}
+      <div className="flex items-start justify-between gap-4">
+        <div className="text-[11px] font-medium uppercase tracking-normal text-neutral-500">
+          {React.string(label)}
+        </div>
+        {icon}
       </div>
-      <div className={"mt-3 text-3xl font-semibold " ++ tone}> {React.string(value)} </div>
-      <div className="mt-2 text-xs text-neutral-500"> {React.string(detail)} </div>
+      <div className="mt-5 flex items-end gap-3">
+        <div className={"text-3xl font-semibold leading-none " ++ tone}> {React.string(value)} </div>
+        <div className="pb-1 text-xs text-neutral-500"> {React.string(detail)} </div>
+      </div>
+      <div className="mt-4 h-px bg-neutral-900" />
     </HeroUI.CardContent>
   </HeroUI.Card>
 
@@ -104,20 +131,28 @@ let banner = (tone, label, message) => {
   </div>
 }
 
+let renderBanner = (tone, label, message) =>
+  switch normalizedRuntimeValue(message) {
+  | None => React.null
+  | Some(message) => banner(tone, label, message)
+  }
+
 let issueCard = (issue: issueItem) =>
-  <article key=issue.identifier className="border-b border-neutral-800 px-3 py-3 last:border-b-0">
-    <div className="flex items-center gap-2">
+  <article
+    key=issue.identifier
+    className="m-3 rounded border border-neutral-800 bg-[#1d1d1d] px-4 py-4 shadow-sm">
+    <div className="flex items-center justify-between gap-3">
       <HeroUI.Chip
         size="sm"
         variant="flat"
-        className="h-5 rounded border border-neutral-700 bg-neutral-900 px-2 font-mono text-[11px] text-neutral-300">
+        className="h-6 rounded border border-neutral-700 bg-neutral-800 px-2 font-mono text-[11px] text-neutral-400">
         {React.string(issue.identifier)}
       </HeroUI.Chip>
-      <span className="text-[11px] uppercase tracking-normal text-neutral-600">
+      <span className="truncate text-[11px] uppercase tracking-normal text-neutral-600">
         {React.string(issue.state)}
       </span>
     </div>
-    <h3 className="mt-2 text-sm font-semibold leading-5 text-neutral-100">
+    <h3 className="mt-5 text-base font-semibold leading-6 text-neutral-100">
       {switch issue.url {
       | "" => React.string(issue.title)
       | url =>
@@ -126,7 +161,7 @@ let issueCard = (issue: issueItem) =>
         </a>
       }}
     </h3>
-    <p className="mt-2 line-clamp-3 text-sm leading-6 text-neutral-400">
+    <p className="mt-5 line-clamp-3 text-sm leading-6 text-neutral-500">
       {React.string(issue.description)}
     </p>
     {switch issue.error {
@@ -178,20 +213,37 @@ let orderedQueuePanel = entries =>
   switch Array.length(entries) {
   | 0 => React.null
   | _ =>
-    <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
-      <HeroUI.CardHeader className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-        <div className="text-sm font-semibold text-neutral-100"> {React.string("Ordered Queue")} </div>
-        <HeroUI.Chip
-          size="sm"
-          variant="flat"
-          className="rounded border border-neutral-700 bg-neutral-900 px-3 text-neutral-200">
-          {React.string(entries->Array.length->Int.toString ++ " entries")}
-        </HeroUI.Chip>
-      </HeroUI.CardHeader>
-      <HeroUI.CardContent className="p-0">
-        <ol> {entries->Array.map(queueEntryRow)->React.array} </ol>
-      </HeroUI.CardContent>
-    </HeroUI.Card>
+    <HeroUI.AccordionRoot
+      variant="bordered"
+      hideSeparator=true
+      className="rounded border border-neutral-800 bg-neutral-950 px-0">
+      <HeroUI.AccordionItem id="ordered-queue" className="border-0">
+        <HeroUI.AccordionHeading>
+          <HeroUI.AccordionTrigger
+            ariaLabel="Toggle ordered queue"
+            className="w-full px-4 py-3 text-left text-neutral-100">
+            <div className="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-3">
+              <div />
+              <div className="flex min-w-0 flex-col items-center justify-center gap-2">
+                <div className="mb-1 text-center text-sm font-semibold text-neutral-100">
+                  {React.string("Ordered Queue")}
+                </div>
+                <HeroUI.Chip
+                  size="sm"
+                  variant="flat"
+                  className="rounded border border-neutral-700 bg-neutral-900 px-3 text-neutral-200">
+                  {React.string(entries->Array.length->Int.toString ++ " entries")}
+                </HeroUI.Chip>
+              </div>
+              <HeroUI.AccordionIndicator className="size-5 text-neutral-400 transition-transform data-[expanded=true]:rotate-180" />
+            </div>
+          </HeroUI.AccordionTrigger>
+        </HeroUI.AccordionHeading>
+        <HeroUI.AccordionPanel className="border-t border-neutral-800">
+          <ol> {entries->Array.map(queueEntryRow)->React.array} </ol>
+        </HeroUI.AccordionPanel>
+      </HeroUI.AccordionItem>
+    </HeroUI.AccordionRoot>
   }
 
 let emptyOrchestrator = error =>
@@ -201,9 +253,27 @@ let emptyOrchestrator = error =>
     | None => React.null
     }}
     <div className="grid gap-4 lg:grid-cols-3">
-      {metricPanel("Running", "-", "text-neutral-100", "No Runtime State snapshot yet")}
-      {metricPanel("Retrying", "-", "text-neutral-100", "No Runtime State snapshot yet")}
-      {metricPanel("Total tokens", "-", "text-neutral-100", "No Runtime State snapshot yet")}
+      {metricPanel(
+        "Running",
+        "-",
+        "text-neutral-100",
+        "No Runtime State snapshot yet",
+        <Iconoir.Play className="size-5 text-teal-400" ariaHidden=true />,
+      )}
+      {metricPanel(
+        "Retrying",
+        "-",
+        "text-neutral-100",
+        "No Runtime State snapshot yet",
+        <Iconoir.Refresh className="size-6 text-amber-400" ariaHidden=true />,
+      )}
+      {metricPanel(
+        "Total tokens",
+        "-",
+        "text-neutral-100",
+        "No Runtime State snapshot yet",
+        <Iconoir.CoinsSwap className="size-6 text-emerald-400" ariaHidden=true />,
+      )}
     </div>
     <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
       <HeroUI.CardContent className="p-6 text-sm text-neutral-400">
@@ -228,34 +298,43 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
     | Some(data) =>
       <>
         <div className="grid gap-4 lg:grid-cols-3">
-          {metricPanel("Running", data.running, "text-teal-200", "Active Task Branch work")}
-          {metricPanel("Retrying", data.retrying, "text-amber-200", "Attention-needed retry loop")}
-          {metricPanel("Total tokens", data.tokens, "text-emerald-200", "Accumulated Codex usage")}
+          {metricPanel(
+            "Running",
+            data.running,
+            "text-neutral-100",
+            "Active Agents",
+            <Iconoir.Play className="size-5 text-teal-400" ariaHidden=true />,
+          )}
+          {metricPanel(
+            "Retrying",
+            data.retrying,
+            "text-neutral-100",
+            "Network Queue",
+            <Iconoir.Refresh className="size-6 text-amber-400" ariaHidden=true />,
+          )}
+          {metricPanel(
+            "Total tokens",
+            data.tokens,
+            "text-neutral-100",
+            "Consumed (24h)",
+            <Iconoir.CoinsSwap className="size-6 text-emerald-400" ariaHidden=true />,
+          )}
         </div>
         {switch error {
         | Some(message) => banner("error", "Live Dashboard Connection", message)
         | None => React.null
         }}
-        {switch data.readinessGaps {
-        | "" => React.null
-        | value => banner("warning", "Readiness Gaps", value)
-        }}
-        {switch data.startupReconciliation {
-        | "" => React.null
-        | value => banner("warning", "Startup Reconciliation", value)
-        }}
-        {switch data.lastError {
-        | "" => React.null
-        | value => banner("error", "Runtime State Error", value)
-        }}
+        {renderBanner("warning", "Readiness Gaps", data.readinessGaps)}
+        {renderBanner("warning", "Startup Reconciliation", data.startupReconciliation)}
+        {renderBanner("error", "Runtime State Error", data.lastError)}
         {orderedQueuePanel(data.orderedQueue)}
         <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
-          <HeroUI.CardHeader className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-            <div>
-              <div className="text-sm font-semibold text-neutral-100"> {React.string("Project board")} </div>
-              <div className="mt-1 text-xs text-neutral-500">
-                {React.string("Columns follow Runtime State status order and issue states.")}
-              </div>
+          <HeroUI.CardHeader className="flex flex-col items-center justify-center border-b border-neutral-800 px-4 py-4 text-center">
+            <div className="mb-2 text-sm font-semibold text-neutral-100">
+              {React.string("Project board")}
+            </div>
+            <div className="mb-3 text-xs text-neutral-500">
+              {React.string("Columns follow Runtime State status order and issue states.")}
             </div>
             <HeroUI.Chip
               size="sm"

@@ -1,6 +1,6 @@
-# Personal Symphony
+# Symphony Orchestrator
 
-Personal Symphony is an installable `symphony` CLI for the Symphony service described in
+Symphony Orchestrator is an installable `symphony` CLI for the Symphony service described in
 [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). The Product Repository keeps
 the OCaml backend, the ReScript React dashboard, and the npm launcher; each Workspace Repository gets
 its own repository-owned Runtime Contract under `.symphony/`.
@@ -192,11 +192,13 @@ skill files and does not include Stage Skill Load in Stage Goal Context. Missing
 duplicate skill identifiers are Readiness Gaps; Symphony checks all configured stages before
 dispatch, resolving Workspace Repository skills before Codex Home skills.
 
+Rendered Agent Prompts include GitHub issue comments as issue context in addition to the issue body.
+
 Set `goal.enabled` to `true` on a specific stage to enable Stage Goal Handoff for that stage only.
 When enabled, Symphony sends `/goal` with deterministic Stage Goal Context before the normal Agent
-Prompt. Stage Goal Context includes issue identifier, title, description, URL, current GitHub Project
-status, labels, priority when present, blocker references when present, attempt, and stage agent
-name. It omits issue creation and update timestamps.
+Prompt. Stage Goal Context includes issue identifier, title, description, comments, URL, current
+GitHub Project status, labels, priority when present, blocker references when present, attempt, and
+stage agent name. It omits issue creation and update timestamps.
 
 Stage Goal Handoff requires Codex goals in `~/.codex/config.toml`:
 
@@ -270,7 +272,7 @@ The `title` and `body` fields are deterministic templates. They support `<head_b
 
 ## GitHub Token Permissions
 
-Personal Symphony reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
+Symphony Orchestrator reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
 when the GitHub Project is owned by a user account, such as `@your-user's Kanban`. GitHub
 fine-grained personal access tokens currently cannot access Projects owned by a user account.
 

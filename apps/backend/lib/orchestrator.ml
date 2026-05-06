@@ -316,6 +316,12 @@ let agent_prompt config issue =
         if Sys.file_exists path then Some (agent, stage, Util.read_file path |> Util.trim) else None
 
 let normal_prompt config issue base_prompt =
+  let comments_section =
+    match Issue.field issue "comments" with
+    | Some comments when Util.trim comments <> "" -> Printf.sprintf "\n\n---\n\nIssue comments:\n\n%s" comments
+    | _ -> ""
+  in
+  let base_prompt = base_prompt ^ comments_section in
   match agent_prompt config issue with
   | None -> base_prompt
   | Some (agent, stage, prompt) ->
@@ -340,6 +346,15 @@ let blocker_to_goal_json (blocker : Issue.blocker) =
       ("state", json_option_string blocker.state);
     ]
 
+let comment_to_goal_json (comment : Issue.comment) =
+  `Assoc
+    [
+      ("author", json_option_string comment.author);
+      ("body", `String comment.body);
+      ("created_at", json_option_string comment.created_at);
+      ("url", json_option_string comment.url);
+    ]
+
 let stage_goal_context issue attempt (stage : Config.stage_agent) =
   `Assoc
     [
@@ -347,6 +362,7 @@ let stage_goal_context issue attempt (stage : Config.stage_agent) =
       ("issue_identifier", `String issue.Issue.identifier);
       ("title", `String issue.title);
       ("description", json_option_string issue.description);
+      ("comments", `List (List.map comment_to_goal_json issue.comments));
       ("url", json_option_string issue.url);
       ("current_project_status", `String issue.state);
       ("labels", `List (List.map (fun label -> `String label) issue.labels));
@@ -464,6 +480,11 @@ let require_clean_loop_start root =
   | Ok _ -> Error "loop-start worktree must be clean before creating task worktrees"
   | Error error -> Error ("git status failed: " ^ error)
 
+let prune_stale_worktrees root =
+  match run_shell_capture ~cwd:root "git worktree prune" with
+  | Ok _ -> Ok ()
+  | Error error -> Error ("git worktree prune failed: " ^ error)
+
 let shell_prepare_workspace config ~loop_start_branch issue =
   let branch = task_branch config issue in
   if not (is_git_repository config.repository_root) then
@@ -479,26 +500,31 @@ let shell_prepare_workspace config ~loop_start_branch issue =
       match require_clean_loop_start config.repository_root with
       | Error _ as error -> error
       | Ok () ->
-          let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
-          let create_branch =
-            if git_ref_exists config.repository_root branch then Ok ()
-            else
-              match
-                run_shell_capture ~cwd:config.repository_root
-                  (Printf.sprintf "git branch %s %s" (Util.shell_quote branch) (Util.shell_quote loop_start_branch))
-              with
-              | Ok _ -> Ok ()
-              | Error _ as error -> error
+          let prepare_workspace () =
+            let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
+            let create_branch =
+              if git_ref_exists config.repository_root branch then Ok ()
+              else
+                match
+                  run_shell_capture ~cwd:config.repository_root
+                    (Printf.sprintf "git branch %s %s" (Util.shell_quote branch) (Util.shell_quote loop_start_branch))
+                with
+                | Ok _ -> Ok ()
+                | Error _ as error -> error
+            in
+            match create_branch with
+            | Error error -> Error ("task branch creation failed: " ^ error)
+            | Ok _ -> (
+                match
+                  run_shell_capture ~cwd:config.repository_root
+                    (Printf.sprintf "git worktree add %s %s" (Util.shell_quote workspace.path) (Util.shell_quote branch))
+                with
+                | Ok _ -> Ok workspace
+                | Error error -> Error ("agent worktree creation failed: " ^ error))
           in
-          (match create_branch with
-          | Error error -> Error ("task branch creation failed: " ^ error)
-          | Ok _ -> (
-              match
-                run_shell_capture ~cwd:config.repository_root
-                  (Printf.sprintf "git worktree add %s %s" (Util.shell_quote workspace.path) (Util.shell_quote branch))
-              with
-              | Ok _ -> Ok workspace
-              | Error error -> Error ("agent worktree creation failed: " ^ error)))
+          match prune_stale_worktrees config.repository_root with
+          | Error _ as error -> error
+          | Ok () -> prepare_workspace ()
 
 let has_worktree_changes root =
   match run_shell_capture ~cwd:root "git status --porcelain" with
@@ -686,7 +712,8 @@ let set_state orchestrator state =
 
 let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
 
-let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(skip_missing = false) ~candidates () =
+let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
+    () =
   match orchestrator.state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->
@@ -694,6 +721,11 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(s
       let candidate_not_dispatchable identifier =
         match candidate_for identifier with
         | Some issue -> not (Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state)
+        | None -> false
+      in
+      let candidate_dispatchable identifier =
+        match candidate_for identifier with
+        | Some issue -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state
         | None -> false
       in
       let candidate_missing identifier = candidate_for identifier = None in
@@ -709,20 +741,26 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(s
                  match completed_identifier with
                  | Some identifier when identifier = entry.issue_identifier -> "completed"
                  | _ -> (
-                     match skipped_identifier with
-                     | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                     match pending_identifier with
+                     | Some identifier when identifier = entry.issue_identifier -> "pending"
                      | _ -> (
-                         match entry_state_for_issue state entry.issue_identifier with
-                         | Some state -> state
-                         | None
-                           when skip_missing && entry.state = "pending"
-                                && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
-                             "skipped"
-                         | None -> entry.state))
+                         match skipped_identifier with
+                         | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                         | _ -> (
+                             match entry_state_for_issue state entry.issue_identifier with
+                             | Some state -> state
+                             | None
+                               when skip_missing && entry.state = "pending"
+                                    && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
+                                 "skipped"
+                             | None when skip_missing && entry.state = "completed" && candidate_dispatchable entry.issue_identifier ->
+                                 "pending"
+                             | None -> entry.state)))
                in
                let skip_reason =
                  match skipped_identifier with
                  | Some identifier when identifier = entry.issue_identifier -> skipped_reason
+                 | _ when pending_identifier = Some entry.issue_identifier -> None
                  | _ when skip_missing && entry.state = "pending" && candidate_missing entry.issue_identifier ->
                      Some "Issue became unavailable or not dispatchable before admission."
                  | _ when skip_missing && entry.state = "pending" && candidate_not_dispatchable entry.issue_identifier ->
@@ -1051,12 +1089,7 @@ let record_task_branch_integration_attention orchestrator issue ?workspace_path 
 
 let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
   let root = config.Config.repository_root in
-  if git_ref_contained_in_head root branch then Ok Already_contained
-  else if git_head_can_fast_forward_to root branch then
-    match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
-    | Ok _ -> Ok Direct_fast_forward
-    | Error error -> Error ("Task Branch could not fast-forward: " ^ error)
-  else
+  let update_task_branch_then_fast_forward () =
     let merge_command =
       Printf.sprintf "git merge --no-edit %s" (Util.shell_quote loop_start_branch)
     in
@@ -1066,6 +1099,13 @@ let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
         match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
         | Ok _ -> Ok Updated_task_branch_then_fast_forward
         | Error error -> Error ("updated Task Branch could not fast-forward: " ^ error))
+  in
+  if git_ref_contained_in_head root branch then Ok Already_contained
+  else if git_head_can_fast_forward_to root branch then
+    match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
+    | Ok _ -> Ok Direct_fast_forward
+    | Error _ -> update_task_branch_then_fast_forward ()
+  else update_task_branch_then_fast_forward ()
 
 let reconcile_startup_candidate orchestrator issue =
   let workspace_path = task_workspace_path orchestrator.config issue in
@@ -1306,8 +1346,20 @@ let mark_blocked orchestrator issue_id error =
         });
       update_ordered_queue_entries orchestrator ~skipped:(row.issue.identifier, error) ~candidates:[ row.issue ] ()
 
-let complete_child orchestrator child =
+let complete_child ?next_status orchestrator child =
   let issue_id = child.issue_id in
+  let next_issue =
+    match next_status with
+    | Some state -> { child.issue with Issue.state }
+    | None -> child.issue
+  in
+  let has_active_next_stage =
+    match next_status with
+    | Some state -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states state
+    | None -> false
+  in
+  let completed_identifier = if has_active_next_stage then None else Some child.issue_identifier in
+  let pending_identifier = if has_active_next_stage then Some child.issue_identifier else None in
   Hashtbl.remove orchestrator.attempts issue_id;
   Hashtbl.remove orchestrator.retry_due issue_id;
   update_state orchestrator (fun state ->
@@ -1318,7 +1370,7 @@ let complete_child orchestrator child =
       issue_errors =
         List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
     });
-  update_ordered_queue_entries orchestrator ~completed_identifier:child.issue_identifier ~candidates:[ child.issue ] ();
+  update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ~candidates:[ next_issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
 let cleanup_task_worktree orchestrator child =
@@ -1396,7 +1448,7 @@ let mark_completed orchestrator child =
           | Some status ->
               if not (move_issue_status orchestrator child.issue status) then
                 mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
-              else complete_child orchestrator child))
+              else complete_child ~next_status:status orchestrator child))
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()
@@ -1502,6 +1554,7 @@ let poll_once orchestrator =
         let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
         update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
         reconcile_startup orchestrator candidates;
+        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
         let dispatchable =
           candidates
@@ -1519,7 +1572,6 @@ let poll_once orchestrator =
                    |> List.filter (queue_entry_allows_dispatch orchestrator.state)
                    |> List.sort (fun left right -> compare (queue_index queue left) (queue_index queue right)))
         in
-        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
         maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
         render_poll_completed orchestrator (List.length dispatchable)

@@ -14,7 +14,7 @@ Codex goal support also depends on local Codex configuration and stdin slash-com
 
 Runtime Settings configure Stage Goal Handoff per stage with `goal.enabled`. Missing `goal` means disabled, and bootstrapped Runtime Settings include `goal.enabled: false` for every example stage.
 
-When a matching stage enables Stage Goal Handoff, Symphony prepends `/goal` plus deterministic Stage Goal Context before the normal rendered Agent Prompt. Stage Goal Context includes issue identifier, title, description, URL, current project status, labels, priority when present, blocker references when present, attempt, and stage agent name. It does not include issue creation or update timestamps by default.
+When a matching stage enables Stage Goal Handoff, Symphony prepends `/goal` plus deterministic Stage Goal Context before the normal rendered Agent Prompt. Stage Goal Context includes issue identifier, title, description, issue comments, URL, current project status, labels, priority when present, blocker references when present, attempt, and stage agent name. It does not include issue creation or update timestamps by default.
 
 Symphony treats missing Codex goal support as a Readiness Gap. It checks `~/.codex/config.toml` for:
 
