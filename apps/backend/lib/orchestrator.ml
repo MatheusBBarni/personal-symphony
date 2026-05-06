@@ -96,6 +96,9 @@ let render_poll_paused seconds_remaining msg =
   Printf.eprintf "%s%s %s %s %s %s %ds\n%!" clear_line (dim (clock_time ())) (blue "poll") (yellow "waiting")
     msg (dim "retry_in") seconds_remaining
 
+let runtime_gap_of_config_gap (gap : Config.readiness_gap) =
+  { Runtime_state.requirement = gap.requirement; remediation = gap.remediation }
+
 let render_dispatch_started issue =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "started")
     issue.Issue.identifier issue.title
@@ -1378,7 +1381,31 @@ let reap_children orchestrator =
 let poll_once orchestrator =
   reap_children orchestrator;
   render_poll_started orchestrator;
-  match orchestrator.tracker_retry_due with
+  match Config.allowed_loop_start_branch_policy_gap orchestrator.config with
+  | Some gap ->
+      let runtime_gap = runtime_gap_of_config_gap gap in
+      update_state orchestrator (fun state ->
+        {
+          state with
+          readiness_gaps = [ runtime_gap ];
+          last_error = Some (gap.requirement ^ ": " ^ gap.remediation);
+        });
+      render_poll_failed ("readiness gap: " ^ gap.requirement)
+  | None -> (
+      if
+        List.exists
+          (fun (existing : Runtime_state.readiness_gap) -> existing.requirement = "git.allowedLoopStartBranches")
+          orchestrator.state.readiness_gaps
+      then
+        update_state orchestrator (fun state ->
+          {
+            state with
+            readiness_gaps =
+              List.filter
+                (fun (existing : Runtime_state.readiness_gap) -> existing.requirement <> "git.allowedLoopStartBranches")
+                state.readiness_gaps;
+          });
+      match orchestrator.tracker_retry_due with
   | Some due when Unix.time () < due ->
       let seconds = seconds_until due in
       let msg = tracker_retry_pause_message seconds in
@@ -1424,7 +1451,7 @@ let poll_once orchestrator =
       | exn ->
           let msg = Printexc.to_string exn in
           set_error orchestrator msg;
-          render_poll_failed msg)
+          render_poll_failed msg))
 
 let run_forever orchestrator =
   let finished_reported = ref false in
