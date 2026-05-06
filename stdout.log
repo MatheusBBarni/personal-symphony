@@ -1,11 +1,15 @@
-Implemented issue #32 documentation scope.
+Implemented the PRD refinement in [spec/spec-process-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/spec/spec-process-protected-path-policy.md).
 
-Changed files:
-- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/CONTEXT.md): added Protected Path Policy storage, matching, authorization, and enforcement domain rules.
-- [spec/spec-process-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/spec/spec-process-protected-path-policy.md): made the existing artifact explicitly the PRD and linked the ADR.
-- [docs/adr/0016-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/docs/adr/0016-protected-path-policy.md): added the accepted runtime decision.
+What changed:
+- Chose `Protected Path Policy` as the canonical term.
+- Decided the Runtime Contract shape: `git.protectedPaths` in Runtime Settings, not `.symphonyignore`.
+- Defined exact matching semantics for files, directories, globs, generated changed paths, deletes, and renames.
+- Defined issue authorization markers: `path:<path>` and `pattern:<pattern-name>`.
+- Defined enforcement order before success status transition, Stage Commit, Stage Push, Task Branch Integration, Batch Branch Push, and Batch Pull Request handoff.
+- Added recommended protected paths and names for this Self-Dogfooding Workspace Repository.
 
-Verification:
-- `git diff --check` passed.
+Verification run:
+- `git diff --check -- spec/spec-process-protected-path-policy.md`
+- Secret scan on the edited PRD; only hit was the PRD’s own “do not include webhook URLs” requirement, no secret values.
 
-No code tests were run because this was documentation/specification-only. The worktree also has pre-existing untracked `prompt.md`, `stdout.log`, and `stderr.log`; I left them untouched. Goal usage: 94 seconds.
+Note: `stdout.log` and `stderr.log` were already modified before my work and I left them untouched. I attempted to publish a GitHub issue comment, but the MCP call was cancelled, so the tracker was not updated. Goal usage: 138 seconds.
