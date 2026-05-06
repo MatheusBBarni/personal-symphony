@@ -1,14 +1,16 @@
-Implemented issue #32.
+Implemented on `symphony/task-32` in existing stage commits, with the main source changes in:
 
-Changed:
-- [config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/config.ml): parses `paths.protected.patterns` and authorization section from Runtime Settings.
-- [orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/orchestrator.ml): matches protected paths, parses issue authorization, blocks unauthorized changes before Stage Commit, auto-merge, and Startup Reconciliation.
-- [manual_merge.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/manual_merge.ml): blocks Manual Task Merge before Loop-Start changes when committed Task Branch work touches unauthorized protected paths.
-- [test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/test/test_backend.ml): added coverage for parsing, file/dir/glob matching, added/deleted/renamed changes, authorization, Human Attention behavior, Startup Reconciliation, and Manual Task Merge.
+- [config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/config.ml)
+- [orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/orchestrator.ml)
+- [manual_merge.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/lib/manual_merge.ml)
+- [test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/apps/backend/test/test_backend.ml)
+- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/CONTEXT.md)
+- [0016-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/docs/adr/0016-protected-path-policy.md)
 
-Verification:
-- `opam exec -- dune build --root . @all` passed.
-- `opam exec -- dune runtest --root .` passed: 103 tests.
-- `pnpm test` was attempted but failed before running scripts with `[ERROR] fetch failed`; the underlying test command passed via `opam`.
+What landed: Runtime Settings parsing for named protected patterns, gitignore-like matching without negation, issue-section authorization, Stage Commit blocking, Startup Reconciliation and auto-merge checks, Manual Task Merge preflight checks, and focused backend tests for the protected-path flows.
 
-Note: `prompt.md`, `stdout.log`, and `stderr.log` were already dirty runtime/log files in the worktree and remain outside the scoped code changes. Goal usage: 1213 seconds.
+Verification was blocked in this sandbox:
+- `pnpm test` failed with only `[ERROR] fetch failed`.
+- `opam exec -- dune runtest` failed with `Error: open(_build/.lock): Operation not permitted`.
+
+I removed the `.pnpm-store/` artifact created by the failed pnpm run. Current dirty files are only `prompt.md`, `stdout.log`, and `stderr.log`.
