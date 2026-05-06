@@ -15,7 +15,7 @@ Source issue: [#24 Support richer commit stage tags and custom skills](https://g
 
 ## 1. Purpose & Scope
 
-This specification applies to Runtime Settings parsing, Stage Agent configuration, Stage Commit message rendering, and optional Stage Skill Load behavior in a Workspace Repository.
+This specification applies to Runtime Settings parsing, Stage Agent configuration, Stage Commit Tag Guidance parsing, Stage Commit message rendering, and optional Stage Skill Load behavior in a Workspace Repository.
 
 The intended audience is implementers, reviewers, and future agents working on Stage Commit behavior. This specification assumes the current Stage Commit flow remains: agent work completes, Stage Commit runs when configured, Stage Push runs only after a successful Stage Commit when enabled, and the issue moves to the stage success status only after the handoff succeeds.
 
@@ -32,6 +32,7 @@ Out of scope:
 - **Stage Agent**: A configured agent entry that owns one or more project statuses and transition behavior.
 - **Stage Commit**: A commit created by Personal Symphony after an agent successfully completes a configured stage.
 - **Stage Commit Classification**: Repository-owned metadata used to choose the commit type or tag for a Stage Commit.
+- **Stage Commit Tag Guidance**: The repository-owned `tags.json` vocabulary that explains the four-character commit tags available to Stage Commit Classification.
 - **Stage Push**: An optional non-force push of the current Task Branch after a Stage Commit is created.
 - **Stage Skill Load**: The ordered set of skills configured for a Stage Agent.
 - **Human Attention Status**: A paused project status for task work that requires operator triage before Symphony should continue.
@@ -49,6 +50,12 @@ Out of scope:
 - **REQ-009**: Stage Skill Load MUST remain opt-in through `stageAgents.stages[].skills`.
 - **REQ-010**: Workspace Repository skills MUST resolve before Codex Home skills when both locations provide a skill with the same name.
 - **REQ-011**: Runtime State or terminal diagnostics MUST identify the labels and mappings that caused a classification conflict.
+- **REQ-012**: A Workspace Repository MAY define Stage Commit Tag Guidance in `tags.json`.
+- **REQ-013**: `tags.json` MUST be a JSON array when present.
+- **REQ-014**: Each `tags.json` array item MUST be an object with `tag` and `instructions` fields.
+- **REQ-015**: Each `tags.json` `tag` MUST be the four-character commit tag/type value used by Stage Commit Classification.
+- **REQ-016**: Each `tags.json` `instructions` value MUST explain the matching Git commit type semantics in four-character-tag form.
+- **REQ-017**: Symphony MUST include `tags.json` guidance in every Stage Commit step when the file is present and valid.
 - **SEC-001**: Documentation and examples MUST mention only secret variable names, never token values.
 - **CON-001**: Stage Commit Classification MUST NOT replace `<generated_message_max_90char>` with unconstrained agent-authored prose.
 - **CON-002**: Stage Push MUST remain non-force and MUST still run only after a successful Stage Commit.
@@ -101,6 +108,19 @@ The exact field names may be adjusted during implementation, but the data contra
 | Multiple labels map to different classifications | Pause in Human Attention Status before Stage Commit. |
 | `commit.enabled` is `false` | Do not create a Stage Commit and do not require classification resolution. |
 
+### Stage Commit Tag Guidance Shape
+
+`tags.json` is repository-owned commit tag/type guidance. It should live at the Workspace Repository root unless implementation discovers a stronger Runtime Contract location.
+
+```json
+[
+  {
+    "tag": "feat",
+    "instructions": "Feature work represented in four-character commit tag form."
+  }
+]
+```
+
 ## 5. Acceptance Criteria
 
 - **AC-001**: Given a commit-enabled stage with a matching issue label, When Symphony renders the Stage Commit message, Then `<type>` is replaced with the mapped classification.
@@ -109,6 +129,8 @@ The exact field names may be adjusted during implementation, but the data contra
 - **AC-004**: Given a Stage Agent with configured skills, When Symphony prepares the agent launch, Then Stage Skill Load remains ordered and opt-in.
 - **AC-005**: Given `commit.push` is `true`, When the Stage Commit succeeds, Then Stage Push runs after the Stage Commit and remains non-force.
 - **AC-006**: Given a documentation example, When it references GitHub authentication, Then it uses only variable names such as `GITHUB_TOKEN` or `GH_TOKEN`.
+- **AC-007**: Given valid `tags.json`, When Symphony prepares a Stage Commit step, Then the four-character tag guidance is included with the agent guidance and commit rendering context.
+- **AC-008**: Given invalid `tags.json`, When Symphony validates Runtime Settings or prepares a Stage Commit step, Then it records a clear readiness or completion diagnostic and does not use malformed tag guidance.
 
 ## 6. Test Automation Strategy
 
@@ -122,6 +144,7 @@ The exact field names may be adjusted during implementation, but the data contra
 Required tests:
 
 - Parse omitted classification, explicit default classification, valid label mappings, and invalid empty classifications.
+- Parse valid `tags.json` and reject non-array JSON, non-object array items, missing fields, empty `tag`, non-four-character `tag`, and empty `instructions`.
 - Render commit messages for fallback, label-derived, and conflicting classifications.
 - Verify conflicting classification does not create a Stage Commit and records attention clearly.
 - Verify existing Stage Push ordering remains unchanged.
@@ -183,6 +206,8 @@ Edge cases:
 - A label appears more than once in tracker data: treat duplicates as one label.
 - A label mapping references an empty classification: reject Runtime Settings as invalid.
 - A commit-disabled stage has classification settings: parse them if present, but do not require resolution.
+- `tags.json` is absent: continue without Stage Commit Tag Guidance.
+- `tags.json` contains duplicate `tag` values: reject the guidance as ambiguous before using it in a Stage Commit step.
 
 ## 10. Validation Criteria
 

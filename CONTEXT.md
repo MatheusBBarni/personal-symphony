@@ -108,6 +108,14 @@ _Avoid_: auto commit, every step commit
 Repository-owned metadata used to choose the commit type or tag for a Stage Commit.
 _Avoid_: commit label, stage tag, arbitrary prefix
 
+**Stage Commit Tag Guidance**:
+The repository-owned `tags.json` vocabulary that explains the four-character commit tags available to Stage Commit Classification.
+_Avoid_: global commit rules, agent-only tag list, free-form tag prompt
+
+**Stage Skill Load**:
+The ordered skill identifiers that Runtime Settings render into the Agent Prompt for a matching Stage Agent.
+_Avoid_: skill prompt injection, automatic skill expansion, agent plugin list
+
 **Stage Push**:
 An optional push of a Stage Commit to the currently checked-out Task Branch after the Stage Commit is created.
 _Avoid_: auto push, push every step
@@ -141,7 +149,7 @@ One issue identifier and its current queue progress within an Ordered Queue.
 _Avoid_: queue item, queued issue, queue row
 
 **Batch Pull Request**:
-A single pull request opened from the Loop-Start Branch after Symphony reaches Orchestration Idle.
+A single pull request opened from the Loop-Start Branch either after Symphony reaches Orchestration Idle or, when configured, after task work moves to the review status.
 _Avoid_: per-task PR, task pull request, queue PR
 
 **Batch Branch Push**:
@@ -155,6 +163,10 @@ _Avoid_: inferred base, default branch, protected branch
 **Pull Request Policy**:
 The Runtime Settings section that controls automatic Batch Pull Request creation.
 _Avoid_: PR config, GitHub settings, git policy
+
+**Review Pull Request Handoff**:
+An opt-in Pull Request Policy trigger that opens the Batch Pull Request immediately after task work is integrated and its issue moves to the review status.
+_Avoid_: per-task PR, review PR, agent PR
 
 **Pull Request Template**:
 The configured title or body pattern used when opening a Batch Pull Request.
@@ -302,6 +314,12 @@ _Avoid_: reinitialize, reset
 - The default **Task Cleanup Policy** keeps a merged **Task Branch**.
 - A **Stage Commit** may be created when a configured stage completes with code changes.
 - A **Stage Commit** may use a **Stage Commit Classification** when rendering its commit message.
+- **Stage Commit Classification** uses matching issue labels before the stage default.
+- When matching issue labels resolve to conflicting classifications for a commit-enabled stage, Symphony pauses the task in a **Human Attention Status** before creating a **Stage Commit**.
+- A **Workspace Repository** may define **Stage Commit Tag Guidance** in `tags.json`.
+- **Stage Commit Tag Guidance** is a JSON array of objects with `tag` and `instructions` fields.
+- A **Stage Commit Tag Guidance** `tag` is a four-character commit tag or type value used by **Stage Commit Classification**.
+- **Stage Commit Tag Guidance** should be included in every **Stage Commit** step.
 - A **Stage Push** happens only after a **Stage Commit** is successfully created.
 - A **Stage Push** happens before the stage moves to its success project state.
 - Runtime Settings enable a **Stage Push** with `commit.push` on a configured stage.
@@ -514,10 +532,12 @@ _Avoid_: reinitialize, reset
 - "queue finished" was used without a queue concept in the Runtime State model; resolved: use **Work Became Idle** for the transition from running or retrying work to zero running and zero retrying work.
 - "error happens" was used broadly; resolved: use **Task Needs Attention** only when a new Runtime State issue error appears.
 - "tasks in queue" was used to mean there is no remaining orchestration work; resolved: use **Orchestration Idle** for the condition where no active issue is running, retrying, or dispatchable.
-- "Open PR after finishing all the tasks" was used to mean opening one pull request for combined task work; resolved: use **Batch Pull Request**, opened from the **Loop-Start Branch** after **Orchestration Idle**.
+- "Open PR after finishing all the tasks" was used to mean opening one pull request for combined task work; resolved: use **Batch Pull Request**, opened from the **Loop-Start Branch** after **Orchestration Idle** by default.
+- "Open PR after the agent reaches In review" means opening the same **Batch Pull Request** early through **Review Pull Request Handoff**, not creating a separate per-task pull request.
 - "base branch" for automatic PR creation was ambiguous because the **Loop-Start Branch** is the head of the **Batch Pull Request**; resolved: use configured **Pull Request Base Branch** for the target branch.
 - "merge the worktrees" was used to mean integrating completed **Task Branches**; resolved: Symphony fast-forward merges **Task Branches** into the **Loop-Start Branch**, not Agent Worktrees.
 - ".symphonyignore" was used to mean a repository-owned rule for files agents must not modify; resolved: use **Protected Path Policy** until the storage format is decided.
 - "allowed branch" was used to mean restricting where orchestration may start; resolved: use **Allowed Loop-Start Branch Policy**.
 - "commit stage tags" was used to mean metadata that chooses a Stage Commit type or tag; resolved: use **Stage Commit Classification**.
+- "tags.json guidance" was used to mean the repository-owned four-character commit tag vocabulary; resolved: use **Stage Commit Tag Guidance**.
 - "maxConcurrentAgents for each stage" was used to mean concurrency caps per Stage Agent; resolved: use **Stage Concurrency Policy**.
