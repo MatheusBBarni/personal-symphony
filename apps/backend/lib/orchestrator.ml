@@ -480,6 +480,11 @@ let require_clean_loop_start root =
   | Ok _ -> Error "loop-start worktree must be clean before creating task worktrees"
   | Error error -> Error ("git status failed: " ^ error)
 
+let prune_stale_worktrees root =
+  match run_shell_capture ~cwd:root "git worktree prune" with
+  | Ok _ -> Ok ()
+  | Error error -> Error ("git worktree prune failed: " ^ error)
+
 let shell_prepare_workspace config ~loop_start_branch issue =
   let branch = task_branch config issue in
   if not (is_git_repository config.repository_root) then
@@ -495,26 +500,31 @@ let shell_prepare_workspace config ~loop_start_branch issue =
       match require_clean_loop_start config.repository_root with
       | Error _ as error -> error
       | Ok () ->
-          let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
-          let create_branch =
-            if git_ref_exists config.repository_root branch then Ok ()
-            else
-              match
-                run_shell_capture ~cwd:config.repository_root
-                  (Printf.sprintf "git branch %s %s" (Util.shell_quote branch) (Util.shell_quote loop_start_branch))
-              with
-              | Ok _ -> Ok ()
-              | Error _ as error -> error
+          let prepare_workspace () =
+            let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
+            let create_branch =
+              if git_ref_exists config.repository_root branch then Ok ()
+              else
+                match
+                  run_shell_capture ~cwd:config.repository_root
+                    (Printf.sprintf "git branch %s %s" (Util.shell_quote branch) (Util.shell_quote loop_start_branch))
+                with
+                | Ok _ -> Ok ()
+                | Error _ as error -> error
+            in
+            match create_branch with
+            | Error error -> Error ("task branch creation failed: " ^ error)
+            | Ok _ -> (
+                match
+                  run_shell_capture ~cwd:config.repository_root
+                    (Printf.sprintf "git worktree add %s %s" (Util.shell_quote workspace.path) (Util.shell_quote branch))
+                with
+                | Ok _ -> Ok workspace
+                | Error error -> Error ("agent worktree creation failed: " ^ error))
           in
-          (match create_branch with
-          | Error error -> Error ("task branch creation failed: " ^ error)
-          | Ok _ -> (
-              match
-                run_shell_capture ~cwd:config.repository_root
-                  (Printf.sprintf "git worktree add %s %s" (Util.shell_quote workspace.path) (Util.shell_quote branch))
-              with
-              | Ok _ -> Ok workspace
-              | Error error -> Error ("agent worktree creation failed: " ^ error)))
+          match prune_stale_worktrees config.repository_root with
+          | Error _ as error -> error
+          | Ok () -> prepare_workspace ()
 
 let has_worktree_changes root =
   match run_shell_capture ~cwd:root "git status --porcelain" with
