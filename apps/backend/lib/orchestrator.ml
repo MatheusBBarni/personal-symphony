@@ -393,13 +393,54 @@ let truncate max_len text =
   let text = Util.trim text in
   if String.length text <= max_len then text else String.sub text 0 max_len |> Util.trim
 
-let render_commit_message issue (stage : Config.stage_agent option) next_status policy =
+let stage_commit_classification_conflict_prefix = "stage commit classification conflict:"
+
+let normalized_unique values =
+  List.fold_left
+    (fun acc value ->
+      let value = Util.trim value |> String.lowercase_ascii in
+      if value = "" || List.exists (( = ) value) acc then acc else acc @ [ value ])
+    [] values
+
+let resolved_stage_commit_classification issue (policy : Config.stage_commit) =
+  let default, label_map =
+    match policy.classification with
+    | None -> (policy.commit_type, [])
+    | Some classification -> (classification.default, classification.label_map)
+  in
+  let labels = normalized_unique issue.Issue.labels in
+  let matches =
+    label_map
+    |> List.filter_map (fun (label, classification) ->
+           let label = Util.trim label |> String.lowercase_ascii in
+           if List.exists (( = ) label) labels then Some (label, classification) else None)
+  in
+  let classifications =
+    List.fold_left
+      (fun acc (_, classification) ->
+        if List.exists (( = ) classification) acc then acc else acc @ [ classification ])
+      [] matches
+  in
+  match classifications with
+  | [] -> Ok default
+  | [ classification ] -> Ok classification
+  | _ ->
+      let details =
+        matches
+        |> List.map (fun (label, classification) -> label ^ " -> " ^ classification)
+        |> String.concat ", "
+      in
+      Error (stage_commit_classification_conflict_prefix ^ " " ^ details)
+
+let render_commit_message_with_classification issue (stage : Config.stage_agent option) next_status policy classification =
   let agent = match stage with Some stage -> stage.agent | None -> "agent" in
   let generated =
     Printf.sprintf "complete %s %s" issue.Issue.identifier issue.title |> truncate 90
   in
   policy.Config.message
-  |> replace_token ~token:"type" ~value:policy.Config.commit_type
+  |> replace_token ~token:"type" ~value:classification
+  |> replace_token ~token:"classification" ~value:classification
+  |> replace_token ~token:"tag" ~value:classification
   |> replace_token ~token:"generated_message_max_90char" ~value:generated
   |> replace_token ~token:"issue_identifier" ~value:issue.identifier
   |> replace_token ~token:"issue_title" ~value:issue.title
@@ -407,6 +448,16 @@ let render_commit_message issue (stage : Config.stage_agent option) next_status 
   |> replace_token ~token:"to_status" ~value:(Option.value next_status ~default:"")
   |> replace_token ~token:"agent" ~value:agent
   |> Util.trim
+
+let render_commit_message_result issue stage next_status policy =
+  match resolved_stage_commit_classification issue policy with
+  | Error _ as error -> error
+  | Ok classification -> Ok (render_commit_message_with_classification issue stage next_status policy classification)
+
+let render_commit_message issue stage next_status policy =
+  match render_commit_message_result issue stage next_status policy with
+  | Ok message -> message
+  | Error error -> error
 
 let run_shell_capture ~cwd command =
   let command = Printf.sprintf "cd %s && %s 2>&1" (Util.shell_quote cwd) command in
@@ -610,25 +661,27 @@ let git_commit_stage_changes _config workspace issue stage next_status =
               render_commit_skipped issue.Issue.identifier;
               Error "commit required but agent produced no code changes"
           | Ok true ->
-              let message = render_commit_message issue (Some stage) next_status policy in
-              match run_shell_capture ~cwd:root "git add -A" with
-              | Error error -> Error ("git add failed: " ^ error)
-              | Ok _ -> (
-                  match run_shell_capture ~cwd:root "git diff --cached --quiet" with
-                  | Ok _ ->
-                      render_commit_skipped issue.Issue.identifier;
-                      Error "commit required but no staged changes were found"
-                  | Error _ ->
-                      let command = Printf.sprintf "git commit -m %s" (Util.shell_quote message) in
-                      match run_shell_capture ~cwd:root command with
+              match render_commit_message_result issue (Some stage) next_status policy with
+              | Error _ as error -> error
+              | Ok message -> (
+                  match run_shell_capture ~cwd:root "git add -A" with
+                  | Error error -> Error ("git add failed: " ^ error)
+                  | Ok _ -> (
+                      match run_shell_capture ~cwd:root "git diff --cached --quiet" with
                       | Ok _ ->
-                          render_commit_completed issue.Issue.identifier message;
-                          if policy.Config.push then
-                            match push_current_branch root with
-                            | Ok _ -> Ok ()
-                            | Error error -> Error ("stage push failed: " ^ error)
-                          else Ok ()
-                      | Error error -> Error error))
+                          render_commit_skipped issue.Issue.identifier;
+                          Error "commit required but no staged changes were found"
+                      | Error _ ->
+                          let command = Printf.sprintf "git commit -m %s" (Util.shell_quote message) in
+                          match run_shell_capture ~cwd:root command with
+                          | Ok _ ->
+                              render_commit_completed issue.Issue.identifier message;
+                              if policy.Config.push then
+                                match push_current_branch root with
+                                | Ok _ -> Ok ()
+                                | Error error -> Error ("stage push failed: " ^ error)
+                              else Ok ()
+                          | Error error -> Error error)))
 
 let replace_first_word command replacement =
   let command = Util.trim command in
@@ -1317,6 +1370,9 @@ let non_retryable_completion_error = function
   | "commit required but agent produced no code changes" | "commit required but no staged changes were found" -> true
   | _ -> false
 
+let human_attention_completion_error error =
+  Util.starts_with ~prefix:stage_commit_classification_conflict_prefix error
+
 let mark_blocked orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
   | None -> ()
@@ -1435,9 +1491,11 @@ let mark_completed orchestrator child =
   let next_status = success_status orchestrator child.issue in
   match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
   | Error error ->
-      set_error orchestrator error;
       render_commit_failed child.issue_identifier error;
-      if non_retryable_completion_error error then mark_blocked orchestrator issue_id error
+      if human_attention_completion_error error then mark_merge_attention orchestrator child error
+      else if non_retryable_completion_error error then (
+        set_error orchestrator error;
+        mark_blocked orchestrator issue_id error)
       else mark_retrying orchestrator issue_id error
   | Ok () ->
       (match auto_merge_child orchestrator child with

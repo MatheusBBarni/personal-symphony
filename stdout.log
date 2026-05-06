@@ -1,20 +1,13 @@
-Implemented the PRD/documentation scope for issue #24.
+Implemented Stage Commit Classification for issue #24.
 
 Changed:
-- [docs/prd/0024-stage-commit-classification-and-commit-skill.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/docs/prd/0024-stage-commit-classification-and-commit-skill.md)
-- [docs/adr/0016-stage-commit-classification-and-commit-skill-load.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/docs/adr/0016-stage-commit-classification-and-commit-skill-load.md)
-- [spec/spec-process-stage-commit-classification.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/spec/spec-process-stage-commit-classification.md)
-- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/CONTEXT.md)
-
-What changed:
-- Reframed the PRD around deterministic **Stage Commit Classification** plus repository-owned `tags.json` guidance.
-- Kept personalized commit skills explicit through `stageAgents.stages[].skills`; no global auto-load behavior.
-- Added `tags.json` contract: JSON array, `tag`, `instructions`, four-character tag semantics, included in Stage Commit steps.
-- Updated ADR and glossary with **Stage Commit Tag Guidance**.
-- Added required test coverage for classification fallback, label-derived tags, conflicts, Stage Skill Load validation, and `tags.json` parsing.
+- [config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/apps/backend/lib/config.ml:39): parses optional `commit.classification` with `default`, `labelMap`, and `conflictBehavior`.
+- [orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/apps/backend/lib/orchestrator.ml:396): resolves labels before fallback, renders `<type>`, `<tag>`, and `<classification>`, and moves conflicts to Human Attention before creating a Stage Commit.
+- [test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/apps/backend/test/test_backend.ml:72): added parsing, rendering, same-classification, conflict, and no-commit-on-conflict coverage.
 
 Verification:
-- `git diff --check -- CONTEXT.md docs/adr/0016-stage-commit-classification-and-commit-skill-load.md docs/prd/0024-stage-commit-classification-and-commit-skill.md spec/spec-process-stage-commit-classification.md` passed.
-- I did not run `pnpm test`; this was documentation/spec-only.
+- `pnpm backend:build` failed before compile with `fetch failed`.
+- Passed: `DUNE_BUILD_DIR=/private/tmp/symphony-dune-build-24 opam exec -- dune build --root ... apps/backend/test/test_backend.exe`
+- Passed: backend Alcotest suite, `101 tests run`.
 
-Note: `prompt.md`, `stdout.log`, and `stderr.log` were already dirty and left untouched.
+Existing unrelated dirty files remain untouched: `prompt.md`, `stderr.log`, `stdout.log`.

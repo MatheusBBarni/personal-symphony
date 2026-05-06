@@ -36,7 +36,18 @@ type codex = {
 }
 type server = { port : int option }
 type pull_request = { enabled : bool; base_branch : string; title : string; body : string }
-type stage_commit = { enabled : bool; commit_type : string; message : string; push : bool }
+type stage_commit_classification = {
+  default : string;
+  label_map : (string * string) list;
+  conflict_behavior : string;
+}
+type stage_commit = {
+  enabled : bool;
+  commit_type : string;
+  message : string;
+  push : bool;
+  classification : stage_commit_classification option;
+}
 type stage_goal = { enabled : bool }
 type stage_agent = {
   states : string list;
@@ -82,6 +93,7 @@ let default_codex_command = "codex exec"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_pull_request = { enabled = false; base_branch = "main"; title = default_pull_request_title; body = default_pull_request_body }
+let default_conflict_behavior = "human_attention"
 
 let default_git =
   {
@@ -106,7 +118,7 @@ let default_stage_agents =
       success_status = Some "To-Do";
       retry_status = Some "Backlog";
       goal = Some { enabled = false };
-      commit = Some { enabled = false; commit_type = "feature"; message = default_commit_message; push = false };
+      commit = Some { enabled = false; commit_type = "feature"; message = default_commit_message; push = false; classification = None };
     };
     {
       states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
@@ -116,7 +128,7 @@ let default_stage_agents =
       success_status = Some "In review";
       retry_status = Some "To-Do";
       goal = Some { enabled = false };
-      commit = Some { enabled = true; commit_type = "feature"; message = default_commit_message; push = false };
+      commit = Some { enabled = true; commit_type = "feature"; message = default_commit_message; push = false; classification = None };
     };
     {
       states = [ "In review"; "In Review" ];
@@ -126,7 +138,7 @@ let default_stage_agents =
       success_status = Some "Done";
       retry_status = Some "In progress";
       goal = Some { enabled = false };
-      commit = Some { enabled = false; commit_type = "refactor"; message = default_commit_message; push = false };
+      commit = Some { enabled = false; commit_type = "refactor"; message = default_commit_message; push = false; classification = None };
     };
   ]
 
@@ -270,6 +282,27 @@ let json_string_list name json ~default =
       |> List.filter_map (function `String s -> Some s | `Int i -> Some (string_of_int i) | _ -> None)
   | _ -> default
 
+let nonempty_trimmed_string path value =
+  match Util.trim value with
+  | "" -> raise (Invalid_config (path ^ " must not be empty"))
+  | trimmed -> trimmed
+
+let json_string_assoc path json =
+  match json with
+  | `Null -> []
+  | `Assoc fields ->
+      fields
+      |> List.map (fun (key, value) ->
+             let key = nonempty_trimmed_string (path ^ "." ^ key) key |> String.lowercase_ascii in
+             let value =
+               match value with
+               | `String s -> nonempty_trimmed_string (path ^ "." ^ key) s
+               | `Int i -> string_of_int i
+               | _ -> raise (Invalid_config (path ^ "." ^ key ^ " must be a string"))
+             in
+             (key, value))
+  | _ -> raise (Invalid_config (path ^ " must be an object"))
+
 let json_branch_name_list name json ~default =
   match member name json with
   | `Null -> default
@@ -297,12 +330,39 @@ let json_stage_agent json =
   let commit =
     match commit_raw with
     | `Assoc _ ->
+        let commit_type = json_string "type" commit_raw ~default:"feature" in
+        let classification_raw = member "classification" commit_raw in
+        let classification =
+          match classification_raw with
+          | `Assoc _ ->
+              let conflict_behavior =
+                json_string "conflictBehavior" classification_raw ~default:default_conflict_behavior
+                |> nonempty_trimmed_string "stageAgents.stages[].commit.classification.conflictBehavior"
+              in
+              if String.lowercase_ascii conflict_behavior <> default_conflict_behavior then
+                raise
+                  (Invalid_config
+                     "stageAgents.stages[].commit.classification.conflictBehavior must be human_attention");
+              Some
+                {
+                  default =
+                    json_string "default" classification_raw ~default:commit_type
+                    |> nonempty_trimmed_string "stageAgents.stages[].commit.classification.default";
+                  label_map =
+                    json_string_assoc "stageAgents.stages[].commit.classification.labelMap"
+                      (member "labelMap" classification_raw);
+                  conflict_behavior;
+                }
+          | `Null -> None
+          | _ -> raise (Invalid_config "stageAgents.stages[].commit.classification must be an object")
+        in
         Some
           {
             enabled = json_bool "enabled" commit_raw ~default:false;
-            commit_type = json_string "type" commit_raw ~default:"feature";
+            commit_type;
             message = json_string "message" commit_raw ~default:default_commit_message;
             push = json_bool "push" commit_raw ~default:false;
+            classification;
           }
     | _ -> None
   in

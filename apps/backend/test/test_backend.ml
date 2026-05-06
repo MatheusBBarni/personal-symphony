@@ -88,7 +88,16 @@ let test_config_parses_git_policy_and_stage_push () =
       {
         "states": ["In review"],
         "agent": "reviewer",
-        "commit": {"enabled": false, "type": "refactor", "message": "<type>: review"}
+        "commit": {
+          "enabled": false,
+          "type": "refactor",
+          "message": "<type>: review",
+          "classification": {
+            "default": "docs",
+            "labelMap": {"documentation": "docs", "bug": "fix"},
+            "conflictBehavior": "human_attention"
+          }
+        }
       }
     ]
   }
@@ -108,11 +117,42 @@ let test_config_parses_git_policy_and_stage_push () =
       Alcotest.(check bool) "pull request enabled" true config.pull_request.enabled;
       Alcotest.(check string) "pull request base" "main" config.pull_request.base_branch;
       Alcotest.(check string) "pull request title" "Symphony batch from <head_branch> into <base_branch>" config.pull_request.title;
-      match config.stage_agents.stages with
+      (match config.stage_agents.stages with
       | [ { Config.commit = Some engineer_commit; _ }; { Config.commit = Some reviewer_commit; _ } ] ->
           Alcotest.(check bool) "stage push" true engineer_commit.push;
-          Alcotest.(check bool) "stage push default" false reviewer_commit.push
-      | _ -> Alcotest.fail "expected stage commit policy")
+          Alcotest.(check bool) "stage push default" false reviewer_commit.push;
+          (match reviewer_commit.classification with
+          | Some classification ->
+              Alcotest.(check string) "classification default" "docs" classification.default;
+              Alcotest.(check (list (pair string string))) "classification label map"
+                [ ("documentation", "docs"); ("bug", "fix") ]
+                classification.label_map;
+              Alcotest.(check string) "classification conflict behavior" "human_attention"
+                classification.conflict_behavior
+          | None -> Alcotest.fail "expected classification policy")
+      | _ -> Alcotest.fail "expected stage commit policy");
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {
+        "states": ["In progress"],
+        "agent": "engineer",
+        "commit": {
+          "enabled": true,
+          "type": "feat",
+          "classification": {"default": "", "labelMap": {"bug": "fix"}}
+        }
+      }
+    ]
+  }
+}|};
+      Alcotest.check_raises "empty classification default is invalid"
+        (Config.Invalid_config "stageAgents.stages[].commit.classification.default must not be empty")
+        (fun () -> ignore (Config.from_settings_file ~workspace_root:root settings)))
 
 let test_config_parses_allowed_loop_start_branch_policy () =
   with_temp_dir "symphony-loop-start-policy-" (fun root ->
@@ -2537,7 +2577,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                     success_status = Some "In review";
                     retry_status = Some "Todo";
                     goal = None;
-                    commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>"; push = false };
+                    commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>"; push = false; classification = None };
                   };
                 ];
             };
@@ -2575,6 +2615,56 @@ let test_orchestrator_commits_stage_before_success_status () =
           stderr_size = 0;
         };
       Alcotest.(check (list string)) "commit before status" [ "commit:fixture: complete #1 One"; "status:In review" ] (List.rev !events))
+
+let test_stage_commit_classification_renders_messages () =
+  let policy =
+    {
+      Config.enabled = true;
+      commit_type = "feat";
+      message = "<type>: <generated_message_max_90char>";
+      push = false;
+      classification =
+        Some
+          {
+            default = "feat";
+            label_map = [ ("bug", "fix"); ("documentation", "docs"); ("docs", "docs") ];
+            conflict_behavior = "human_attention";
+          };
+    }
+  in
+  let stage =
+    Some
+      {
+        Config.states = [ "In progress" ];
+        agent = "engineer";
+        skills = [];
+        start_status = None;
+        success_status = Some "In review";
+        retry_status = Some "Todo";
+        goal = None;
+        commit = Some policy;
+      }
+  in
+  let issue ?(labels = []) identifier title =
+    { (Issue.empty ~id:identifier ~identifier ~title ~state:"In progress") with labels }
+  in
+  Alcotest.(check string) "fallback classification" "feat: complete #1 Fallback"
+    (Orchestrator.render_commit_message (issue "#1" "Fallback") stage (Some "In review") policy);
+  Alcotest.(check string) "label-derived classification" "fix: complete #2 Bug"
+    (Orchestrator.render_commit_message (issue ~labels:[ "Bug" ] "#2" "Bug") stage (Some "In review") policy);
+  Alcotest.(check string) "tag token classification" "fix: complete #2 Bug"
+    (Orchestrator.render_commit_message (issue ~labels:[ "Bug" ] "#2" "Bug") stage (Some "In review")
+       { policy with message = "<tag>: <generated_message_max_90char>" });
+  Alcotest.(check string) "same classification labels" "docs: complete #3 Docs"
+    (Orchestrator.render_commit_message (issue ~labels:[ "documentation"; "docs" ] "#3" "Docs") stage
+       (Some "In review") policy);
+  match Orchestrator.render_commit_message_result (issue ~labels:[ "bug"; "documentation" ] "#4" "Conflict") stage
+          (Some "In review") policy with
+  | Ok message -> Alcotest.fail ("expected conflict, got " ^ message)
+  | Error error ->
+      Alcotest.(check string) "conflict diagnostic"
+        "stage commit classification conflict: bug -> fix, documentation -> docs"
+        error
 
 let test_orchestrator_retries_when_success_status_move_fails () =
   with_temp_dir "symphony-status-failure-" (fun root ->
@@ -2684,7 +2774,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                     success_status = Some "In review";
                     retry_status = Some "Todo";
                     goal = None;
-                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = true };
+                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = true; classification = None };
                   };
                 ];
             };
@@ -2770,7 +2860,7 @@ let test_stage_commit_requires_code_changes () =
             success_status = Some "In review";
             retry_status = Some "Todo";
             goal = None;
-            commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
+            commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
           }
       in
       let workspace = { Workspace.path = root; workspace_key = "test"; created_now = false } in
@@ -2822,7 +2912,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                     success_status = Some "In review";
                     retry_status = Some "Todo";
                     goal = None;
-                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false };
+                    commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
                   };
                 ];
             };
@@ -2973,6 +3063,71 @@ let completed_child issue workspace =
     stdout_size = 0;
     stderr_size = 0;
   }
+
+let test_conflicting_stage_commit_classification_moves_attention_without_commit () =
+  with_temp_dir "symphony-stage-commit-classification-attention-" (fun root ->
+      init_repo root "symphony/dogfood";
+      let config =
+        {
+          (base_orchestrator_config root (git_policy ~auto_merge:false ())) with
+          Config.stage_agents =
+            {
+              enabled = true;
+              root = Filename.concat root "agents";
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "In progress" ];
+                    agent = "engineer";
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit =
+                      Some
+                        {
+                          enabled = true;
+                          commit_type = "feat";
+                          message = Config.default_commit_message;
+                          push = false;
+                          classification =
+                            Some
+                              {
+                                default = "feat";
+                                label_map = [ ("bug", "fix"); ("documentation", "docs") ];
+                                conflict_behavior = "human_attention";
+                              };
+                        };
+                  };
+                ];
+            };
+        }
+      in
+      let issue =
+        {
+          (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Conflicting labels" ~state:"In progress") with
+          labels = [ "bug"; "documentation" ];
+        }
+      in
+      Util.write_file (Filename.concat root "change.txt") "change\n";
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator
+        (completed_child issue { Workspace.path = root; workspace_key = "test"; created_now = false });
+      Alcotest.(check (list string)) "moves to attention" [ "Human attention" ] (List.rev !statuses);
+      Alcotest.(check int) "no stage commit created" 1
+        (List.length (run_ok ~cwd:root "log" "git log --format=%s" |> Util.split_lines));
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "not retrying" 0 (List.length state.retrying);
+      Alcotest.(check (option string)) "last error"
+        (Some "stage commit classification conflict: bug -> fix, documentation -> docs")
+        state.last_error)
 
 let test_ordered_queue_keeps_stage_handoffs_pending () =
   with_temp_dir "symphony-orchestrator-queue-stage-" (fun root ->
@@ -3623,7 +3778,7 @@ let test_stage_commit_pushes_task_branch () =
             success_status = Some "In review";
             retry_status = Some "Todo";
             goal = None;
-            commit = Some { enabled = true; commit_type = "feat"; message = Config.default_commit_message; push = true };
+            commit = Some { enabled = true; commit_type = "feat"; message = Config.default_commit_message; push = true; classification = None };
           }
       in
       (match Orchestrator.git_commit_stage_changes config workspace issue stage (Some "In review") with
@@ -4083,6 +4238,8 @@ let () =
           Alcotest.test_case "parses goal usage variants" `Quick test_parse_goal_usage_variants_and_ignores_invalid;
           Alcotest.test_case "parses nested goal usage fields" `Quick test_parse_goal_usage_nested_usage_fields;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
+          Alcotest.test_case "renders stage commit classification messages" `Quick
+            test_stage_commit_classification_renders_messages;
           Alcotest.test_case "retries when success status move fails" `Quick test_orchestrator_retries_when_success_status_move_fails;
           Alcotest.test_case "retries push failure before success status"
             `Quick test_orchestrator_retries_push_failure_before_success_status;
@@ -4117,6 +4274,8 @@ let () =
           Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
           Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
             test_orchestrator_blocks_disallowed_loop_start_before_side_effects;
+          Alcotest.test_case "moves conflicting stage commit classification to attention" `Quick
+            test_conflicting_stage_commit_classification_moves_attention_without_commit;
           Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
           Alcotest.test_case "prunes missing registered worktree" `Quick
             test_orchestrator_prunes_missing_registered_worktree;
