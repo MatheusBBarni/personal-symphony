@@ -686,7 +686,8 @@ let set_state orchestrator state =
 
 let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
 
-let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(skip_missing = false) ~candidates () =
+let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
+    () =
   match orchestrator.state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->
@@ -709,20 +710,24 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(s
                  match completed_identifier with
                  | Some identifier when identifier = entry.issue_identifier -> "completed"
                  | _ -> (
-                     match skipped_identifier with
-                     | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                     match pending_identifier with
+                     | Some identifier when identifier = entry.issue_identifier -> "pending"
                      | _ -> (
-                         match entry_state_for_issue state entry.issue_identifier with
-                         | Some state -> state
-                         | None
-                           when skip_missing && entry.state = "pending"
-                                && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
-                             "skipped"
-                         | None -> entry.state))
+                         match skipped_identifier with
+                         | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                         | _ -> (
+                             match entry_state_for_issue state entry.issue_identifier with
+                             | Some state -> state
+                             | None
+                               when skip_missing && entry.state = "pending"
+                                    && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
+                                 "skipped"
+                             | None -> entry.state)))
                in
                let skip_reason =
                  match skipped_identifier with
                  | Some identifier when identifier = entry.issue_identifier -> skipped_reason
+                 | _ when pending_identifier = Some entry.issue_identifier -> None
                  | _ when skip_missing && entry.state = "pending" && candidate_missing entry.issue_identifier ->
                      Some "Issue became unavailable or not dispatchable before admission."
                  | _ when skip_missing && entry.state = "pending" && candidate_not_dispatchable entry.issue_identifier ->
@@ -1306,8 +1311,20 @@ let mark_blocked orchestrator issue_id error =
         });
       update_ordered_queue_entries orchestrator ~skipped:(row.issue.identifier, error) ~candidates:[ row.issue ] ()
 
-let complete_child orchestrator child =
+let complete_child ?next_status orchestrator child =
   let issue_id = child.issue_id in
+  let next_issue =
+    match next_status with
+    | Some state -> { child.issue with Issue.state }
+    | None -> child.issue
+  in
+  let has_active_next_stage =
+    match next_status with
+    | Some state -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states state
+    | None -> false
+  in
+  let completed_identifier = if has_active_next_stage then None else Some child.issue_identifier in
+  let pending_identifier = if has_active_next_stage then Some child.issue_identifier else None in
   Hashtbl.remove orchestrator.attempts issue_id;
   Hashtbl.remove orchestrator.retry_due issue_id;
   update_state orchestrator (fun state ->
@@ -1318,7 +1335,7 @@ let complete_child orchestrator child =
       issue_errors =
         List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
     });
-  update_ordered_queue_entries orchestrator ~completed_identifier:child.issue_identifier ~candidates:[ child.issue ] ();
+  update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ~candidates:[ next_issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
 let cleanup_task_worktree orchestrator child =
@@ -1396,7 +1413,7 @@ let mark_completed orchestrator child =
           | Some status ->
               if not (move_issue_status orchestrator child.issue status) then
                 mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
-              else complete_child orchestrator child))
+              else complete_child ~next_status:status orchestrator child))
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()

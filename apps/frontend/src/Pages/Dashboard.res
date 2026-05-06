@@ -31,8 +31,18 @@ type snapshot = {
 @send external arrayPush: (array<'a>, 'a) => int = "push"
 @send external arrayFilter: (array<'a>, 'a => bool) => array<'a> = "filter"
 @send external toLowerCase: string => string = "toLowerCase"
+@send external trim: string => string = "trim"
 
 let sameState = (left, right) => left->toLowerCase == right->toLowerCase
+let backlogState = "Backlog"
+
+let blankRuntimeValue = value => {
+  let normalized = value->trim
+  switch normalized->toLowerCase {
+  | "" | "null" | "undefined" => true
+  | _ => false
+  }
+}
 
 let arrayIncludesState = (states, state) => {
   let found = ref(false)
@@ -64,6 +74,12 @@ let issueStateColumns = (issues: array<issueItem>) => {
 
 let orderedIssueStateColumns = (statusOrder: array<string>, issues: array<issueItem>) => {
   let states = []
+  let hasBacklog =
+    arrayIncludesState(statusOrder, backlogState) ||
+    arrayIncludesState(issues->issueStateColumns, backlogState)
+  if hasBacklog {
+    ignore(arrayPush(states, backlogState))
+  }
   statusOrder->Array.forEach(state => {
     if !arrayIncludesState(states, state) {
       ignore(arrayPush(states, state))
@@ -104,8 +120,16 @@ let banner = (tone, label, message) => {
   </div>
 }
 
+let renderBanner = (tone, label, message) =>
+  switch blankRuntimeValue(message) {
+  | true => React.null
+  | false => banner(tone, label, message->trim)
+  }
+
 let issueCard = (issue: issueItem) =>
-  <article key=issue.identifier className="border-b border-neutral-800 px-3 py-3 last:border-b-0">
+  <article
+    key=issue.identifier
+    className="m-3 rounded border border-neutral-800 bg-neutral-950 px-3 py-3">
     <div className="flex items-center gap-2">
       <HeroUI.Chip
         size="sm"
@@ -178,20 +202,37 @@ let orderedQueuePanel = entries =>
   switch Array.length(entries) {
   | 0 => React.null
   | _ =>
-    <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
-      <HeroUI.CardHeader className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-        <div className="text-sm font-semibold text-neutral-100"> {React.string("Ordered Queue")} </div>
-        <HeroUI.Chip
-          size="sm"
-          variant="flat"
-          className="rounded border border-neutral-700 bg-neutral-900 px-3 text-neutral-200">
-          {React.string(entries->Array.length->Int.toString ++ " entries")}
-        </HeroUI.Chip>
-      </HeroUI.CardHeader>
-      <HeroUI.CardContent className="p-0">
-        <ol> {entries->Array.map(queueEntryRow)->React.array} </ol>
-      </HeroUI.CardContent>
-    </HeroUI.Card>
+    <HeroUI.AccordionRoot
+      variant="bordered"
+      hideSeparator=true
+      className="rounded border border-neutral-800 bg-neutral-950 px-0">
+      <HeroUI.AccordionItem id="ordered-queue" className="border-0">
+        <HeroUI.AccordionHeading>
+          <HeroUI.AccordionTrigger
+            ariaLabel="Toggle ordered queue"
+            className="w-full px-4 py-3 text-left text-neutral-100">
+            <div className="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-3">
+              <div />
+              <div className="flex min-w-0 flex-col items-center justify-center gap-2">
+                <div className="mb-1 text-center text-sm font-semibold text-neutral-100">
+                  {React.string("Ordered Queue")}
+                </div>
+                <HeroUI.Chip
+                  size="sm"
+                  variant="flat"
+                  className="rounded border border-neutral-700 bg-neutral-900 px-3 text-neutral-200">
+                  {React.string(entries->Array.length->Int.toString ++ " entries")}
+                </HeroUI.Chip>
+              </div>
+              <HeroUI.AccordionIndicator className="size-5 text-neutral-400 transition-transform data-[expanded=true]:rotate-180" />
+            </div>
+          </HeroUI.AccordionTrigger>
+        </HeroUI.AccordionHeading>
+        <HeroUI.AccordionPanel className="border-t border-neutral-800">
+          <ol> {entries->Array.map(queueEntryRow)->React.array} </ol>
+        </HeroUI.AccordionPanel>
+      </HeroUI.AccordionItem>
+    </HeroUI.AccordionRoot>
   }
 
 let emptyOrchestrator = error =>
@@ -236,26 +277,17 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
         | Some(message) => banner("error", "Live Dashboard Connection", message)
         | None => React.null
         }}
-        {switch data.readinessGaps {
-        | "" => React.null
-        | value => banner("warning", "Readiness Gaps", value)
-        }}
-        {switch data.startupReconciliation {
-        | "" => React.null
-        | value => banner("warning", "Startup Reconciliation", value)
-        }}
-        {switch data.lastError {
-        | "" => React.null
-        | value => banner("error", "Runtime State Error", value)
-        }}
+        {renderBanner("warning", "Readiness Gaps", data.readinessGaps)}
+        {renderBanner("warning", "Startup Reconciliation", data.startupReconciliation)}
+        {renderBanner("error", "Runtime State Error", data.lastError)}
         {orderedQueuePanel(data.orderedQueue)}
         <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
-          <HeroUI.CardHeader className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-            <div>
-              <div className="text-sm font-semibold text-neutral-100"> {React.string("Project board")} </div>
-              <div className="mt-1 text-xs text-neutral-500">
-                {React.string("Columns follow Runtime State status order and issue states.")}
-              </div>
+          <HeroUI.CardHeader className="flex flex-col items-center justify-center border-b border-neutral-800 px-4 py-4 text-center">
+            <div className="mb-2 text-sm font-semibold text-neutral-100">
+              {React.string("Project board")}
+            </div>
+            <div className="mb-3 text-xs text-neutral-500">
+              {React.string("Columns follow Runtime State status order and issue states.")}
             </div>
             <HeroUI.Chip
               size="sm"
