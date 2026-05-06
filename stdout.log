@@ -1,16 +1,20 @@
-Implemented the PRD deliverable for issue #24.
+Implemented the PRD/documentation scope for issue #24.
 
-Changed files:
-- [docs/prd/0024-stage-commit-classification-and-commit-skill.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/docs/prd/0024-stage-commit-classification-and-commit-skill.md:1)
-- [docs/adr/0016-stage-commit-classification-and-commit-skill-load.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/docs/adr/0016-stage-commit-classification-and-commit-skill-load.md:1)
-- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/CONTEXT.md:111)
+Changed:
+- [docs/prd/0024-stage-commit-classification-and-commit-skill.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/docs/prd/0024-stage-commit-classification-and-commit-skill.md)
+- [docs/adr/0016-stage-commit-classification-and-commit-skill-load.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/docs/adr/0016-stage-commit-classification-and-commit-skill-load.md)
+- [spec/spec-process-stage-commit-classification.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/spec/spec-process-stage-commit-classification.md)
+- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_24/CONTEXT.md)
 
-The PRD defines **Stage Commit Classification** as Runtime Settings-owned metadata, allows an optional commit-specific **Stage Skill Load**, covers issue labels, Stage Agent defaults, generated outputs, conflict behavior, and test coverage.
+What changed:
+- Reframed the PRD around deterministic **Stage Commit Classification** plus repository-owned `tags.json` guidance.
+- Kept personalized commit skills explicit through `stageAgents.stages[].skills`; no global auto-load behavior.
+- Added `tags.json` contract: JSON array, `tag`, `instructions`, four-character tag semantics, included in Stage Commit steps.
+- Updated ADR and glossary with **Stage Commit Tag Guidance**.
+- Added required test coverage for classification fallback, label-derived tags, conflicts, Stage Skill Load validation, and `tags.json` parsing.
 
 Verification:
-- Ran `git diff --check` on the changed docs.
-- No backend/frontend tests were needed because this is documentation-only.
+- `git diff --check -- CONTEXT.md docs/adr/0016-stage-commit-classification-and-commit-skill-load.md docs/prd/0024-stage-commit-classification-and-commit-skill.md spec/spec-process-stage-commit-classification.md` passed.
+- I did not run `pnpm test`; this was documentation/spec-only.
 
-GitHub publication was attempted, but the MCP tool call was cancelled, so the PRD remains local. Worktree also contains pre-existing untracked `prompt.md`, `stdout.log`, and `stderr.log`; I left them untouched.
-
-Goal usage: 17 seconds.
+Note: `prompt.md`, `stdout.log`, and `stderr.log` were already dirty and left untouched.

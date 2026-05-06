@@ -1,4 +1,4 @@
-# PRD: Richer Stage Commit Classification and Commit-Specific Stage Skill Load
+# PRD: Stage Commit Classification and Commit Tag Guidance
 
 ## Problem Statement
 
@@ -17,15 +17,14 @@ belongs in **Runtime Settings**, in a personalized skill, or in both, so enginee
 Model the feature as both:
 
 1. **Runtime Settings**-driven **Stage Commit Classification**: the authoritative source for commit
-   type, optional scope, and ordered tags used when Symphony renders a **Stage Commit** message.
-2. Optional commit-specific **Stage Skill Load**: a skill reference that can be loaded for stages
-   with **Stage Commit** enabled, so the agent receives repository-specific guidance for producing
-   work that will later be committed by Symphony.
+   type or tag used when Symphony renders a **Stage Commit** message.
+2. Repository-owned commit tag guidance in `tags.json`: the vocabulary that explains valid
+   four-character commit tags to agents and commit rendering.
 
 **Runtime Settings** remain authoritative for commit metadata. A personalized commit skill may guide
-the agent, but it must not perform the **Stage Commit** and must not override resolved **Stage
-Commit Classification** unless **Runtime Settings** explicitly allow a future structured stage
-completion metadata input.
+the agent only when it is explicitly listed in normal **Stage Skill Load**, but it must not perform
+the **Stage Commit** and must not override resolved **Stage Commit Classification** unless
+**Runtime Settings** explicitly allow a future structured stage completion metadata input.
 
 ## User Stories
 
@@ -37,21 +36,20 @@ completion metadata input.
    taxonomy, so that commit messages do not depend on each agent's memory.
 4. As an operator, I want label-based classification rules to be deterministic, so that the same
    issue and stage configuration always produce the same **Stage Commit** message.
-5. As an operator, I want conflicting label rules to produce an explicit **Readiness Gap** or
-   configured deterministic fallback, so that ambiguous commit metadata does not silently produce
-   misleading history.
+5. As an operator, I want conflicting label rules to pause the task in **Human Attention Status**,
+   so that ambiguous commit metadata does not silently produce misleading history.
 6. As an operator, I want missing or malformed commit classification configuration to be caught
    before dispatch when possible, so that a task does not fail after agent work is complete.
-7. As an operator, I want richer **Stage Commit** message tokens for type, scope, tags, issue
-   identifier, issue title, stage transition, and **Stage Agent** name, so that repositories can
-   choose their own commit style.
+7. As an operator, I want a repository-owned `tags.json` file that defines the available
+   four-character commit tags, so that agents and **Stage Commit** rendering use the same tag
+   vocabulary.
 8. As an operator, I want existing **Stage Commit** message templates to keep working, so that
    current **Runtime Contracts** are not broken by the richer model.
 9. As an engineer **Stage Agent**, I want a commit-specific skill to be loaded when my stage will
-   create a **Stage Commit**, so that I know how to shape final work outputs without running Git
-   commit commands myself.
+   create a **Stage Commit** only if the Workspace Repository explicitly configures that skill, so
+   that I know how to shape final work outputs without running Git commit commands myself.
 10. As a planner **Stage Agent**, I want commit-specific guidance to stay disabled unless my stage
-    creates **Stage Commits**, so that PRD-only planning work is not polluted by engineering commit
+    explicitly opts into it, so that PRD-only planning work is not polluted by engineering commit
     instructions.
 11. As a maintainer, I want generated work outputs to influence the generated summary text but not
     silently override explicit **Runtime Settings** classification, so that commit metadata remains
@@ -59,9 +57,9 @@ completion metadata input.
 12. As a maintainer, I want **Stage Commit Classification** to be tested independently from Git
     commit execution, so that classification behavior can be verified without expensive repository
     setup.
-13. As a maintainer, I want **Stage Skill Load** validation to cover automatically loaded commit
-    skills, so that missing, malformed, or duplicate skill identifiers are surfaced as **Readiness
-    Gaps**.
+13. As a maintainer, I want **Stage Skill Load** validation to keep catching missing, malformed, or
+    duplicate explicitly configured skills, so that commit guidance follows the same readiness model
+    as other stage skills.
 14. As a reviewer, I want the PRD to make clear that this feature does not change **Stage Push**,
     **Task Branch Integration**, auto-merge, or **Batch Pull Request** behavior, so that
     implementation scope stays narrow.
@@ -75,64 +73,82 @@ completion metadata input.
   "arbitrary prefix" in product docs and implementation naming.
 - Extend the **Stage Commit** policy model rather than replacing it. Existing `commit.enabled`,
   `commit.type`, `commit.message`, and `commit.push` semantics should continue to work.
-- The richer classification should resolve to a small structured value: required type, optional
-  scope, and an ordered tag list. The rendered commit message may expose these through new template
-  tokens while preserving existing tokens.
+- Keep `commit.type` as the stage-level compatibility fallback. A stage may add a richer
+  `commit.classification` policy under its existing commit policy instead of configuring a separate
+  global commit subsystem.
+- The richer classification should initially resolve to a deterministic commit type or
+  four-character tag. A future implementation may add structured scope or additional tokens, but the
+  first implementation should keep `<type>` and any future classification token deterministic.
 - Classification source precedence should be deterministic:
-  1. explicit per-stage commit classification defaults in the **Stage Agent** configuration;
-  2. label rules from **Runtime Settings** that match the issue labels present in **Stage Goal
+  1. label rules from **Runtime Settings** that match the issue labels present in **Stage Goal
      Context** or tracker data;
-  3. stage-level fallback classification when no label rule matches;
+  2. explicit per-stage `commit.classification.default`;
+  3. stage-level `commit.type` fallback when `commit.classification.default` is omitted;
   4. generated summary text from work outputs only for the subject or body summary, not for
      authoritative type, scope, or tag selection.
-- **Runtime Settings** should define repository-owned label rules. A rule may match one or more
-  issue labels and produce type, scope, and/or tags. Rules should be ordered only if the conflict
-  policy allows first-match behavior.
-- Default conflict behavior should be conservative: conflicting matched rules for the same
-  classification field should be a **Readiness Gap** or completion blocker with a clear remediation.
-  If a later implementation adds `firstMatch` or priority-based conflict handling, that behavior
-  must be explicit in **Runtime Settings**.
-- Tag propagation should preserve configured order and de-duplicate repeated tags. Stage-level tags
-  should appear before label-derived tags unless the final implementation documents a different
-  deterministic order.
-- The personalized commit skill should be modeled as a commit-specific **Stage Skill Load**
-  reference, not as a separate Git commit runner. Symphony remains responsible for creating the
-  **Stage Commit** after successful agent completion.
-- The commit-specific skill may be loaded automatically only for stages with **Stage Commit** enabled
-  and a configured commit skill. Auto-loading must participate in the same skill identifier
-  validation used by normal **Stage Skill Load**.
-- If the same skill appears in both the normal **Stage Skill Load** and the commit-specific
-  **Stage Skill Load**, Symphony should load it once in deterministic order and report duplicate
-  configuration clearly.
+- **Runtime Settings** should define repository-owned label mappings. A mapping matches one issue
+  label and resolves to one classification.
+- No matching label is normal and should use the stage default classification.
+- Multiple matching labels that resolve to the same classification are unambiguous.
+- Multiple matching labels that resolve to different classifications should pause the task through
+  **Human Attention Status** when `commit.enabled` is `true`; Symphony should not create a
+  misleading **Stage Commit** and should not retry agent work to resolve the conflict.
+- `commit.classification.conflictBehavior` should support `human_attention` for the first
+  implementation. If a later implementation adds `first_match` or priority-based behavior, that
+  behavior must be explicit in **Runtime Settings**.
+- The generated commit message template stays deterministic. **Stage Commit Classification** chooses
+  the `<type>` value or a future classification token, while `<generated_message_max_90char>` remains
+  bounded generated summary text rather than unconstrained agent-authored prose.
+- Add repository-owned `tags.json` as commit tag/type guidance. The file must be a JSON array. Each
+  array item must be an object with `tag` and `instructions` fields.
+- Each `tags.json` `tag` must be the four-character commit tag/type value used by **Stage Commit
+  Classification**. Each `instructions` value must explain the matching Git commit type semantics in
+  four-character-tag form.
+- The `tags.json` guidance should be included in every **Stage Commit** step so commit rendering and
+  agent guidance use the same tag vocabulary.
+- A personalized commit skill should be modeled only as explicit **Stage Skill Load** through
+  `stageAgents.stages[].skills`, not as a global commit skill and not as a separate Git commit
+  runner. Symphony remains responsible for creating the **Stage Commit** after successful agent
+  completion.
+- **Stage Skill Load** should resolve Workspace Repository skills before Codex Home skills when both
+  locations provide a skill with the same name.
+- If the same skill appears more than once in explicit **Stage Skill Load**, Symphony should keep
+  reporting duplicate configuration clearly through the existing validation model.
 - Generated work outputs should support the generated message portion by using existing issue and
   stage data and, if added later, a bounded structured completion summary. Free-form agent prose must
   not be parsed as authoritative classification metadata in the first implementation.
-- Because this changes **Runtime Settings** semantics for **Stage Commit Classification** and
-  optional automatic skill loading, the implementation should add or update an ADR before shipping.
+- Because this changes **Runtime Settings** semantics for **Stage Commit Classification** and adds
+  repository-owned `tags.json` guidance, the implementation should add or update an ADR before
+  shipping.
 - Do not change **Runtime Contract** defaults in the first implementation unless Human attention
   explicitly approves it. Add examples to documentation without changing bootstrap defaults if
   default behavior is not approved.
 
-Likely modules to touch are configuration parsing and readiness validation, **Stage Commit** message
-rendering, orchestration completion behavior around **Stage Commit** creation, **Runtime Contract**
-documentation, ADR documentation, and focused backend tests around config and **Stage Commit**
-behavior.
+Likely modules to touch are configuration parsing and readiness validation, `tags.json` parsing,
+**Stage Commit** message rendering, orchestration completion behavior around **Stage Commit**
+creation, **Runtime Contract** documentation, ADR documentation, and focused backend tests around
+config and **Stage Commit** behavior.
 
 ## Testing Decisions
 
 - Add pure tests for **Stage Commit Classification** resolution. These should cover stage defaults,
-  label-derived classification, ordered tag propagation, de-duplication, no matching labels, and
-  multiple matching labels.
+  label-derived classification, no matching labels, multiple matching labels that resolve to the
+  same classification, and multiple matching labels that conflict.
 - Add config and readiness tests for missing, malformed, duplicate, and conflicting classification or
-  commit skill configuration.
+  skill configuration.
+- Add `tags.json` parsing tests for a valid JSON array, missing `tag`, missing `instructions`,
+  non-object array items, empty tags, and non-four-character tags.
 - Add message rendering tests proving existing templates still work and new tokens render
   deterministically.
-- Add **Stage Skill Load** tests proving a configured commit skill is loaded automatically only when
-  **Stage Commit** is enabled for the stage, and that missing or duplicate commit skills are treated
-  like existing skill readiness gaps.
+- Add **Stage Skill Load** tests proving configured skills remain opt-in, ordered, and resolved from
+  Workspace Repository skills before Codex Home skills. Missing, malformed, and duplicate skills
+  should remain readiness gaps.
 - Add focused orchestration tests around **Stage Commit** creation to prove classification affects
   the commit message before the success status transition and does not affect **Stage Push**
   ordering.
+- Add a focused orchestration test proving a commit-enabled stage with conflicting classification
+  does not create a **Stage Commit** and records **Human Attention Status** diagnostics that name the
+  conflicting labels and classifications.
 - Keep tests near existing backend coverage for **Runtime Settings**, **Stage Goal Handoff**,
   **Stage Skill Load**, **Stage Commit** rendering, and Git-backed **Stage Commit** execution.
 - Prefer tests of externally visible behavior: parsed config values, readiness gaps, rendered prompt
