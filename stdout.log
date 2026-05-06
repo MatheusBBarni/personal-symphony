@@ -1,0 +1,11 @@
+Implemented issue #32 documentation scope.
+
+Changed files:
+- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/CONTEXT.md): added Protected Path Policy storage, matching, authorization, and enforcement domain rules.
+- [spec/spec-process-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/spec/spec-process-protected-path-policy.md): made the existing artifact explicitly the PRD and linked the ADR.
+- [docs/adr/0016-protected-path-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_32/docs/adr/0016-protected-path-policy.md): added the accepted runtime decision.
+
+Verification:
+- `git diff --check` passed.
+
+No code tests were run because this was documentation/specification-only. The worktree also has pre-existing untracked `prompt.md`, `stdout.log`, and `stderr.log`; I left them untouched. Goal usage: 94 seconds.

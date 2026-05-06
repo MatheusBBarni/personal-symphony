@@ -264,6 +264,12 @@ _Avoid_: reinitialize, reset
 - The **Runtime Settings** contain a **Git Policy**.
 - A **Git Policy** may contain an **Allowed Loop-Start Branch Policy**.
 - A **Workspace Repository** may define a **Protected Path Policy**.
+- The first **Protected Path Policy** lives in **Runtime Settings**, not in a standalone `.symphonyignore` file.
+- **Protected Path Policy** patterns are repository-root-relative and may match files, directories, globs, generated-file paths that would otherwise be committed or integrated, and nested paths.
+- The first **Protected Path Policy** does not support negation patterns.
+- **Protected Path Policy** checks added, modified, deleted, and renamed paths.
+- A protected path change requires human-authored issue scope that authorizes the exact protected path or exact policy pattern name before dispatch.
+- Agent output cannot authorize a protected path change.
 - The **Git Policy** contains a **Task Cleanup Policy**.
 - The **Local Environment**, **Runtime State**, and **Agent Workspaces** are ignored by version control.
 - Each **Agent Worktree** belongs to one dispatched task.
@@ -308,6 +314,11 @@ _Avoid_: reinitialize, reset
 - A missing `commit.push` setting means the **Stage Push** is disabled.
 - Bootstrapped Runtime Settings include `commit.push` as `false` in each example stage commit policy.
 - A **Stage Push** sends the **Stage Commit** to the currently checked-out **Task Branch**.
+- Symphony checks the **Protected Path Policy** before creating a **Stage Commit**.
+- Unauthorized protected path changes move the task to the **Human Attention Status** and prevent **Stage Commit** creation.
+- Because **Stage Push** follows **Stage Commit**, unauthorized protected path changes also prevent **Stage Push**.
+- **Startup Reconciliation**, **Task Branch Integration**, and **Manual Task Merge** must refuse unauthorized protected path changes before integrating committed **Task Branch** work.
+- **Batch Pull Request** creation remains blocked while protected-path attention is unresolved.
 - A **Stage Push** pushes the current **Task Branch** tip, including earlier unpushed commits on that branch.
 - A **Stage Push** is a non-force push.
 - A **Stage Push** uses the current **Task Branch** upstream when one exists.
@@ -516,7 +527,7 @@ _Avoid_: reinitialize, reset
 - "Open PR after finishing all the tasks" was used to mean opening one pull request for combined task work; resolved: use **Batch Pull Request**, opened from the **Loop-Start Branch** after **Orchestration Idle**.
 - "base branch" for automatic PR creation was ambiguous because the **Loop-Start Branch** is the head of the **Batch Pull Request**; resolved: use configured **Pull Request Base Branch** for the target branch.
 - "merge the worktrees" was used to mean integrating completed **Task Branches**; resolved: Symphony fast-forward merges **Task Branches** into the **Loop-Start Branch**, not Agent Worktrees.
-- ".symphonyignore" was used to mean a repository-owned rule for files agents must not modify; resolved: use **Protected Path Policy** until the storage format is decided.
+- ".symphonyignore" was used to mean a repository-owned rule for files agents must not modify; resolved: use **Protected Path Policy** stored in **Runtime Settings** for the first version.
 - "allowed branch" was used to mean restricting where orchestration may start; resolved: use **Allowed Loop-Start Branch Policy**.
 - "commit stage tags" was used to mean metadata that chooses a Stage Commit type or tag; resolved: use **Stage Commit Classification**.
 - "maxConcurrentAgents for each stage" was used to mean concurrency caps per Stage Agent; resolved: use **Stage Concurrency Policy**.

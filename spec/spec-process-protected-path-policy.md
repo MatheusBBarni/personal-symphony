@@ -9,7 +9,7 @@ tags: [process, runtime-settings, safety, git, issue-32]
 
 # Introduction
 
-This specification defines a Protected Path Policy for Personal Symphony. The goal is to let a Workspace Repository declare paths that agent work must not modify unless a human explicitly authorizes that scope before dispatch.
+This PRD defines a Protected Path Policy for Personal Symphony. The goal is to let a Workspace Repository declare paths that agent work must not modify unless a human explicitly authorizes that scope before dispatch.
 
 Source issue: [#32 Add repository-owned protected path policy](https://github.com/MatheusBBarni/symphony-orchestrator/issues/32).
 
@@ -207,5 +207,6 @@ Edge cases:
 ## 11. Related Specifications / Further Reading
 
 - [CONTEXT.md](../CONTEXT.md)
+- [ADR 0016: Protected Path Policy](../docs/adr/0016-protected-path-policy.md)
 - [Issue #32](https://github.com/MatheusBBarni/symphony-orchestrator/issues/32)
 - [ADR directory](../docs/adr/)
