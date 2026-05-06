@@ -446,6 +446,12 @@ let agent_prompt config issue =
         if Sys.file_exists path then Some (agent, stage, Util.read_file path |> Util.trim) else None
 
 let normal_prompt config issue base_prompt =
+  let comments_section =
+    match Issue.field issue "comments" with
+    | Some comments when Util.trim comments <> "" -> Printf.sprintf "\n\n---\n\nIssue comments:\n\n%s" comments
+    | _ -> ""
+  in
+  let base_prompt = base_prompt ^ comments_section in
   match agent_prompt config issue with
   | None -> base_prompt
   | Some (agent, stage, prompt) ->
@@ -470,6 +476,15 @@ let blocker_to_goal_json (blocker : Issue.blocker) =
       ("state", json_option_string blocker.state);
     ]
 
+let comment_to_goal_json (comment : Issue.comment) =
+  `Assoc
+    [
+      ("author", json_option_string comment.author);
+      ("body", `String comment.body);
+      ("created_at", json_option_string comment.created_at);
+      ("url", json_option_string comment.url);
+    ]
+
 let stage_goal_context issue attempt (stage : Config.stage_agent) =
   `Assoc
     [
@@ -477,6 +492,7 @@ let stage_goal_context issue attempt (stage : Config.stage_agent) =
       ("issue_identifier", `String issue.Issue.identifier);
       ("title", `String issue.title);
       ("description", json_option_string issue.description);
+      ("comments", `List (List.map comment_to_goal_json issue.comments));
       ("url", json_option_string issue.url);
       ("current_project_status", `String issue.state);
       ("labels", `List (List.map (fun label -> `String label) issue.labels));
@@ -507,13 +523,54 @@ let truncate max_len text =
   let text = Util.trim text in
   if String.length text <= max_len then text else String.sub text 0 max_len |> Util.trim
 
-let render_commit_message issue (stage : Config.stage_agent option) next_status policy =
+let stage_commit_classification_conflict_prefix = "stage commit classification conflict:"
+
+let normalized_unique values =
+  List.fold_left
+    (fun acc value ->
+      let value = Util.trim value |> String.lowercase_ascii in
+      if value = "" || List.exists (( = ) value) acc then acc else acc @ [ value ])
+    [] values
+
+let resolved_stage_commit_classification issue (policy : Config.stage_commit) =
+  let default, label_map =
+    match policy.classification with
+    | None -> (policy.commit_type, [])
+    | Some classification -> (classification.default, classification.label_map)
+  in
+  let labels = normalized_unique issue.Issue.labels in
+  let matches =
+    label_map
+    |> List.filter_map (fun (label, classification) ->
+           let label = Util.trim label |> String.lowercase_ascii in
+           if List.exists (( = ) label) labels then Some (label, classification) else None)
+  in
+  let classifications =
+    List.fold_left
+      (fun acc (_, classification) ->
+        if List.exists (( = ) classification) acc then acc else acc @ [ classification ])
+      [] matches
+  in
+  match classifications with
+  | [] -> Ok default
+  | [ classification ] -> Ok classification
+  | _ ->
+      let details =
+        matches
+        |> List.map (fun (label, classification) -> label ^ " -> " ^ classification)
+        |> String.concat ", "
+      in
+      Error (stage_commit_classification_conflict_prefix ^ " " ^ details)
+
+let render_commit_message_with_classification issue (stage : Config.stage_agent option) next_status policy classification =
   let agent = match stage with Some stage -> stage.agent | None -> "agent" in
   let generated =
     Printf.sprintf "complete %s %s" issue.Issue.identifier issue.title |> truncate 90
   in
   policy.Config.message
-  |> replace_token ~token:"type" ~value:policy.Config.commit_type
+  |> replace_token ~token:"type" ~value:classification
+  |> replace_token ~token:"classification" ~value:classification
+  |> replace_token ~token:"tag" ~value:classification
   |> replace_token ~token:"generated_message_max_90char" ~value:generated
   |> replace_token ~token:"issue_identifier" ~value:issue.identifier
   |> replace_token ~token:"issue_title" ~value:issue.title
@@ -521,6 +578,16 @@ let render_commit_message issue (stage : Config.stage_agent option) next_status 
   |> replace_token ~token:"to_status" ~value:(Option.value next_status ~default:"")
   |> replace_token ~token:"agent" ~value:agent
   |> Util.trim
+
+let render_commit_message_result issue stage next_status policy =
+  match resolved_stage_commit_classification issue policy with
+  | Error _ as error -> error
+  | Ok classification -> Ok (render_commit_message_with_classification issue stage next_status policy classification)
+
+let render_commit_message issue stage next_status policy =
+  match render_commit_message_result issue stage next_status policy with
+  | Ok message -> message
+  | Error error -> error
 
 let run_shell_capture ~cwd command =
   let command = Printf.sprintf "cd %s && %s 2>&1" (Util.shell_quote cwd) command in
@@ -607,6 +674,11 @@ let require_clean_loop_start root =
   | Ok _ -> Error "loop-start worktree must be clean before creating task worktrees"
   | Error error -> Error ("git status failed: " ^ error)
 
+let prune_stale_worktrees root =
+  match run_shell_capture ~cwd:root "git worktree prune" with
+  | Ok _ -> Ok ()
+  | Error error -> Error ("git worktree prune failed: " ^ error)
+
 let shell_prepare_workspace config ~loop_start_branch issue =
   let branch = task_branch config issue in
   if not (is_git_repository config.repository_root) then
@@ -622,26 +694,31 @@ let shell_prepare_workspace config ~loop_start_branch issue =
       match require_clean_loop_start config.repository_root with
       | Error _ as error -> error
       | Ok () ->
-          let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
-          let create_branch =
-            if git_ref_exists config.repository_root branch then Ok ()
-            else
-              match
-                run_shell_capture ~cwd:config.repository_root
-                  (Printf.sprintf "git branch %s %s" (Util.shell_quote branch) (Util.shell_quote loop_start_branch))
-              with
-              | Ok _ -> Ok ()
-              | Error _ as error -> error
+          let prepare_workspace () =
+            let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
+            let create_branch =
+              if git_ref_exists config.repository_root branch then Ok ()
+              else
+                match
+                  run_shell_capture ~cwd:config.repository_root
+                    (Printf.sprintf "git branch %s %s" (Util.shell_quote branch) (Util.shell_quote loop_start_branch))
+                with
+                | Ok _ -> Ok ()
+                | Error _ as error -> error
+            in
+            match create_branch with
+            | Error error -> Error ("task branch creation failed: " ^ error)
+            | Ok _ -> (
+                match
+                  run_shell_capture ~cwd:config.repository_root
+                    (Printf.sprintf "git worktree add %s %s" (Util.shell_quote workspace.path) (Util.shell_quote branch))
+                with
+                | Ok _ -> Ok workspace
+                | Error error -> Error ("agent worktree creation failed: " ^ error))
           in
-          (match create_branch with
-          | Error error -> Error ("task branch creation failed: " ^ error)
-          | Ok _ -> (
-              match
-                run_shell_capture ~cwd:config.repository_root
-                  (Printf.sprintf "git worktree add %s %s" (Util.shell_quote workspace.path) (Util.shell_quote branch))
-              with
-              | Ok _ -> Ok workspace
-              | Error error -> Error ("agent worktree creation failed: " ^ error)))
+          match prune_stale_worktrees config.repository_root with
+          | Error _ as error -> error
+          | Ok () -> prepare_workspace ()
 
 let has_worktree_changes root =
   match run_shell_capture ~cwd:root "git status --porcelain" with
@@ -713,8 +790,7 @@ let gh_batch_pull_request_handoff config ~head_branch =
       | Ok None -> create_batch_pull_request config ~head_branch)
 
 let git_commit_stage_changes config workspace issue stage next_status =
-  let commit_with_policy root stage policy =
-    let message = render_commit_message issue (Some stage) next_status policy in
+  let commit_with_policy root policy message =
     match run_shell_capture ~cwd:root "git add -A" with
     | Error error -> Error ("git add failed: " ^ error)
     | Ok _ -> (
@@ -752,7 +828,10 @@ let git_commit_stage_changes config workspace issue stage next_status =
               | Error error -> Error error
               | Ok paths -> (
                   match unauthorized_protected_path_matches config issue paths with
-                  | [] -> commit_with_policy root stage policy
+                  | [] -> (
+                      match render_commit_message_result issue (Some stage) next_status policy with
+                      | Error _ as error -> error
+                      | Ok message -> commit_with_policy root policy message)
                   | matches -> Error (protected_path_attention_message matches)))))
 
 let replace_first_word command replacement =
@@ -837,7 +916,8 @@ let set_state orchestrator state =
 
 let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
 
-let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(skip_missing = false) ~candidates () =
+let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
+    () =
   match orchestrator.state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->
@@ -845,6 +925,11 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(s
       let candidate_not_dispatchable identifier =
         match candidate_for identifier with
         | Some issue -> not (Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state)
+        | None -> false
+      in
+      let candidate_dispatchable identifier =
+        match candidate_for identifier with
+        | Some issue -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state
         | None -> false
       in
       let candidate_missing identifier = candidate_for identifier = None in
@@ -860,20 +945,26 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?skipped ?(s
                  match completed_identifier with
                  | Some identifier when identifier = entry.issue_identifier -> "completed"
                  | _ -> (
-                     match skipped_identifier with
-                     | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                     match pending_identifier with
+                     | Some identifier when identifier = entry.issue_identifier -> "pending"
                      | _ -> (
-                         match entry_state_for_issue state entry.issue_identifier with
-                         | Some state -> state
-                         | None
-                           when skip_missing && entry.state = "pending"
-                                && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
-                             "skipped"
-                         | None -> entry.state))
+                         match skipped_identifier with
+                         | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                         | _ -> (
+                             match entry_state_for_issue state entry.issue_identifier with
+                             | Some state -> state
+                             | None
+                               when skip_missing && entry.state = "pending"
+                                    && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
+                                 "skipped"
+                             | None when skip_missing && entry.state = "completed" && candidate_dispatchable entry.issue_identifier ->
+                                 "pending"
+                             | None -> entry.state)))
                in
                let skip_reason =
                  match skipped_identifier with
                  | Some identifier when identifier = entry.issue_identifier -> skipped_reason
+                 | _ when pending_identifier = Some entry.issue_identifier -> None
                  | _ when skip_missing && entry.state = "pending" && candidate_missing entry.issue_identifier ->
                      Some "Issue became unavailable or not dispatchable before admission."
                  | _ when skip_missing && entry.state = "pending" && candidate_not_dispatchable entry.issue_identifier ->
@@ -1210,12 +1301,7 @@ let unauthorized_protected_task_branch_changes config issue ~base_ref ~head_ref 
 
 let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
   let root = config.Config.repository_root in
-  if git_ref_contained_in_head root branch then Ok Already_contained
-  else if git_head_can_fast_forward_to root branch then
-    match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
-    | Ok _ -> Ok Direct_fast_forward
-    | Error error -> Error ("Task Branch could not fast-forward: " ^ error)
-  else
+  let update_task_branch_then_fast_forward () =
     let merge_command =
       Printf.sprintf "git merge --no-edit %s" (Util.shell_quote loop_start_branch)
     in
@@ -1225,6 +1311,13 @@ let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
         match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
         | Ok _ -> Ok Updated_task_branch_then_fast_forward
         | Error error -> Error ("updated Task Branch could not fast-forward: " ^ error))
+  in
+  if git_ref_contained_in_head root branch then Ok Already_contained
+  else if git_head_can_fast_forward_to root branch then
+    match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
+    | Ok _ -> Ok Direct_fast_forward
+    | Error _ -> update_task_branch_then_fast_forward ()
+  else update_task_branch_then_fast_forward ()
 
 let reconcile_startup_candidate orchestrator issue =
   let workspace_path = task_workspace_path orchestrator.config issue in
@@ -1313,6 +1406,29 @@ let set_pull_request_handoff orchestrator status ?url ?error () =
       last_error = (match error with Some error -> Some error | None -> state.last_error);
     })
 
+let attempt_batch_pull_request orchestrator =
+  let policy = orchestrator.config.Config.pull_request in
+  set_pull_request_handoff orchestrator "attempting" ();
+  match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
+  | Ok url ->
+      orchestrator.batch_pull_request_completed <- true;
+      set_pull_request_handoff orchestrator "completed" ?url ();
+      render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
+  | Error error ->
+      set_pull_request_handoff orchestrator "retryable_failure" ~error ();
+      render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
+
+let status_is_review_status config status =
+  match config.Config.tracker.project_status_on_success with
+  | Some review_status -> string_equal_ci status review_status
+  | None -> false
+
+let maybe_open_review_pull_request orchestrator status =
+  let policy = orchestrator.config.Config.pull_request in
+  if policy.enabled && policy.open_on_review && (not orchestrator.batch_pull_request_completed)
+     && status_is_review_status orchestrator.config status
+  then attempt_batch_pull_request orchestrator
+
 let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
   let policy = orchestrator.config.Config.pull_request in
   if policy.enabled && not orchestrator.batch_pull_request_completed then
@@ -1326,15 +1442,7 @@ let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
       && not has_attention
     in
     if idle then (
-      set_pull_request_handoff orchestrator "attempting" ();
-      match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
-      | Ok url ->
-          orchestrator.batch_pull_request_completed <- true;
-          set_pull_request_handoff orchestrator "completed" ?url ();
-          render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
-      | Error error ->
-          set_pull_request_handoff orchestrator "retryable_failure" ~error ();
-          render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error)
+      attempt_batch_pull_request orchestrator)
 
 let dispatch_issue orchestrator issue =
   let target_start_status = start_status orchestrator issue in
@@ -1450,6 +1558,10 @@ let non_retryable_completion_error = function
 let protected_path_completion_error error =
   Util.starts_with ~prefix:"Protected Path Policy blocked unauthorized changes:" error
 
+let human_attention_completion_error error =
+  protected_path_completion_error error ||
+  Util.starts_with ~prefix:stage_commit_classification_conflict_prefix error
+
 let mark_blocked orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
   | None -> ()
@@ -1479,8 +1591,20 @@ let mark_blocked orchestrator issue_id error =
         });
       update_ordered_queue_entries orchestrator ~skipped:(row.issue.identifier, error) ~candidates:[ row.issue ] ()
 
-let complete_child orchestrator child =
+let complete_child ?next_status orchestrator child =
   let issue_id = child.issue_id in
+  let next_issue =
+    match next_status with
+    | Some state -> { child.issue with Issue.state }
+    | None -> child.issue
+  in
+  let has_active_next_stage =
+    match next_status with
+    | Some state -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states state
+    | None -> false
+  in
+  let completed_identifier = if has_active_next_stage then None else Some child.issue_identifier in
+  let pending_identifier = if has_active_next_stage then Some child.issue_identifier else None in
   Hashtbl.remove orchestrator.attempts issue_id;
   Hashtbl.remove orchestrator.retry_due issue_id;
   update_state orchestrator (fun state ->
@@ -1491,7 +1615,7 @@ let complete_child orchestrator child =
       issue_errors =
         List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
     });
-  update_ordered_queue_entries orchestrator ~completed_identifier:child.issue_identifier ~candidates:[ child.issue ] ();
+  update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ~candidates:[ next_issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
 let cleanup_task_worktree orchestrator child =
@@ -1562,10 +1686,11 @@ let mark_completed orchestrator child =
   let next_status = success_status orchestrator child.issue in
   match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
   | Error error ->
-      set_error orchestrator error;
       render_commit_failed child.issue_identifier error;
-      if protected_path_completion_error error then mark_merge_attention orchestrator child error
-      else if non_retryable_completion_error error then mark_blocked orchestrator issue_id error
+      if human_attention_completion_error error then mark_merge_attention orchestrator child error
+      else if non_retryable_completion_error error then (
+        set_error orchestrator error;
+        mark_blocked orchestrator issue_id error)
       else mark_retrying orchestrator issue_id error
   | Ok () ->
       (match auto_merge_child orchestrator child with
@@ -1576,7 +1701,9 @@ let mark_completed orchestrator child =
           | Some status ->
               if not (move_issue_status orchestrator child.issue status) then
                 mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
-              else complete_child orchestrator child))
+              else (
+                maybe_open_review_pull_request orchestrator status;
+                complete_child ~next_status:status orchestrator child)))
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()
@@ -1682,6 +1809,7 @@ let poll_once orchestrator =
         let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
         update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
         reconcile_startup orchestrator candidates;
+        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
         let dispatchable =
           candidates
@@ -1699,7 +1827,6 @@ let poll_once orchestrator =
                    |> List.filter (queue_entry_allows_dispatch orchestrator.state)
                    |> List.sort (fun left right -> compare (queue_index queue left) (queue_index queue right)))
         in
-        update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         if available > 0 then dispatchable |> take available |> List.iter (dispatch_issue orchestrator);
         maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
         render_poll_completed orchestrator (List.length dispatchable)
