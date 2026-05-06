@@ -108,6 +108,10 @@ _Avoid_: auto commit, every step commit
 Repository-owned metadata used to choose the commit type or tag for a Stage Commit.
 _Avoid_: commit label, stage tag, arbitrary prefix
 
+**Stage Skill Load**:
+The ordered skill identifiers that Runtime Settings render into the Agent Prompt for a matching Stage Agent.
+_Avoid_: skill prompt injection, automatic skill expansion, agent plugin list
+
 **Stage Push**:
 An optional push of a Stage Commit to the currently checked-out Task Branch after the Stage Commit is created.
 _Avoid_: auto push, push every step
