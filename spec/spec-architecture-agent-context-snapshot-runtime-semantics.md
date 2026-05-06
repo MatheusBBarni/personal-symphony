@@ -134,5 +134,6 @@ Edge cases:
 
 - [Issue #37](https://github.com/MatheusBBarni/symphony-orchestrator/issues/37)
 - [CONTEXT.md](../CONTEXT.md)
+- [Agent Context Snapshot Runtime Semantics ADR](../docs/adr/0019-agent-context-snapshot-runtime-semantics.md)
 - [Codex Loop Context Management Analysis](../docs/agent-context/codex-loop-context-management.md)
 - [Stage Goal Handoff ADR](../docs/adr/0007-stage-goal-handoff.md)
