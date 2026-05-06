@@ -998,6 +998,75 @@ let cleanup_task_worktree_for_issue config issue workspace_path =
       (run_shell_capture ~cwd:config.repository_root
          (Printf.sprintf "git branch -d %s" (Util.shell_quote (task_branch config issue))))
 
+type task_branch_integration_result =
+  | Already_contained
+  | Direct_fast_forward
+  | Updated_task_branch_then_fast_forward
+
+let task_branch_integration_result_name = function
+  | Already_contained -> "already_contained"
+  | Direct_fast_forward -> "direct_fast_forward"
+  | Updated_task_branch_then_fast_forward -> "updated_task_branch_then_fast_forwarded"
+
+let task_branch_integration_message = function
+  | Already_contained -> "Task Branch is already contained in the Loop-Start Branch"
+  | Direct_fast_forward -> "Task Branch fast-forwarded directly into the Loop-Start Branch"
+  | Updated_task_branch_then_fast_forward ->
+      "Task Branch was updated from the Loop-Start Branch, then fast-forwarded into the Loop-Start Branch"
+
+let record_task_branch_integration orchestrator issue ?workspace_path result =
+  let result_name = task_branch_integration_result_name result in
+  let row =
+    {
+      Runtime_state.issue_id = issue.Issue.id;
+      issue_identifier = issue.identifier;
+      task_branch = task_branch orchestrator.config issue;
+      workspace_path;
+      result = result_name;
+      direct_fast_forward = (result = Direct_fast_forward);
+      task_branch_updated_from_loop_start = (result = Updated_task_branch_then_fast_forward);
+      attention = None;
+      message = task_branch_integration_message result;
+    }
+  in
+  update_state orchestrator (fun state ->
+    { state with task_branch_integrations = state.task_branch_integrations @ [ row ] })
+
+let record_task_branch_integration_attention orchestrator issue ?workspace_path attention message =
+  let row =
+    {
+      Runtime_state.issue_id = issue.Issue.id;
+      issue_identifier = issue.identifier;
+      task_branch = task_branch orchestrator.config issue;
+      workspace_path;
+      result = "attention";
+      direct_fast_forward = false;
+      task_branch_updated_from_loop_start = false;
+      attention = Some attention;
+      message;
+    }
+  in
+  update_state orchestrator (fun state ->
+    { state with task_branch_integrations = state.task_branch_integrations @ [ row ] })
+
+let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
+  let root = config.Config.repository_root in
+  if git_ref_contained_in_head root branch then Ok Already_contained
+  else if git_head_can_fast_forward_to root branch then
+    match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
+    | Ok _ -> Ok Direct_fast_forward
+    | Error error -> Error ("Task Branch could not fast-forward: " ^ error)
+  else
+    let merge_command =
+      Printf.sprintf "git merge --no-edit %s" (Util.shell_quote loop_start_branch)
+    in
+    match run_shell_capture ~cwd:workspace_path merge_command with
+    | Error error -> Error ("Task Branch could not update from the Loop-Start Branch: " ^ error)
+    | Ok _ -> (
+        match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
+        | Ok _ -> Ok Updated_task_branch_then_fast_forward
+        | Error error -> Error ("updated Task Branch could not fast-forward: " ^ error))
+
 let reconcile_startup_candidate orchestrator issue =
   let workspace_path = task_workspace_path orchestrator.config issue in
   let branch = task_branch orchestrator.config issue in
@@ -1021,23 +1090,23 @@ let reconcile_startup_candidate orchestrator issue =
           let root = orchestrator.config.repository_root in
           if git_ref_contained_in_head root branch then (
             cleanup_task_worktree_for_issue orchestrator.config issue workspace_path;
+            record_task_branch_integration orchestrator issue ~workspace_path Already_contained;
             record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path "already_reconciled"
               "Task Branch is already contained in the Loop-Start Branch")
           else if protected_loop_start orchestrator then
             record_startup_attention orchestrator issue branch workspace_path "attention_protected_trunk"
               "committed Task Branch work exists but Loop-Start Branch is protected"
-          else if git_head_can_fast_forward_to root branch then
-            match run_shell_capture ~cwd:root (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch)) with
-            | Ok _ ->
-                cleanup_task_worktree_for_issue orchestrator.config issue workspace_path;
-                record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path "merged"
-                  "Task Branch fast-forwarded into the Loop-Start Branch"
-            | Error error ->
-                record_startup_attention orchestrator issue branch workspace_path "attention_non_fast_forward"
-                  ("Task Branch could not fast-forward: " ^ error)
           else
-            record_startup_attention orchestrator issue branch workspace_path "attention_non_fast_forward"
-              "Task Branch could not fast-forward")
+            match integrate_task_branch orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch ~workspace_path branch with
+            | Ok result ->
+                cleanup_task_worktree_for_issue orchestrator.config issue workspace_path;
+                record_task_branch_integration orchestrator issue ~workspace_path result;
+                record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path
+                  (task_branch_integration_result_name result)
+                  (task_branch_integration_message result)
+            | Error error ->
+                record_task_branch_integration_attention orchestrator issue ~workspace_path "attention_integration_failed" error;
+                record_startup_attention orchestrator issue branch workspace_path "attention_integration_failed" error)
 
 let reconcile_startup orchestrator candidates =
   if not orchestrator.startup_reconciliation_done then (
@@ -1259,14 +1328,29 @@ let auto_merge_child orchestrator child =
   if (not (is_git_repository orchestrator.config.repository_root)) || (not orchestrator.config.git.auto_merge) || protected_loop_start orchestrator then Ok ()
   else
     let branch = task_branch orchestrator.config child.issue in
-    match
-      run_shell_capture ~cwd:orchestrator.config.repository_root
-        (Printf.sprintf "git merge --ff-only %s" (Util.shell_quote branch))
-    with
-    | Ok _ ->
-        cleanup_task_worktree orchestrator child;
-        Ok ()
-    | Error error -> Error ("auto-merge failed: " ^ error)
+    match has_worktree_changes child.workspace.path with
+    | Error error ->
+        record_task_branch_integration_attention orchestrator child.issue ~workspace_path:child.workspace.path
+          "attention_uncommitted_changes" error;
+        Error ("auto-merge failed: " ^ error)
+    | Ok true ->
+        let error = "Agent Worktree has uncommitted changes" in
+        record_task_branch_integration_attention orchestrator child.issue ~workspace_path:child.workspace.path
+          "attention_uncommitted_changes" error;
+        Error ("auto-merge failed: " ^ error)
+    | Ok false -> (
+        match
+          integrate_task_branch orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch
+            ~workspace_path:child.workspace.path branch
+        with
+        | Ok result ->
+            record_task_branch_integration orchestrator child.issue ~workspace_path:child.workspace.path result;
+            cleanup_task_worktree orchestrator child;
+            Ok ()
+        | Error error ->
+            record_task_branch_integration_attention orchestrator child.issue ~workspace_path:child.workspace.path
+              "attention_integration_failed" error;
+            Error ("auto-merge failed: " ^ error))
 
 let mark_merge_attention orchestrator child error =
   set_error orchestrator error;

@@ -2918,6 +2918,22 @@ let create_task_worktree config issue =
   | Ok workspace -> workspace
   | Error error -> Alcotest.fail error
 
+let completed_child issue workspace =
+  {
+    Orchestrator.pid = 0;
+    issue;
+    issue_id = issue.Issue.id;
+    issue_identifier = issue.identifier;
+    issue_title = issue.title;
+    workspace;
+    started_at = Unix.time ();
+    last_output_at = Unix.time ();
+    stdout_path = None;
+    stderr_path = None;
+    stdout_size = 0;
+    stderr_size = 0;
+  }
+
 let commit_file ~cwd file content message =
   Util.write_file (Filename.concat cwd file) content;
   ignore (run_ok ~cwd "commit file" (Printf.sprintf "git add %s && git commit -q -m %s" (Util.shell_quote file) (Util.shell_quote message)))
@@ -2945,7 +2961,7 @@ let test_startup_reconciliation_merges_completed_worktrees_in_order () =
       Orchestrator.poll_once orchestrator;
       Alcotest.(check bool) "first file merged" true (Sys.file_exists (Filename.concat root "a.txt"));
       Alcotest.(check bool) "second file merged" true (Sys.file_exists (Filename.concat root "b.txt"));
-      Alcotest.(check (list string)) "diagnostic order" [ "merged"; "merged" ]
+      Alcotest.(check (list string)) "diagnostic order" [ "direct_fast_forward"; "direct_fast_forward" ]
         (diagnostic_categories (Orchestrator.get_state orchestrator));
       let log = run_ok ~cwd:root "log" "git log --reverse --format=%s" |> Util.split_lines in
       Alcotest.(check (list string)) "merge order" [ "initial"; "ignore-runtime-home"; "task 21"; "task 22" ] log;
@@ -3016,7 +3032,7 @@ let test_startup_reconciliation_moves_unsafe_candidates_to_attention () =
         (List.rev !statuses);
       Alcotest.(check int) "issue errors" 2 (List.length (Orchestrator.get_state orchestrator).issue_errors))
 
-let test_startup_reconciliation_continues_after_non_fast_forward () =
+let test_startup_reconciliation_updates_task_branch_before_fast_forward () =
   with_temp_dir "symphony-startup-reconcile-nonff-" (fun root ->
       init_repo root "feature/start";
       ignore_runtime_home root;
@@ -3037,11 +3053,12 @@ let test_startup_reconciliation_continues_after_non_fast_forward () =
           ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
-      Alcotest.(check bool) "non fast forward not merged" false (Sys.file_exists (Filename.concat root "nonff.txt"));
+      Alcotest.(check bool) "non fast forward merged" true (Sys.file_exists (Filename.concat root "nonff.txt"));
       Alcotest.(check bool) "later candidate still merged" true (Sys.file_exists (Filename.concat root "later.txt"));
-      Alcotest.(check (list string)) "diagnostics" [ "attention_non_fast_forward"; "merged" ]
+      Alcotest.(check (list string)) "diagnostics"
+        [ "updated_task_branch_then_fast_forwarded"; "updated_task_branch_then_fast_forwarded" ]
         (diagnostic_categories (Orchestrator.get_state orchestrator));
-      Alcotest.(check (list (pair string string))) "only nonff moved to attention" [ ("#26", "Human attention") ]
+      Alcotest.(check (list (pair string string))) "no attention status" []
         (List.rev !statuses))
 
 let test_startup_reconciliation_detects_wrong_and_missing_task_branch () =
@@ -3558,6 +3575,46 @@ let test_auto_merge_skips_protected_trunk_branch () =
       Alcotest.(check bool) "worktree kept" true (Sys.file_exists workspace.path);
       Alcotest.(check (list string)) "still advances status" [ "In review" ] (List.rev !statuses))
 
+let test_auto_merge_integrates_parallel_unrelated_task_branches () =
+  with_temp_dir "symphony-parallel-task-integration-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let git = git_policy ~auto_merge:true () in
+      let config =
+        {
+          (base_orchestrator_config root git) with
+          Config.agent = { Config.max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
+        }
+      in
+      let issue_11 = Issue.empty ~id:"I11" ~identifier:"#11" ~title:"Eleven" ~state:"In progress" in
+      let issue_12 = Issue.empty ~id:"I12" ~identifier:"#12" ~title:"Twelve" ~state:"In progress" in
+      let workspace_11 = create_task_worktree config issue_11 in
+      let workspace_12 = create_task_worktree config issue_12 in
+      commit_file ~cwd:workspace_11.path "one.txt" "one\n" "task 11";
+      commit_file ~cwd:workspace_12.path "two.txt" "two\n" "task 12";
+      let statuses = ref [] in
+      let set_status _ issue status =
+        statuses := (issue.Issue.identifier, status) :: !statuses;
+        Ok ()
+      in
+      let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.mark_completed orchestrator (completed_child issue_11 workspace_11);
+      Orchestrator.mark_completed orchestrator (completed_child issue_12 workspace_12);
+      Alcotest.(check bool) "first file merged" true (Sys.file_exists (Filename.concat root "one.txt"));
+      Alcotest.(check bool) "second file merged" true (Sys.file_exists (Filename.concat root "two.txt"));
+      Alcotest.(check bool) "first worktree removed" false (Sys.file_exists workspace_11.path);
+      Alcotest.(check bool) "second worktree removed" false (Sys.file_exists workspace_12.path);
+      Alcotest.(check (list (pair string string))) "both statuses advance"
+        [ ("#11", "In review"); ("#12", "In review") ]
+        (List.rev !statuses);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "no issue errors" 0 (List.length state.issue_errors);
+      Alcotest.(check (list string)) "integration results"
+        [ "direct_fast_forward"; "updated_task_branch_then_fast_forwarded" ]
+        (List.map
+           (fun (row : Runtime_state.task_branch_integration) -> row.result)
+           state.Runtime_state.task_branch_integrations))
+
 let test_auto_merge_failure_moves_human_attention () =
   with_temp_dir "symphony-auto-merge-fail-" (fun root ->
       init_repo root "feature/start";
@@ -3568,10 +3625,12 @@ let test_auto_merge_failure_moves_human_attention () =
         | Ok workspace -> workspace
         | Error error -> Alcotest.fail error
       in
-      Util.write_file (Filename.concat workspace.path "task.txt") "task\n";
-      ignore (run_ok ~cwd:workspace.path "task commit" "git add task.txt && git commit -q -m task");
-      Util.write_file (Filename.concat root "loop.txt") "loop\n";
-      ignore (run_ok ~cwd:root "loop commit" "git add loop.txt && git commit -q -m loop");
+      Util.write_file (Filename.concat root "shared.txt") "base\n";
+      ignore (run_ok ~cwd:root "base commit" "git add shared.txt && git commit -q -m base-shared");
+      Util.write_file (Filename.concat workspace.path "shared.txt") "task\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add shared.txt && git commit -q -m task");
+      Util.write_file (Filename.concat root "shared.txt") "loop\n";
+      ignore (run_ok ~cwd:root "loop commit" "git add shared.txt && git commit -q -m loop");
       let statuses = ref [] in
       let set_status _ _ status =
         statuses := status :: !statuses;
@@ -3596,7 +3655,11 @@ let test_auto_merge_failure_moves_human_attention () =
       Alcotest.(check (list string)) "attention status only" [ "Human attention" ] (List.rev !statuses);
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "issue error" 1 (List.length state.issue_errors);
-      Alcotest.(check bool) "worktree kept for inspection" true (Sys.file_exists workspace.path))
+      Alcotest.(check bool) "worktree kept for inspection" true (Sys.file_exists workspace.path);
+      Alcotest.(check (list string)) "attention diagnostic" [ "attention" ]
+        (List.map
+           (fun (row : Runtime_state.task_branch_integration) -> row.result)
+           state.Runtime_state.task_branch_integrations))
 
 let manual_merge_config ?(keep_task_branch = true) root =
   if not (Sys.file_exists (Filename.concat root ".gitignore")) then (
@@ -3862,8 +3925,8 @@ let () =
             `Quick test_startup_reconciliation_already_contained_applies_cleanup_without_status_change;
           Alcotest.test_case "startup reconciliation moves unsafe candidates to attention"
             `Quick test_startup_reconciliation_moves_unsafe_candidates_to_attention;
-          Alcotest.test_case "startup reconciliation continues after non-fast-forward"
-            `Quick test_startup_reconciliation_continues_after_non_fast_forward;
+          Alcotest.test_case "startup reconciliation updates task branch before fast-forward"
+            `Quick test_startup_reconciliation_updates_task_branch_before_fast_forward;
           Alcotest.test_case "startup reconciliation detects wrong and missing branches"
             `Quick test_startup_reconciliation_detects_wrong_and_missing_task_branch;
           Alcotest.test_case "startup reconciliation blocks when loop-start is dirty"
@@ -3886,6 +3949,8 @@ let () =
           Alcotest.test_case "fast-forwards task branch and removes worktree" `Quick test_auto_merge_fast_forwards_and_removes_worktree;
           Alcotest.test_case "can remove task branch after merge" `Quick test_cleanup_can_remove_task_branch_after_merge;
           Alcotest.test_case "skips auto-merge on protected trunk" `Quick test_auto_merge_skips_protected_trunk_branch;
+          Alcotest.test_case "integrates parallel unrelated task branches"
+            `Quick test_auto_merge_integrates_parallel_unrelated_task_branches;
           Alcotest.test_case "moves merge failures to human attention" `Quick test_auto_merge_failure_moves_human_attention;
         ] );
       ( "manual-merge",
