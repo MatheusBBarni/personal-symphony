@@ -321,6 +321,7 @@ _Avoid_: reinitialize, reset
 - A **Stage Goal Handoff** is not a global Codex launch mode.
 - Runtime Settings configure **Stage Goal Handoff** with `goal.enabled` on a stage.
 - A missing `goal` setting means **Stage Goal Handoff** is disabled for that stage.
+- A rendered **Agent Prompt** includes GitHub issue comments when they are present.
 - Bootstrapped Runtime Settings include `goal.enabled` as `false` in each example stage.
 - A **Stage Goal Handoff** uses **Stage Goal Context** as its Codex goal payload.
 - A **Stage Goal Handoff** supplements the normal **Agent Prompt**.
@@ -333,7 +334,7 @@ _Avoid_: reinitialize, reset
 - Symphony sends the Codex `/goal` command before the normal rendered **Agent Prompt** when performing a **Stage Goal Handoff**.
 - Implementation of **Stage Goal Handoff** must verify that `codex exec` accepts `/goal` from standard input before treating the feature as supported.
 - If `codex exec` does not accept `/goal` from standard input, Symphony must surface the blocker instead of pretending **Stage Goal Handoff** works.
-- **Stage Goal Context** includes issue identifier, title, description, URL, current project status, labels, priority when present, blocker references when present, attempt, and stage agent name.
+- **Stage Goal Context** includes issue identifier, title, description, comments, URL, current project status, labels, priority when present, blocker references when present, attempt, and stage agent name.
 - **Stage Goal Context** does not include issue creation or update timestamps by default.
 - Symphony extracts **Goal Usage** from Codex output when Codex reports it in a parseable form.
 - Symphony does not invent **Goal Usage** when Codex output does not report it.
