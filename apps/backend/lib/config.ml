@@ -20,6 +20,7 @@ type git_cleanup = { remove_worktree_after_merge : bool; keep_task_branch : bool
 type git = {
   task_branch_prefix : string;
   protected_trunk_branches : string list;
+  allowed_loop_start_branches : string list;
   auto_merge : bool;
   merge_attention_status : string;
   cleanup : git_cleanup;
@@ -86,6 +87,7 @@ let default_git =
   {
     task_branch_prefix = "symphony/task-";
     protected_trunk_branches = [ "main"; "master" ];
+    allowed_loop_start_branches = [];
     auto_merge = true;
     merge_attention_status = default_merge_attention_status;
     cleanup = { remove_worktree_after_merge = true; keep_task_branch = true };
@@ -267,6 +269,17 @@ let json_string_list name json ~default =
       values
       |> List.filter_map (function `String s -> Some s | `Int i -> Some (string_of_int i) | _ -> None)
   | _ -> default
+
+let json_branch_name_list name json ~default =
+  match member name json with
+  | `Null -> default
+  | `List values ->
+      values
+      |> List.map (function
+           | `String s when Util.trim s <> "" -> Util.trim s
+           | `String _ -> raise (Invalid_config ("git." ^ name ^ " must not contain empty branch names"))
+           | _ -> raise (Invalid_config ("git." ^ name ^ " must contain only branch name strings")))
+  | _ -> raise (Invalid_config ("git." ^ name ^ " must be a list of branch name strings"))
 
 let json_bool name json ~default =
   match member name json with `Bool b -> b | `String "true" -> true | `String "false" -> false | _ -> default
@@ -452,6 +465,8 @@ let from_settings_file ~workspace_root path =
         task_branch_prefix = json_string "taskBranchPrefix" git_raw ~default:default_git.task_branch_prefix;
         protected_trunk_branches =
           json_string_list "protectedTrunkBranches" git_raw ~default:default_git.protected_trunk_branches;
+        allowed_loop_start_branches =
+          json_branch_name_list "allowedLoopStartBranches" git_raw ~default:default_git.allowed_loop_start_branches;
         auto_merge = json_bool "autoMerge" git_raw ~default:default_git.auto_merge;
         merge_attention_status;
         cleanup =
@@ -633,6 +648,60 @@ let validate_stage_skill_load config add =
           stage.skills)
       config.stage_agents.stages
 
+let run_shell_capture ~cwd command =
+  let command = Printf.sprintf "cd %s && %s 2>&1" (Util.shell_quote cwd) command in
+  let ic = Unix.open_process_in command in
+  let output =
+    Fun.protect ~finally:(fun () -> ()) (fun () ->
+        let buffer = Buffer.create 128 in
+        (try
+           while true do
+             Buffer.add_string buffer (input_line ic);
+             Buffer.add_char buffer '\n'
+           done
+         with End_of_file -> ());
+        Buffer.contents buffer |> Util.trim)
+  in
+  match Unix.close_process_in ic with
+  | Unix.WEXITED 0 -> Ok output
+  | Unix.WEXITED code -> Error (Printf.sprintf "exit %d: %s" code output)
+  | Unix.WSIGNALED signal -> Error (Printf.sprintf "signal %d: %s" signal output)
+  | Unix.WSTOPPED signal -> Error (Printf.sprintf "stopped %d: %s" signal output)
+
+let current_loop_start_branch root =
+  match run_shell_capture ~cwd:root "git branch --show-current" with
+  | Ok branch when Util.trim branch <> "" -> Some (Util.trim branch)
+  | _ -> None
+
+let allowed_loop_start_branch_policy_gap config =
+  match config.git.allowed_loop_start_branches with
+  | [] -> None
+  | allowed_branches -> (
+      let allowed = String.concat ", " allowed_branches in
+      match current_loop_start_branch config.repository_root with
+      | Some current_branch when List.exists (( = ) current_branch) allowed_branches -> None
+      | Some current_branch ->
+          Some
+            {
+              requirement = "git.allowedLoopStartBranches";
+              remediation =
+                Printf.sprintf
+                  "Allowed Loop-Start Branch Policy blocked dispatch: current Loop-Start Branch %s is not allowed. \
+                   Allowed branches: %s. Switch to an allowed Loop-Start Branch or update Runtime Settings."
+                  current_branch allowed;
+            }
+      | None ->
+          Some
+            {
+              requirement = "git.allowedLoopStartBranches";
+              remediation =
+                Printf.sprintf
+                  "Allowed Loop-Start Branch Policy blocked dispatch: the current checkout does not have a named \
+                   Loop-Start Branch. Allowed branches: %s. Switch to an allowed Loop-Start Branch or update Runtime \
+                   Settings."
+                  allowed;
+            })
+
 let readiness_gaps config =
   let gaps = ref [] in
   let add requirement remediation = gaps := { requirement; remediation } :: !gaps in
@@ -658,6 +727,9 @@ let readiness_gaps config =
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
   if config.pull_request.enabled && Util.trim config.pull_request.base_branch = "" then
     add "pullRequest.baseBranch" "Set pullRequest.baseBranch in .symphony/settings.json when pullRequest.enabled is true.";
+  (match allowed_loop_start_branch_policy_gap config with
+  | Some gap -> add gap.requirement gap.remediation
+  | None -> ());
   if stage_goal_handoff_enabled config then (
     let codex_config = codex_config_path () in
     if not (codex_goals_feature_enabled codex_config) then

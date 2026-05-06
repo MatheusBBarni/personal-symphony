@@ -280,7 +280,9 @@ _Avoid_: reinitialize, reset
 - Auto-merge of a **Task Branch** into the **Loop-Start Branch** is fast-forward only.
 - When auto-merge fails, Symphony may move the task to a **Merge Attention Status**.
 - Auto-merge, **Startup Reconciliation**, and **Manual Task Merge** are **Task Branch Integration** paths.
-- An **Allowed Loop-Start Branch Policy** prevents dispatch from any Loop-Start Branch outside the configured branch set.
+- An **Allowed Loop-Start Branch Policy** prevents dispatch from any Loop-Start Branch outside the configured literal branch set.
+- An omitted or empty **Allowed Loop-Start Branch Policy** allows any Loop-Start Branch.
+- A disallowed **Loop-Start Branch** is a **Readiness Gap** that keeps the **Terminal Console** and **Web Dashboard** available for inspection while blocking dispatch, **Startup Reconciliation**, and **Batch Pull Request** creation.
 - **Manual Task Merge** integrates selected completed task work with `--merge` without running normal orchestration.
 - **Manual Task Merge** accepts issue identifiers such as `20` and `#20`; it does not accept raw **Task Branch** names.
 - **Manual Task Merge** preflights every selected task before merging anything, requires clean Loop-Start and Agent Worktrees, and uses fast-forward-only semantics.

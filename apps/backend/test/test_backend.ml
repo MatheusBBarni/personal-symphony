@@ -44,11 +44,13 @@ let ignore_runtime_home root =
   ignore (run_ok ~cwd:root "ignore runtime home" "git add .gitignore && git commit -q -m ignore-runtime-home")
 
 let git_policy ?(auto_merge = false) ?(protected_trunk_branches = [ "main"; "master" ])
+    ?(allowed_loop_start_branches = [])
     ?(merge_attention_status = "Human attention") ?(remove_worktree_after_merge = true) () =
   {
     Config.default_git with
     auto_merge;
     protected_trunk_branches;
+    allowed_loop_start_branches;
     merge_attention_status;
     cleanup = { Config.remove_worktree_after_merge = remove_worktree_after_merge; keep_task_branch = true };
   }
@@ -63,6 +65,7 @@ let test_config_parses_git_policy_and_stage_push () =
   "git": {
     "taskBranchPrefix": "agent/",
     "protectedTrunkBranches": ["main", "release"],
+    "allowedLoopStartBranches": ["symphony/dogfood"],
     "autoMerge": false,
     "mergeAttentionStatus": "Needs merge",
     "cleanup": {"removeWorktreeAfterMerge": false, "keepTaskBranch": true}
@@ -95,6 +98,8 @@ let test_config_parses_git_policy_and_stage_push () =
       let config = Config.from_settings_file ~workspace_root:root settings in
       Alcotest.(check string) "branch prefix" "agent/" config.git.task_branch_prefix;
       Alcotest.(check (list string)) "protected trunks" [ "main"; "release" ] config.git.protected_trunk_branches;
+      Alcotest.(check (list string)) "allowed loop-start branches" [ "symphony/dogfood" ]
+        config.git.allowed_loop_start_branches;
       Alcotest.(check bool) "auto merge" false config.git.auto_merge;
       Alcotest.(check string) "attention status" "Needs merge" config.git.merge_attention_status;
       Alcotest.(check bool) "attention status visible" true
@@ -108,6 +113,54 @@ let test_config_parses_git_policy_and_stage_push () =
           Alcotest.(check bool) "stage push" true engineer_commit.push;
           Alcotest.(check bool) "stage push default" false reviewer_commit.push
       | _ -> Alcotest.fail "expected stage commit policy")
+
+let test_config_parses_allowed_loop_start_branch_policy () =
+  with_temp_dir "symphony-loop-start-policy-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      Util.write_file (Filename.concat root ".symphony/agents/engineer.md") "Engineer";
+      Unix.putenv "GITHUB_TOKEN" "token";
+      let write_settings body =
+        let settings = Filename.concat root ("settings-" ^ string_of_int (Random.bits ()) ^ ".json") in
+        Util.write_file settings body;
+        Config.from_settings_file ~workspace_root:root settings
+      in
+      let omitted =
+        write_settings
+          {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {"enabled": false}
+}|}
+      in
+      Alcotest.(check (list string)) "omitted allows any branch" [] omitted.git.allowed_loop_start_branches;
+      let empty =
+        write_settings
+          {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "git": {"allowedLoopStartBranches": []},
+  "stageAgents": {"enabled": false}
+}|}
+      in
+      Alcotest.(check (list string)) "empty allows any branch" [] empty.git.allowed_loop_start_branches;
+      let valid =
+        write_settings
+          {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "git": {"allowedLoopStartBranches": ["symphony/dogfood", "release/train"]},
+  "stageAgents": {"enabled": false}
+}|}
+      in
+      Alcotest.(check (list string)) "valid branches" [ "symphony/dogfood"; "release/train" ]
+        valid.git.allowed_loop_start_branches;
+      Alcotest.check_raises "whitespace-only branch is invalid"
+        (Config.Invalid_config "git.allowedLoopStartBranches must not contain empty branch names")
+        (fun () ->
+          ignore
+            (write_settings
+               {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "git": {"allowedLoopStartBranches": ["   "]},
+  "stageAgents": {"enabled": false}
+}|})))
 
 let test_config_parses_stage_goal_and_readiness () =
   let original_home = Sys.getenv_opt "HOME" in
@@ -2812,6 +2865,27 @@ let base_orchestrator_config root git =
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
+let test_allowed_loop_start_branch_readiness () =
+  with_temp_dir "symphony-loop-start-ready-" (fun root ->
+      init_repo root "symphony/dogfood";
+      let allowed = base_orchestrator_config root (git_policy ~allowed_loop_start_branches:[ "symphony/dogfood" ] ()) in
+      Alcotest.(check int) "allowed branch has no policy gap" 0
+        (Config.readiness_gaps allowed
+        |> List.filter (fun (gap : Config.readiness_gap) -> gap.requirement = "git.allowedLoopStartBranches")
+        |> List.length);
+      ignore (run_ok ~cwd:root "create main" "git switch -q -c main");
+      let blocked = base_orchestrator_config root (git_policy ~allowed_loop_start_branches:[ "symphony/dogfood" ] ()) in
+      let gaps = Config.readiness_gaps blocked in
+      let gap =
+        List.find_opt (fun (gap : Config.readiness_gap) -> gap.requirement = "git.allowedLoopStartBranches") gaps
+      in
+      Alcotest.(check bool) "disallowed branch is a readiness gap" true (Option.is_some gap);
+      let remediation = match gap with Some gap -> gap.remediation | None -> "" in
+      Alcotest.(check bool) "mentions current branch" true (contains_substring remediation "current Loop-Start Branch main");
+      Alcotest.(check bool) "mentions allowed branch" true (contains_substring remediation "symphony/dogfood");
+      Alcotest.(check bool) "mentions remediation" true
+        (contains_substring remediation "Switch to an allowed Loop-Start Branch or update Runtime Settings"))
+
 let completed_stage_config root git =
   {
     (base_orchestrator_config root git) with
@@ -3229,6 +3303,50 @@ let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
         (Orchestrator.get_state orchestrator).last_error;
       Alcotest.(check bool) "no placeholder worktree left" false
         (Sys.file_exists (Filename.concat config.workspace.root "_4")))
+
+let test_orchestrator_blocks_disallowed_loop_start_before_side_effects () =
+  with_temp_dir "symphony-disallowed-loop-start-" (fun root ->
+      init_repo root "main";
+      let config =
+        completed_stage_config root (git_policy ~auto_merge:true ~allowed_loop_start_branches:[ "symphony/dogfood" ] ())
+      in
+      let issue = Issue.empty ~id:"I30" ~identifier:"#30" ~title:"Thirty" ~state:"In review" in
+      let workspace = create_task_worktree config issue in
+      Util.write_file (Filename.concat workspace.path "should-not-merge.txt") "blocked\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add should-not-merge.txt && git commit -q -m task");
+      let fetches = ref 0 in
+      let statuses = ref [] in
+      let launches = ref 0 in
+      let prs = ref 0 in
+      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launches;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ ->
+            incr fetches;
+            [ issue ])
+          ~set_status
+          ~batch_pull_request_handoff:(fun _ ~head_branch:_ ->
+            incr prs;
+            Ok (Some "https://example.test/pr/1"))
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "tracker not fetched" 0 !fetches;
+      Alcotest.(check int) "not launched" 0 !launches;
+      Alcotest.(check (list string)) "no status movement" [] (List.rev !statuses);
+      Alcotest.(check int) "no batch pull request" 0 !prs;
+      Alcotest.(check bool) "startup reconciliation did not merge" false
+        (Sys.file_exists (Filename.concat root "should-not-merge.txt"));
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check (list string)) "readiness gap"
+        [ "git.allowedLoopStartBranches" ]
+        (List.map (fun (gap : Runtime_state.readiness_gap) -> gap.requirement) state.readiness_gaps))
 
 let test_orchestrator_reuses_existing_task_branch_on_restart () =
   with_temp_dir "symphony-reuse-task-branch-" (fun root ->
@@ -3662,12 +3780,16 @@ let () =
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
+          Alcotest.test_case "parses allowed loop-start branch policy" `Quick
+            test_config_parses_allowed_loop_start_branch_policy;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
           Alcotest.test_case "disabled stage goal does not require codex goals" `Quick test_disabled_stage_goal_does_not_require_codex_goals;
           Alcotest.test_case "parses stage skill load and readiness" `Quick test_config_parses_stage_skill_load_and_readiness;
           Alcotest.test_case "stage goal requires codex exec stdin support" `Quick test_stage_goal_requires_codex_exec_stdin_support;
           Alcotest.test_case "stage goal live stdin probe" `Quick test_stage_goal_live_stdin_probe;
           Alcotest.test_case "requires pull request base branch when enabled" `Quick test_pull_request_base_branch_readiness_gap;
+          Alcotest.test_case "checks allowed loop-start branch readiness" `Quick
+            test_allowed_loop_start_branch_readiness;
         ] );
       ( "runtime-state",
         [
@@ -3754,6 +3876,8 @@ let () =
           Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
           Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;
           Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
+          Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
+            test_orchestrator_blocks_disallowed_loop_start_before_side_effects;
           Alcotest.test_case "reuses existing task branch on restart" `Quick test_orchestrator_reuses_existing_task_branch_on_restart;
           Alcotest.test_case "reuses worktree for existing in-progress task"
             `Quick test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launch;
