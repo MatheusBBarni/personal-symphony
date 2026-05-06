@@ -38,6 +38,17 @@ type startup_reconciliation = {
   category : string;
   message : string;
 }
+type task_branch_integration = {
+  issue_id : string;
+  issue_identifier : string;
+  task_branch : string;
+  workspace_path : string option;
+  result : string;
+  direct_fast_forward : bool;
+  task_branch_updated_from_loop_start : bool;
+  attention : string option;
+  message : string;
+}
 type pull_request_handoff = {
   enabled : bool;
   head_branch : string option;
@@ -60,6 +71,7 @@ type t = {
   pull_request : pull_request_handoff option;
   ordered_queue : ordered_queue option;
   startup_reconciliation : startup_reconciliation list;
+  task_branch_integrations : task_branch_integration list;
   last_error : string option;
 }
 
@@ -77,6 +89,7 @@ let empty ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue ?last_error
     pull_request = None;
     ordered_queue;
     startup_reconciliation = [];
+    task_branch_integrations = [];
     last_error;
   }
 
@@ -174,6 +187,20 @@ let startup_reconciliation_to_yojson (row : startup_reconciliation) =
       ("message", `String row.message);
     ]
 
+let task_branch_integration_to_yojson (row : task_branch_integration) =
+  `Assoc
+    [
+      ("issue_id", `String row.issue_id);
+      ("issue_identifier", `String row.issue_identifier);
+      ("task_branch", `String row.task_branch);
+      ("workspace_path", (match row.workspace_path with Some s -> `String s | None -> `Null));
+      ("result", `String row.result);
+      ("direct_fast_forward", `Bool row.direct_fast_forward);
+      ("task_branch_updated_from_loop_start", `Bool row.task_branch_updated_from_loop_start);
+      ("attention", (match row.attention with Some s -> `String s | None -> `Null));
+      ("message", `String row.message);
+    ]
+
 let json_member name = function
   | `Assoc fields -> List.assoc_opt name fields
   | _ -> None
@@ -232,5 +259,6 @@ let to_yojson state =
       ("pull_request", (match state.pull_request with Some row -> pull_request_handoff_to_yojson row | None -> `Null));
       ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
       ("startup_reconciliation", `List (List.map startup_reconciliation_to_yojson state.startup_reconciliation));
+      ("task_branch_integrations", `List (List.map task_branch_integration_to_yojson state.task_branch_integrations));
       ("last_error", (match state.last_error with Some s -> `String s | None -> `Null));
     ]

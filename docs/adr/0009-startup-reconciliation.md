@@ -14,9 +14,9 @@ Startup Reconciliation runs once per process startup after the first tracker fet
 
 Candidates are sorted by numeric issue identifier and then Task Branch name. The Loop-Start Worktree must be clean before any candidate is merged. Each Agent Worktree must be a valid Git worktree, be checked out on the expected Task Branch, reference an existing Task Branch, and have no uncommitted changes.
 
-Safe committed work is integrated into the Loop-Start Branch with `git merge --ff-only`. Already-contained Task Branches are treated as reconciled. Successful and already-contained candidates apply the existing Task Cleanup Policy and do not change tracker status.
+Safe committed work uses the same Task Branch Integration path as normal completion. Already-contained Task Branches are treated as reconciled. If the Loop-Start Branch can fast-forward directly to the Task Branch, Startup Reconciliation preserves that direct fast-forward. If direct fast-forward is not possible, Startup Reconciliation may merge the current Loop-Start Branch into the Task Branch from the Agent Worktree, then fast-forward the Loop-Start Branch to the updated Task Branch. Successful and already-contained candidates apply the existing Task Cleanup Policy and do not change tracker status.
 
-Unsafe candidates move to the configured Merge Attention Status and are recorded in Runtime State issue errors. Protected Trunk Branch targets, wrong branches, missing Task Branches, uncommitted Agent Worktree changes, and non-fast-forward branches are attention cases. Startup Reconciliation does not create Stage Commits, does not resolve conflicts, does not rebase, does not force-push, and does not auto-merge into Protected Trunk Branches.
+Unsafe candidates move to the configured Merge Attention Status and are recorded in Runtime State issue errors. Protected Trunk Branch targets, wrong branches, missing Task Branches, uncommitted Agent Worktree changes, and conflicted integration are attention cases. Startup Reconciliation does not create Stage Commits, does not resolve conflicts, does not rebase, does not force-push, and does not auto-merge into Protected Trunk Branches.
 
 Runtime State records startup reconciliation diagnostics for merged, already-reconciled, skipped, and attention outcomes. The Terminal Console also prints each outcome during startup.
 

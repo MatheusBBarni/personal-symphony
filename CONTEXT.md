@@ -173,7 +173,7 @@ The startup-time recovery pass that checks completed-stage Agent Worktrees for T
 _Avoid_: startup merge, branch sweep, cleanup scan
 
 **Task Branch Integration**:
-The act of bringing completed Task Branch commits into the Loop-Start Branch.
+The serialized act of bringing completed Task Branch commits into the Loop-Start Branch, directly by fast-forward when possible or by first updating the Task Branch from the current Loop-Start Branch.
 _Avoid_: merge worktrees, copy workspace, finish branch
 
 **Terminal Console**:
@@ -244,7 +244,7 @@ _Avoid_: reinitialize, reset
 - A **Self-Dogfooding Workspace Repository** should keep **Stage Push** disabled unless remote branch publication is deliberately enabled.
 - A **Self-Dogfooding Workspace Repository** should use reviewer-stage comments and a **Human Attention Status** for review findings that require operator triage.
 - A **Self-Dogfooding Workspace Repository** should have the reviewer stage run focused verification when practical before moving work to `Done`.
-- A **Self-Dogfooding Workspace Repository** should use one concurrent agent until Personal Symphony can safely integrate multiple concurrently completed **Task Branches**.
+- A **Self-Dogfooding Workspace Repository** may increase concurrency when its **Loop-Start Branch** is not a **Protected Trunk Branch** because **Task Branch Integration** can integrate unrelated concurrently completed **Task Branches**.
 - A **Self-Dogfooding Workspace Repository** should use a dedicated non-trunk **Loop-Start Branch** so completed **Task Branches** do not auto-merge into the Product Repository trunk.
 - A **Self-Dogfooding Workspace Repository** may open a **Batch Pull Request** from its dedicated **Loop-Start Branch** to its **Protected Trunk Branch** after **Orchestration Idle**.
 - A **Self-Dogfooding Workspace Repository** should remove merged **Agent Worktrees** and delete merged **Task Branches** to avoid local branch buildup.
@@ -277,7 +277,8 @@ _Avoid_: reinitialize, reset
 - If Symphony starts while a task is already in the in-progress project state, Symphony creates or reuses that task's **Agent Worktree** before starting agent work.
 - Symphony requires a **Clean Loop-Start Worktree** before creating an **Agent Worktree**.
 - Symphony may auto-merge a completed **Task Branch** into the **Loop-Start Branch** only when the **Loop-Start Branch** is not a **Protected Trunk Branch**.
-- Auto-merge of a **Task Branch** into the **Loop-Start Branch** is fast-forward only.
+- Auto-merge of a **Task Branch** into the **Loop-Start Branch** keeps the final **Loop-Start Branch** update fast-forward only.
+- If the **Loop-Start Branch** cannot fast-forward directly to a completed **Task Branch**, Symphony may update the **Task Branch** by merging the current **Loop-Start Branch** into it from the **Agent Worktree**, then fast-forward the **Loop-Start Branch** to the updated **Task Branch**.
 - When auto-merge fails, Symphony may move the task to a **Merge Attention Status**.
 - Auto-merge, **Startup Reconciliation**, and **Manual Task Merge** are **Task Branch Integration** paths.
 - An **Allowed Loop-Start Branch Policy** prevents dispatch from any Loop-Start Branch outside the configured literal branch set.
@@ -290,9 +291,10 @@ _Avoid_: reinitialize, reset
 - **Manual Task Merge** does not push branches, run Startup Reconciliation, dispatch agents, or open a Batch Pull Request.
 - **Startup Reconciliation** runs once per process startup before normal dispatch or agent launch.
 - **Startup Reconciliation** evaluates completed-stage **Agent Worktrees** in deterministic issue order.
-- **Startup Reconciliation** integrates safe committed **Task Branch** work into the **Loop-Start Branch** by fast-forward only.
+- **Startup Reconciliation** uses the same safe **Task Branch Integration** path as normal completion.
 - **Startup Reconciliation** does not create a **Stage Commit**, reconcile retained **Task Branches** without **Agent Worktrees**, or change tracker status after successful or already-contained reconciliation.
-- **Startup Reconciliation** moves unsafe, contradictory, non-fast-forward, or Protected Trunk Branch candidates to the **Merge Attention Status** and records Runtime State diagnostics.
+- **Startup Reconciliation** moves unsafe, contradictory, conflicted, or Protected Trunk Branch candidates to the **Merge Attention Status** and records Runtime State diagnostics.
+- **Runtime State** records **Task Branch Integration** diagnostics for direct fast-forwards, update-then-fast-forward integrations, already-contained branches, and integration attention.
 - A **Merge Attention Status** is a **Human Attention Status**.
 - The default **Merge Attention Status** is `Human attention`.
 - A **Human Attention Status** is paused and not dispatchable.
@@ -311,6 +313,7 @@ _Avoid_: reinitialize, reset
 - A **Stage Push** uses the current **Task Branch** upstream when one exists.
 - A **Stage Push** creates an upstream on `origin` when the current **Task Branch** has no upstream.
 - A **Stage Push** happens before any auto-merge attempt.
+- **Task Branch Integration** must not force-push a **Task Branch** after **Stage Push**.
 - Symphony does not push the **Loop-Start Branch** after auto-merge.
 - A failed **Stage Push** prevents the stage from moving to its success project state.
 - A failed **Stage Push** is retryable.
