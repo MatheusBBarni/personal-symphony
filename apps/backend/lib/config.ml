@@ -35,6 +35,9 @@ type codex = {
   stall_timeout_ms : int;
 }
 type server = { port : int option }
+type protected_path_pattern = { name : string; pattern : string; reason : string option }
+type protected_path_authorization = { issue_section : string }
+type protected_paths = { patterns : protected_path_pattern list; authorization : protected_path_authorization }
 type pull_request = { enabled : bool; open_on_review : bool; base_branch : string; title : string; body : string }
 type stage_commit_classification = {
   default : string;
@@ -73,6 +76,7 @@ type t = {
   codex : codex;
   server : server;
   pull_request : pull_request;
+  protected_paths : protected_paths;
   stage_agents : stage_agents;
 }
 
@@ -92,6 +96,8 @@ let default_reasoning_effort = "medium"
 let default_codex_command = "codex exec"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
+let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
+let default_protected_paths = { patterns = []; authorization = default_protected_path_authorization }
 let default_pull_request =
   { enabled = false; open_on_review = false; base_branch = "main"; title = default_pull_request_title; body = default_pull_request_body }
 let default_conflict_behavior = "human_attention"
@@ -263,6 +269,7 @@ let from_workflow workflow =
       };
     server = { port = Simple_yaml.get_int "port" server_raw };
     pull_request = default_pull_request;
+    protected_paths = default_protected_paths;
     stage_agents = { enabled = false; root = Filename.concat workflow.dir ".symphony/agents"; default_agent = None; stages = [] };
   }
 
@@ -323,6 +330,75 @@ let json_optional_string name json =
 
 let json_object_list name json =
   match member name json with `List values -> values | _ -> []
+
+let json_protected_path_patterns json =
+  json_object_list "patterns" json
+  |> List.mapi (fun index raw ->
+         match raw with
+         | `Assoc _ ->
+             let name = json_string "name" raw ~default:"" |> Util.trim in
+             let pattern = json_string "pattern" raw ~default:"" |> Util.trim in
+             if name = "" then
+               raise
+                 (Invalid_config
+                    (Printf.sprintf "paths.protected.patterns[%d].name is required" index));
+             if pattern = "" then
+               raise
+                 (Invalid_config
+                    (Printf.sprintf "paths.protected.patterns[%d].pattern is required" index));
+             if String.length pattern > 0 && pattern.[0] = '!' then
+               raise
+                 (Invalid_config
+                    (Printf.sprintf
+                       "paths.protected.patterns[%d].pattern must not use negation" index));
+             if String.length pattern > 0 && pattern.[0] = '/' then
+               raise
+                 (Invalid_config
+                    (Printf.sprintf
+                       "paths.protected.patterns[%d].pattern must be repository-root-relative" index));
+             if List.exists (( = ) "..") (String.split_on_char '/' pattern) then
+               raise
+                 (Invalid_config
+                    (Printf.sprintf
+                       "paths.protected.patterns[%d].pattern must not contain .. segments" index));
+             if String.contains pattern '\\' then
+               raise
+                 (Invalid_config
+                    (Printf.sprintf
+                       "paths.protected.patterns[%d].pattern must use / path separators" index));
+             {
+               name;
+               pattern;
+               reason =
+                 (match member "reason" raw with
+                 | `String reason when Util.trim reason <> "" -> Some (Util.trim reason)
+                 | _ -> None);
+             }
+         | _ ->
+             raise
+               (Invalid_config
+                  (Printf.sprintf "paths.protected.patterns[%d] must be an object" index)))
+
+let json_protected_paths paths_raw =
+  let protected_raw = member "protected" paths_raw in
+  match protected_raw with
+  | `Assoc _ ->
+      let authorization_raw = member "authorization" protected_raw in
+      let issue_section =
+        json_string "issueSection" authorization_raw
+          ~default:default_protected_path_authorization.issue_section
+        |> Util.trim
+      in
+      {
+        patterns = json_protected_path_patterns protected_raw;
+        authorization =
+          {
+            issue_section =
+              (if issue_section = "" then default_protected_path_authorization.issue_section
+               else issue_section);
+          };
+      }
+  | _ -> default_protected_paths
 
 let json_stage_agent json =
   let goal_raw = member "goal" json in
@@ -483,6 +559,7 @@ let from_settings_file ~workspace_root path =
   let codex_raw = member "codex" root in
   let server_raw = member "server" root in
   let pull_request_raw = member "pullRequest" root in
+  let paths_raw = member "paths" root in
   let stage_agents_raw = member "stageAgents" root in
   let kind = json_string "kind" tracker_raw ~default:"github" in
   if kind <> "github" then raise (Invalid_config "tracker.kind must be github for this implementation");
@@ -565,6 +642,7 @@ let from_settings_file ~workspace_root path =
         title = json_string "title" pull_request_raw ~default:default_pull_request.title;
         body = json_string "body" pull_request_raw ~default:default_pull_request.body;
       };
+    protected_paths = json_protected_paths paths_raw;
     stage_agents =
       {
         enabled = json_bool "enabled" stage_agents_raw ~default:true;

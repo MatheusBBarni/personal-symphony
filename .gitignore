@@ -10,3 +10,5 @@ apps/frontend/src/**/*.res.js
 !.env.example
 
 prompt.md
+stderr.log
+stdout.log

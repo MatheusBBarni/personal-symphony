@@ -9,7 +9,7 @@ tags: [process, runtime-settings, safety, git, issue-32]
 
 # Introduction
 
-This specification defines a Protected Path Policy for Personal Symphony. The goal is to let a Workspace Repository declare paths that agent work must not modify unless a human explicitly authorizes that scope before dispatch.
+This PRD defines a Protected Path Policy for Personal Symphony. The goal is to let a Workspace Repository declare paths that agent work must not modify unless a human explicitly authorizes that scope before dispatch.
 
 Source issue: [#32 Add repository-owned protected path policy](https://github.com/MatheusBBarni/symphony-orchestrator/issues/32).
 
@@ -42,19 +42,19 @@ Any implementation that changes runtime semantics MUST add or update an ADR unde
 
 ## 3. Requirements, Constraints & Guidelines
 
-- **REQ-001**: The first version MUST store Protected Path Policy in Runtime Settings.
+- **REQ-001**: The first version MUST store Protected Path Policy in Runtime Settings under Git Policy as `git.protectedPaths`.
 - **REQ-002**: Policy patterns MUST be repository-root-relative.
 - **REQ-003**: Policy matching MUST support files, directories, and nested paths.
-- **REQ-004**: Policy matching SHOULD use gitignore-like path semantics without negation in the first version.
+- **REQ-004**: Policy matching MUST use the matching semantics defined in this PRD without negation in the first version.
 - **REQ-005**: Symphony MUST evaluate modified, added, deleted, and renamed paths.
-- **REQ-006**: Symphony MUST check protected path changes before creating a Stage Commit.
-- **REQ-007**: Unauthorized protected path changes MUST pause the task in Human Attention Status and MUST NOT create a Stage Commit.
+- **REQ-006**: Symphony MUST check protected path changes before creating a Stage Commit or moving a stage to its success status.
+- **REQ-007**: Unauthorized protected path changes MUST pause the task in Human Attention Status and MUST NOT create a Stage Commit or success status transition.
 - **REQ-008**: When unauthorized protected path changes are detected, Symphony MUST NOT run Stage Push, Task Branch Integration, or Batch Pull Request handoff for that task.
 - **REQ-009**: Startup Reconciliation MUST check committed Task Branch work for unauthorized protected path changes before integrating into the Loop-Start Branch.
 - **REQ-010**: Manual Task Merge MUST check committed Task Branch work for unauthorized protected path changes before integrating into the Loop-Start Branch.
 - **REQ-011**: Authorization MUST come from human-authored issue scope before dispatch.
 - **REQ-012**: Agent output MUST NOT be able to authorize protected path changes.
-- **REQ-013**: Authorization MUST name exact protected paths or exact policy pattern names.
+- **REQ-013**: Authorization MUST name exact changed paths or exact policy pattern names using the authorization markers defined in this PRD.
 - **REQ-014**: Human Attention diagnostics MUST list the protected paths that changed and the matching policy pattern.
 - **REQ-015**: Batch Pull Request creation MUST remain blocked while protected-path attention is unresolved.
 - **SEC-001**: Policy examples MUST NOT include secrets, token values, webhook URLs, or local `.env` contents.
@@ -66,12 +66,13 @@ Any implementation that changes runtime semantics MUST add or update an ADR unde
 
 ### Runtime Settings Shape
 
-The exact field names may be adjusted during implementation, but Runtime Settings MUST support named protected patterns and a human authorization mechanism.
+The first version MUST use `git.protectedPaths` as the canonical Runtime Settings shape. The policy is omitted by default for backward compatibility. When present, `patterns` is an ordered list of named path patterns, and `authorizationSection` names the human-authored issue section Symphony reads before dispatch.
 
 ```json
 {
-  "paths": {
-    "protected": {
+  "git": {
+    "protectedPaths": {
+      "authorizationSection": "Protected Path Authorization",
       "patterns": [
         {
           "name": "cli-package-entrypoint",
@@ -83,27 +84,60 @@ The exact field names may be adjusted during implementation, but Runtime Setting
           "pattern": "scripts/package-*.js",
           "reason": "Packaging behavior affects npm distribution."
         }
-      ],
-      "authorization": {
-        "issueSection": "Protected Path Authorization"
-      }
+      ]
     }
   }
 }
 ```
 
+Policy validation rules:
+
+- `authorizationSection` is optional and defaults to `Protected Path Authorization`.
+- Pattern `name` values MUST be unique, non-empty, and stable because issue authorization may refer to them.
+- Pattern strings MUST be non-empty, repository-root-relative paths or globs using `/` separators.
+- Leading `/` is ignored during matching but SHOULD NOT be used in Runtime Settings.
+- `!` negation patterns are invalid in the first version.
+- Patterns MUST NOT point inside ignored Runtime Home internals such as Local Environment, Runtime State, or Agent Workspaces.
+
+### Matching Semantics
+
+Symphony normalizes changed paths to repository-root-relative paths with `/` separators before matching.
+
+- A literal file pattern such as `bin/symphony.js` matches only that file.
+- A literal directory pattern with a trailing slash, such as `vendor/`, matches every nested path under that directory.
+- A glob pattern supports `*`, `?`, character classes, and `**` using gitignore-like path semantics.
+- A generated file is checked only when it appears in changed-path data that would otherwise be committed or integrated.
+- For renamed paths, Symphony evaluates both the old path and the new path.
+- For deleted paths, Symphony evaluates the deleted path.
+- When multiple patterns match, diagnostics include every matching pattern name.
+
 ### Issue Authorization Shape
 
-Human-authored issue scope MUST use an explicit section or equivalent structured tracker field.
+Human-authored issue scope MUST use the configured explicit section or an equivalent structured tracker field. The first version recognizes these bullet markers inside the configured issue section:
+
+- `pattern:<pattern-name>` authorizes all changed paths matched by the named policy pattern.
+- `path:<repository-root-relative-path>` authorizes only that exact changed path.
+
+Authorization markers MUST appear in the source issue before dispatch. Agent comments, generated summaries, branch commits, and PR text do not authorize protected path changes.
 
 ```md
 ## Protected Path Authorization
 
-- `bin/symphony.js`
-- `package-binary-scripts`
+- `path:bin/symphony.js`
+- `pattern:package-binary-scripts`
 ```
 
+### Enforcement Order
+
+For stage completion, Symphony MUST inspect the Agent Worktree changed paths before the success status transition. If unauthorized protected path changes are present, Symphony moves the issue to the configured Human Attention Status, records diagnostics, keeps the Agent Worktree and Task Branch available for inspection, and skips Stage Commit. Stage Push and automated Task Branch Integration are skipped because they are downstream of a successful Stage Commit and stage handoff.
+
+Startup Reconciliation and Manual Task Merge MUST inspect committed Task Branch changes before changing the Loop-Start Branch. If unauthorized protected path changes are present, they record protected-path attention and leave the Loop-Start Branch unchanged.
+
+Batch Pull Request handoff MUST treat unresolved protected-path attention the same way it treats unresolved orchestration attention: no Batch Branch Push and no Batch Pull Request creation until the attention is resolved outside the agent retry loop.
+
 ### Recommended Initial Protected Paths For This Product Repository
+
+When the policy is implemented, this Self-Dogfooding Workspace Repository SHOULD add these entries to its Runtime Contract without changing Bootstrap defaults for other Workspace Repositories:
 
 ```text
 bin/symphony.js
@@ -116,10 +150,23 @@ pnpm-lock.yaml
 vendor/symphony-*
 ```
 
+Recommended names:
+
+```text
+cli-package-entrypoint
+package-binary-script
+package-platform-script
+npm-export-validation
+release-export-workflow
+package-manifest
+package-lockfile
+platform-binary-payload
+```
+
 ## 5. Acceptance Criteria
 
 - **AC-001**: Given a policy protecting `bin/symphony.js`, When an agent modifies that file without authorization, Then Symphony pauses the task in Human Attention Status before Stage Commit.
-- **AC-002**: Given an issue authorizes `bin/symphony.js`, When an agent modifies that path, Then Symphony allows normal Stage Commit behavior.
+- **AC-002**: Given an issue contains `path:bin/symphony.js` in the configured authorization section, When an agent modifies that path, Then Symphony allows normal Stage Commit behavior.
 - **AC-003**: Given committed Task Branch work modifies a protected path without authorization, When Startup Reconciliation runs, Then Symphony refuses integration and records attention.
 - **AC-004**: Given Manual Task Merge targets a Task Branch with unauthorized protected path changes, When the command runs, Then Symphony refuses integration before changing the Loop-Start Branch.
 - **AC-005**: Given a protected directory pattern, When a nested file changes, Then the policy matches that path.
@@ -207,5 +254,6 @@ Edge cases:
 ## 11. Related Specifications / Further Reading
 
 - [CONTEXT.md](../CONTEXT.md)
+- [ADR 0016: Protected Path Policy](../docs/adr/0016-protected-path-policy.md)
 - [Issue #32](https://github.com/MatheusBBarni/symphony-orchestrator/issues/32)
 - [ADR directory](../docs/adr/)

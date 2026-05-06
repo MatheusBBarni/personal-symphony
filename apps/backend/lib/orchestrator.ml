@@ -54,6 +54,8 @@ and child = {
 
 exception Orchestrator_error of string
 
+type protected_path_match = { path : string; pattern_name : string; pattern : string }
+
 let runtime_tokens = { Runtime_state.input_tokens = 0; output_tokens = 0; total_tokens = 0 }
 
 let colors_enabled () = Sys.getenv_opt "NO_COLOR" = None
@@ -125,6 +127,134 @@ let render_commit_skipped issue_identifier =
 let render_commit_failed issue_identifier error =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "commit") (red "failed")
     issue_identifier error
+
+let normalize_repo_path path =
+  let path = String.map (function '\\' -> '/' | c -> c) path |> Util.trim in
+  let rec drop_prefixes path =
+    match Util.drop_prefix ~prefix:"./" path with Some path -> drop_prefixes path | None -> path
+  in
+  drop_prefixes path
+
+let split_path path =
+  normalize_repo_path path |> String.split_on_char '/' |> List.filter (fun part -> part <> "")
+
+let has_glob text = String.exists (function '*' | '?' -> true | _ -> false) text
+
+let glob_segment_matches pattern text =
+  let pattern_len = String.length pattern in
+  let text_len = String.length text in
+  let rec loop p t star next_t =
+    if t = text_len then
+      let rec only_stars p = p = pattern_len || (pattern.[p] = '*' && only_stars (p + 1)) in
+      only_stars p
+    else if p < pattern_len then
+      match pattern.[p] with
+      | '*' -> loop (p + 1) t (Some p) t
+      | '?' -> loop (p + 1) (t + 1) star next_t
+      | c when c = text.[t] -> loop (p + 1) (t + 1) star next_t
+      | _ -> (
+          match star with
+          | Some star_p when next_t < text_len -> loop (star_p + 1) (next_t + 1) star (next_t + 1)
+          | _ -> false)
+    else
+      match star with
+      | Some star_p when next_t < text_len -> loop (star_p + 1) (next_t + 1) star (next_t + 1)
+      | _ -> false
+  in
+  loop 0 0 None 0
+
+let rec prefix_segments_match patterns paths =
+  match (patterns, paths) with
+  | [], _ -> true
+  | pattern :: rest_patterns, path :: rest_paths ->
+      glob_segment_matches pattern path && prefix_segments_match rest_patterns rest_paths
+  | _ :: _, [] -> false
+
+let protected_pattern_matches_path (pattern : Config.protected_path_pattern) path =
+  let raw_pattern = normalize_repo_path pattern.pattern in
+  let directory_pattern = String.length raw_pattern > 0 && raw_pattern.[String.length raw_pattern - 1] = '/' in
+  let pattern_path =
+    if directory_pattern then String.sub raw_pattern 0 (String.length raw_pattern - 1) else raw_pattern
+  in
+  let pattern_segments = split_path pattern_path in
+  let path_segments = split_path path in
+  if pattern_segments = [] || path_segments = [] then false
+  else if not (has_glob pattern_path) then
+    let normalized_pattern = String.concat "/" pattern_segments in
+    let normalized_path = String.concat "/" path_segments in
+    normalized_path = normalized_pattern || Util.starts_with ~prefix:(normalized_pattern ^ "/") normalized_path
+  else if String.contains pattern_path '/' then
+    if directory_pattern then prefix_segments_match pattern_segments path_segments
+    else
+      List.length path_segments = List.length pattern_segments
+      && prefix_segments_match pattern_segments path_segments
+  else
+    List.exists (glob_segment_matches pattern_path) path_segments
+
+let protected_path_matches config paths =
+  let seen = Hashtbl.create 16 in
+  paths
+  |> List.filter_map (fun path ->
+         let path = normalize_repo_path path in
+         if path = "" || Hashtbl.mem seen path then None
+         else (
+           Hashtbl.add seen path ();
+           config.Config.protected_paths.patterns
+           |> List.find_opt (fun pattern -> protected_pattern_matches_path pattern path)
+           |> Option.map (fun (pattern : Config.protected_path_pattern) ->
+                  { path; pattern_name = pattern.name; pattern = pattern.pattern })))
+
+let issue_authorizes_protected_match config issue protected_match =
+  let section = config.Config.protected_paths.authorization.issue_section |> String.lowercase_ascii in
+  let lines = issue.Issue.description |> Option.value ~default:"" |> Util.split_lines in
+  let authorized = ref [] in
+  let in_section = ref false in
+  List.iter
+    (fun line ->
+      let trimmed = Util.trim line in
+      if Util.starts_with ~prefix:"#" trimmed then
+        let title =
+          trimmed |> String.split_on_char '#' |> String.concat "" |> Util.trim |> String.lowercase_ascii
+        in
+        in_section := title = section
+      else if !in_section then
+        let value =
+          trimmed
+          |> Util.drop_prefix ~prefix:"-"
+          |> Option.value ~default:trimmed
+          |> Util.trim
+        in
+        let value =
+          if String.length value >= 2 && value.[0] = '`' && value.[String.length value - 1] = '`' then
+            String.sub value 1 (String.length value - 2)
+          else value
+        in
+        if value <> "" then authorized := value :: !authorized)
+    lines;
+  List.exists
+    (fun value -> value = protected_match.path || value = protected_match.pattern_name)
+    !authorized
+
+let unauthorized_protected_path_matches config issue paths =
+  protected_path_matches config paths
+  |> List.filter (fun protected_match ->
+         not (issue_authorizes_protected_match config issue protected_match))
+
+let protected_path_attention_message matches =
+  let details =
+    matches
+    |> List.map (fun item -> Printf.sprintf "%s (matched %s: %s)" item.path item.pattern_name item.pattern)
+    |> String.concat ", "
+  in
+  "Protected Path Policy blocked unauthorized changes: " ^ details
+
+let parse_name_status output =
+  output |> Util.split_lines
+  |> List.concat_map (fun line ->
+         match String.split_on_char '\t' line with
+         | status :: old_path :: new_path :: _ when status <> "" && status.[0] = 'R' -> [ old_path; new_path ]
+         | _status :: path :: _ -> [ path ]
+         | _ -> [])
 
 let render_pull_request_completed head base =
   Printf.eprintf "%s%s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "pull-request") (green "ready")
@@ -479,6 +609,19 @@ let run_shell_capture ~cwd command =
   | Unix.WSIGNALED signal -> Error (Printf.sprintf "signal %d: %s" signal output)
   | Unix.WSTOPPED signal -> Error (Printf.sprintf "stopped %d: %s" signal output)
 
+let changed_paths_in_worktree root =
+  match run_shell_capture ~cwd:root "git diff --name-status -M HEAD --" with
+  | Error error -> Error error
+  | Ok tracked -> (
+      match run_shell_capture ~cwd:root "git ls-files --others --exclude-standard" with
+      | Error error -> Error error
+      | Ok untracked -> Ok (parse_name_status tracked @ Util.split_lines untracked))
+
+let changed_paths_between_refs root ~base_ref ~head_ref =
+  run_shell_capture ~cwd:root
+    (Printf.sprintf "git diff --name-status -M %s %s --" (Util.shell_quote base_ref) (Util.shell_quote head_ref))
+  |> Result.map parse_name_status
+
 let current_branch root =
   match run_shell_capture ~cwd:root "git branch --show-current" with
   | Ok branch when Util.trim branch <> "" -> Util.trim branch
@@ -646,42 +789,50 @@ let gh_batch_pull_request_handoff config ~head_branch =
       | Ok (Some url) -> Ok (if Util.trim url = "" then None else Some url)
       | Ok None -> create_batch_pull_request config ~head_branch)
 
-let git_commit_stage_changes _config workspace issue stage next_status =
+let git_commit_stage_changes config workspace issue stage next_status =
+  let commit_with_policy root policy message =
+    match run_shell_capture ~cwd:root "git add -A" with
+    | Error error -> Error ("git add failed: " ^ error)
+    | Ok _ -> (
+        match run_shell_capture ~cwd:root "git diff --cached --quiet" with
+        | Ok _ ->
+            render_commit_skipped issue.Issue.identifier;
+            Error "commit required but no staged changes were found"
+        | Error _ -> (
+            let command = Printf.sprintf "git commit -m %s" (Util.shell_quote message) in
+            match run_shell_capture ~cwd:root command with
+            | Error error -> Error error
+            | Ok _ ->
+                render_commit_completed issue.Issue.identifier message;
+                if policy.Config.push then
+                  match push_current_branch root with
+                  | Ok _ -> Ok ()
+                  | Error error -> Error ("stage push failed: " ^ error)
+                else Ok ()))
+  in
   match stage with
   | None -> Ok ()
   | Some stage -> (
       match stage.Config.commit with
       | None -> Ok ()
       | Some policy when not policy.enabled -> Ok ()
-      | Some policy ->
+      | Some policy -> (
           let root = workspace.Workspace.path in
           match has_worktree_changes root with
           | Error error -> Error error
           | Ok false ->
               render_commit_skipped issue.Issue.identifier;
               Error "commit required but agent produced no code changes"
-          | Ok true ->
-              match render_commit_message_result issue (Some stage) next_status policy with
-              | Error _ as error -> error
-              | Ok message -> (
-                  match run_shell_capture ~cwd:root "git add -A" with
-                  | Error error -> Error ("git add failed: " ^ error)
-                  | Ok _ -> (
-                      match run_shell_capture ~cwd:root "git diff --cached --quiet" with
-                      | Ok _ ->
-                          render_commit_skipped issue.Issue.identifier;
-                          Error "commit required but no staged changes were found"
-                      | Error _ ->
-                          let command = Printf.sprintf "git commit -m %s" (Util.shell_quote message) in
-                          match run_shell_capture ~cwd:root command with
-                          | Ok _ ->
-                              render_commit_completed issue.Issue.identifier message;
-                              if policy.Config.push then
-                                match push_current_branch root with
-                                | Ok _ -> Ok ()
-                                | Error error -> Error ("stage push failed: " ^ error)
-                              else Ok ()
-                          | Error error -> Error error)))
+          | Ok true -> (
+              match changed_paths_in_worktree root with
+              | Error error -> Error error
+              | Ok paths -> (
+                  match unauthorized_protected_path_matches config issue paths with
+                  | [] -> (
+                      match render_commit_message_result issue (Some stage) next_status policy with
+                      | Error _ as error -> error
+                      | Ok message -> commit_with_policy root policy message)
+                  | matches -> Error (protected_path_attention_message matches)))))
 
 let replace_first_word command replacement =
   let command = Util.trim command in
@@ -1140,6 +1291,14 @@ let record_task_branch_integration_attention orchestrator issue ?workspace_path 
   update_state orchestrator (fun state ->
     { state with task_branch_integrations = state.task_branch_integrations @ [ row ] })
 
+let unauthorized_protected_task_branch_changes config issue ~base_ref ~head_ref =
+  match changed_paths_between_refs config.Config.repository_root ~base_ref ~head_ref with
+  | Error error -> Error ("Protected Path Policy changed-path inspection failed: " ^ error)
+  | Ok paths -> (
+      match unauthorized_protected_path_matches config issue paths with
+      | [] -> Ok ()
+      | matches -> Error (protected_path_attention_message matches))
+
 let integrate_task_branch config ~loop_start_branch ~workspace_path branch =
   let root = config.Config.repository_root in
   let update_task_branch_then_fast_forward () =
@@ -1186,20 +1345,31 @@ let reconcile_startup_candidate orchestrator issue =
             record_task_branch_integration orchestrator issue ~workspace_path Already_contained;
             record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path "already_reconciled"
               "Task Branch is already contained in the Loop-Start Branch")
-          else if protected_loop_start orchestrator then
-            record_startup_attention orchestrator issue branch workspace_path "attention_protected_trunk"
-              "committed Task Branch work exists but Loop-Start Branch is protected"
           else
-            match integrate_task_branch orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch ~workspace_path branch with
-            | Ok result ->
-                cleanup_task_worktree_for_issue orchestrator.config issue workspace_path;
-                record_task_branch_integration orchestrator issue ~workspace_path result;
-                record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path
-                  (task_branch_integration_result_name result)
-                  (task_branch_integration_message result)
+            match unauthorized_protected_task_branch_changes orchestrator.config issue ~base_ref:"HEAD" ~head_ref:branch with
             | Error error ->
-                record_task_branch_integration_attention orchestrator issue ~workspace_path "attention_integration_failed" error;
-                record_startup_attention orchestrator issue branch workspace_path "attention_integration_failed" error)
+                record_task_branch_integration_attention orchestrator issue ~workspace_path
+                  "attention_protected_paths" error;
+                record_startup_attention orchestrator issue branch workspace_path "attention_protected_paths" error
+            | Ok () ->
+                if protected_loop_start orchestrator then
+                  record_startup_attention orchestrator issue branch workspace_path "attention_protected_trunk"
+                    "committed Task Branch work exists but Loop-Start Branch is protected"
+                else
+                  match
+                    integrate_task_branch orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch
+                      ~workspace_path branch
+                  with
+                  | Ok result ->
+                      cleanup_task_worktree_for_issue orchestrator.config issue workspace_path;
+                      record_task_branch_integration orchestrator issue ~workspace_path result;
+                      record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path
+                        (task_branch_integration_result_name result)
+                        (task_branch_integration_message result)
+                  | Error error ->
+                      record_task_branch_integration_attention orchestrator issue ~workspace_path
+                        "attention_integration_failed" error;
+                      record_startup_attention orchestrator issue branch workspace_path "attention_integration_failed" error)
 
 let reconcile_startup orchestrator candidates =
   if not orchestrator.startup_reconciliation_done then (
@@ -1385,7 +1555,11 @@ let non_retryable_completion_error = function
   | "commit required but agent produced no code changes" | "commit required but no staged changes were found" -> true
   | _ -> false
 
+let protected_path_completion_error error =
+  Util.starts_with ~prefix:"Protected Path Policy blocked unauthorized changes:" error
+
 let human_attention_completion_error error =
+  protected_path_completion_error error ||
   Util.starts_with ~prefix:stage_commit_classification_conflict_prefix error
 
 let mark_blocked orchestrator issue_id error =
@@ -1462,10 +1636,16 @@ let auto_merge_child orchestrator child =
           "attention_uncommitted_changes" error;
         Error ("auto-merge failed: " ^ error)
     | Ok false -> (
-        match
-          integrate_task_branch orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch
-            ~workspace_path:child.workspace.path branch
-        with
+        match unauthorized_protected_task_branch_changes orchestrator.config child.issue ~base_ref:"HEAD" ~head_ref:branch with
+        | Error error ->
+            record_task_branch_integration_attention orchestrator child.issue ~workspace_path:child.workspace.path
+              "attention_protected_paths" error;
+            Error ("auto-merge failed: " ^ error)
+        | Ok () -> (
+            match
+              integrate_task_branch orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch
+                ~workspace_path:child.workspace.path branch
+            with
         | Ok result ->
             record_task_branch_integration orchestrator child.issue ~workspace_path:child.workspace.path result;
             cleanup_task_worktree orchestrator child;
@@ -1473,7 +1653,7 @@ let auto_merge_child orchestrator child =
         | Error error ->
             record_task_branch_integration_attention orchestrator child.issue ~workspace_path:child.workspace.path
               "attention_integration_failed" error;
-            Error ("auto-merge failed: " ^ error))
+            Error ("auto-merge failed: " ^ error)))
 
 let mark_merge_attention orchestrator child error =
   set_error orchestrator error;
