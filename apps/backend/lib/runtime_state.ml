@@ -1,5 +1,6 @@
 type tokens = { input_tokens : int; output_tokens : int; total_tokens : int }
 type goal_usage = { status : string option; time_used_seconds : float option; tokens_used : int option }
+type context_status = { state : string; summary : string; diagnostics_path : string option }
 
 type running = {
   issue : Issue.t;
@@ -85,6 +86,7 @@ type t = {
   issue_errors : issue_error list;
   status_order : string list;
   readiness_gaps : readiness_gap list;
+  context_statuses : (string * context_status) list;
   codex_totals : tokens;
   seconds_running : float;
   rate_limits : Yojson.Safe.t option;
@@ -106,6 +108,7 @@ let empty ?workspace_repository_name ?(readiness_gaps = []) ?(status_order = [])
     issue_errors = [];
     status_order;
     readiness_gaps;
+    context_statuses = [];
     codex_totals = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
     seconds_running = 0.;
     rate_limits = None;
@@ -134,6 +137,32 @@ let goal_usage_to_yojson (usage : goal_usage) =
       ("tokens_used", (match usage.tokens_used with Some value -> `Int value | None -> `Null));
     ]
 
+let make_context_status ?diagnostics_path ~state ~summary () = { state; summary; diagnostics_path }
+
+let skipped_context_status =
+  make_context_status ~state:"skipped" ~summary:"Context behavior disabled or not applicable." ()
+
+let set_context_status issue_id context_status state =
+  {
+    state with
+    context_statuses =
+      (issue_id, context_status) :: List.filter (fun (existing_issue_id, _) -> existing_issue_id <> issue_id) state.context_statuses;
+  }
+
+let clear_context_status issue_id state =
+  { state with context_statuses = List.filter (fun (existing_issue_id, _) -> existing_issue_id <> issue_id) state.context_statuses }
+
+let context_status_for_issue state issue_id =
+  match List.assoc_opt issue_id state.context_statuses with Some context_status -> context_status | None -> skipped_context_status
+
+let context_status_to_yojson (status : context_status) =
+  `Assoc
+    [
+      ("state", `String status.state);
+      ("summary", `String status.summary);
+      ("diagnostics_path", (match status.diagnostics_path with Some path -> `String path | None -> `Null));
+    ]
+
 let issue_to_yojson issue =
   `Assoc
     [
@@ -148,7 +177,7 @@ let issue_to_yojson issue =
       ("updated_at", (match issue.updated_at with Some s -> `String s | None -> `Null));
     ]
 
-let running_to_yojson row =
+let running_to_yojson state row =
   `Assoc
     [
       ("issue_id", `String row.issue.id);
@@ -168,9 +197,10 @@ let running_to_yojson row =
       ("last_event_at", (match row.last_event_at with Some s -> `String s | None -> `Null));
       ("tokens", tokens_to_yojson row.tokens);
       ("goal_usage", (match row.goal_usage with Some usage -> goal_usage_to_yojson usage | None -> `Null));
+      ("context_status", context_status_for_issue state row.issue.id |> context_status_to_yojson);
     ]
 
-let retrying_to_yojson (row : retrying) =
+let retrying_to_yojson state (row : retrying) =
   `Assoc
     [
       ("issue_id", `String row.issue_id);
@@ -179,6 +209,7 @@ let retrying_to_yojson (row : retrying) =
       ("due_at", `String row.due_at);
       ("error", (match row.error with Some s -> `String s | None -> `Null));
       ("goal_usage", (match row.goal_usage with Some usage -> goal_usage_to_yojson usage | None -> `Null));
+      ("context_status", context_status_for_issue state row.issue_id |> context_status_to_yojson);
     ]
 
 let issue_error_to_yojson (row : issue_error) =
@@ -291,8 +322,8 @@ let to_yojson state =
       ("workspace_repository_name", (match state.workspace_repository_name with Some s -> `String s | None -> `Null));
       ("counts", `Assoc [ ("running", `Int (List.length state.running)); ("retrying", `Int (List.length state.retrying)) ]);
       ("issues", `List (List.map issue_to_yojson state.issues));
-      ("running", `List (List.map running_to_yojson state.running));
-      ("retrying", `List (List.map retrying_to_yojson state.retrying));
+      ("running", `List (List.map (running_to_yojson state) state.running));
+      ("retrying", `List (List.map (retrying_to_yojson state) state.retrying));
       ("issue_errors", `List (List.map issue_error_to_yojson state.issue_errors));
       ("status_order", `List (List.map (fun status -> `String status) state.status_order));
       ("readiness_gaps", `List (List.map readiness_gap_to_yojson state.readiness_gaps));

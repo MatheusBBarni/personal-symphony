@@ -900,6 +900,7 @@ type context_command_run = {
 
 type context_command_result = {
   lines : string list;
+  context_status : Runtime_state.context_status;
   diagnostic : context_command_diagnostic option;
 }
 
@@ -914,8 +915,15 @@ type context_generation_diagnostics = {
   command : context_command_diagnostic option;
 }
 
+type context_generation = {
+  lines : string list;
+  context_status : Runtime_state.context_status;
+  context_diagnostics : context_generation_diagnostics option;
+}
+
 type prompt_composition = {
   prompt : string;
+  context_status : Runtime_state.context_status;
   context_diagnostics : context_generation_diagnostics option;
 }
 
@@ -1201,16 +1209,43 @@ let context_command_stdout_lines ~max_output_bytes ~truncated output =
     in
     [ ""; "### Context Command"; "" ] @ warning @ [ output ]
 
-let context_command_status_lines (command : Config.stage_context_command) run =
-  if run.timed_out then context_command_warning_lines (Printf.sprintf "timed out after %dms" command.timeout_ms)
+let context_status state summary = Runtime_state.make_context_status ~state ~summary ()
+
+let context_warning_summary subject warning =
+  Printf.sprintf "%s %s; prompt contains bounded warning." subject (bounded_warning warning)
+
+let context_command_result ?diagnostic state summary lines = { lines; context_status = context_status state summary; diagnostic }
+
+let context_command_status_result (command : Config.stage_context_command) env run =
+  let diagnostic = context_command_diagnostic_of_run env command run in
+  if run.timed_out then
+      let warning = Printf.sprintf "timed out after %dms" command.timeout_ms in
+      context_command_result ~diagnostic "timed_out" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
   else
     match run.process_status with
     | Unix.WEXITED 0 ->
+      let lines =
         context_command_stdout_lines ~max_output_bytes:command.max_output_bytes ~truncated:run.stdout.truncated
           run.stdout.output
-    | Unix.WEXITED code -> context_command_warning_lines (Printf.sprintf "exited with code %d" code)
-    | Unix.WSIGNALED signal -> context_command_warning_lines (Printf.sprintf "terminated by signal %d" signal)
-    | Unix.WSTOPPED signal -> context_command_warning_lines (Printf.sprintf "stopped by signal %d" signal)
+      in
+      if run.stdout.truncated then
+        context_command_result ~diagnostic "warning"
+          (context_warning_summary "Context Command" "stdout exceeded maxOutputBytes")
+          lines
+      else context_command_result ~diagnostic "succeeded" "Context Command succeeded." lines
+    | Unix.WEXITED code ->
+      let warning = Printf.sprintf "exited with code %d" code in
+      context_command_result ~diagnostic "warning" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
+    | Unix.WSIGNALED signal ->
+      let warning = Printf.sprintf "terminated by signal %d" signal in
+      context_command_result ~diagnostic "warning" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
+    | Unix.WSTOPPED signal ->
+      let warning = Printf.sprintf "stopped by signal %d" signal in
+      context_command_result ~diagnostic "warning" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
 
 let with_context_command_pipes f =
   let stdout_read, stdout_write = Unix.pipe () in
@@ -1224,7 +1259,8 @@ let with_context_command_pipes f =
 
 let context_command_failure_result ?env ?duration_ms command warning =
   let diagnostic = make_context_command_diagnostic ?env ?duration_ms ~error:warning command in
-  { lines = context_command_warning_lines warning; diagnostic = Some diagnostic }
+  context_command_result ~diagnostic "failed" (context_warning_summary "Context Command" warning)
+    (context_command_warning_lines warning)
 
 let run_context_command config issue attempt (stage : Config.stage_agent) ~workspace command =
   let started_at = Unix.gettimeofday () in
@@ -1253,18 +1289,15 @@ let run_context_command config issue attempt (stage : Config.stage_agent) ~works
                     close_noerr stdout_write;
                     close_noerr stderr_write;
                     let run = wait_context_command env pid command.timeout_ms stdout_read stderr_read command.max_output_bytes in
-                    {
-                      lines = context_command_status_lines command run;
-                      diagnostic = Some (context_command_diagnostic_of_run env command run);
-                    })))
+                    context_command_status_result command env run)))
   with exn ->
     let warning = "failed: " ^ Printexc.to_string exn in
     context_command_failure_result ~duration_ms:(context_command_elapsed_ms started_at) command warning
 
 let context_command_result config issue attempt (stage : Config.stage_agent) ~workspace =
   match stage.context_command with
-  | Some command when Config.stage_context_command_enabled stage -> run_context_command config issue attempt stage ~workspace command
-  | _ -> { lines = []; diagnostic = None }
+  | Some command when Config.stage_context_command_enabled stage -> Some (run_context_command config issue attempt stage ~workspace command)
+  | _ -> None
 
 let stage_context_snapshot_requested (stage : Config.stage_agent) =
   Config.stage_context_snapshot_enabled stage || Config.stage_context_command_enabled stage
@@ -1274,10 +1307,11 @@ let stage_context_snapshot_max_output_bytes (stage : Config.stage_agent) =
   | Some snapshot when Config.stage_context_snapshot_enabled stage -> snapshot.max_output_bytes
   | _ -> Config.default_context_snapshot_max_output_bytes
 
-let agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch =
+let agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch :
+    context_generation =
   match match stage with Some _ -> stage | None -> stage_for_issue config issue with
   | Some stage when stage_context_snapshot_requested stage ->
-      let command = context_command_result config issue attempt stage ~workspace in
+      let command_result = context_command_result config issue attempt stage ~workspace in
       let lines =
         [
           "## Agent Context Snapshot";
@@ -1293,10 +1327,17 @@ let agent_context_snapshot_result ?stage ?previous_attempt_output config issue a
         ]
         @ optional_line "Loop-Start Branch" loop_start_branch
         @ previous_attempt_lines previous_attempt_output
-        @ command.lines
+        @ (match command_result with Some result -> result.lines | None -> [])
       in
       let raw_snapshot = String.concat "\n" lines in
       let max_output_bytes = stage_context_snapshot_max_output_bytes stage in
+      let context_status =
+        match command_result with
+        | Some { context_status = { Runtime_state.state = "succeeded"; _ }; _ } ->
+            context_status "succeeded" "Agent Context Snapshot generated; Context Command succeeded."
+        | Some result -> result.context_status
+        | None -> context_status "succeeded" "Agent Context Snapshot generated."
+      in
       let diagnostics =
         {
           snapshot =
@@ -1305,30 +1346,42 @@ let agent_context_snapshot_result ?stage ?previous_attempt_output config issue a
               rendered_bytes = String.length raw_snapshot;
               truncated = String.length raw_snapshot > max_output_bytes;
             };
-          command = command.diagnostic;
+          command = Option.bind command_result (fun result -> result.diagnostic);
         }
       in
-      Some (truncate_snapshot max_output_bytes raw_snapshot, diagnostics)
-  | _ -> None
+      { lines = [ truncate_snapshot max_output_bytes raw_snapshot ]; context_status; context_diagnostics = Some diagnostics }
+  | _ ->
+      {
+        lines = [];
+        context_status = Runtime_state.skipped_context_status;
+        context_diagnostics = None;
+      }
 
 let agent_context_snapshot ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch =
-  match agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch with
-  | Some (snapshot, _) -> Some snapshot
-  | None -> None
+  match (agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch).lines with
+  | [ snapshot ] -> Some snapshot
+  | _ -> None
 
 let compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
-  let base_prompt = normal_prompt ?stage config issue base_prompt in
-  let prompt, context_diagnostics =
-    match agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch with
-    | None -> (base_prompt, None)
-    | Some (snapshot, diagnostics) -> (Printf.sprintf "%s\n\n---\n\n%s" (base_prompt |> Util.trim) snapshot, Some diagnostics)
+  let snapshot_result = agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch in
+  let prompt =
+    match snapshot_result.lines with
+    | [] -> normal_prompt ?stage config issue base_prompt
+    | [ snapshot ] -> Printf.sprintf "%s\n\n---\n\n%s" (normal_prompt ?stage config issue base_prompt |> Util.trim) snapshot
+    | snapshots ->
+        Printf.sprintf "%s\n\n---\n\n%s" (normal_prompt ?stage config issue base_prompt |> Util.trim)
+          (String.concat "\n" snapshots)
   in
   let prompt =
     match stage_goal_handoff_stage ?stage config issue with
     | None -> prompt
     | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
   in
-  { prompt; context_diagnostics }
+  {
+    prompt;
+    context_status = snapshot_result.context_status;
+    context_diagnostics = snapshot_result.context_diagnostics;
+  }
 
 let compose_prompt ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
   (compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch).prompt
@@ -1373,6 +1426,35 @@ let context_diagnostic_id issue attempt =
   Printf.sprintf "%s-attempt-%d-%d" (Workspace.sanitize issue.Issue.identifier) (launch_attempt_number attempt)
     (int_of_float (Unix.gettimeofday () *. 1000000.))
 
+let max_context_diagnostic_summaries = 100
+
+let context_diagnostic_file_entry dir name =
+  if Filename.check_suffix name ".json" then
+    let path = Filename.concat dir name in
+    try
+      let stat = Unix.stat path in
+      if stat.Unix.st_kind = Unix.S_REG then Some (path, stat.Unix.st_mtime) else None
+    with Unix.Unix_error _ | Sys_error _ -> None
+  else None
+
+let prune_context_diagnostic_files ~keep_path dir =
+  let files =
+    Sys.readdir dir |> Array.to_list |> List.filter_map (context_diagnostic_file_entry dir)
+    |> List.sort (fun (left_path, left_mtime) (right_path, right_mtime) ->
+           let mtime_compare = compare right_mtime left_mtime in
+           if mtime_compare <> 0 then mtime_compare else String.compare right_path left_path)
+  in
+  let keep_files, other_files = List.partition (fun (path, _) -> path = keep_path) files in
+  let files = keep_files @ other_files in
+  let rec loop kept = function
+    | [] -> ()
+    | _ :: rest when kept < max_context_diagnostic_summaries -> loop (kept + 1) rest
+    | (path, _) :: rest ->
+        remove_if_exists path;
+        loop kept rest
+  in
+  loop 0 files
+
 let persist_context_generation_diagnostics config issue stage attempt diagnostics =
   let dir = context_diagnostics_dir config in
   ensure_private_runtime_dir dir;
@@ -1380,6 +1462,7 @@ let persist_context_generation_diagnostics config issue stage attempt diagnostic
   let path = Filename.concat dir (diagnostic_id ^ ".json") in
   let json = context_generation_diagnostics_to_yojson issue attempt stage diagnostic_id diagnostics in
   write_private_file path (Yojson.Safe.pretty_to_string json ^ "\n");
+  prune_context_diagnostic_files ~keep_path:path dir;
   let command = diagnostics.command in
   {
     Runtime_state.issue_id = issue.Issue.id;
@@ -1395,8 +1478,6 @@ let persist_context_generation_diagnostics config issue stage attempt diagnostic
     stderr_bytes = Option.map (fun (command : context_command_diagnostic) -> command.stderr_bytes) command;
     stdout_truncated = Option.map (fun (command : context_command_diagnostic) -> command.stdout_truncated) command;
   }
-
-let max_context_diagnostic_summaries = 100
 
 let rec drop_first count rows =
   if count <= 0 then rows
@@ -2343,6 +2424,11 @@ let dispatch_issue orchestrator issue =
         let context_diagnostic_summary, context_diagnostic_error =
           match context_diagnostic_result with Ok summary -> (summary, None) | Error error -> (None, Some error)
         in
+        let context_status =
+          match context_diagnostic_summary with
+          | Some summary -> { composition.context_status with Runtime_state.diagnostics_path = Some summary.diagnostic_path }
+          | None -> composition.context_status
+        in
         let prompt = composition.prompt in
         let harness =
           Option.value (Config.selected_agent_harness orchestrator.config stage)
@@ -2381,7 +2467,8 @@ let dispatch_issue orchestrator issue =
               | Some summary -> append_context_diagnostic_summary state.context_diagnostics summary
               | None -> state.context_diagnostics);
             last_error = context_diagnostic_error;
-          });
+          }
+          |> Runtime_state.set_context_status issue.id context_status);
         update_ordered_queue_entries orchestrator ~candidates:[ issue ] ();
         (match launched.pid with
         | Some pid ->
@@ -2493,7 +2580,8 @@ let mark_blocked orchestrator issue_id error =
             }
             :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
           last_error = Some error;
-        });
+        }
+        |> Runtime_state.clear_context_status issue_id);
       update_ordered_queue_entries orchestrator ~skipped:(row.issue.identifier, error) ~candidates:[ row.issue ] ()
 
 let complete_child ?next_status orchestrator child =
@@ -2520,7 +2608,8 @@ let complete_child ?next_status orchestrator child =
       retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
       issue_errors =
         List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
-    });
+    }
+    |> Runtime_state.clear_context_status issue_id);
   update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ~candidates:[ next_issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
@@ -2583,7 +2672,8 @@ let mark_merge_attention orchestrator child error =
         }
         :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> child.issue_id) state.issue_errors;
       last_error = Some error;
-    });
+    }
+    |> Runtime_state.clear_context_status child.issue_id);
   update_ordered_queue_entries orchestrator ~skipped:(child.issue_identifier, error) ~candidates:[ child.issue ] ()
 
 let mark_completed orchestrator child =

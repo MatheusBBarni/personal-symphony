@@ -43,12 +43,46 @@ assert.equal(sockets[0].url, "ws://127.0.0.1:8080/api/v1/state/live");
 
 sockets[0].onmessage({
   data: JSON.stringify({
-    counts: { running: 1, retrying: 0 },
+    counts: { running: 1, retrying: 1 },
     generated_at: "2026-05-04T00:00:00Z",
+    running: [
+      {
+        issue_id: "I1",
+        issue_identifier: "#1",
+        context_status: {
+          state: "succeeded",
+          summary: "Agent Context Snapshot generated.",
+          diagnostics_path: null,
+        },
+      },
+    ],
+    retrying: [
+      {
+        issue_id: "I2",
+        issue_identifier: "#2",
+        context_status: {
+          state: "timed_out",
+          summary: "Context Command timed out after 20ms; prompt contains bounded warning.",
+          diagnostics_path: null,
+        },
+      },
+    ],
   }),
 });
 assert.equal(snapshots.length, 1);
 assert.equal(snapshots[0].counts.running, 1);
+assert.equal(snapshots[0].running[0].context_status.state, "succeeded");
+assert.equal(snapshots[0].retrying[0].context_status.state, "timed_out");
+
+sockets[0].onmessage({
+  data: JSON.stringify({
+    counts: { running: 1, retrying: 0 },
+    generated_at: "2026-05-04T00:01:00Z",
+    running: [{ issue_id: "I3", issue_identifier: "#3" }],
+  }),
+});
+assert.equal(snapshots.length, 2);
+assert.equal(snapshots[1].running[0].context_status, undefined);
 
 sockets[0].onclose();
 assert.equal(errors.at(-1), "Live dashboard disconnected. Reconnecting...");

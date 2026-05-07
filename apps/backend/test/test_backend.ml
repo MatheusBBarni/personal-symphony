@@ -298,7 +298,8 @@ let test_config_parses_stage_context_snapshot_and_readiness () =
       let gaps = Config.readiness_gaps invalid in
       match
         List.find_opt
-          (fun (gap : Config.readiness_gap) -> gap.requirement = "stageAgents.engineer.context.snapshot")
+          (fun (gap : Config.readiness_gap) ->
+            gap.requirement = "stageAgents.engineer.context.snapshot.maxOutputBytes")
           gaps
       with
       | Some gap ->
@@ -1865,6 +1866,73 @@ let test_runtime_state_exposes_goal_usage_when_available () =
   Alcotest.(check string) "error goal status" "blocked" (error_usage |> member "status" |> to_string);
   Alcotest.(check (float 0.01)) "error goal time" 2. (error_usage |> member "time_used_seconds" |> to_float)
 
+let test_runtime_state_exposes_context_status () =
+  let running_row issue =
+    {
+      Runtime_state.issue;
+      stage_agent = Some "engineer";
+      stage_states = [ "Todo" ];
+      session_id = Some ("pid:" ^ issue.Issue.id);
+      turn_count = 0;
+      last_event = Some "launched";
+      last_message = None;
+      started_at = "2026-05-04T00:00:00Z";
+      last_event_at = None;
+      tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+      goal_usage = None;
+    }
+  in
+  let issue1 = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Skipped context" ~state:"Todo" in
+  let issue2 = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Succeeded context" ~state:"Todo" in
+  let issue3 = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Warning context" ~state:"Todo" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      running = [ running_row issue1; running_row issue2; running_row issue3 ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I4";
+            issue_identifier = "#4";
+            attempt = 1;
+            due_at = "2026-05-04T00:01:00Z";
+            error = Some "agent exited with code 1";
+            goal_usage = None;
+          };
+          {
+            Runtime_state.issue_id = "I5";
+            issue_identifier = "#5";
+            attempt = 1;
+            due_at = "2026-05-04T00:02:00Z";
+            error = Some "context failed";
+            goal_usage = None;
+          };
+        ];
+    }
+    |> Runtime_state.set_context_status "I2"
+         (Runtime_state.make_context_status ~state:"succeeded" ~summary:"Agent Context Snapshot generated." ())
+    |> Runtime_state.set_context_status "I3"
+         (Runtime_state.make_context_status ~state:"warning" ~summary:"Context Command exited with code 7." ())
+    |> Runtime_state.set_context_status "I4"
+         (Runtime_state.make_context_status ~state:"timed_out" ~summary:"Context Command timed out after 20ms." ())
+    |> Runtime_state.set_context_status "I5"
+         (Runtime_state.make_context_status ~state:"failed" ~summary:"Context Command missing executable." ())
+  in
+  let open Yojson.Safe.Util in
+  let json = Runtime_state.to_yojson state in
+  let running_states =
+    json |> member "running" |> to_list
+    |> List.map (fun row -> row |> member "context_status" |> member "state" |> to_string)
+  in
+  Alcotest.(check (list string)) "running context statuses" [ "skipped"; "succeeded"; "warning" ] running_states;
+  let retrying_states =
+    json |> member "retrying" |> to_list
+    |> List.map (fun row -> row |> member "context_status" |> member "state" |> to_string)
+  in
+  Alcotest.(check (list string)) "retrying context statuses" [ "timed_out"; "failed" ] retrying_states;
+  let skipped_summary = json |> member "running" |> to_list |> List.hd |> member "context_status" |> member "summary" |> to_string in
+  Alcotest.(check string) "default skipped summary" "Context behavior disabled or not applicable." skipped_summary
+
 let websocket_request () =
   {
     Server.request_line = "GET /api/v1/state/live HTTP/1.1";
@@ -1998,6 +2066,63 @@ let test_websocket_readiness_snapshot_and_http_state () =
       { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
   in
   Alcotest.(check bool) "diagnostic endpoint preserved" true (String.contains http '{')
+
+let test_websocket_context_status_snapshot_and_http_state () =
+  let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Context status" ~state:"Todo" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      running =
+        [
+          {
+            Runtime_state.issue;
+            stage_agent = Some "engineer";
+            stage_states = [ "Todo" ];
+            session_id = Some "pid:1";
+            turn_count = 0;
+            last_event = Some "launched";
+            last_message = None;
+            started_at = "2026-05-04T00:00:00Z";
+            last_event_at = None;
+            tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+            goal_usage = None;
+          };
+        ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 1;
+            due_at = "2026-05-04T00:01:00Z";
+            error = Some "agent exited with code 1";
+            goal_usage = None;
+          };
+        ];
+    }
+    |> Runtime_state.set_context_status "I1"
+         (Runtime_state.make_context_status ~state:"warning"
+            ~summary:"Context Command exited with code 7; prompt contains bounded warning." ())
+    |> Runtime_state.set_context_status "I2"
+         (Runtime_state.make_context_status ~state:"timed_out"
+            ~summary:"Context Command timed out after 20ms; prompt contains bounded warning." ())
+  in
+  with_websocket_client state (fun ~set_state:_ ~live:_ ~client_fd:_ ~initial ->
+      let open Yojson.Safe.Util in
+      let json = Yojson.Safe.from_string initial in
+      Alcotest.(check string) "websocket running context" "warning"
+        (json |> member "running" |> to_list |> List.hd |> member "context_status" |> member "state" |> to_string);
+      Alcotest.(check string) "websocket retrying context" "timed_out"
+        (json |> member "retrying" |> to_list |> List.hd |> member "context_status" |> member "state" |> to_string));
+  let http =
+    Server.handle_request (fun () -> state)
+      { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+  in
+  let body = match List.rev (String.split_on_char '\n' http) with body :: _ -> body | [] -> "" in
+  let open Yojson.Safe.Util in
+  let json = Yojson.Safe.from_string body in
+  Alcotest.(check string) "http running context" "warning"
+    (json |> member "running" |> to_list |> List.hd |> member "context_status" |> member "state" |> to_string)
 
 let test_orchestrator_notifies_each_state_mutation () =
   with_temp_dir "symphony-notify-" (fun root ->
@@ -3826,6 +3951,23 @@ let context_diagnostic_file state =
       (row, path, Yojson.Safe.from_file path)
   | rows -> Alcotest.fail (Printf.sprintf "expected one context diagnostic, got %d" (List.length rows))
 
+let context_diagnostics_dir root = Filename.concat (Filename.concat (Filename.concat root ".symphony") "state") "context-diagnostics"
+
+let context_diagnostic_json_file_count root =
+  let dir = context_diagnostics_dir root in
+  if Sys.file_exists dir then
+    Sys.readdir dir |> Array.to_list
+    |> List.filter (fun name -> Filename.check_suffix name ".json")
+    |> List.length
+  else 0
+
+let first_running_context_status_field field state =
+  let open Yojson.Safe.Util in
+  Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd |> member "context_status" |> member field
+  |> to_string
+
+let first_running_context_status_state state = first_running_context_status_field "state" state
+
 let test_orchestrator_runs_stage_context_command_before_launch () =
   with_temp_dir "symphony-context-command-valid-" (fun root ->
       let script = Filename.concat root "context command.sh" in
@@ -3860,7 +4002,9 @@ printf 'cwd=%s\n' "$PWD"
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
       let workspace = match !captured_workspace with Some workspace -> workspace | None -> Alcotest.fail "expected launch" in
+      Alcotest.(check string) "context status" "succeeded" (first_running_context_status_state state);
       Alcotest.(check bool) "snapshot present" true (contains_substring !captured_prompt "## Agent Context Snapshot");
       Alcotest.(check bool) "command section present" true (contains_substring !captured_prompt "### Context Command");
       Alcotest.(check bool) "stdout included raw" true
@@ -3913,6 +4057,7 @@ let test_orchestrator_warns_when_context_command_missing () =
       let prompt, launch_count, state = prompt_from_context_command root (stage_context_command [ missing ]) in
       Alcotest.(check int) "launch still happens" 1 launch_count;
       Alcotest.(check int) "no retry" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check string) "context status" "failed" (first_running_context_status_state state);
       Alcotest.(check bool) "missing warning" true (contains_substring prompt "[warning: missing executable]");
       Alcotest.(check bool) "snapshot present" true (contains_substring prompt "## Agent Context Snapshot"))
 
@@ -3928,6 +4073,7 @@ exit 7
       let prompt, launch_count, state = prompt_from_context_command root (stage_context_command [ script ]) in
       Alcotest.(check int) "launch still happens" 1 launch_count;
       Alcotest.(check int) "no retry" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check string) "context status" "warning" (first_running_context_status_state state);
       Alcotest.(check bool) "exit warning" true (contains_substring prompt "[warning: exited with code 7]");
       Alcotest.(check bool) "stdout excluded on failure" false (contains_substring prompt "stdout should not appear");
       Alcotest.(check bool) "stderr excluded" false (contains_substring prompt "stderr should not appear"))
@@ -3984,6 +4130,7 @@ printf 'late stdout'
       in
       Alcotest.(check int) "launch still happens" 1 launch_count;
       Alcotest.(check int) "no retry" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check string) "context status" "timed_out" (first_running_context_status_state state);
       Alcotest.(check bool) "timeout warning" true (contains_substring prompt "[warning: timed out after 20ms]");
       Alcotest.(check bool) "late stdout excluded" false (contains_substring prompt "late stdout"))
 
@@ -3994,10 +4141,11 @@ let test_orchestrator_truncates_context_command_stdout () =
         {|#!/bin/sh
 printf '0123456789EXTRA-CONTENT'
 |};
-      let prompt, launch_count, _ =
+      let prompt, launch_count, state =
         prompt_from_context_command root (stage_context_command ~max_output_bytes:10 [ script ])
       in
       Alcotest.(check int) "launch still happens" 1 launch_count;
+      Alcotest.(check string) "context status" "warning" (first_running_context_status_state state);
       Alcotest.(check bool) "truncation warning" true
         (contains_substring prompt "[warning: stdout exceeded maxOutputBytes; truncated to 10 bytes]");
       Alcotest.(check bool) "stdout prefix included" true (contains_substring prompt "0123456789");
@@ -4050,6 +4198,44 @@ printf 'diagnostic stderr' >&2
       Alcotest.(check string) "prompt unchanged" "Runtime Contract prompt sentinel\n" (Util.read_file prompt_path);
       Alcotest.(check bool) "settings has no diagnostics" false
         (contains_substring (Util.read_file settings_path) "Context Diagnostics"))
+
+let test_orchestrator_prunes_context_diagnostic_files () =
+  with_temp_dir "symphony-context-diagnostics-prune-" (fun root ->
+      let command = stage_context_command [ "true" ] in
+      let base_config = stage_context_test_config ~context_snapshot:false ~context_command:command root in
+      let config = { base_config with Config.agent = { base_config.agent with max_concurrent_agents = 105 } } in
+      let rec build_issues index acc =
+        if index = 0 then acc
+        else
+          let identifier = "#" ^ string_of_int index in
+          let issue =
+            Issue.empty ~id:("I" ^ string_of_int index) ~identifier ~title:("Issue " ^ string_of_int index)
+              ~state:"Todo"
+          in
+          build_issues (index - 1) (issue :: acc)
+      in
+      let issues = build_issues 105 [] in
+      let launch_count = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launch_count;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      let open Yojson.Safe.Util in
+      let state_rows = Runtime_state.to_yojson state |> member "context_diagnostics" |> to_list in
+      Alcotest.(check int) "all launches happened" 105 !launch_count;
+      Alcotest.(check int) "state diagnostics capped" 100 (List.length state_rows);
+      Alcotest.(check int) "diagnostic files capped" 100 (context_diagnostic_json_file_count root);
+      List.iter
+        (fun row ->
+          let path = row |> member "diagnostic_path" |> to_string in
+          Alcotest.(check bool) "retained diagnostic file exists" true (Sys.file_exists path))
+        state_rows)
 
 let test_orchestrator_persists_context_command_timeout_diagnostics () =
   with_temp_dir "symphony-context-diagnostics-timeout-" (fun root ->
@@ -6568,12 +6754,15 @@ let () =
           Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
+          Alcotest.test_case "exposes context status" `Quick test_runtime_state_exposes_context_status;
         ] );
       ( "server",
         [
           Alcotest.test_case "handles websocket upgrade and initial snapshot" `Quick test_websocket_accept_and_initial_snapshot;
           Alcotest.test_case "broadcasts after state change" `Quick test_websocket_broadcast_after_state_change;
           Alcotest.test_case "serves readiness live snapshot and diagnostic state" `Quick test_websocket_readiness_snapshot_and_http_state;
+          Alcotest.test_case "serves context status live snapshot and HTTP state" `Quick
+            test_websocket_context_status_snapshot_and_http_state;
         ] );
       ( "cli",
         [
@@ -6642,6 +6831,8 @@ let () =
             test_orchestrator_truncates_context_command_stdout;
           Alcotest.test_case "persists successful context command diagnostics" `Quick
             test_orchestrator_persists_context_command_success_diagnostics;
+          Alcotest.test_case "prunes context diagnostic files" `Quick
+            test_orchestrator_prunes_context_diagnostic_files;
           Alcotest.test_case "persists timed out context command diagnostics" `Quick
             test_orchestrator_persists_context_command_timeout_diagnostics;
           Alcotest.test_case "persists truncated context command diagnostics" `Quick

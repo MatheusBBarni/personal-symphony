@@ -144,6 +144,10 @@ _Avoid_: full transcript, prompt replay, all logs
 An optional stage-specific local command whose bounded stdout may supplement an Agent Context Snapshot.
 _Avoid_: lifecycle hook, global hook, context script
 
+**Context Status**:
+The per-task Runtime State summary of Agent Context Snapshot and Context Command generation for running or retrying work.
+_Avoid_: task result, orchestration status, primary metric
+
 **Runtime State**:
 The ignored files inside the Runtime Home that record current orchestration activity and recovery data.
 _Avoid_: state files, generated data
@@ -435,8 +439,10 @@ _Avoid_: reinitialize, reset
 - **Previous Attempt Output** must use deterministic truncation markers and must not replay full Codex transcripts.
 - Runtime Settings own operator-configurable **Agent Context Snapshot** and **Context Command** behavior.
 - **Agent Prompt** composition owns **Agent Context Snapshot** prompt injection.
-- **Runtime State** may expose live **Agent Context Snapshot** generation status.
-- **Runtime Diagnostics** may store bounded, secret-free **Agent Context Snapshot** and **Context Command** metadata.
+- **Runtime State** exposes live **Context Status** for running or retrying work.
+- **Context Status** is the per-task **Runtime State** field that reports **Agent Context Snapshot** and **Context Command** generation without replacing task state, **Goal Usage**, or readiness summaries.
+- When current **Runtime State** rows carry **Context Status** and context behavior is disabled or not applicable, the **Context Status** is `skipped`; older Runtime State snapshots may omit the field.
+- **Runtime Diagnostics** may store bounded, secret-free **Agent Context Snapshot** and **Context Command** metadata; Context Diagnostics files are pruned to the same retention cap as Runtime State summaries.
 - A **Context Command** belongs to a **Stage Agent** mapping.
 - A **Context Command** stdout may supplement an **Agent Context Snapshot**.
 - A **Context Command** stderr and failures are **Runtime Diagnostics** by default.

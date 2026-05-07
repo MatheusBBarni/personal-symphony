@@ -2,7 +2,7 @@
 title: Context Readiness And Runtime Status Schema
 version: 1.0
 date_created: 2026-05-06
-last_updated: 2026-05-06
+last_updated: 2026-05-07
 owner: Product Repository maintainers
 tags: [schema, runtime-state, dashboard, agent-context, issue-41]
 ---
@@ -56,12 +56,14 @@ Out of scope:
       "context_status": {
         "state": "warning",
         "summary": "Context Command exited 1; prompt contains bounded warning.",
-        "diagnostics_path": ".symphony/state/context/issue-41.json"
+        "diagnostics_path": null
       }
     }
   ]
 }
 ```
+
+`diagnostics_path` is nullable until persisted Runtime Diagnostics are implemented. Older Runtime State snapshots may omit `context_status`; current snapshots should include it for running and retrying rows.
 
 ### Status Values
 
@@ -75,7 +77,7 @@ Out of scope:
 
 ## 5. Acceptance Criteria
 
-- **AC-001**: Given context is disabled, When Runtime State renders, Then the task context status is `skipped` or omitted according to the accepted compatibility design.
+- **AC-001**: Given context is disabled, When current Runtime State renders, Then the task context status is `skipped`.
 - **AC-002**: Given Context Command succeeds, When Runtime State renders, Then status is `succeeded`.
 - **AC-003**: Given Context Command times out, When Runtime State renders, Then status is `timed_out`.
 - **AC-004**: Given old snapshots omit context fields, When frontend parsing runs, Then the dashboard remains usable.
