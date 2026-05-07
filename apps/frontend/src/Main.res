@@ -204,7 +204,7 @@ let navItem = (href, label, isActive, icon) =>
     {React.string(label)}
   </a>
 
-let headerRepositoryName = snapshot =>
+let headerRepositoryName = (snapshot: option<Dashboard.snapshot>) =>
   switch snapshot {
   | Some(data) => data.workspaceRepositoryName
   | None => ""

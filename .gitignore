@@ -1,5 +1,7 @@
 node_modules/
+.pnpm-store/
 _build/
+_build_*/
 dist/
 apps/frontend/lib/
 apps/frontend/src/**/*.res.js

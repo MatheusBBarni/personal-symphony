@@ -43,6 +43,17 @@ let substring_index text substring =
   in
   loop 0
 
+let test_child_harness =
+  Config.harness_of_codex
+    {
+      Config.command = "true";
+      model = Config.default_model;
+      reasoning_effort = Config.default_reasoning_effort;
+      turn_timeout_ms = 1000;
+      read_timeout_ms = 100;
+      stall_timeout_ms = 1000;
+    }
+
 let init_repo root branch =
   ignore (run_ok ~cwd:root "git init" (Printf.sprintf "git init -q -b %s" (Util.shell_quote branch)));
   ignore (run_ok ~cwd:root "git user email" "git config user.email test@example.com");
@@ -728,6 +739,8 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
               read_timeout_ms = 100;
               stall_timeout_ms = 1000;
             };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -736,7 +749,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
       let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
-      let launched = Orchestrator.shell_launch ~config ~workspace ~prompt:"Issue #1" ~issue in
+      let launched = Orchestrator.shell_launch ~stage:None ~config ~workspace ~prompt:"Issue #1" ~issue in
       (match launched.pid with
       | Some pid -> ignore (Unix.waitpid [] pid)
       | None -> Alcotest.fail "expected shell launch pid");
@@ -744,6 +757,203 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
         (Util.read_file (Filename.concat workspace.path "launched.cwd") |> Util.trim);
       Alcotest.(check string) "prompt piped" "Issue #1" (Util.read_file (Filename.concat workspace.path "launched.prompt") |> Util.trim);
       Alcotest.(check bool) "loop-start unchanged" false (Sys.file_exists (Filename.concat root "launched.cwd")))
+
+let test_shell_launch_selects_pi_harness_for_stage_agent () =
+  with_temp_dir "symphony-launch-pi-root-" (fun root ->
+      let workspace_root = Filename.concat root "workspaces" in
+      let agents_root = Filename.concat root "agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "pi.md") "PI stage instructions";
+      let codex =
+        {
+          Config.command = "false";
+          model = Config.default_model;
+          reasoning_effort = Config.default_reasoning_effort;
+          turn_timeout_ms = 1000;
+          read_timeout_ms = 100;
+          stall_timeout_ms = 1000;
+        }
+      in
+      let pi_harness =
+        {
+          Config.name = "pi";
+          kind = "pi";
+          command = "sh -c 'pwd > pi.cwd; cat > pi.prompt'";
+          model = Config.default_pi_model;
+          reasoning_effort = Config.default_reasoning_effort;
+          turn_timeout_ms = 1000;
+          read_timeout_ms = 100;
+          stall_timeout_ms = 1000;
+        }
+      in
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = workspace_root };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex;
+          agent_harnesses_explicit = true;
+          agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          stage_agents =
+            {
+              enabled = true;
+              root = agents_root;
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "pi";
+                    max_concurrent_agents = None;
+                    context_snapshot = None;
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+      let launched = Orchestrator.shell_launch ~stage:None ~config ~workspace ~prompt:"Issue #1" ~issue in
+      (match launched.pid with
+      | Some pid -> ignore (Unix.waitpid [] pid)
+      | None -> Alcotest.fail "expected shell launch pid");
+      Alcotest.(check string) "pi cwd" (Unix.realpath workspace.path)
+        (Util.read_file (Filename.concat workspace.path "pi.cwd") |> Util.trim);
+      Alcotest.(check string) "pi prompt piped" "Issue #1"
+        (Util.read_file (Filename.concat workspace.path "pi.prompt") |> Util.trim))
+
+let test_dispatch_selects_pi_harness_before_start_status_update () =
+  with_temp_dir "symphony-dispatch-pi-start-status-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let workspace_root = Filename.concat root ".symphony/workspaces" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "pi.md") "PI stage instructions";
+      let codex =
+        {
+          Config.command = "false";
+          model = Config.default_model;
+          reasoning_effort = Config.default_reasoning_effort;
+          turn_timeout_ms = 1000;
+          read_timeout_ms = 100;
+          stall_timeout_ms = 1000;
+        }
+      in
+      let pi_harness =
+        {
+          Config.name = "pi";
+          kind = "pi";
+          command = "sh -c 'pwd > pi.cwd; cat > pi.prompt'";
+          model = Config.default_pi_model;
+          reasoning_effort = Config.default_reasoning_effort;
+          turn_timeout_ms = 1000;
+          read_timeout_ms = 100;
+          stall_timeout_ms = 1000;
+        }
+      in
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo"; "In progress" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = workspace_root };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex;
+          agent_harnesses_explicit = true;
+          agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          stage_agents =
+            {
+              enabled = true;
+              root = agents_root;
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "pi";
+                    max_concurrent_agents = None;
+                    context_snapshot = None;
+                    skills = [];
+                    start_status = Some "In progress";
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let statuses = ref [] in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let child =
+        match orchestrator.Orchestrator.children with
+        | [ child ] -> child
+        | _ -> Alcotest.fail "expected one running PI child"
+      in
+      ignore (Unix.waitpid [] child.pid);
+      Alcotest.(check (list string)) "start status moved before launch" [ "In progress" ] (List.rev !statuses);
+      Alcotest.(check string) "pi cwd" (Unix.realpath child.workspace.path)
+        (Util.read_file (Filename.concat child.workspace.path "pi.cwd") |> Util.trim);
+      Alcotest.(check string) "pi prompt piped" "PI stage instructions\n\n---\n\nStage agent: pi\n\nIssue #1"
+        (Util.read_file (Filename.concat child.workspace.path "pi.prompt") |> Util.trim))
 
 let test_invalid_tracker_kind () =
   let content =
@@ -781,6 +991,124 @@ body
       let config = Config.from_workflow workflow in
       Alcotest.(check string) "legacy command" Config.default_codex_command config.codex.command)
 
+let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
+  with_temp_dir "symphony-agent-harnesses-" (fun root ->
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {"command": "codex app-server", "model": "legacy-model"},
+  "agents": {
+    "codex": {
+      "kind": "codex",
+      "command": "codex exec --model <model> --reasoning <reasoning>",
+      "model": "gpt-5.4",
+      "reasoningEffort": "high",
+      "turnTimeoutMs": 11,
+      "readTimeoutMs": 12,
+      "stallTimeoutMs": 13
+    },
+    "pi": {
+      "kind": "pi",
+      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "medium",
+      "turnTimeoutMs": 21,
+      "readTimeoutMs": 22,
+      "stallTimeoutMs": 23
+    }
+  },
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check bool) "explicit harnesses" true config.agent_harnesses_explicit;
+      Alcotest.(check string) "agents codex wins" "gpt-5.4" config.codex.model;
+      Alcotest.(check string) "legacy command ignored" "codex exec --model <model> --reasoning <reasoning>"
+        config.codex.command;
+      let pi =
+        match Config.harness_named "pi" config.agent_harnesses with
+        | Some harness -> harness
+        | None -> Alcotest.fail "expected pi harness"
+      in
+      Alcotest.(check string) "pi kind" "pi" pi.kind;
+      Alcotest.(check int) "pi turn timeout" 21 pi.turn_timeout_ms;
+      Alcotest.(check int) "pi read timeout" 22 pi.read_timeout_ms;
+      Alcotest.(check int) "pi stall timeout" 23 pi.stall_timeout_ms)
+
+let test_harness_command_rendering () =
+  let pi =
+    {
+      Config.name = "pi";
+      kind = "pi";
+      command = "pi --model <model> --thinking <reasoning> --print --no-session";
+      model = "openai/gpt-5.5";
+      reasoning_effort = "medium";
+      turn_timeout_ms = 1000;
+      read_timeout_ms = 100;
+      stall_timeout_ms = 1000;
+    }
+  in
+  Alcotest.(check string) "pi tokens"
+    "pi --model 'openai/gpt-5.5' --thinking 'medium' --print --no-session"
+    (Orchestrator.render_harness_command pi);
+  let codex =
+    {
+      Config.name = "codex";
+      kind = "codex";
+      command = "codex exec";
+      model = "gpt-5.5";
+      reasoning_effort = "high";
+      turn_timeout_ms = 1000;
+      read_timeout_ms = 100;
+      stall_timeout_ms = 1000;
+    }
+  in
+  Alcotest.(check string) "codex injection" "codex -m 'gpt-5.5' -c 'model_reasoning_effort=\"high\"' exec"
+    (Orchestrator.render_harness_command codex)
+
+let test_agent_harness_readiness_gaps () =
+  let original_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match original_home with Some value -> Unix.putenv "HOME" value | None -> Unix.putenv "HOME" "")
+    (fun () ->
+      with_temp_dir "symphony-agent-harness-readiness-" (fun root ->
+          Unix.putenv "HOME" root;
+          Unix.putenv "GITHUB_TOKEN" "token";
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "pi.md") "PI";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "agents": {
+    "codex": {"kind": "codex", "command": "codex exec"},
+    "pi": {"kind": "pi", "command": "pi --print", "model": "openai/gpt-5.5", "reasoningEffort": "medium"},
+    "bad": {"kind": "unknown", "command": "", "model": "", "reasoningEffort": ""}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "pi", "goal": {"enabled": true}},
+      {"states": ["In review"], "agent": "missing"}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let requirements = Config.readiness_gaps config |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement) in
+          Alcotest.(check bool) "invalid kind" true (List.exists (( = ) "agents.bad.kind") requirements);
+          Alcotest.(check bool) "blank command" true (List.exists (( = ) "agents.bad.command") requirements);
+          Alcotest.(check bool) "blank model" true (List.exists (( = ) "agents.bad.model") requirements);
+          Alcotest.(check bool) "blank reasoning" true (List.exists (( = ) "agents.bad.reasoningEffort") requirements);
+          Alcotest.(check bool) "missing harness" true
+            (List.exists (( = ) "stageAgents.missing.agent") requirements);
+          Alcotest.(check bool) "pi goal blocked" true (List.exists (( = ) "stageAgents.pi.goal") requirements);
+          Alcotest.(check bool) "pi goal does not require codex goals" false
+            (List.exists (( = ) "codex.goals") requirements)))
+
 let test_project_status_order_uses_transition_flow () =
   let tracker =
     {
@@ -816,11 +1144,13 @@ let test_project_status_order_uses_transition_flow () =
           turn_timeout_ms = 1000;
           read_timeout_ms = 100;
           stall_timeout_ms = 1000;
-      };
-    server = { port = None };
-    pull_request = Config.default_pull_request;
-          protected_paths = Config.default_protected_paths;
-    stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
+        };
+      agent_harnesses_explicit = false;
+      agent_harnesses = [];
+      server = { port = None };
+      pull_request = Config.default_pull_request;
+      protected_paths = Config.default_protected_paths;
+      stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
     }
   in
   Alcotest.(check (list string)) "kanban status order" [ "To-Do"; "In progress"; "In review"; "Done" ]
@@ -1271,6 +1601,8 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1533,6 +1865,8 @@ let test_orchestrator_notifies_each_state_mutation () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1577,6 +1911,8 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1624,9 +1960,10 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
         [
           {
             Orchestrator.pid;
-            issue;
-            stage = None;
-            issue_id = issue.id;
+              issue;
+              stage = None;
+              harness = Config.default_agent_harness config;
+              issue_id = issue.id;
             issue_identifier = issue.identifier;
             issue_title = issue.title;
             workspace;
@@ -1682,6 +2019,8 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1; read_timeout_ms = 1000; stall_timeout_ms = 100000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1728,9 +2067,10 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
         [
           {
             Orchestrator.pid;
-            issue;
-            stage = None;
-            issue_id = issue.id;
+              issue;
+              stage = None;
+              harness = Config.default_agent_harness config;
+              issue_id = issue.id;
             issue_identifier = issue.identifier;
             issue_title = issue.title;
             workspace;
@@ -1795,6 +2135,8 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2097,9 +2439,11 @@ let stage_capacity_config root ~global_cap =
         reasoning_effort = Config.default_reasoning_effort;
         turn_timeout_ms = 1000;
         read_timeout_ms = 1000;
-        stall_timeout_ms = 1000;
-      };
-    server = { port = None };
+          stall_timeout_ms = 1000;
+        };
+      agent_harnesses_explicit = false;
+      agent_harnesses = [];
+      server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
     stage_agents =
@@ -2176,6 +2520,8 @@ let test_orchestrator_dispatch_limits () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2190,7 +2536,7 @@ let test_orchestrator_dispatch_limits () =
         ]
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.id :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2218,7 +2564,7 @@ let test_orchestrator_stage_capacity_dispatches_all_available_slots () =
         ]
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2236,7 +2582,7 @@ let test_orchestrator_stage_capacity_does_not_spawn_idle_agents () =
       let config = stage_capacity_config root ~global_cap:5 in
       let issues = [ Issue.empty ~id:"E1" ~identifier:"#1" ~title:"Engineer one" ~state:"Todo" ] in
       let launch_count = ref 0 in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         incr launch_count;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2262,7 +2608,7 @@ let test_orchestrator_stage_capacity_respects_lower_global_cap () =
         ]
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2287,7 +2633,7 @@ let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
           Issue.empty ~id:"ready" ~identifier:"#5" ~title:"Ready" ~state:"Todo";
         ]
       in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
@@ -2359,9 +2705,11 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
               reasoning_effort = Config.default_reasoning_effort;
               turn_timeout_ms = 1000;
               read_timeout_ms = 1000;
-              stall_timeout_ms = 1000;
-            };
-          server = { port = None };
+                stall_timeout_ms = 1000;
+              };
+            agent_harnesses_explicit = false;
+            agent_harnesses = [];
+            server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -2411,7 +2759,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
         match Ordered_queue.parse "#1,#2,#3,#4" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2469,9 +2817,11 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
               reasoning_effort = Config.default_reasoning_effort;
               turn_timeout_ms = 1000;
               read_timeout_ms = 1000;
-              stall_timeout_ms = 1000;
-            };
-          server = { port = None };
+          stall_timeout_ms = 1000;
+        };
+      agent_harnesses_explicit = false;
+      agent_harnesses = [];
+      server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -2488,7 +2838,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
         match Ordered_queue.parse "#2,#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2533,6 +2883,8 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2585,6 +2937,8 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 2; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2598,7 +2952,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
         ]
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.id :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2637,6 +2991,8 @@ let test_orchestrator_retries_failed_agent () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2685,8 +3041,10 @@ let test_orchestrator_moves_status_to_review_on_success () =
           workspace = { root = Filename.concat root "workspaces" };
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
-          server = { port = None };
+            codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+            agent_harnesses_explicit = false;
+            agent_harnesses = [];
+            server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -2745,6 +3103,8 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2781,7 +3141,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
         statuses := (issue.Issue.identifier, status) :: !statuses;
         Ok ()
       in
-      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2794,10 +3154,11 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
       Alcotest.(check (list (pair string string))) "no start status for review" [] (List.rev !statuses);
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
@@ -2840,6 +3201,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2887,7 +3250,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         }
       in
       let captured_prompt = ref "" in
-      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -2965,6 +3328,8 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2993,7 +3358,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
       let captured_prompt = ref "" in
-      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -3039,9 +3404,11 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         reasoning_effort = Config.default_reasoning_effort;
         turn_timeout_ms = 1000;
         read_timeout_ms = 100;
-        stall_timeout_ms = 1000;
-      };
-    server = { port = None };
+          stall_timeout_ms = 1000;
+        };
+      agent_harnesses_explicit = false;
+      agent_harnesses = [];
+      server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
     stage_agents =
@@ -3072,7 +3439,7 @@ let test_orchestrator_omits_retry_output_on_first_launch () =
       let config = stage_context_test_config root in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
       let captured_prompt = ref "" in
-      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -3091,7 +3458,7 @@ let test_orchestrator_includes_retry_output_on_retry_launch () =
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
       let launch_count = ref 0 in
       let retry_prompt = ref "" in
-      let launch ~config:_ ~workspace ~prompt ~issue =
+      let launch ~stage:_ ~config:_ ~workspace ~prompt ~issue =
         incr launch_count;
         if !launch_count = 1 then (
           let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
@@ -3209,6 +3576,8 @@ let test_orchestrator_truncates_agent_context_snapshot () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3336,6 +3705,8 @@ let test_orchestrator_commits_stage_before_success_status () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3380,10 +3751,11 @@ let test_orchestrator_commits_stage_before_success_status () =
       let orchestrator = Orchestrator.make ~set_status ~commit_stage ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
@@ -3475,6 +3847,8 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3482,7 +3856,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
         }
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In review" in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let fetch _ = [ issue ] in
@@ -3491,10 +3865,11 @@ let test_orchestrator_retries_when_success_status_move_fails () =
       Orchestrator.poll_once orchestrator;
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
@@ -3541,6 +3916,8 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3574,7 +3951,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
         Ok ()
       in
       let commit_stage _ _ _ _ _ = Error "stage push failed: exit 1: remote rejected" in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
@@ -3585,10 +3962,11 @@ let test_orchestrator_retries_push_failure_before_success_status () =
       statuses := [];
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
@@ -3631,8 +4009,10 @@ let test_stage_commit_requires_code_changes () =
           workspace = { root = Filename.concat root "workspaces" };
           git = Config.default_git;
           agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
-          server = { port = None };
+            codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+            agent_harnesses_explicit = false;
+            agent_harnesses = [];
+            server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -3684,9 +4064,11 @@ let test_orchestrator_does_not_retry_empty_commit () =
           polling = { interval_ms = 1000 };
           workspace = { root = Filename.concat root "workspaces" };
           git = Config.default_git;
-          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
-          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
-          server = { port = None };
+            agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+            codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+            agent_harnesses_explicit = false;
+            agent_harnesses = [];
+            server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -3716,7 +4098,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
       let launches = ref 0 in
       let statuses = ref [] in
       let fetch _ = [ issue ] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         incr launches;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -3730,10 +4112,11 @@ let test_orchestrator_does_not_retry_empty_commit () =
       Alcotest.(check int) "first launch" 1 !launches;
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace = { Workspace.path = root; workspace_key = "test"; created_now = false };
@@ -3783,9 +4166,11 @@ let base_orchestrator_config root git =
         reasoning_effort = Config.default_reasoning_effort;
         turn_timeout_ms = 1000;
         read_timeout_ms = 100;
-        stall_timeout_ms = 1000;
-    };
-    server = { port = None };
+      stall_timeout_ms = 1000;
+  };
+  agent_harnesses_explicit = false;
+  agent_harnesses = [];
+  server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -3953,10 +4338,11 @@ let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
       in
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace;
@@ -4034,10 +4420,11 @@ let create_task_worktree config issue =
 
 let completed_child issue workspace =
   {
-    Orchestrator.pid = 0;
-    issue;
-    stage = None;
-    issue_id = issue.Issue.id;
+      Orchestrator.pid = 0;
+      issue;
+      stage = None;
+      harness = test_child_harness;
+      issue_id = issue.Issue.id;
     issue_identifier = issue.identifier;
     issue_title = issue.title;
     workspace;
@@ -4171,7 +4558,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
         match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.state :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -4221,7 +4608,7 @@ let test_ordered_queue_revives_persisted_completed_active_entries () =
         match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
       in
       let launched = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -4481,7 +4868,7 @@ let test_orchestrator_creates_task_worktree_and_branch () =
       let config = base_orchestrator_config root (git_policy ()) in
       let issue = Issue.empty ~id:"I1" ~identifier:"#3" ~title:"Three" ~state:"Todo" in
       let captured_workspace = ref None in
-      let launch ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
         captured_workspace := Some workspace;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -4561,7 +4948,7 @@ let test_orchestrator_opens_batch_pull_request_on_review_status () =
       let issue = Issue.empty ~id:"I33" ~identifier:"#33" ~title:"Thirty three" ~state:"Todo" in
       let attempts = ref [] in
       let current_status = ref "Todo" in
-      let launch ~config:_ ~workspace ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace ~prompt:_ ~issue =
         commit_file ~cwd:workspace.Workspace.path "review-pr.txt" "ready\n" "task 33";
         let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "true" |] Unix.stdin Unix.stdout Unix.stderr in
         { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
@@ -4601,7 +4988,7 @@ let test_orchestrator_opens_task_pull_request_on_review_status_from_protected_lo
       let issue = Issue.empty ~id:"I34" ~identifier:"#34" ~title:"Thirty four" ~state:"Todo" in
       let attempts = ref [] in
       let current_status = ref "Todo" in
-      let launch ~config:_ ~workspace ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace ~prompt:_ ~issue =
         commit_file ~cwd:workspace.Workspace.path "task-pr.txt" "ready\n" "task 34";
         let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "true" |] Unix.stdin Unix.stdout Unix.stderr in
         { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
@@ -4782,7 +5169,7 @@ let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
       let issue = Issue.empty ~id:"I2" ~identifier:"#4" ~title:"Four" ~state:"Todo" in
       let launches = ref 0 in
       let statuses = ref [] in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         incr launches;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -4816,7 +5203,7 @@ let test_orchestrator_blocks_disallowed_loop_start_before_side_effects () =
       let statuses = ref [] in
       let launches = ref 0 in
       let prs = ref 0 in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         incr launches;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -4882,7 +5269,7 @@ let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launc
       let issue = Issue.empty ~id:"I9" ~identifier:"#11" ~title:"Eleven" ~state:"In progress" in
       ignore (run_ok ~cwd:root "create task branch" "git branch symphony/task-11 feature/start");
       let launched_branch = ref None in
-      let launch ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
         launched_branch := Some (run_ok ~cwd:workspace.path "branch" "git branch --show-current");
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -4902,7 +5289,7 @@ let test_orchestrator_rejects_existing_non_worktree_workspace () =
       let stale_workspace = Filename.concat config.workspace.root "_12" in
       Unix.mkdir stale_workspace 0o755;
       let launches = ref 0 in
-      let launch ~config:_ ~workspace:_ ~prompt:_ ~issue =
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         incr launches;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
@@ -4980,10 +5367,11 @@ let test_auto_merge_fast_forwards_and_removes_worktree () =
       let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace;
@@ -5021,10 +5409,11 @@ let test_cleanup_can_remove_task_branch_after_merge () =
       let orchestrator = Orchestrator.make ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace;
@@ -5058,10 +5447,11 @@ let test_auto_merge_skips_protected_trunk_branch () =
       let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace;
@@ -5140,10 +5530,11 @@ let test_auto_merge_failure_moves_human_attention () =
       let orchestrator = Orchestrator.make ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.mark_completed orchestrator
         {
-          Orchestrator.pid = 0;
-          issue;
-          stage = None;
-          issue_id = issue.id;
+            Orchestrator.pid = 0;
+            issue;
+            stage = None;
+            harness = test_child_harness;
+            issue_id = issue.id;
           issue_identifier = issue.identifier;
           issue_title = issue.title;
           workspace;
@@ -5353,7 +5744,13 @@ let () =
       ("workflow", [ Alcotest.test_case "parse config" `Quick test_workflow_and_config ]);
       ("prompt", [ Alcotest.test_case "strict render" `Quick test_prompt_strict_rendering ]);
       ("workspace", [ Alcotest.test_case "sanitize and reuse" `Quick test_workspace_safety ]);
-      ("launch", [ Alcotest.test_case "runs agent in agent worktree" `Quick test_shell_launch_runs_agent_in_agent_worktree ]);
+      ( "launch",
+        [
+          Alcotest.test_case "runs agent in agent worktree" `Quick test_shell_launch_runs_agent_in_agent_worktree;
+          Alcotest.test_case "selects PI harness for stage agent" `Quick test_shell_launch_selects_pi_harness_for_stage_agent;
+          Alcotest.test_case "selects PI harness before start status update" `Quick
+            test_dispatch_selects_pi_harness_before_start_status_update;
+        ] );
       ( "runtime-home",
         [
           Alcotest.test_case "bootstrap is idempotent" `Quick test_bootstrap_idempotency_preserves_user_files;
@@ -5367,6 +5764,10 @@ let () =
         [
           Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
+          Alcotest.test_case "parses agent harnesses" `Quick
+            test_config_parses_agent_harnesses_and_legacy_codex_precedence;
+          Alcotest.test_case "renders harness commands" `Quick test_harness_command_rendering;
+          Alcotest.test_case "validates agent harness readiness" `Quick test_agent_harness_readiness_gaps;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
           Alcotest.test_case "validates stage concurrency policy" `Quick test_config_validates_stage_concurrency_policy;
