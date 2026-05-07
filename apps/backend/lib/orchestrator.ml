@@ -1471,6 +1471,10 @@ let maybe_open_review_pull_request orchestrator issue status =
     else if policy.open_on_review && (not orchestrator.batch_pull_request_completed) then
       attempt_batch_pull_request orchestrator
 
+let task_pull_request_before_auto_merge orchestrator status =
+  let policy = orchestrator.config.Config.pull_request in
+  policy.enabled && policy.mode = "task" && status_is_review_status orchestrator.config status
+
 let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
   let policy = orchestrator.config.Config.pull_request in
   if policy.enabled && policy.mode = "batch" && not orchestrator.batch_pull_request_completed then
@@ -1782,17 +1786,32 @@ let mark_completed orchestrator child =
         mark_blocked orchestrator issue_id error)
       else mark_retrying orchestrator issue_id error
   | Ok () ->
-      (match auto_merge_child orchestrator child with
-      | Error error -> mark_merge_attention orchestrator child error
-      | Ok () -> (
-          match next_status with
-          | None -> complete_child orchestrator child
-          | Some status ->
-              if not (move_issue_status orchestrator child.issue status) then
-                mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
-              else (
-                maybe_open_review_pull_request orchestrator child.issue status;
-                complete_child ~next_status:status orchestrator child)))
+      let status_moved_before_merge =
+        match next_status with
+        | Some status when task_pull_request_before_auto_merge orchestrator status ->
+            if move_issue_status orchestrator child.issue status then (
+              attempt_task_pull_request orchestrator child.issue;
+              Some true)
+            else (
+              mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status);
+              None)
+        | _ -> Some false
+      in
+      (match status_moved_before_merge with
+      | None -> ()
+      | Some status_moved_before_merge -> (
+          match auto_merge_child orchestrator child with
+          | Error error -> mark_merge_attention orchestrator child error
+          | Ok () -> (
+              match next_status with
+              | None -> complete_child orchestrator child
+              | Some status ->
+                  if status_moved_before_merge then complete_child ~next_status:status orchestrator child
+                  else if not (move_issue_status orchestrator child.issue status) then
+                    mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
+                  else (
+                    maybe_open_review_pull_request orchestrator child.issue status;
+                    complete_child ~next_status:status orchestrator child))))
 
 let kill_child child =
   try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()

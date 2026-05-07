@@ -4287,6 +4287,55 @@ let test_orchestrator_opens_task_pull_request_on_review_status_from_protected_lo
           Alcotest.(check (option string)) "url" (Some "https://github.example/acme/widgets/pull/34") handoff.url
       | None -> Alcotest.fail "expected task pull request handoff state")
 
+let test_task_pull_request_opens_before_auto_merge_cleanup () =
+  with_temp_dir "symphony-task-pr-before-cleanup-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let git =
+        {
+          (git_policy ~auto_merge:true ()) with
+          cleanup = { Config.remove_worktree_after_merge = true; keep_task_branch = false };
+        }
+      in
+      let config = base_orchestrator_config root git |> task_pull_request_config in
+      let issue = Issue.empty ~id:"I35" ~identifier:"#35" ~title:"Thirty five" ~state:"In progress" in
+      let workspace = create_task_worktree config issue in
+      commit_file ~cwd:workspace.path "task-pr-before-cleanup.txt" "ready\n" "task 35";
+      let statuses = ref [] in
+      let branch_exists_during_handoff = ref false in
+      let attempts = ref [] in
+      let set_status _ issue status =
+        statuses := (issue.Issue.identifier, status) :: !statuses;
+        Ok ()
+      in
+      let batch_pull_request_handoff _config ~head_branch =
+        branch_exists_during_handoff :=
+          Sys.command
+            ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/"
+            ^ Util.shell_quote head_branch)
+          = 0;
+        attempts := head_branch :: !attempts;
+        Ok (Some "https://github.example/acme/widgets/pull/35")
+      in
+      let orchestrator =
+        Orchestrator.make ~set_status ~batch_pull_request_handoff ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.mark_completed orchestrator (completed_child issue workspace);
+      Alcotest.(check (list string)) "handoff attempted from Task Branch" [ "symphony/task-35" ] (List.rev !attempts);
+      Alcotest.(check bool) "Task Branch exists during handoff" true !branch_exists_during_handoff;
+      Alcotest.(check bool) "task merged into Loop-Start Branch" true
+        (Sys.file_exists (Filename.concat root "task-pr-before-cleanup.txt"));
+      Alcotest.(check bool) "Task Branch removed after cleanup" false
+        (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-35") = 0);
+      Alcotest.(check (list (pair string string))) "review status before completion" [ ("#35", "In review") ]
+        (List.rev !statuses);
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "status" "completed" handoff.status;
+          Alcotest.(check (option string)) "head branch" (Some "symphony/task-35") handoff.head_branch
+      | None -> Alcotest.fail "expected task pull request handoff state")
+
 let test_orchestrator_retries_batch_pull_request_handoff_failure () =
   with_temp_dir "symphony-batch-pr-retry-" (fun root ->
       init_repo root "feature/start";
@@ -5097,6 +5146,8 @@ let () =
             test_orchestrator_opens_batch_pull_request_on_review_status;
           Alcotest.test_case "opens task pull request on review status" `Quick
             test_orchestrator_opens_task_pull_request_on_review_status_from_protected_loop_start;
+          Alcotest.test_case "opens task pull request before auto-merge cleanup" `Quick
+            test_task_pull_request_opens_before_auto_merge_cleanup;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
           Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
           Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;
