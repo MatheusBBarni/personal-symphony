@@ -5302,6 +5302,44 @@ let test_orchestrator_opens_task_pull_request_on_review_status_from_protected_lo
           Alcotest.(check (option string)) "url" (Some "https://github.example/acme/widgets/pull/34") handoff.url
       | None -> Alcotest.fail "expected task pull request handoff state")
 
+let test_task_pull_request_renders_issue_template_tokens () =
+  with_temp_dir "symphony-task-pr-template-" (fun root ->
+      init_repo root "main";
+      ignore_runtime_home root;
+      let base_config = base_orchestrator_config root (git_policy ~auto_merge:true ()) |> task_pull_request_config in
+      let config =
+        {
+          base_config with
+          Config.pull_request =
+            {
+              base_config.pull_request with
+              title = "Symphony: <issue_identifier> from <head_branch> into <base_branch>";
+              body = "Issue: <issue_identifier>\nTitle: <issue_title>\nTask Branch: <head_branch>";
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I40" ~identifier:"#40" ~title:"Forty" ~state:"In progress" in
+      let workspace = create_task_worktree config issue in
+      commit_file ~cwd:workspace.path "task-pr-template.txt" "ready\n" "task 40";
+      let captured_title = ref None in
+      let captured_body = ref None in
+      let set_status _ _ _ = Ok () in
+      let batch_pull_request_handoff config ~head_branch:_ =
+        captured_title := Some config.Config.pull_request.title;
+        captured_body := Some config.Config.pull_request.body;
+        Ok (Some "https://github.example/acme/widgets/pull/40")
+      in
+      let orchestrator =
+        Orchestrator.make ~set_status ~batch_pull_request_handoff ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.mark_completed orchestrator (completed_child issue workspace);
+      Alcotest.(check (option string)) "title" (Some "Symphony: #40 from <head_branch> into <base_branch>")
+        !captured_title;
+      Alcotest.(check (option string)) "body"
+        (Some "Issue: #40\nTitle: Forty\nTask Branch: <head_branch>")
+        !captured_body)
+
 let test_task_pull_request_opens_before_auto_merge_cleanup () =
   with_temp_dir "symphony-task-pr-before-cleanup-" (fun root ->
       init_repo root "feature/start";
@@ -6198,6 +6236,8 @@ let () =
             test_orchestrator_opens_batch_pull_request_on_review_status;
           Alcotest.test_case "opens task pull request on review status" `Quick
             test_orchestrator_opens_task_pull_request_on_review_status_from_protected_loop_start;
+          Alcotest.test_case "renders task pull request issue template tokens" `Quick
+            test_task_pull_request_renders_issue_template_tokens;
           Alcotest.test_case "opens task pull request before auto-merge cleanup" `Quick
             test_task_pull_request_opens_before_auto_merge_cleanup;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;

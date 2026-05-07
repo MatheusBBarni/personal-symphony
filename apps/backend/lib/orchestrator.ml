@@ -874,6 +874,24 @@ let render_pull_request_template config ~head_branch text =
   |> replace_token ~token:"base_branch" ~value:config.Config.pull_request.base_branch
   |> Util.trim
 
+let render_task_pull_request_issue_template issue text =
+  text
+  |> replace_token ~token:"issue_identifier" ~value:issue.Issue.identifier
+  |> replace_token ~token:"issue_title" ~value:issue.Issue.title
+  |> Util.trim
+
+let config_with_task_pull_request_issue config issue =
+  let pull_request = config.Config.pull_request in
+  {
+    config with
+    pull_request =
+      {
+        pull_request with
+        title = render_task_pull_request_issue_template issue pull_request.title;
+        body = render_task_pull_request_issue_template issue pull_request.body;
+      };
+  }
+
 let batch_branch_push config ~head_branch =
   if not (is_git_repository config.Config.repository_root) then Error "batch pull request requires a Git repository"
   else
@@ -1608,10 +1626,11 @@ let attempt_batch_pull_request orchestrator =
       render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
 
 let attempt_task_pull_request orchestrator issue =
-  let policy = orchestrator.config.Config.pull_request in
-  let head_branch = task_branch orchestrator.config issue in
+  let config = config_with_task_pull_request_issue orchestrator.config issue in
+  let policy = config.Config.pull_request in
+  let head_branch = task_branch config issue in
   set_pull_request_handoff orchestrator ~issue ~head_branch "attempting" ();
-  match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch with
+  match orchestrator.batch_pull_request_handoff config ~head_branch with
   | Ok url ->
       set_pull_request_handoff orchestrator ~issue ~head_branch "completed" ?url ();
       render_pull_request_completed head_branch policy.base_branch
