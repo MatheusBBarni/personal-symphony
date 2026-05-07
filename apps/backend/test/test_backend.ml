@@ -1200,7 +1200,11 @@ let test_runtime_state_exposes_running_issue_details () =
     (row |> member "description" |> to_string);
   let issue_row = Runtime_state.to_yojson state |> member "issues" |> to_list |> List.hd in
   Alcotest.(check string) "issue snapshot status" "In progress" (issue_row |> member "state" |> to_string);
-  let ordered_state = Runtime_state.empty ~status_order:[ "Todo"; "In progress"; "In review"; "Done" ] () in
+  let ordered_state =
+    Runtime_state.empty ~workspace_repository_name:"widgets" ~status_order:[ "Todo"; "In progress"; "In review"; "Done" ] ()
+  in
+  Alcotest.(check string) "workspace repository name" "widgets"
+    (Runtime_state.to_yojson ordered_state |> member "workspace_repository_name" |> to_string);
   Alcotest.(check (list string)) "status order"
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)

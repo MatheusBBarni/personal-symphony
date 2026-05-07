@@ -1,12 +1,16 @@
-Blocking finding:
+Implemented issue #62.
 
-- The branch commits root launch artifacts: [prompt.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/prompt.md), [stdout.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/stdout.log), and especially [stderr.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/stderr.log). `main...HEAD` shows `stderr.log` with ~18k added lines, and `git diff --check main...HEAD` fails on trailing whitespace from that log. This is not ready for Done because it persists runtime prompt/transcript-style output in the Product Repository, directly conflicting with the slice’s “avoid persisting full prompt text or full Codex transcript content” intent.
+Changed:
+- `apps/backend/lib/runtime_state.ml`: added `workspace_repository_name` to Runtime State JSON.
+- `apps/backend/lib/orchestrator.ml`: populates it from `tracker.repo`, falling back to the Workspace Repository root basename.
+- `apps/frontend/src/Main.res`: renders the repository name before `Generated ...` in the dashboard header.
+- `apps/frontend/src/Pages/Dashboard.res`: added the snapshot field.
+- `apps/backend/test/test_backend.ml`: added coverage for the new JSON field.
 
-Functional review: the `orchestrator.ml` retry snapshot implementation and backend tests look aligned with the acceptance criteria once those artifacts are removed. I ran:
+Verification:
+- Passed: `DUNE_ROOT=... DUNE_BUILD_DIR=/private/tmp/symphony-orchestrator-_62-dune-build opam exec -- dune runtest`  
+  Result: 126 tests passed.
+- Passed: `git diff --check` on touched files.
+- Could not run `pnpm frontend:test` or ReScript build: this workspace has no `node_modules`, and pnpm failed before scripts started with `[ERROR] fetch failed`.
 
-- `opam exec -- dune runtest --root . --no-buffer --build-dir /private/tmp/symphony-dune-build-39`
-- `opam exec -- dune exec --root . --build-dir /private/tmp/symphony-dune-build-39 apps/backend/test/test_backend.exe -- --compact`
-
-Both passed.
-
-I made no file changes. I attempted to add the GitHub review comment, but the MCP tool call was canceled, so I could not update the issue or move project status to Human attention from here. Goal usage: 158 seconds.
+Unrelated pre-existing changes remain untouched: `prompt.md`, `stdout.log`, `stderr.log`.

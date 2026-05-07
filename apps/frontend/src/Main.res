@@ -87,6 +87,7 @@ type runningIssue = {
 }
 
 type runtimeState = {
+  workspace_repository_name: option<string>,
   counts: counts,
   codex_totals: codexTotals,
   generated_at: string,
@@ -203,6 +204,12 @@ let navItem = (href, label, isActive, icon) =>
     {React.string(label)}
   </a>
 
+let headerRepositoryName = snapshot =>
+  switch snapshot {
+  | Some(data) => data.workspaceRepositoryName
+  | None => ""
+  }
+
 module App = {
   @react.component
   let make = (
@@ -252,13 +259,19 @@ module App = {
         <main className="min-w-0">
           <header className="border-b border-neutral-800 bg-neutral-950/95 px-5 py-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-neutral-500">
-                <span className="uppercase"> {React.string("Generated")} </span>
-                <span className="ml-2 text-neutral-200">
-                  {React.string(switch snapshot {
-                  | Some(data) => data.generatedAt
-                  | None => "-"
-                  })}
+              <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-500">
+                {switch headerRepositoryName(snapshot) {
+                | "" => React.null
+                | name => <span className="font-medium text-neutral-200"> {React.string(name)} </span>
+                }}
+                <span>
+                  <span className="uppercase"> {React.string("Generated")} </span>
+                  <span className="ml-2 text-neutral-200">
+                    {React.string(switch snapshot {
+                    | Some(data) => data.generatedAt
+                    | None => "-"
+                    })}
+                  </span>
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-500">
@@ -318,6 +331,10 @@ let renderDashboard = (root, ~snapshot, ~error, ~audioEnabled, ~onAudioToggle) =
   )
 
 let snapshotFromState = state => {
+  Dashboard.workspaceRepositoryName: switch state.workspace_repository_name {
+  | Some(value) => value
+  | None => ""
+  },
   Dashboard.running: state.counts.running->Int.toString,
   retrying: state.counts.retrying->Int.toString,
   tokens: state.codex_totals.total_tokens->Int.toString,
