@@ -76,6 +76,22 @@ _Avoid_: workflow file, harness config
 The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, agent, server, and path configuration.
 _Avoid_: config, preferences
 
+**Issue Tracker**:
+The configured source of Workspace Repository issue records that Personal Symphony polls and updates during orchestration.
+_Avoid_: task database, work list
+
+**GitHub Tracker**:
+An Issue Tracker that uses GitHub Issues as issue records and GitHub Projects status values as dispatch state.
+_Avoid_: GitHub workflow, remote tracker
+
+**Local Issue Tracker**:
+An Issue Tracker whose issue records live as repository-owned local files inside the Workspace Repository and can be consumed without GitHub API access.
+_Avoid_: synced GitHub issues, local notes
+
+**Local Issue File**:
+A human-editable issue record stored by a Local Issue Tracker and used by Personal Symphony to render an Agent Prompt, select a Stage Agent, and update tracker status.
+_Avoid_: task markdown, PRD file, scratch note
+
 **Runtime Settings Invocation Override**:
 A command-line value that replaces one loaded Runtime Settings field for the current Symphony process only.
 _Avoid_: temporary config, settings rewrite, runtime patch
@@ -312,6 +328,12 @@ _Avoid_: reinitialize, reset
 - Personal Symphony exits before Bootstrap when the current directory is not the root of a **Workspace Repository**.
 - A **Runtime Home** contains the **Runtime Contract**, user-editable settings, and internal state.
 - The **Runtime Contract** contains **Runtime Settings**.
+- Runtime Settings select one **Issue Tracker** for orchestration.
+- The **GitHub Tracker** remains the default Issue Tracker.
+- A **Local Issue Tracker** stores issue records in **Local Issue Files** owned by the Workspace Repository.
+- A **Local Issue Tracker** must preserve Stage Agent dispatch, tracker status transitions, Agent Prompt rendering, Task Branch naming, retry, Stage Commit, Stage Push, and Task Branch Integration behavior.
+- A **Local Issue Tracker** must not require GitHub API access for issue fetches or tracker status updates.
+- Bootstrap must not overwrite existing **Local Issue Files**.
 - A **Runtime Settings Invocation Override** is applied after **Runtime Settings** load and before orchestration, but it is not written into the **Runtime Contract**.
 - The **Runtime Contract** contains an **Agent Prompt**.
 - A **Runtime Home** contains one **Environment Template** and may contain one **Local Environment**.
