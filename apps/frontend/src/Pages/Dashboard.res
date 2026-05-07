@@ -16,6 +16,7 @@ type queueEntry = {
 }
 
 type snapshot = {
+  workspaceRepositoryName: string,
   running: string,
   retrying: string,
   tokens: string,

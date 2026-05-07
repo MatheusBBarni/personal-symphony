@@ -1024,13 +1024,16 @@ let shell_launch ~stage ~config ~workspace ~prompt ~issue =
 let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues)
     ?(set_status = Github_tracker.update_issue_status)
     ?(commit_stage = git_commit_stage_changes) ?(batch_pull_request_handoff = gh_batch_pull_request_handoff)
-    ?(notify_state = fun _ -> ()) ~config ~prompt_template () =
+    ?(notify_state = fun _ -> ()) ~(config : Config.t) ~prompt_template () =
+  let workspace_repository_name =
+    match Util.trim config.tracker.repo with "" -> Filename.basename config.repository_root | repo -> repo
+  in
   {
     config;
     prompt_template;
     tracker = Github_tracker.make config.tracker;
     state =
-      Runtime_state.empty ~status_order:(Config.project_status_order config)
+      Runtime_state.empty ~workspace_repository_name ~status_order:(Config.project_status_order config)
         ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
         ();
     children = [];
