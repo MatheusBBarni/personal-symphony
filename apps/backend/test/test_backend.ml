@@ -16,6 +16,18 @@ let with_temp_dir prefix f =
       Unix.mkdir root 0o755;
       f root)
 
+let with_env bindings f =
+  let keys = List.map fst bindings in
+  let originals = List.map (fun key -> (key, Sys.getenv_opt key)) keys in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (key, value) -> match value with Some value -> Unix.putenv key value | None -> Unix.putenv key "")
+        originals)
+    (fun () ->
+      List.iter (fun (key, value) -> Unix.putenv key value) bindings;
+      f ())
+
 let run_ok ?(cwd = ".") label command =
   match Orchestrator.run_shell_capture ~cwd command with
   | Ok output -> output
@@ -763,7 +775,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
       let workspace_root = Filename.concat root "workspaces" in
       let agents_root = Filename.concat root "agents" in
       Util.mkdir_p agents_root;
-      Util.write_file (Filename.concat agents_root "pi.md") "PI stage instructions";
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
       let codex =
         {
           Config.command = "false";
@@ -825,7 +837,8 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
                 [
                   {
                     Config.states = [ "Todo" ];
-                    agent = "pi";
+                    agent = "engineer";
+                    harness = Some "pi";
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -857,7 +870,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
       let workspace_root = Filename.concat root ".symphony/workspaces" in
       let agents_root = Filename.concat root ".symphony/agents" in
       Util.mkdir_p agents_root;
-      Util.write_file (Filename.concat agents_root "pi.md") "PI stage instructions";
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
       let codex =
         {
           Config.command = "false";
@@ -919,7 +932,8 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
                 [
                   {
                     Config.states = [ "Todo" ];
-                    agent = "pi";
+                    agent = "engineer";
+                    harness = Some "pi";
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -952,7 +966,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
       Alcotest.(check (list string)) "start status moved before launch" [ "In progress" ] (List.rev !statuses);
       Alcotest.(check string) "pi cwd" (Unix.realpath child.workspace.path)
         (Util.read_file (Filename.concat child.workspace.path "pi.cwd") |> Util.trim);
-      Alcotest.(check string) "pi prompt piped" "PI stage instructions\n\n---\n\nStage agent: pi\n\nIssue #1"
+      Alcotest.(check string) "pi prompt piped" "Engineer stage instructions\n\n---\n\nStage agent: engineer\n\nIssue #1"
         (Util.read_file (Filename.concat child.workspace.path "pi.prompt") |> Util.trim))
 
 let test_invalid_tracker_kind () =
@@ -1020,7 +1034,13 @@ let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
       "stallTimeoutMs": 23
     }
   },
-  "stageAgents": {"enabled": false}
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "harness": "pi"}
+    ]
+  }
 }|};
       let config = Config.from_settings_file ~workspace_root:root settings in
       Alcotest.(check bool) "explicit harnesses" true config.agent_harnesses_explicit;
@@ -1035,7 +1055,15 @@ let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
       Alcotest.(check string) "pi kind" "pi" pi.kind;
       Alcotest.(check int) "pi turn timeout" 21 pi.turn_timeout_ms;
       Alcotest.(check int) "pi read timeout" 22 pi.read_timeout_ms;
-      Alcotest.(check int) "pi stall timeout" 23 pi.stall_timeout_ms)
+      Alcotest.(check int) "pi stall timeout" 23 pi.stall_timeout_ms;
+      match config.stage_agents.stages with
+      | [ stage ] -> (
+          Alcotest.(check string) "stage agent prompt" "engineer" stage.agent;
+          Alcotest.(check (option string)) "stage harness" (Some "pi") stage.harness;
+          match Config.selected_agent_harness config (Some stage) with
+          | Some harness -> Alcotest.(check string) "stage selects pi" "pi" harness.name
+          | None -> Alcotest.fail "expected selected harness")
+      | _ -> Alcotest.fail "expected one stage")
 
 let test_harness_command_rendering () =
   let pi =
@@ -1104,10 +1132,50 @@ let test_agent_harness_readiness_gaps () =
           Alcotest.(check bool) "blank model" true (List.exists (( = ) "agents.bad.model") requirements);
           Alcotest.(check bool) "blank reasoning" true (List.exists (( = ) "agents.bad.reasoningEffort") requirements);
           Alcotest.(check bool) "missing harness" true
-            (List.exists (( = ) "stageAgents.missing.agent") requirements);
+            (List.exists (( = ) "stageAgents.missing.harness") requirements);
           Alcotest.(check bool) "pi goal blocked" true (List.exists (( = ) "stageAgents.pi.goal") requirements);
           Alcotest.(check bool) "pi goal does not require codex goals" false
             (List.exists (( = ) "codex.goals") requirements)))
+
+let test_pi_harness_readiness_checks_install_and_auth () =
+  with_temp_dir "symphony-pi-readiness-" (fun root ->
+      let agent_dir = Filename.concat root "pi-agent" in
+      let settings = Filename.concat root "settings.json" in
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let write_settings command =
+        Util.write_file settings
+          (Printf.sprintf
+             {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "agents": {
+    "codex": {"kind": "codex", "command": "codex exec"},
+    "pi": {
+      "kind": "pi",
+      "command": %s,
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "medium"
+    }
+  },
+  "stageAgents": {"enabled": false}
+}|}
+             (Yojson.Safe.to_string (`String command)))
+      in
+      let requirements () =
+        Config.from_settings_file ~workspace_root:root settings
+        |> Config.readiness_gaps
+        |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+      in
+      with_env [ ("GITHUB_TOKEN", "token"); ("PI_CODING_AGENT_DIR", agent_dir) ] (fun () ->
+          write_settings "/definitely/missing/pi --print";
+          Alcotest.(check bool) "missing pi executable" true
+            (List.exists (( = ) "agents.pi.install") (requirements ()));
+          write_settings "sh -c 'cat >/dev/null'";
+          Alcotest.(check bool) "missing pi auth" true
+            (List.exists (( = ) "agents.pi.auth") (requirements ()));
+          Util.mkdir_p agent_dir;
+          Util.write_file (Filename.concat agent_dir "auth.json") {|{"openai-codex":{"access":"test-token"}}|};
+          Alcotest.(check bool) "configured pi auth" false
+            (List.exists (( = ) "agents.pi.auth") (requirements ()))))
 
 let test_project_status_order_uses_transition_flow () =
   let tracker =
@@ -2456,6 +2524,7 @@ let stage_capacity_config root ~global_cap =
             {
               Config.states = [ "Backlog" ];
               agent = "planner";
+              harness = None;
               max_concurrent_agents = Some 1;
                     context_snapshot = None;
               skills = [];
@@ -2468,6 +2537,7 @@ let stage_capacity_config root ~global_cap =
             {
               Config.states = [ "Todo"; "In progress" ];
               agent = "engineer";
+              harness = None;
               max_concurrent_agents = Some 2;
                     context_snapshot = None;
               skills = [];
@@ -2480,6 +2550,7 @@ let stage_capacity_config root ~global_cap =
             {
               Config.states = [ "In review" ];
               agent = "reviewer";
+              harness = None;
               max_concurrent_agents = Some 2;
                     context_snapshot = None;
               skills = [];
@@ -2722,6 +2793,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = Some 1;
                     context_snapshot = None;
                     skills = [];
@@ -2734,6 +2806,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                   {
                     Config.states = [ "In review" ];
                     agent = "reviewer";
+                    harness = None;
                     max_concurrent_agents = Some 2;
                     context_snapshot = None;
                     skills = [];
@@ -3118,6 +3191,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                   {
                     Config.states = [ "In review" ];
                     agent = "reviewer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -3216,6 +3290,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = Some { enabled = true; max_output_bytes = 12000; validation_error = None };
                     skills = [ "to-prd"; "github:gh-fix-ci" ];
@@ -3343,6 +3418,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -3421,6 +3497,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
             {
               Config.states = [ "Todo" ];
               agent = "engineer";
+              harness = None;
               max_concurrent_agents = None;
               context_snapshot = Some { enabled = true; max_output_bytes; validation_error = None };
               skills = [];
@@ -3591,6 +3668,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = Some { enabled = true; max_output_bytes = 96; validation_error = None };
                     skills = [];
@@ -3720,6 +3798,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -3789,6 +3868,7 @@ let test_stage_commit_classification_renders_messages () =
       {
         Config.states = [ "In progress" ];
         agent = "engineer";
+        harness = None;
         max_concurrent_agents = None;
                     context_snapshot = None;
         skills = [];
@@ -3931,6 +4011,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -4024,6 +4105,7 @@ let test_stage_commit_requires_code_changes () =
           {
             Config.states = [ "In progress" ];
             agent = "engineer";
+            harness = None;
             max_concurrent_agents = None;
                     context_snapshot = None;
             skills = [];
@@ -4081,6 +4163,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -4189,6 +4272,7 @@ let protected_stage =
     {
       Config.states = [ "In progress" ];
       agent = "engineer";
+      harness = None;
       max_concurrent_agents = None;
                     context_snapshot = None;
       skills = [];
@@ -4299,6 +4383,7 @@ let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -4397,6 +4482,7 @@ let completed_stage_config root git =
             {
               Config.states = [ "In progress" ];
               agent = "engineer";
+              harness = None;
               max_concurrent_agents = None;
                     context_snapshot = None;
               skills = [];
@@ -4452,6 +4538,7 @@ let test_conflicting_stage_commit_classification_moves_attention_without_commit 
                   {
                     Config.states = [ "In progress" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -4528,6 +4615,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                   {
                     Config.states = [ "Backlog" ];
                     agent = "planner";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -4540,6 +4628,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     skills = [];
@@ -5329,6 +5418,7 @@ let test_stage_commit_pushes_task_branch () =
           {
             Config.states = [ "In progress" ];
             agent = "engineer";
+            harness = None;
             max_concurrent_agents = None;
                     context_snapshot = None;
             skills = [];
@@ -5579,6 +5669,7 @@ let manual_merge_config ?(keep_task_branch = true) root =
               success_status = Some "Done";
               retry_status = None;
               agent = "reviewer";
+              harness = None;
               max_concurrent_agents = None;
                     context_snapshot = None;
               skills = [];
@@ -5768,6 +5859,8 @@ let () =
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
           Alcotest.test_case "renders harness commands" `Quick test_harness_command_rendering;
           Alcotest.test_case "validates agent harness readiness" `Quick test_agent_harness_readiness_gaps;
+          Alcotest.test_case "validates PI harness install and auth" `Quick
+            test_pi_harness_readiness_checks_install_and_auth;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
           Alcotest.test_case "validates stage concurrency policy" `Quick test_config_validates_stage_concurrency_policy;

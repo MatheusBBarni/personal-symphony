@@ -18,7 +18,7 @@ Runtime Settings will introduce named Agent Harness definitions. Each Agent Harn
 
 The legacy Runtime Settings `codex` block remains supported as a backwards-compatible Codex Harness. Existing Workspace Repositories that define only the legacy `codex` block continue to run without migration. When both `agents.codex` and the legacy `codex` block are present, `agents.codex` is canonical and the legacy block is ignored for that harness.
 
-Stage Agent mappings continue using their existing `agent` identifier to select the named Agent Harness. If a Stage Agent selects an unknown harness, Symphony reports a Readiness Gap instead of dispatching work.
+Stage Agent mappings may use `harness` to select the named Agent Harness independently from the `agent` instruction file. Existing Runtime Settings that omit `harness` continue using their `agent` identifier as the harness selector. If a Stage Agent selects an unknown harness, Symphony reports a Readiness Gap instead of dispatching work.
 
 The first PI Harness uses PI non-interactive print mode with the default command shape:
 
@@ -29,6 +29,8 @@ pi --model <model> --thinking <reasoning> --print --no-session
 Command rendering replaces `<model>` and `<reasoning>` tokens for all supported harnesses. Codex keeps its existing command rendering behavior for legacy command shapes.
 
 Stage Goal Handoff remains Codex Harness-specific for the first PI integration. A Stage Agent that enables Stage Goal Handoff on a non-Codex harness is a Readiness Gap until an equivalent non-Codex goal contract exists.
+
+PI Harness readiness validation checks that the configured command executable is available and that PI has authentication for the configured model provider through a subscription login, stored auth file, command-line API key, or supported environment variable. Missing PI installation or auth is reported as a Readiness Gap before dispatch.
 
 ## Consequences
 

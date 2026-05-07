@@ -77,6 +77,7 @@ type stage_context_snapshot = {
 type stage_agent = {
   states : string list;
   agent : string;
+  harness : string option;
   max_concurrent_agents : int option;
   context_snapshot : stage_context_snapshot option;
   skills : string list;
@@ -178,6 +179,7 @@ let default_stage_agents =
     {
       states = [ "Backlog" ];
       agent = "planner";
+      harness = None;
       max_concurrent_agents = None;
       context_snapshot = None;
       skills = [];
@@ -190,6 +192,7 @@ let default_stage_agents =
     {
       states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
       agent = "engineer";
+      harness = None;
       max_concurrent_agents = None;
       context_snapshot = None;
       skills = [];
@@ -202,6 +205,7 @@ let default_stage_agents =
     {
       states = [ "In review"; "In Review" ];
       agent = "reviewer";
+      harness = None;
       max_concurrent_agents = None;
       context_snapshot = None;
       skills = [];
@@ -423,6 +427,8 @@ let json_object_list name json =
 let harness_named name (harnesses : agent_harness list) =
   List.find_opt (fun (harness : agent_harness) -> harness.name = name) harnesses
 
+let stage_harness_name (stage : stage_agent) = Option.value stage.harness ~default:stage.agent
+
 let json_agent_harnesses agents_raw ~legacy_codex =
   match agents_raw with
   | `Null -> (false, [ harness_of_codex legacy_codex ])
@@ -485,7 +491,8 @@ let selected_agent_harness config (stage : stage_agent option) =
     match harness_named "codex" config.agent_harnesses with Some harness -> Some harness | None -> Some (harness_of_codex config.codex)
   else
     match stage with
-    | Some (stage : stage_agent) -> harness_named stage.agent config.agent_harnesses
+    | Some (stage : stage_agent) ->
+        harness_named (stage_harness_name stage) config.agent_harnesses
     | None -> harness_named "codex" config.agent_harnesses
 
 let default_agent_harness config =
@@ -647,6 +654,7 @@ let json_stage_agent json =
   {
     states = json_string_list "states" json ~default:[];
     agent = json_string "agent" json ~default:"";
+    harness = json_optional_string "harness" json;
     max_concurrent_agents =
       (match member "maxConcurrentAgents" json with
       | `Null -> None
@@ -760,6 +768,120 @@ let codex_goal_stdin_supported_harness (harness : agent_harness) =
 
 let codex_goal_stdin_supported config =
   codex_goal_stdin_supported_harness (harness_of_codex config.codex)
+
+let command_words command =
+  String.split_on_char ' ' command |> List.filter (fun word -> Util.trim word <> "")
+
+let harness_executable (harness : agent_harness) =
+  let words =
+    match harness_probe_command harness |> command_words with
+    | "env" :: rest -> drop_env_assignments rest
+    | words -> drop_env_assignments words
+  in
+  match words with
+  | executable :: _ -> Some executable
+  | [] -> None
+
+let executable_available executable =
+  if String.contains executable '/' then
+    try
+      Unix.access executable [ Unix.X_OK ];
+      true
+    with Unix.Unix_error _ -> false
+  else
+    match Unix.system (Printf.sprintf "command -v %s >/dev/null 2>&1" (Util.shell_quote executable)) with
+    | Unix.WEXITED 0 -> true
+    | _ -> false
+
+let pi_agent_dir () =
+  match Util.getenv_nonempty "PI_CODING_AGENT_DIR" with
+  | Some dir -> dir
+  | None ->
+      let home = Option.value (Util.getenv_nonempty "HOME") ~default:(Unix.getcwd ()) in
+      Filename.concat (Filename.concat home ".pi") "agent"
+
+let pi_auth_path () = Filename.concat (pi_agent_dir ()) "auth.json"
+
+let rec json_has_nonempty_entry = function
+  | `Null -> false
+  | `String value -> Util.trim value <> ""
+  | `Assoc fields -> List.exists (fun (_, value) -> json_has_nonempty_entry value) fields
+  | `List values -> List.exists json_has_nonempty_entry values
+  | _ -> true
+
+let pi_auth_provider_configured provider =
+  let path = pi_auth_path () in
+  if not (Sys.file_exists path) then false
+  else
+    try
+      match Yojson.Safe.from_file path with
+      | `Assoc fields -> (
+          match List.assoc_opt provider fields with Some value -> json_has_nonempty_entry value | None -> false)
+      | _ -> false
+    with Yojson.Json_error _ | Sys_error _ -> false
+
+let pi_any_auth_configured () =
+  let path = pi_auth_path () in
+  if not (Sys.file_exists path) then false
+  else
+    try
+      match Yojson.Safe.from_file path with
+      | `Assoc fields -> List.exists (fun (_, value) -> json_has_nonempty_entry value) fields
+      | _ -> false
+    with Yojson.Json_error _ | Sys_error _ -> false
+
+let pi_provider_envs =
+  [
+    ("anthropic", [ "ANTHROPIC_API_KEY"; "ANTHROPIC_OAUTH_TOKEN" ]);
+    ("azure-openai-responses", [ "AZURE_OPENAI_API_KEY" ]);
+    ("openai", [ "OPENAI_API_KEY" ]);
+    ("deepseek", [ "DEEPSEEK_API_KEY" ]);
+    ("google", [ "GEMINI_API_KEY" ]);
+    ("mistral", [ "MISTRAL_API_KEY" ]);
+    ("groq", [ "GROQ_API_KEY" ]);
+    ("cerebras", [ "CEREBRAS_API_KEY" ]);
+    ("cloudflare-ai-gateway", [ "CLOUDFLARE_API_KEY" ]);
+    ("cloudflare-workers-ai", [ "CLOUDFLARE_API_KEY" ]);
+    ("xai", [ "XAI_API_KEY" ]);
+    ("openrouter", [ "OPENROUTER_API_KEY" ]);
+    ("vercel-ai-gateway", [ "AI_GATEWAY_API_KEY" ]);
+    ("zai", [ "ZAI_API_KEY" ]);
+    ("opencode", [ "OPENCODE_API_KEY" ]);
+    ("opencode-go", [ "OPENCODE_API_KEY" ]);
+    ("huggingface", [ "HF_TOKEN" ]);
+    ("fireworks", [ "FIREWORKS_API_KEY" ]);
+    ("kimi-coding", [ "KIMI_API_KEY" ]);
+    ("minimax", [ "MINIMAX_API_KEY" ]);
+    ("minimax-cn", [ "MINIMAX_CN_API_KEY" ]);
+    ("xiaomi", [ "XIAOMI_API_KEY" ]);
+    ("xiaomi-token-plan-cn", [ "XIAOMI_TOKEN_PLAN_CN_API_KEY" ]);
+    ("xiaomi-token-plan-ams", [ "XIAOMI_TOKEN_PLAN_AMS_API_KEY" ]);
+    ("xiaomi-token-plan-sgp", [ "XIAOMI_TOKEN_PLAN_SGP_API_KEY" ]);
+  ]
+
+let pi_provider_env_configured provider =
+  match List.assoc_opt provider pi_provider_envs with
+  | None -> false
+  | Some envs -> List.exists (fun env -> Util.getenv_nonempty env <> None) envs
+
+let pi_any_env_configured () =
+  pi_provider_envs |> List.exists (fun (_, envs) -> List.exists (fun env -> Util.getenv_nonempty env <> None) envs)
+
+let command_supplies_api_key command =
+  command_words command
+  |> List.exists (fun word -> word = "--api-key" || Util.starts_with ~prefix:"--api-key=" word)
+
+let pi_model_provider model =
+  match String.split_on_char '/' (Util.trim model) with
+  | provider :: _ :: _ when Util.trim provider <> "" -> Some (Util.trim provider)
+  | _ -> None
+
+let pi_harness_auth_configured (harness : agent_harness) =
+  if command_supplies_api_key harness.command then true
+  else
+    match pi_model_provider harness.model with
+    | Some provider -> pi_auth_provider_configured provider || pi_provider_env_configured provider
+    | None -> pi_any_auth_configured () || pi_any_env_configured ()
 
 let from_settings_file ~workspace_root path =
   let root =
@@ -1110,6 +1232,32 @@ let readiness_gaps config =
       if Util.trim harness.reasoning_effort = "" then
         add (prefix ^ ".reasoningEffort") "Set the Agent Harness reasoningEffort.")
     config.agent_harnesses;
+  List.iter
+    (fun (harness : agent_harness) ->
+      if harness.kind = "pi" && Util.trim harness.command <> "" then (
+        let prefix =
+          if config.agent_harnesses_explicit then "agents." ^ harness.name else "agents.pi"
+        in
+        (match harness_executable harness with
+        | Some executable when executable_available executable -> ()
+        | Some executable ->
+            add (prefix ^ ".install")
+              (Printf.sprintf
+                 "Install PI or update the PI Harness command so its executable is available: %s."
+                 executable)
+        | None -> ());
+        if Util.trim harness.model <> "" && not (pi_harness_auth_configured harness) then
+          let provider =
+            match pi_model_provider harness.model with
+            | Some provider -> " for provider " ^ provider
+            | None -> ""
+          in
+          add (prefix ^ ".auth")
+            (Printf.sprintf
+               "Configure PI authentication%s. Run `pi`, use `/login` for a subscription provider, or set an API key \
+                environment variable supported by PI."
+               provider)))
+    config.agent_harnesses;
   if config.tracker.active_states = [] then
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then
@@ -1165,8 +1313,9 @@ let readiness_gaps config =
         if config.agent_harnesses_explicit then (
           match selected_agent_harness config (Some stage) with
           | None ->
-              add ("stageAgents." ^ stage.agent ^ ".agent")
-                (Printf.sprintf "Define agents.%s in .symphony/settings.json or select an existing Agent Harness." stage.agent)
+              let harness_name = stage_harness_name stage in
+              add ("stageAgents." ^ stage.agent ^ ".harness")
+                (Printf.sprintf "Define agents.%s in .symphony/settings.json or select an existing Agent Harness." harness_name)
           | Some harness when stage_goal_enabled stage && harness.kind <> "codex" ->
               add ("stageAgents." ^ stage.agent ^ ".goal")
                 "Stage Goal Handoff is only supported by a Codex Harness in this release. Disable goal.enabled or select a Codex Harness."
