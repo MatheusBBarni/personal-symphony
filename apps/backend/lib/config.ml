@@ -38,7 +38,14 @@ type server = { port : int option }
 type protected_path_pattern = { name : string; pattern : string; reason : string option }
 type protected_path_authorization = { issue_section : string }
 type protected_paths = { patterns : protected_path_pattern list; authorization : protected_path_authorization }
-type pull_request = { enabled : bool; open_on_review : bool; base_branch : string; title : string; body : string }
+type pull_request = {
+  enabled : bool;
+  mode : string;
+  open_on_review : bool;
+  base_branch : string;
+  title : string;
+  body : string;
+}
 type stage_commit_classification = {
   default : string;
   label_map : (string * string) list;
@@ -100,7 +107,14 @@ let default_pull_request_body = "Opened automatically by Symphony after orchestr
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
 let default_protected_paths = { patterns = []; authorization = default_protected_path_authorization }
 let default_pull_request =
-  { enabled = false; open_on_review = false; base_branch = "main"; title = default_pull_request_title; body = default_pull_request_body }
+  {
+    enabled = false;
+    mode = "batch";
+    open_on_review = false;
+    base_branch = "main";
+    title = default_pull_request_title;
+    body = default_pull_request_body;
+  }
 let default_conflict_behavior = "human_attention"
 
 let default_git =
@@ -648,6 +662,9 @@ let from_settings_file ~workspace_root path =
     pull_request =
       {
         enabled = json_bool "enabled" pull_request_raw ~default:default_pull_request.enabled;
+        mode =
+          json_string "mode" pull_request_raw ~default:default_pull_request.mode
+          |> Util.trim |> String.lowercase_ascii;
         open_on_review = json_bool "openOnReview" pull_request_raw ~default:default_pull_request.open_on_review;
         base_branch = json_string "baseBranch" pull_request_raw ~default:default_pull_request.base_branch;
         title = json_string "title" pull_request_raw ~default:default_pull_request.title;
@@ -878,7 +895,16 @@ let readiness_gaps config =
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
   if config.pull_request.enabled && Util.trim config.pull_request.base_branch = "" then
     add "pullRequest.baseBranch" "Set pullRequest.baseBranch in .symphony/settings.json when pullRequest.enabled is true.";
-  if config.pull_request.enabled && Util.trim config.pull_request.base_branch <> "" then (
+  if
+    config.pull_request.enabled
+    && not (List.exists (( = ) config.pull_request.mode) [ "batch"; "task" ])
+  then
+    add "pullRequest.mode" "Set pullRequest.mode to batch or task.";
+  if
+    config.pull_request.enabled
+    && config.pull_request.mode = "batch"
+    && Util.trim config.pull_request.base_branch <> ""
+  then (
     match current_loop_start_branch config.repository_root with
     | Some loop_start_branch when loop_start_branch = Util.trim config.pull_request.base_branch ->
         add "pullRequest.baseBranch"

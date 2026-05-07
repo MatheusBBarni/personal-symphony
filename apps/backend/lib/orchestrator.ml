@@ -1405,21 +1405,33 @@ let reconcile_startup orchestrator candidates =
           set_error orchestrator message
       | Ok () -> List.iter (reconcile_startup_candidate orchestrator) candidates)
 
-let set_pull_request_handoff orchestrator status ?url ?error () =
+let set_pull_request_handoff orchestrator ?issue ?head_branch status ?url ?error () =
   let policy = orchestrator.config.Config.pull_request in
+  let head_branch = Option.value head_branch ~default:orchestrator.loop_start_branch in
+  let issue_identifier = Option.map (fun issue -> issue.Issue.identifier) issue in
+  let row =
+    {
+      Runtime_state.enabled = policy.enabled;
+      mode = policy.mode;
+      issue_identifier;
+      head_branch = Some head_branch;
+      base_branch = Some policy.base_branch;
+      status;
+      url;
+      error;
+    }
+  in
+  let same_handoff existing =
+    existing.Runtime_state.mode = row.mode
+    && existing.issue_identifier = row.issue_identifier
+    && existing.head_branch = row.head_branch
+    && existing.base_branch = row.base_branch
+  in
   update_state orchestrator (fun state ->
     {
       state with
-      pull_request =
-        Some
-          {
-            Runtime_state.enabled = policy.enabled;
-            head_branch = Some orchestrator.loop_start_branch;
-            base_branch = Some policy.base_branch;
-            status;
-            url;
-            error;
-          };
+      pull_request = Some row;
+      pull_requests = row :: List.filter (fun existing -> not (same_handoff existing)) state.pull_requests;
       last_error = (match error with Some error -> Some error | None -> state.last_error);
     })
 
@@ -1435,20 +1447,33 @@ let attempt_batch_pull_request orchestrator =
       set_pull_request_handoff orchestrator "retryable_failure" ~error ();
       render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
 
+let attempt_task_pull_request orchestrator issue =
+  let policy = orchestrator.config.Config.pull_request in
+  let head_branch = task_branch orchestrator.config issue in
+  set_pull_request_handoff orchestrator ~issue ~head_branch "attempting" ();
+  match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch with
+  | Ok url ->
+      set_pull_request_handoff orchestrator ~issue ~head_branch "completed" ?url ();
+      render_pull_request_completed head_branch policy.base_branch
+  | Error error ->
+      set_pull_request_handoff orchestrator ~issue ~head_branch "retryable_failure" ~error ();
+      render_pull_request_failed head_branch policy.base_branch error
+
 let status_is_review_status config status =
   match config.Config.tracker.project_status_on_success with
   | Some review_status -> string_equal_ci status review_status
   | None -> false
 
-let maybe_open_review_pull_request orchestrator status =
+let maybe_open_review_pull_request orchestrator issue status =
   let policy = orchestrator.config.Config.pull_request in
-  if policy.enabled && policy.open_on_review && (not orchestrator.batch_pull_request_completed)
-     && status_is_review_status orchestrator.config status
-  then attempt_batch_pull_request orchestrator
+  if policy.enabled && status_is_review_status orchestrator.config status then
+    if policy.mode = "task" then attempt_task_pull_request orchestrator issue
+    else if policy.open_on_review && (not orchestrator.batch_pull_request_completed) then
+      attempt_batch_pull_request orchestrator
 
 let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
   let policy = orchestrator.config.Config.pull_request in
-  if policy.enabled && not orchestrator.batch_pull_request_completed then
+  if policy.enabled && policy.mode = "batch" && not orchestrator.batch_pull_request_completed then
     let has_attention = List.exists (issue_needs_attention orchestrator) candidates || orchestrator.state.issue_errors <> [] in
     let idle =
       dispatchable_count = 0
@@ -1766,7 +1791,7 @@ let mark_completed orchestrator child =
               if not (move_issue_status orchestrator child.issue status) then
                 mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
               else (
-                maybe_open_review_pull_request orchestrator status;
+                maybe_open_review_pull_request orchestrator child.issue status;
                 complete_child ~next_status:status orchestrator child)))
 
 let kill_child child =
