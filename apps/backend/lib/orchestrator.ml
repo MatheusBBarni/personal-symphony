@@ -492,6 +492,7 @@ let stage_goal_handoff_stage ?stage config issue =
 
 let json_option_string = function Some value when Util.trim value <> "" -> `String value | _ -> `Null
 let json_option_int = function Some value -> `Int value | None -> `Null
+let launch_attempt_number attempt = Option.value attempt ~default:0 + 1
 
 let blocker_to_goal_json (blocker : Issue.blocker) =
   `Assoc
@@ -523,7 +524,7 @@ let stage_goal_context issue attempt (stage : Config.stage_agent) =
       ("labels", `List (List.map (fun label -> `String label) issue.labels));
       ("priority", json_option_int issue.priority);
       ("blocker_references", `List (List.map blocker_to_goal_json issue.blocked_by));
-      ("attempt", `Int (Option.value attempt ~default:0));
+      ("attempt", `Int (launch_attempt_number attempt));
       ("stage_agent_name", `String stage.agent);
     ]
   |> Yojson.Safe.to_string
@@ -770,8 +771,6 @@ let previous_attempt_lines = function
       @ [ "" ]
       @ render_previous_attempt_stream "stderr" previous.stderr_path
 
-let launch_attempt_number attempt = Option.value attempt ~default:0 + 1
-
 let context_command_input_path_env = "SYMPHONY_CONTEXT_COMMAND_INPUT_PATH"
 
 let runtime_state_dir config = Filename.concat (Filename.concat config.Config.repository_root ".symphony") "state"
@@ -914,13 +913,21 @@ let executable_file path =
     true
   with Unix.Unix_error _ | Sys_error _ -> false
 
+let context_command_path_separator = if Sys.win32 then ';' else ':'
+
+let context_command_default_path =
+  if Sys.win32 then "C:\\Windows\\System32;C:\\Windows" else "/usr/bin:/bin:/usr/sbin:/sbin"
+
+let context_program_has_directory_part program =
+  String.contains program '/' || (Sys.win32 && String.contains program '\\')
+
 let resolve_context_executable ~cwd env program =
-  if String.contains program '/' then
+  if context_program_has_directory_part program then
     let path = if Filename.is_relative program then Filename.concat cwd program else program in
     if executable_file path then Ok path else Error "missing executable"
   else
-    let path_value = Option.value (env_value "PATH" env) ~default:"/usr/bin:/bin:/usr/sbin:/sbin" in
-    let dirs = String.split_on_char ':' path_value in
+    let path_value = Option.value (env_value "PATH" env) ~default:context_command_default_path in
+    let dirs = String.split_on_char context_command_path_separator path_value in
     match
       List.find_map
         (fun dir ->
@@ -933,25 +940,24 @@ let resolve_context_executable ~cwd env program =
     | None -> Error "missing executable"
 
 let close_noerr fd = try Unix.close fd with Unix.Unix_error _ -> ()
-let close_context_fd fd = if fd <> Unix.stdin && fd <> Unix.stdout && fd <> Unix.stderr then close_noerr fd
 
-let spawn_context_command ~cwd ~env ~stdin_path ~stdout_fd ~stderr_fd ~close_in_child ~executable argv =
+let with_context_command_cwd cwd f =
+  let original_cwd = Sys.getcwd () in
+  if original_cwd = cwd then f ()
+  else
+    Fun.protect
+      ~finally:(fun () -> Sys.chdir original_cwd)
+      (fun () ->
+        Sys.chdir cwd;
+        f ())
+
+let spawn_context_command ~cwd ~env ~stdin_path ~stdout_fd ~stderr_fd ~executable argv =
   let stdin_fd = Unix.openfile stdin_path [ Unix.O_RDONLY ] 0 in
   Fun.protect
     ~finally:(fun () -> close_noerr stdin_fd)
     (fun () ->
-      match Unix.fork () with
-      | 0 ->
-          (try
-             ignore (Unix.setsid ());
-             Unix.chdir cwd;
-             Unix.dup2 stdin_fd Unix.stdin;
-             Unix.dup2 stdout_fd Unix.stdout;
-             Unix.dup2 stderr_fd Unix.stderr;
-             List.iter close_context_fd (stdin_fd :: stdout_fd :: stderr_fd :: close_in_child);
-             Unix.execve executable (Array.of_list argv) env
-           with _ -> Unix._exit 127)
-      | pid -> pid)
+      with_context_command_cwd cwd (fun () ->
+          Unix.create_process_env executable (Array.of_list argv) env stdin_fd stdout_fd stderr_fd))
 
 let kill_context_process_group pid =
   try Unix.kill (-pid) Sys.sigkill
@@ -1112,7 +1118,7 @@ let run_context_command_lines config issue attempt (stage : Config.stage_agent) 
                 with_context_command_pipes (fun ~stdout_read ~stdout_write ~stderr_read ~stderr_write ->
                     let pid =
                       spawn_context_command ~cwd ~env ~stdin_path:input_path ~stdout_fd:stdout_write
-                        ~stderr_fd:stderr_write ~close_in_child:[ stdout_read; stderr_read ] ~executable command.argv
+                        ~stderr_fd:stderr_write ~executable command.argv
                     in
                     close_noerr stdout_write;
                     close_noerr stderr_write;

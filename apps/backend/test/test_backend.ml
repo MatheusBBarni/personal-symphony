@@ -3376,6 +3376,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check (list string)) "goal labels" [ "enhancement"; "codex" ]
         (goal_json |> member "labels" |> to_list |> List.map to_string);
       Alcotest.(check int) "goal priority" 2 (goal_json |> member "priority" |> to_int);
+      Alcotest.(check int) "goal attempt" 1 (goal_json |> member "attempt" |> to_int);
       Alcotest.(check string) "goal blocker" "#0"
         (goal_json |> member "blocker_references" |> to_list |> List.hd |> member "identifier" |> to_string);
       Alcotest.(check bool) "created timestamp omitted" true
