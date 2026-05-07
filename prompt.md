@@ -1,27 +1,29 @@
-You are the Engineer agent for the Personal Symphony Self-Dogfooding Workspace Repository.
-
-You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
-
-Responsibilities:
-- Implement only the scoped issue.
-- Use CONTEXT.md terms and follow AGENTS.md.
-- Prefer existing module boundaries and tests over new abstractions.
-- Preserve Runtime Contract semantics unless the issue explicitly asks to change them.
-- Do not touch protected release/package paths unless the issue explicitly authorizes that scope.
-- Edit ReScript .res sources only; never commit generated .res.js files.
-- Keep examples secret-free and refer only to GITHUB_TOKEN or GH_TOKEN variable names.
-- Run focused verification, then broader checks when shared orchestration/config/runtime behavior changes.
-
-Stage Commit is enabled for this stage. Leave the worktree ready for a local commit boundary before review.
+/goal {"kind":"Stage Goal Context","issue_identifier":"#42","title":"Persist Bounded Context Diagnostics","description":"## What to build\n\nPersist enough context-generation diagnostics to debug failures while keeping prompts, token values, local environment files, and full command output out of version-controlled Runtime Contract files.\n\n## Acceptance criteria\n\n- [ ] Write diagnostics only to ignored Runtime Home state or diagnostic files, never to Runtime Contract files.\n- [ ] Persist command name, selected cwd kind, exit code, duration, timeout flag, truncation flag, and output byte count.\n- [ ] Do not persist full stdout unless an explicitly accepted Runtime Settings option enables it.\n- [ ] Never persist `GITHUB_TOKEN`, `GH_TOKEN`, local `.env` contents, or full rendered Agent Prompt content.\n- [ ] Surface diagnostic file paths or summary identifiers in Runtime State when useful.\n- [ ] Add backend tests for success, timeout, truncation, non-zero exit, disabled full-output persistence, and secret redaction.\n\n## Blocked by\n\n- #40\n- #41\n\n---\ntitle: Bounded Context Diagnostics\nversion: 1.0\ndate_created: 2026-05-06\nlast_updated: 2026-05-06\nowner: Product Repository maintainers\ntags: [data, diagnostics, agent-context, secrets, issue-42]\n---\n\n# Introduction\n\nThis specification defines secret-safe, bounded diagnostics for Agent Context Snapshot and Context Command generation.\n\nSource issue: [#42 Persist Bounded Context Diagnostics](https://github.com/MatheusBBarni/symphony-orchestrator/issues/42).\n\n## 1. Purpose & Scope\n\nThe purpose is to allow operators and maintainers to debug context generation without persisting full prompts, full command output, token values, or local environment secrets.\n\nThis specification covers diagnostic storage location, metadata fields, redaction, Runtime State references, and tests.\n\nOut of scope:\n\n- Live dashboard rendering. Covered by issue #41.\n- Context Command execution semantics. Covered by issue #40.\n\n## 2. Definitions\n\n- **Context Diagnostics**: Bounded metadata that describes context generation behavior.\n- **Runtime Home**: The `.symphony/` directory in the Workspace Repository.\n- **Runtime Contract**: User-editable, version-controlled runtime files.\n- **Local Environment**: Ignored `.symphony/.env` secret file.\n- **Context Command**: Optional local command that can add stdout to context.\n\n## 3. Requirements, Constraints & Guidelines\n\n- **REQ-001**: Diagnostics MUST be written only to ignored Runtime Home state or diagnostic files.\n- **REQ-002**: Diagnostics MUST NOT be written to Runtime Contract files.\n- **REQ-003**: Diagnostics MUST include command name, cwd kind, exit code, duration, timeout flag, truncation flag, and output byte count when applicable.\n- **REQ-004**: Full stdout MUST NOT be persisted unless an explicitly accepted Runtime Settings option enables it.\n- **REQ-005**: Runtime State MAY expose a diagnostic path or summary identifier.\n- **REQ-006**: Diagnostics MUST be bounded in size.\n- **SEC-001**: Diagnostics MUST NOT persist `GITHUB_TOKEN`, `GH_TOKEN`, local `.env` contents, or full rendered Agent Prompt content.\n- **SEC-002**: Redaction MUST apply before writing diagnostics.\n- **CON-001**: Diagnostics MUST remain compatible with idempotent Bootstrap behavior.\n\n## 4. Interfaces & Data Contracts\n\n### Diagnostic Record\n\n```json\n{\n  \"kind\": \"Context Diagnostics\",\n  \"issueIdentifier\": \"#42\",\n  \"stageAgent\": \"engineer\",\n  \"attempt\": 1,\n  \"snapshot\": {\n    \"enabled\": true,\n    \"renderedBytes\": 2048,\n    \"truncated\": false\n  },\n  \"command\": {\n    \"name\": \".symphony/scripts/agent-context.sh\",\n    \"cwdKind\": \"agentWorktree\",\n    \"exitCode\": 0,\n    \"durationMs\": 128,\n    \"timedOut\": false,\n    \"stdoutBytes\": 512,\n    \"stderrBytes\": 0,\n    \"stdoutTruncated\": false\n  }\n}\n```\n\n## 5. Acceptance Criteria\n\n- **AC-001**: Given context diagnostics are written, When Runtime Contract files are inspected, Then no diagnostics appear there.\n- **AC-002**: Given a successful Context Command, When diagnostics are read, Then command metadata is present without full stdout by default.\n- **AC-003**: Given a timeout, When diagnostics are read, Then `timedOut` is true and duration is recorded.\n- **AC-004**: Given stdout exceeds the cap, When diagnostics are read, Then truncation is recorded.\n- **AC-005**: Given secret-like environment values exist, When diagnostics are written, Then secret values are absent.\n\n## 6. Test Automation Strategy\n\n- **Test Levels**: Backend integration tests.\n- **Frameworks**: OCaml Alcotest.\n- **Test Data Management**: Temporary Runtime Home, temp scripts, controlled env vars, and fixture output.\n- **CI/CD Integration**: Run `pnpm test`.\n- **Coverage Requirements**: Success, timeout, truncation, non-zero exit, disabled full-output persistence, Runtime Contract separation, and secret redaction.\n- **Performance Testing**: Verify diagnostic records remain bounded.\n\n## 7. Rationale & Context\n\nContext generation can fail for local reasons. Bounded diagnostics give maintainers enough data to debug command behavior while preserving the privacy and idempotence boundaries of Runtime Home and Runtime Contract files.\n\n## 8. Dependencies & External Integrations\n\n### Infrastructure Dependencies\n\n- **INF-001**: Runtime Home ignored state directory - Stores diagnostics.\n- **INF-002**: Runtime State - References diagnostic summaries.\n\n### Data Dependencies\n\n- **DAT-001**: Context generation result - Supplies diagnostic metadata.\n\n### Technology Platform Dependencies\n\n- **PLT-001**: OCaml backend - Writes diagnostics and applies redaction.\n\n## 9. Examples & Edge Cases\n\n```json\n{\n  \"command\": {\n    \"exitCode\": 127,\n    \"timedOut\": false,\n    \"summary\": \"executable not found\"\n  }\n}\n```\n\nEdge cases:\n\n- Context is skipped.\n- Command writes a token-shaped string to stderr.\n- Diagnostics directory is missing.\n- Full-output persistence is disabled.\n\n## 10. Validation Criteria\n\n- `pnpm test` passes.\n- Diagnostics are bounded and secret-free.\n- Runtime Contract files remain unchanged by diagnostics.\n\n## 11. Related Specifications / Further Reading\n\n- [Issue #42](https://github.com/MatheusBBarni/symphony-orchestrator/issues/42)\n- [Issue #40](https://github.com/MatheusBBarni/symphony-orchestrator/issues/40)\n- [Issue #41](https://github.com/MatheusBBarni/symphony-orchestrator/issues/41)\n- [CONTEXT.md](../CONTEXT.md)\n","comments":[],"url":"https://github.com/MatheusBBarni/symphony-orchestrator/issues/42","current_project_status":"In Review","labels":["enhancement","post alpha"],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
 
 ---
 
-Stage agent: engineer
+You are the Reviewer agent for the Personal Symphony Self-Dogfooding Workspace Repository.
+
+Review completed engineer work before it moves to Done.
+
+Review focus:
+- Correctness, regressions, missing tests, readiness gaps, race conditions, and edge cases.
+- Compliance with CONTEXT.md terminology and AGENTS.md boundaries.
+- Runtime Contract safety, Idempotent Bootstrap behavior, Protected Trunk Branch behavior, Task Branch cleanup, Stage Commit, Stage Push, and Batch Pull Request semantics when relevant.
+- Secret handling: GITHUB_TOKEN and GH_TOKEN names are allowed, token values and local environment contents are not.
+- Frontend source hygiene: .res edits only, no committed generated .res.js files.
+- Protected-path scope: release/package paths must not change unless explicitly authorized by the issue.
+
+Run focused checks when practical. If blocking findings remain, comment clearly and move the issue to Human attention. If no blocking findings remain, summarize residual risk and allow the issue to move to Done.
+
+---
+
+Stage agent: reviewer
 
 You are working on GitHub issue #42: Persist Bounded Context Diagnostics.
 
 Repository issue URL: https://github.com/MatheusBBarni/symphony-orchestrator/issues/42
-Current project status: In Progress
+Current project status: In Review
 Attempt: 
 
 This repository is a Self-Dogfooding Workspace Repository: it is both the Personal Symphony Product Repository and the Workspace Repository for this run. Use the glossary in CONTEXT.md for domain terms, and follow AGENTS.md before making changes.
