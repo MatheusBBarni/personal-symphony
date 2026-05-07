@@ -76,6 +76,22 @@ _Avoid_: workflow file, harness config
 The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, agent, server, and path configuration.
 _Avoid_: config, preferences
 
+**Stage Agent**:
+A Runtime Settings mapping from project statuses to a named agent instruction file, Agent Harness selection, and optional stage behavior.
+_Avoid_: status agent, workflow step, lane
+
+**Agent Harness**:
+A named Runtime Settings launch configuration that tells Symphony which non-interactive agent tool to run for a Stage Agent.
+_Avoid_: agent command, codex config, provider
+
+**Codex Harness**:
+An Agent Harness whose launch semantics target Codex non-interactive execution.
+_Avoid_: default agent, symphony agent
+
+**PI Harness**:
+An Agent Harness whose launch semantics target PI non-interactive execution.
+_Avoid_: codex-compatible command, pi agent
+
 **Git Policy**:
 The Runtime Settings section that defines Task Branch and Protected Trunk Branch behavior.
 _Avoid_: branch config, git settings
@@ -297,6 +313,11 @@ _Avoid_: reinitialize, reset
 - A **Runtime Home** may contain **Runtime State**.
 - A **Runtime Home** may contain many **Agent Workspaces**.
 - An **Agent Worktree** is an **Agent Workspace**.
+- The **Runtime Settings** may define many named **Agent Harnesses**.
+- A **Stage Agent** mapping selects an **Agent Harness** by its `agent` identifier.
+- A legacy Runtime Settings `codex` block is a backwards-compatible **Codex Harness** definition.
+- A **PI Harness** uses PI non-interactive print mode for the first PI integration.
+- A **PI Harness** must preserve Agent Worktree, Task Branch, Agent Prompt, Stage Commit, Stage Push, retry, and status transition behavior.
 - The **Runtime Settings** contain a **Git Policy**.
 - A **Git Policy** may contain an **Allowed Loop-Start Branch Policy**.
 - A **Workspace Repository** may define a **Protected Path Policy**.
@@ -372,6 +393,7 @@ _Avoid_: reinitialize, reset
 - A failed **Stage Push** is retryable.
 - A **Stage Goal Handoff** is configured per **Stage Agent**.
 - A **Stage Goal Handoff** is not a global Codex launch mode.
+- A **Stage Goal Handoff** is supported only by a **Codex Harness** until a non-Codex harness defines equivalent goal semantics.
 - Runtime Settings configure **Stage Goal Handoff** with `goal.enabled` on a stage.
 - A missing `goal` setting means **Stage Goal Handoff** is disabled for that stage.
 - A rendered **Agent Prompt** includes GitHub issue comments when they are present.
@@ -610,3 +632,4 @@ _Avoid_: reinitialize, reset
 - "tags.json guidance" was used to mean the repository-owned four-character commit tag vocabulary; resolved: use **Stage Commit Tag Guidance**.
 - "maxConcurrentAgents for each stage" was used to mean concurrency caps per Stage Agent; resolved: use **Stage Concurrency Policy**.
 - "full context" and "context compression" were used broadly for launch-time context; resolved: use **Agent Context Snapshot** for bounded deterministic launch context and **Context Command** for optional operator-generated stdout.
+- "agent command" was used to mean both a local executable string and the selectable launch behavior for a Stage Agent; resolved: use **Agent Harness** for the named Runtime Settings launch configuration, with **Codex Harness** and **PI Harness** as concrete harness kinds.
