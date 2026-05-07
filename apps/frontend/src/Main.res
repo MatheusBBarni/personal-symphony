@@ -23,6 +23,12 @@ function goalUsageText(value) {
   }
   return parts.join(" | ");
 }
+function contextStatusText(value) {
+  if (!value || !value.state) return "";
+  const label = String(value.state).replace(/_/g, " ");
+  const summary = value.summary ? String(value.summary) : "";
+  return summary ? label + ": " + summary : label;
+}
 `)
 
 type domElement
@@ -46,11 +52,18 @@ type goalUsage = {
   tokens_used: option<int>,
 }
 
+type contextStatus = {
+  state: string,
+  summary: option<string>,
+  diagnostics_path: option<string>,
+}
+
 type taskError = {
   issue_id: string,
   issue_identifier: string,
   error: option<string>,
   goal_usage: option<goalUsage>,
+  context_status: option<contextStatus>,
 }
 
 type blockedTaskError = {
@@ -84,6 +97,7 @@ type runningIssue = {
   url: option<string>,
   description: option<string>,
   goal_usage: option<goalUsage>,
+  context_status: option<contextStatus>,
 }
 
 type runtimeState = {
@@ -109,6 +123,7 @@ type runtimeState = {
 @val external shortDescription: string => string = "shortDescription"
 @val external arrayOrEmpty: array<'value> => array<'value> = "arrayOrEmpty"
 @val external goalUsageText: option<goalUsage> => string = "goalUsageText"
+@val external contextStatusText: option<contextStatus> => string = "contextStatusText"
 @val external symphonyPackageVersion: string = "symphonyPackageVersion"
 external audioNotificationState: runtimeState => AudioNotifications.runtimeState = "%identity"
 
@@ -167,6 +182,17 @@ let goalUsageForIssue = (state, issueId) => {
       | Some(error) => goalUsageText(error.goal_usage)
       | None => ""
       }
+    }
+  }
+}
+
+let contextStatusForIssue = (state, issueId) => {
+  switch arrayOrEmpty(state.running)->Array.find(issue => issue.issue_id == issueId) {
+  | Some(issue) => contextStatusText(issue.context_status)
+  | None =>
+    switch arrayOrEmpty(state.retrying)->Array.find(error => error.issue_id == issueId) {
+    | Some(error) => contextStatusText(error.context_status)
+    | None => ""
     }
   }
 }
@@ -363,6 +389,7 @@ let snapshotFromState = state => {
       description: description->shortDescription,
       error: taskErrorForIssue(state, issue.issue_id),
       goalUsage: goalUsageForIssue(state, issue.issue_id),
+      contextStatus: contextStatusForIssue(state, issue.issue_id),
     }
   }),
 }

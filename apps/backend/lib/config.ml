@@ -1218,17 +1218,6 @@ let validate_stage_skill_load config add =
           stage.skills)
       config.stage_agents.stages
 
-let validate_stage_context_snapshots config add =
-  if config.stage_agents.enabled then
-    List.iter
-      (fun (stage : stage_agent) ->
-        match stage.context_snapshot with
-        | Some { validation_error = Some error; _ } ->
-            add ("stageAgents." ^ stage.agent ^ ".context.snapshot")
-              (error ^ ". Fix the Stage Agent context snapshot Runtime Settings before dispatch.")
-        | _ -> ())
-      config.stage_agents.stages
-
 let stage_context_setting_requirement (stage : stage_agent) default_path error =
   let prefix = "stageAgents.stages[]." in
   match Util.drop_prefix ~prefix error with
@@ -1236,6 +1225,18 @@ let stage_context_setting_requirement (stage : stage_agent) default_path error =
       let path = match String.index_opt rest ' ' with Some index -> String.sub rest 0 index | None -> rest in
       "stageAgents." ^ stage.agent ^ "." ^ path
   | None -> "stageAgents." ^ stage.agent ^ "." ^ default_path
+
+let validate_stage_context_snapshots config add =
+  if config.stage_agents.enabled then
+    List.iter
+      (fun (stage : stage_agent) ->
+        match stage.context_snapshot with
+        | Some { validation_error = Some error; _ } ->
+            add
+              (stage_context_setting_requirement stage "context.snapshot" error)
+              (error ^ ". Fix the Stage Agent context snapshot Runtime Settings before dispatch.")
+        | _ -> ())
+      config.stage_agents.stages
 
 let validate_stage_context_commands config add =
   if config.stage_agents.enabled then
