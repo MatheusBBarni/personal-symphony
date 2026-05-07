@@ -1,15 +1,14 @@
-**Blocking Finding**
+Implemented issue #38.
 
-- [prompt.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/prompt.md:1), [stderr.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stderr.log:14), and [stdout.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stdout.log:1) are included in task commit `207c021`. These are launch/runtime artifacts, not #37 documentation deliverables. `prompt.md` contains the rendered Stage Goal Handoff/Agent Prompt payload, and `stderr.log` contains captured Codex transcript output. That conflicts with the issue’s context-safety intent to avoid persisting full rendered Agent Prompts or full Codex transcripts.
+Changed:
+- [apps/backend/lib/config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_38/apps/backend/lib/config.ml): parses per-stage `context.snapshot`, defaults missing config to disabled, and reports invalid snapshot settings as Readiness Gaps.
+- [apps/backend/lib/orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_38/apps/backend/lib/orchestrator.ml): appends bounded deterministic `## Agent Context Snapshot` content after the normal Agent Prompt, while preserving Stage Goal Handoff ordering.
+- [apps/backend/test/test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_38/apps/backend/test/test_backend.ml): added coverage for disabled/enabled config, invalid readiness gaps, Stage Goal Handoff coexistence, and truncation.
 
-- `git diff --check HEAD^..HEAD` fails because those committed artifacts contain whitespace errors: `prompt.md:197` and multiple trailing-whitespace lines in `stderr.log`.
+Verification:
+- `opam exec -- dune build --root . --build-dir /private/tmp/symphony-dune-build-38 apps/backend/bin/main.exe` passed.
+- `opam exec -- dune runtest --root . --build-dir /private/tmp/symphony-dune-build-38 apps/backend/test` passed: 118 tests.
+- `git diff --check -- apps/backend/lib/config.ml apps/backend/lib/orchestrator.ml apps/backend/test/test_backend.ml` passed.
+- `pnpm test` could not run because pnpm failed with `[ERROR] fetch failed` in this restricted network environment.
 
-The accepted docs themselves look aligned: `CONTEXT.md` and ADR 0019 already define Agent Context Snapshot and Context Command, and the remaining docs/spec cleanup uses the accepted terminology.
-
-Checks run:
-- `git diff --name-status HEAD^..HEAD`
-- `git diff --check HEAD^..HEAD` failed as above
-- protected-path/generated `.res.js` check over changed paths: clean
-- terminology scan for stale “Context Command stdout supplements the Agent Prompt” wording: clean
-
-I attempted to post the blocking review comment to GitHub issue #37, but the connector call was canceled. The issue should not move to Done until the committed launch artifacts are removed or otherwise handled.
+Note: `prompt.md`, `stderr.log`, and `stdout.log` are also modified in the worktree as existing/generated agent launch artifacts; I did not include them in the implementation scope.

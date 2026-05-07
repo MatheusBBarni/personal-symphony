@@ -209,6 +209,54 @@ let test_config_validates_stage_concurrency_policy () =
       assert_invalid "negative stage cap" {js|, "maxConcurrentAgents": -1|js};
       assert_invalid "non-integer stage cap" {js|, "maxConcurrentAgents": "two"|js})
 
+let test_config_parses_stage_context_snapshot_and_readiness () =
+  with_temp_dir "symphony-settings-stage-context-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      Util.write_file (Filename.concat root ".symphony/agents/engineer.md") "Engineer";
+      Unix.putenv "GITHUB_TOKEN" "token";
+      let write_settings stage_field =
+        let settings = Filename.concat root ("settings-" ^ string_of_int (Random.bits ()) ^ ".json") in
+        Util.write_file settings
+          (Printf.sprintf
+             {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer"%s}
+    ]
+  }
+}|}
+             stage_field);
+        Config.from_settings_file ~workspace_root:root settings
+      in
+      let omitted = write_settings "" in
+      (match omitted.stage_agents.stages with
+      | [ stage ] -> Alcotest.(check bool) "omitted snapshot disabled" false (Config.stage_context_snapshot_enabled stage)
+      | _ -> Alcotest.fail "expected one configured stage");
+      let enabled =
+        write_settings {js|, "context": {"snapshot": {"enabled": true, "maxOutputBytes": 4096}}|js}
+      in
+      (match enabled.stage_agents.stages with
+      | [ { Config.context_snapshot = Some snapshot; _ } as stage ] ->
+          Alcotest.(check bool) "snapshot enabled" true (Config.stage_context_snapshot_enabled stage);
+          Alcotest.(check int) "snapshot cap" 4096 snapshot.max_output_bytes
+      | _ -> Alcotest.fail "expected enabled snapshot");
+      let invalid =
+        write_settings {js|, "context": {"snapshot": {"enabled": true, "maxOutputBytes": "large"}}|js}
+      in
+      let gaps = Config.readiness_gaps invalid in
+      match
+        List.find_opt
+          (fun (gap : Config.readiness_gap) -> gap.requirement = "stageAgents.engineer.context.snapshot")
+          gaps
+      with
+      | Some gap ->
+          Alcotest.(check bool) "mentions setting path" true
+            (contains_substring gap.remediation "stageAgents.stages[].context.snapshot.maxOutputBytes")
+      | None -> Alcotest.fail "expected context snapshot readiness gap")
+
 let test_config_parses_allowed_loop_start_branch_policy () =
   with_temp_dir "symphony-loop-start-policy-" (fun root ->
       Util.mkdir_p (Filename.concat root ".symphony/agents");
@@ -2031,6 +2079,7 @@ let stage_capacity_config root ~global_cap =
               Config.states = [ "Backlog" ];
               agent = "planner";
               max_concurrent_agents = Some 1;
+                    context_snapshot = None;
               skills = [];
               start_status = None;
               success_status = Some "Todo";
@@ -2042,6 +2091,7 @@ let stage_capacity_config root ~global_cap =
               Config.states = [ "Todo"; "In progress" ];
               agent = "engineer";
               max_concurrent_agents = Some 2;
+                    context_snapshot = None;
               skills = [];
               start_status = Some "In progress";
               success_status = Some "In review";
@@ -2053,6 +2103,7 @@ let stage_capacity_config root ~global_cap =
               Config.states = [ "In review" ];
               agent = "reviewer";
               max_concurrent_agents = Some 2;
+                    context_snapshot = None;
               skills = [];
               start_status = None;
               success_status = Some "Done";
@@ -2290,6 +2341,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                     Config.states = [ "Todo" ];
                     agent = "engineer";
                     max_concurrent_agents = Some 1;
+                    context_snapshot = None;
                     skills = [];
                     start_status = Some "In progress";
                     success_status = Some "In review";
@@ -2301,6 +2353,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                     Config.states = [ "In review" ];
                     agent = "reviewer";
                     max_concurrent_agents = Some 2;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -2672,6 +2725,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                     Config.states = [ "In review" ];
                     agent = "reviewer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -2766,6 +2820,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
                     Config.states = [ "Todo" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = Some { enabled = true; max_output_bytes = 12000; validation_error = None };
                     skills = [ "to-prd"; "github:gh-fix-ci" ];
                     start_status = None;
                     success_status = Some "In review";
@@ -2811,6 +2866,17 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         (contains_substring !captured_prompt "Issue comments:\n\nreviewer at 2026-05-06T18:30:00Z:\nRemember the edge case from the thread.");
       Alcotest.(check bool) "skill load preserves order" true
         (contains_substring !captured_prompt "Stage Skill Load:\n$to-prd\n$github:gh-fix-ci");
+      Alcotest.(check bool) "snapshot appended" true
+        (contains_substring !captured_prompt "## Agent Context Snapshot\n\n- Issue: #1 One");
+      Alcotest.(check bool) "snapshot includes branch" true
+        (contains_substring !captured_prompt "- Task Branch: symphony/task-1");
+      Alcotest.(check bool) "snapshot includes worktree" true
+        (contains_substring !captured_prompt "- Agent Worktree:");
+      Alcotest.(check bool) "snapshot includes loop-start" true
+        (contains_substring !captured_prompt "- Loop-Start Branch:");
+      Alcotest.(check bool) "handoff remains before prompt snapshot" true
+        (String.starts_with ~prefix:"/goal " !captured_prompt
+        && contains_substring !captured_prompt "---\n\nEngineer stage instructions");
       let goal_line =
         match String.split_on_char '\n' !captured_prompt with
         | first :: _ -> first
@@ -2879,6 +2945,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
                     Config.states = [ "Todo" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -2899,8 +2966,91 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
       let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check bool) "no goal command" false (String.starts_with ~prefix:"/goal" !captured_prompt);
+      Alcotest.(check bool) "no context snapshot" false
+        (contains_substring !captured_prompt "## Agent Context Snapshot");
       Alcotest.(check bool) "stage agent still included" true (String.contains !captured_prompt 'E');
       Alcotest.(check bool) "normal prompt still included" true (String.contains !captured_prompt '#'))
+
+let test_orchestrator_truncates_agent_context_snapshot () =
+  with_temp_dir "symphony-context-snapshot-truncated-" (fun root ->
+      let agents_root = Filename.concat root "agents" in
+      Unix.mkdir agents_root 0o755;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          stage_agents =
+            {
+              enabled = true;
+              root = agents_root;
+              default_agent = None;
+              stages =
+                [
+                  {
+                    Config.states = [ "Todo" ];
+                    agent = "engineer";
+                    max_concurrent_agents = None;
+                    context_snapshot = Some { enabled = true; max_output_bytes = 96; validation_error = None };
+                    skills = [];
+                    start_status = None;
+                    success_status = Some "In review";
+                    retry_status = Some "Todo";
+                    goal = None;
+                    commit = None;
+                  };
+                ];
+            };
+        }
+      in
+      let issue =
+        {
+          (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One with a very long deterministic title" ~state:"Todo") with
+          labels = [ "enhancement"; "context"; "snapshot"; "bounded" ];
+        }
+      in
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let prompt =
+        Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) config issue (Some 2) "Normal #1" ~workspace
+          ~loop_start_branch:(Some "symphony/dogfood")
+      in
+      let marker = "## Agent Context Snapshot" in
+      let rec drop_until_marker = function
+        | [] -> []
+        | line :: _ as lines when line = marker -> lines
+        | _ :: rest -> drop_until_marker rest
+      in
+      let snapshot =
+        match String.split_on_char '\n' prompt |> drop_until_marker with
+        | [] -> Alcotest.fail "expected snapshot"
+        | lines -> String.concat "\n" lines
+      in
+      Alcotest.(check bool) "snapshot capped" true (String.length snapshot <= 96);
+      Alcotest.(check bool) "snapshot truncation marker" true (contains_substring snapshot "[truncated]"))
 
 let test_parse_goal_usage_from_codex_output () =
   with_temp_dir "symphony-goal-usage-" (fun root ->
@@ -2992,6 +3142,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                     Config.states = [ "In progress" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3059,6 +3210,7 @@ let test_stage_commit_classification_renders_messages () =
         Config.states = [ "In progress" ];
         agent = "engineer";
         max_concurrent_agents = None;
+                    context_snapshot = None;
         skills = [];
         start_status = None;
         success_status = Some "In review";
@@ -3195,6 +3347,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                     Config.states = [ "In progress" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3284,6 +3437,7 @@ let test_stage_commit_requires_code_changes () =
             Config.states = [ "In progress" ];
             agent = "engineer";
             max_concurrent_agents = None;
+                    context_snapshot = None;
             skills = [];
             start_status = None;
             success_status = Some "In review";
@@ -3338,6 +3492,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                     Config.states = [ "In progress" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3442,6 +3597,7 @@ let protected_stage =
       Config.states = [ "In progress" ];
       agent = "engineer";
       max_concurrent_agents = None;
+                    context_snapshot = None;
       skills = [];
       start_status = None;
       success_status = Some "In review";
@@ -3551,6 +3707,7 @@ let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
                     Config.states = [ "In progress" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3647,6 +3804,7 @@ let completed_stage_config root git =
               Config.states = [ "In progress" ];
               agent = "engineer";
               max_concurrent_agents = None;
+                    context_snapshot = None;
               skills = [];
               start_status = Some "In progress";
               success_status = Some "In review";
@@ -3700,6 +3858,7 @@ let test_conflicting_stage_commit_classification_moves_attention_without_commit 
                     Config.states = [ "In progress" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3775,6 +3934,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                     Config.states = [ "Backlog" ];
                     agent = "planner";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Todo";
@@ -3786,6 +3946,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                     Config.states = [ "Todo" ];
                     agent = "engineer";
                     max_concurrent_agents = None;
+                    context_snapshot = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -4466,6 +4627,7 @@ let test_stage_commit_pushes_task_branch () =
             Config.states = [ "In progress" ];
             agent = "engineer";
             max_concurrent_agents = None;
+                    context_snapshot = None;
             skills = [];
             start_status = None;
             success_status = Some "In review";
@@ -4711,6 +4873,7 @@ let manual_merge_config ?(keep_task_branch = true) root =
               retry_status = None;
               agent = "reviewer";
               max_concurrent_agents = None;
+                    context_snapshot = None;
               skills = [];
               goal = None;
               commit = None;
@@ -4891,6 +5054,8 @@ let () =
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
           Alcotest.test_case "validates stage concurrency policy" `Quick test_config_validates_stage_concurrency_policy;
+          Alcotest.test_case "parses stage context snapshot and readiness" `Quick
+            test_config_parses_stage_context_snapshot_and_readiness;
           Alcotest.test_case "parses allowed loop-start branch policy" `Quick
             test_config_parses_allowed_loop_start_branch_policy;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
@@ -4967,6 +5132,7 @@ let () =
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
+          Alcotest.test_case "truncates agent context snapshot" `Quick test_orchestrator_truncates_agent_context_snapshot;
           Alcotest.test_case "parses goal usage output" `Quick test_parse_goal_usage_from_codex_output;
           Alcotest.test_case "parses goal usage variants" `Quick test_parse_goal_usage_variants_and_ignores_invalid;
           Alcotest.test_case "parses nested goal usage fields" `Quick test_parse_goal_usage_nested_usage_fields;

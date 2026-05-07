@@ -520,12 +520,6 @@ let stage_goal_context issue attempt (stage : Config.stage_agent) =
     ]
   |> Yojson.Safe.to_string
 
-let compose_prompt ?stage config issue attempt base_prompt =
-  let prompt = normal_prompt ?stage config issue base_prompt in
-  match stage_goal_handoff_stage ?stage config issue with
-  | None -> prompt
-  | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
-
 let replace_token ~token ~value text =
   String.split_on_char '<' text
   |> List.mapi (fun index part ->
@@ -684,6 +678,71 @@ let task_branch config issue = config.Config.git.task_branch_prefix ^ issue_bran
 
 let task_workspace_path config issue =
   Filename.concat config.Config.workspace.root (Workspace.sanitize issue.Issue.identifier)
+
+let compact_markdown_value value =
+  value |> String.split_on_char '\n' |> List.map Util.trim |> List.filter (fun part -> part <> "") |> String.concat " "
+
+let optional_line label = function
+  | Some value when Util.trim value <> "" -> [ Printf.sprintf "- %s: %s" label (compact_markdown_value value) ]
+  | _ -> []
+
+let blockers_line blockers =
+  let blocker_text =
+    blockers
+    |> List.map (fun (blocker : Issue.blocker) ->
+           match (blocker.identifier, blocker.state, blocker.id) with
+           | Some identifier, Some state, _ -> Printf.sprintf "%s (%s)" identifier state
+           | Some identifier, None, _ -> identifier
+           | None, Some state, Some id -> Printf.sprintf "%s (%s)" id state
+           | None, Some state, None -> state
+           | None, None, Some id -> id
+           | None, None, None -> "")
+    |> List.filter (fun value -> Util.trim value <> "")
+  in
+  if blocker_text = [] then "(none)" else String.concat ", " blocker_text
+
+let truncate_snapshot max_output_bytes snapshot =
+  if String.length snapshot <= max_output_bytes then snapshot
+  else
+    let marker = "\n\n[truncated]" in
+    if max_output_bytes <= String.length marker then String.sub snapshot 0 max_output_bytes
+    else
+      let keep = max_output_bytes - String.length marker in
+      String.sub snapshot 0 keep |> Util.trim |> fun text -> text ^ marker
+
+let agent_context_snapshot ?stage config issue attempt ~workspace ~loop_start_branch =
+  match match stage with Some _ -> stage | None -> stage_for_issue config issue with
+  | Some stage when Config.stage_context_snapshot_enabled stage -> (
+      match stage.Config.context_snapshot with
+      | Some snapshot ->
+          let lines =
+            [
+              "## Agent Context Snapshot";
+              "";
+              Printf.sprintf "- Issue: %s %s" issue.Issue.identifier (compact_markdown_value issue.title);
+              Printf.sprintf "- Project status: %s" issue.state;
+              Printf.sprintf "- Labels: %s" (if issue.labels = [] then "(none)" else String.concat ", " issue.labels);
+              Printf.sprintf "- Blockers: %s" (blockers_line issue.blocked_by);
+              Printf.sprintf "- Attempt: %d" (Option.value attempt ~default:0);
+              Printf.sprintf "- Stage Agent: %s" stage.agent;
+              Printf.sprintf "- Task Branch: %s" (task_branch config issue);
+              Printf.sprintf "- Agent Worktree: %s" workspace.Workspace.path;
+            ]
+            @ optional_line "Loop-Start Branch" loop_start_branch
+          in
+          Some (String.concat "\n" lines |> truncate_snapshot snapshot.max_output_bytes)
+      | None -> None)
+  | _ -> None
+
+let compose_prompt ?stage config issue attempt base_prompt ~workspace ~loop_start_branch =
+  let prompt =
+    match agent_context_snapshot ?stage config issue attempt ~workspace ~loop_start_branch with
+    | None -> normal_prompt ?stage config issue base_prompt
+    | Some snapshot -> Printf.sprintf "%s\n\n---\n\n%s" (normal_prompt ?stage config issue base_prompt |> Util.trim) snapshot
+  in
+  match stage_goal_handoff_stage ?stage config issue with
+  | None -> prompt
+  | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
 
 let require_clean_loop_start root =
   match run_shell_capture ~cwd:root "git status --porcelain" with
@@ -1519,7 +1578,10 @@ let dispatch_issue orchestrator issue =
         let issue = match target_start_status with Some state -> { issue with Issue.state } | None -> issue in
         let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
         let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
-        let prompt = compose_prompt ?stage orchestrator.config issue attempt rendered in
+        let prompt =
+          compose_prompt ?stage orchestrator.config issue attempt rendered ~workspace
+            ~loop_start_branch:(Some orchestrator.loop_start_branch)
+        in
         let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
         let now = Util.now_iso8601 () in
         let stage_agent, stage_states = selected_stage_fields stage in
