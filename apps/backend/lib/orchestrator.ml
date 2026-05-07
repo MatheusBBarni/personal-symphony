@@ -492,6 +492,7 @@ let stage_goal_handoff_stage ?stage config issue =
 
 let json_option_string = function Some value when Util.trim value <> "" -> `String value | _ -> `Null
 let json_option_int = function Some value -> `Int value | None -> `Null
+let launch_attempt_number attempt = Option.value attempt ~default:0 + 1
 
 let blocker_to_goal_json (blocker : Issue.blocker) =
   `Assoc
@@ -523,7 +524,7 @@ let stage_goal_context issue attempt (stage : Config.stage_agent) =
       ("labels", `List (List.map (fun label -> `String label) issue.labels));
       ("priority", json_option_int issue.priority);
       ("blocker_references", `List (List.map blocker_to_goal_json issue.blocked_by));
-      ("attempt", `Int (Option.value attempt ~default:0));
+      ("attempt", `Int (launch_attempt_number attempt));
       ("stage_agent_name", `String stage.agent);
     ]
   |> Yojson.Safe.to_string
@@ -770,29 +771,395 @@ let previous_attempt_lines = function
       @ [ "" ]
       @ render_previous_attempt_stream "stderr" previous.stderr_path
 
+let context_command_input_path_env = "SYMPHONY_CONTEXT_COMMAND_INPUT_PATH"
+
+let runtime_state_dir config = Filename.concat (Filename.concat config.Config.repository_root ".symphony") "state"
+
+let context_command_temp_dir config = Filename.concat (runtime_state_dir config) "context-command"
+
+let remove_if_exists path = try if Sys.file_exists path then Sys.remove path with Sys_error _ | Unix.Unix_error _ -> ()
+
+let ensure_private_context_command_dir dir =
+  Util.mkdir_p (Filename.dirname dir);
+  if Sys.file_exists dir then
+    let stats = Unix.lstat dir in
+    match stats.Unix.st_kind with
+    | Unix.S_DIR -> if stats.Unix.st_perm land 0o077 <> 0 then Unix.chmod dir 0o700
+    | _ -> invalid_arg (dir ^ " exists and is not a directory")
+  else Unix.mkdir dir 0o700
+
+let write_context_command_input_file config input_json =
+  let dir = context_command_temp_dir config in
+  ensure_private_context_command_dir dir;
+  let path, oc = Filename.open_temp_file ~mode:[ Open_binary ] ~perms:0o600 ~temp_dir:dir "context-" ".json" in
+  try
+    output_string oc input_json;
+    close_out oc;
+    path
+  with exn ->
+    close_out_noerr oc;
+    remove_if_exists path;
+    raise exn
+
+let env_value name env =
+  let prefix = name ^ "=" in
+  Array.to_list env
+  |> List.find_map (fun entry ->
+         match Util.drop_prefix ~prefix entry with Some value -> Some value | None -> None)
+
+let context_command_secret_env_names = [ "GITHUB_TOKEN"; "GH_TOKEN" ]
+
+let context_command_secret_values env =
+  context_command_secret_env_names
+  |> List.filter_map (fun name -> env_value name env)
+  |> List.map Util.trim
+  |> List.filter (fun value -> value <> "")
+  |> List.sort_uniq String.compare
+  |> List.sort (fun left right -> compare (String.length right) (String.length left))
+
+let secret_matches_at text index secret =
+  let length = String.length secret in
+  index + length <= String.length text && String.sub text index length = secret
+
+let redact_context_command_prefix env text prefix_length =
+  let secrets = context_command_secret_values env in
+  let buffer = Buffer.create prefix_length in
+  let rec loop index =
+    if index >= prefix_length then ()
+    else
+      match List.find_opt (secret_matches_at text index) secrets with
+      | Some secret ->
+          Buffer.add_string buffer "[redacted]";
+          loop (min prefix_length (index + String.length secret))
+      | None ->
+          Buffer.add_char buffer text.[index];
+          loop (index + 1)
+  in
+  loop 0;
+  let output = Buffer.contents buffer in
+  if String.length output > prefix_length then String.sub output 0 prefix_length else output
+
+type context_command_stdout_capture = {
+  buffer : Buffer.t;
+  read_limit : int;
+  mutable total_bytes : int;
+}
+
+type context_command_stdout = { output : string; truncated : bool }
+
+let context_command_redaction_window env =
+  context_command_secret_values env |> List.fold_left (fun acc value -> max acc (String.length value)) 0
+
+let context_command_stdout_read_limit env max_output_bytes = max_output_bytes + context_command_redaction_window env + 1
+
+let create_context_command_stdout_capture env max_output_bytes =
+  { buffer = Buffer.create (min max_output_bytes 4096); read_limit = context_command_stdout_read_limit env max_output_bytes; total_bytes = 0 }
+
+let capture_context_stdout_chunk capture chunk =
+  let length = String.length chunk in
+  let buffered = Buffer.length capture.buffer in
+  let remaining = max 0 (capture.read_limit - buffered) in
+  if remaining > 0 then Buffer.add_substring capture.buffer chunk 0 (min remaining length);
+  capture.total_bytes <- capture.total_bytes + length
+
+let context_command_stdout_from_capture env max_output_bytes capture =
+  let raw = Buffer.contents capture.buffer in
+  let prefix_length = min max_output_bytes (String.length raw) in
+  { output = redact_context_command_prefix env raw prefix_length; truncated = capture.total_bytes > max_output_bytes }
+
+let context_command_input_json config issue attempt (stage : Config.stage_agent) ~workspace =
+  `Assoc
+    [
+      ("kind", `String "Context Command Input");
+      ( "issue",
+        `Assoc
+          [
+            ("identifier", `String issue.Issue.identifier);
+            ("title", `String issue.title);
+            ("status", `String issue.state);
+          ] );
+      ("stageAgent", `String stage.agent);
+      ("attempt", `Int (launch_attempt_number attempt));
+      ("workspaceRepositoryRoot", `String config.Config.repository_root);
+      ("agentWorktree", `String workspace.Workspace.path);
+      ("taskBranch", `String (task_branch config issue));
+    ]
+  |> Yojson.Safe.to_string
+
+let context_command_cwd config workspace (command : Config.stage_context_command) =
+  match command.cwd with
+  | "workspaceRepositoryRoot" -> config.Config.repository_root
+  | "agentWorktree" -> workspace.Workspace.path
+  | _ -> workspace.Workspace.path
+
+let env_with_context_input input_path =
+  let replacements = [ (context_command_input_path_env, input_path) ] in
+  let replacement_names = List.map fst replacements in
+  let is_replaced entry =
+    match String.index_opt entry '=' with
+    | None -> false
+    | Some index ->
+        let name = String.sub entry 0 index in
+        List.exists (( = ) name) replacement_names
+  in
+  Array.to_list (Unix.environment ())
+  |> List.filter (fun entry -> not (is_replaced entry))
+  |> fun existing -> existing @ List.map (fun (name, value) -> name ^ "=" ^ value) replacements
+  |> Array.of_list
+
+let executable_file path =
+  try
+    Unix.access path [ Unix.X_OK ];
+    true
+  with Unix.Unix_error _ | Sys_error _ -> false
+
+let context_command_path_separator = if Sys.win32 then ';' else ':'
+
+let context_command_default_path =
+  if Sys.win32 then "C:\\Windows\\System32;C:\\Windows" else "/usr/bin:/bin:/usr/sbin:/sbin"
+
+let context_program_has_directory_part program =
+  String.contains program '/' || (Sys.win32 && String.contains program '\\')
+
+let resolve_context_executable ~cwd env program =
+  if context_program_has_directory_part program then
+    let path = if Filename.is_relative program then Filename.concat cwd program else program in
+    if executable_file path then Ok path else Error "missing executable"
+  else
+    let path_value = Option.value (env_value "PATH" env) ~default:context_command_default_path in
+    let dirs = String.split_on_char context_command_path_separator path_value in
+    match
+      List.find_map
+        (fun dir ->
+          let dir = if dir = "" then cwd else dir in
+          let path = Filename.concat dir program in
+          if executable_file path then Some path else None)
+        dirs
+    with
+    | Some path -> Ok path
+    | None -> Error "missing executable"
+
+let close_noerr fd = try Unix.close fd with Unix.Unix_error _ -> ()
+
+let with_context_command_cwd cwd f =
+  let original_cwd = Sys.getcwd () in
+  if original_cwd = cwd then f ()
+  else
+    Fun.protect
+      ~finally:(fun () -> Sys.chdir original_cwd)
+      (fun () ->
+        Sys.chdir cwd;
+        f ())
+
+let spawn_context_command ~cwd ~env ~stdin_path ~stdout_fd ~stderr_fd ~executable argv =
+  let stdin_fd = Unix.openfile stdin_path [ Unix.O_RDONLY ] 0 in
+  Fun.protect
+    ~finally:(fun () -> close_noerr stdin_fd)
+    (fun () ->
+      with_context_command_cwd cwd (fun () ->
+          Unix.create_process_env executable (Array.of_list argv) env stdin_fd stdout_fd stderr_fd))
+
+let kill_context_process_group pid =
+  try Unix.kill (-pid) Sys.sigkill
+  with Unix.Unix_error _ -> (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
+
+let read_pipe_chunk fd =
+  let bytes = Bytes.create 4096 in
+  try
+    match Unix.read fd bytes 0 (Bytes.length bytes) with
+    | 0 -> `Eof
+    | read -> `Data (Bytes.sub_string bytes 0 read)
+  with
+  | Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK | Unix.EINTR), _, _) -> `Would_block
+  | Unix.Unix_error (Unix.EBADF, _, _) -> `Eof
+
+let drain_pipe fd open_ref ~on_data =
+  let rec loop () =
+    match read_pipe_chunk fd with
+    | `Data chunk ->
+        on_data chunk;
+        loop ()
+    | `Eof ->
+        open_ref := false;
+        close_noerr fd
+    | `Would_block -> ()
+  in
+  loop ()
+
+let context_command_pipe_output env max_output_bytes capture =
+  context_command_stdout_from_capture env max_output_bytes capture
+
+let wait_context_command env pid timeout_ms stdout_fd stderr_fd max_output_bytes =
+  let deadline = Unix.gettimeofday () +. (float_of_int timeout_ms /. 1000.) in
+  let stdout_capture = create_context_command_stdout_capture env max_output_bytes in
+  let stdout_open = ref true in
+  let stderr_open = ref true in
+  let status = ref None in
+  let timed_out = ref false in
+  let close_if_open fd open_ref =
+    if !open_ref then (
+      open_ref := false;
+      close_noerr fd)
+  in
+  let close_open_pipes () =
+    close_if_open stdout_fd stdout_open;
+    close_if_open stderr_fd stderr_open
+  in
+  let record_status process_status =
+    match !status with
+    | Some _ -> ()
+    | None ->
+        kill_context_process_group pid;
+        status := Some process_status
+  in
+  let rec loop () =
+    (match !status with
+    | Some _ -> ()
+    | None -> (
+        match Unix.waitpid [ Unix.WNOHANG ] pid with
+        | 0, _ -> ()
+        | _, process_status -> record_status process_status));
+    if (not !timed_out) && Unix.gettimeofday () >= deadline then (
+      kill_context_process_group pid;
+      (match !status with
+      | Some _ -> ()
+      | None ->
+          let _, process_status = Unix.waitpid [] pid in
+          status := Some process_status);
+      timed_out := true;
+      close_open_pipes ());
+    let open_fds = (if !stdout_open then [ stdout_fd ] else []) @ (if !stderr_open then [ stderr_fd ] else []) in
+    (if open_fds = [] then ()
+     else
+       let timeout =
+         match !status with
+         | Some _ -> 0.01
+         | None -> max 0.0 (min 0.01 (deadline -. Unix.gettimeofday ()))
+       in
+       let ready, _, _ = Unix.select open_fds [] [] timeout in
+       List.iter
+         (fun fd ->
+           if fd = stdout_fd then drain_pipe fd stdout_open ~on_data:(capture_context_stdout_chunk stdout_capture)
+           else if fd = stderr_fd then drain_pipe fd stderr_open ~on_data:(fun _ -> ()))
+         ready;
+       match !status with
+       | Some _ ->
+           if !stdout_open then (
+             drain_pipe stdout_fd stdout_open ~on_data:(capture_context_stdout_chunk stdout_capture);
+             if !stdout_open then (
+               stdout_open := false;
+               close_noerr stdout_fd));
+           if !stderr_open then (
+             drain_pipe stderr_fd stderr_open ~on_data:(fun _ -> ());
+             if !stderr_open then (
+               stderr_open := false;
+               close_noerr stderr_fd))
+       | None -> ());
+    match (!status, !stdout_open, !stderr_open) with
+    | Some process_status, false, false ->
+        let output = context_command_pipe_output env max_output_bytes stdout_capture in
+        if !timed_out then `Timed_out process_status else `Exited (process_status, output)
+    | _ ->
+        if open_fds = [] then Unix.sleepf 0.01;
+        loop ()
+  in
+  loop ()
+
+let bounded_warning text =
+  let text = Util.trim text in
+  if String.length text <= 512 then text else (String.sub text 0 512 |> Util.trim) ^ " [truncated]"
+
+let context_command_warning_lines warning =
+  [ ""; "### Context Command"; ""; Printf.sprintf "[warning: %s]" (bounded_warning warning) ]
+
+let context_command_stdout_lines ~max_output_bytes ~truncated output =
+  if (not truncated) && output = "" then []
+  else
+    let warning =
+      if truncated then
+        [ Printf.sprintf "[warning: stdout exceeded maxOutputBytes; truncated to %d bytes]" max_output_bytes; "" ]
+      else []
+    in
+    [ ""; "### Context Command"; "" ] @ warning @ [ output ]
+
+let context_command_status_lines (command : Config.stage_context_command) = function
+  | `Timed_out _ -> context_command_warning_lines (Printf.sprintf "timed out after %dms" command.timeout_ms)
+  | `Exited (Unix.WEXITED 0, output) ->
+      context_command_stdout_lines ~max_output_bytes:command.max_output_bytes ~truncated:output.truncated output.output
+  | `Exited (Unix.WEXITED code, _) -> context_command_warning_lines (Printf.sprintf "exited with code %d" code)
+  | `Exited (Unix.WSIGNALED signal, _) -> context_command_warning_lines (Printf.sprintf "terminated by signal %d" signal)
+  | `Exited (Unix.WSTOPPED signal, _) -> context_command_warning_lines (Printf.sprintf "stopped by signal %d" signal)
+
+let with_context_command_pipes f =
+  let stdout_read, stdout_write = Unix.pipe () in
+  let stderr_read, stderr_write = Unix.pipe () in
+  Fun.protect
+    ~finally:(fun () -> List.iter close_noerr [ stdout_read; stdout_write; stderr_read; stderr_write ])
+    (fun () ->
+      Unix.set_nonblock stdout_read;
+      Unix.set_nonblock stderr_read;
+      f ~stdout_read ~stdout_write ~stderr_read ~stderr_write)
+
+let run_context_command_lines config issue attempt (stage : Config.stage_agent) ~workspace command =
+  try
+    let input_json = context_command_input_json config issue attempt stage ~workspace in
+    let input_path = write_context_command_input_file config input_json in
+    Fun.protect
+      ~finally:(fun () -> remove_if_exists input_path)
+      (fun () ->
+        let env = env_with_context_input input_path in
+        let cwd = context_command_cwd config workspace command in
+        match command.argv with
+        | [] -> context_command_warning_lines "command argv is empty"
+        | program :: _ -> (
+            match resolve_context_executable ~cwd env program with
+            | Error error -> context_command_warning_lines error
+            | Ok executable ->
+                with_context_command_pipes (fun ~stdout_read ~stdout_write ~stderr_read ~stderr_write ->
+                    let pid =
+                      spawn_context_command ~cwd ~env ~stdin_path:input_path ~stdout_fd:stdout_write
+                        ~stderr_fd:stderr_write ~executable command.argv
+                    in
+                    close_noerr stdout_write;
+                    close_noerr stderr_write;
+                    wait_context_command env pid command.timeout_ms stdout_read stderr_read command.max_output_bytes
+                    |> context_command_status_lines command)))
+  with exn -> context_command_warning_lines ("failed: " ^ Printexc.to_string exn)
+
+let context_command_lines config issue attempt (stage : Config.stage_agent) ~workspace =
+  match stage.context_command with
+  | Some command when Config.stage_context_command_enabled stage -> run_context_command_lines config issue attempt stage ~workspace command
+  | _ -> []
+
+let stage_context_snapshot_requested (stage : Config.stage_agent) =
+  Config.stage_context_snapshot_enabled stage || Config.stage_context_command_enabled stage
+
+let stage_context_snapshot_max_output_bytes (stage : Config.stage_agent) =
+  match stage.context_snapshot with
+  | Some snapshot when Config.stage_context_snapshot_enabled stage -> snapshot.max_output_bytes
+  | _ -> Config.default_context_snapshot_max_output_bytes
+
 let agent_context_snapshot ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch =
   match match stage with Some _ -> stage | None -> stage_for_issue config issue with
-  | Some stage when Config.stage_context_snapshot_enabled stage -> (
-      match stage.Config.context_snapshot with
-      | Some snapshot ->
-          let lines =
-            [
-              "## Agent Context Snapshot";
-              "";
-              Printf.sprintf "- Issue: %s %s" issue.Issue.identifier (compact_markdown_value issue.title);
-              Printf.sprintf "- Project status: %s" issue.state;
-              Printf.sprintf "- Labels: %s" (if issue.labels = [] then "(none)" else String.concat ", " issue.labels);
-              Printf.sprintf "- Blockers: %s" (blockers_line issue.blocked_by);
-              Printf.sprintf "- Attempt: %d" (Option.value attempt ~default:0);
-              Printf.sprintf "- Stage Agent: %s" stage.agent;
-              Printf.sprintf "- Task Branch: %s" (task_branch config issue);
-              Printf.sprintf "- Agent Worktree: %s" workspace.Workspace.path;
-            ]
-            @ optional_line "Loop-Start Branch" loop_start_branch
-            @ previous_attempt_lines previous_attempt_output
-          in
-          Some (String.concat "\n" lines |> truncate_snapshot snapshot.max_output_bytes)
-      | None -> None)
+  | Some stage when stage_context_snapshot_requested stage ->
+      let lines =
+        [
+          "## Agent Context Snapshot";
+          "";
+          Printf.sprintf "- Issue: %s %s" issue.Issue.identifier (compact_markdown_value issue.title);
+          Printf.sprintf "- Project status: %s" issue.state;
+          Printf.sprintf "- Labels: %s" (if issue.labels = [] then "(none)" else String.concat ", " issue.labels);
+          Printf.sprintf "- Blockers: %s" (blockers_line issue.blocked_by);
+          Printf.sprintf "- Attempt: %d" (launch_attempt_number attempt);
+          Printf.sprintf "- Stage Agent: %s" stage.agent;
+          Printf.sprintf "- Task Branch: %s" (task_branch config issue);
+          Printf.sprintf "- Agent Worktree: %s" workspace.Workspace.path;
+        ]
+        @ optional_line "Loop-Start Branch" loop_start_branch
+        @ previous_attempt_lines previous_attempt_output
+        @ context_command_lines config issue attempt stage ~workspace
+      in
+      Some (String.concat "\n" lines |> truncate_snapshot (stage_context_snapshot_max_output_bytes stage))
   | _ -> None
 
 let compose_prompt ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =

@@ -306,6 +306,84 @@ let test_config_parses_stage_context_snapshot_and_readiness () =
             (contains_substring gap.remediation "stageAgents.stages[].context.snapshot.maxOutputBytes")
       | None -> Alcotest.fail "expected context snapshot readiness gap")
 
+let test_config_parses_stage_context_command_and_readiness () =
+  with_temp_dir "symphony-settings-stage-context-command-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      Util.write_file (Filename.concat root ".symphony/agents/engineer.md") "Engineer";
+      Unix.putenv "GITHUB_TOKEN" "token";
+      let write_settings stage_field =
+        let settings = Filename.concat root ("settings-" ^ string_of_int (Random.bits ()) ^ ".json") in
+        Util.write_file settings
+          (Printf.sprintf
+             {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer"%s}
+    ]
+  }
+}|}
+             stage_field);
+        Config.from_settings_file ~workspace_root:root settings
+      in
+      let omitted = write_settings "" in
+      (match omitted.stage_agents.stages with
+      | [ stage ] -> Alcotest.(check bool) "omitted command disabled" false (Config.stage_context_command_enabled stage)
+      | _ -> Alcotest.fail "expected one configured stage");
+      let enabled =
+        write_settings
+          {js|, "context": {"command": ["sh", "-c", "echo ok"], "cwd": "workspaceRepositoryRoot", "timeoutMs": 123, "maxOutputBytes": 456}|js}
+      in
+      (match enabled.stage_agents.stages with
+      | [ { Config.context_command = Some command; _ } as stage ] ->
+          Alcotest.(check bool) "command enabled" true (Config.stage_context_command_enabled stage);
+          Alcotest.(check (list string)) "argv" [ "sh"; "-c"; "echo ok" ] command.argv;
+          Alcotest.(check string) "cwd" "workspaceRepositoryRoot" command.cwd;
+          Alcotest.(check int) "timeout" 123 command.timeout_ms;
+          Alcotest.(check int) "cap" 456 command.max_output_bytes
+      | _ -> Alcotest.fail "expected enabled context command");
+      let defaulted = write_settings {js|, "context": {"command": ["sh"]}|js} in
+      (match defaulted.stage_agents.stages with
+      | [ { Config.context_command = Some command; _ } ] ->
+          Alcotest.(check string) "default cwd" "agentWorktree" command.cwd;
+          Alcotest.(check int) "default timeout" Config.default_context_command_timeout_ms command.timeout_ms;
+          Alcotest.(check int) "default cap" Config.default_context_command_max_output_bytes command.max_output_bytes
+      | _ -> Alcotest.fail "expected defaulted context command");
+      let invalid_argv = write_settings {js|, "context": {"command": "sh -c echo"}|js} in
+      let argv_gaps = Config.readiness_gaps invalid_argv in
+      Alcotest.(check bool) "invalid argv readiness gap" true
+        (List.exists
+           (fun (gap : Config.readiness_gap) ->
+             gap.requirement = "stageAgents.engineer.context.command"
+             && contains_substring gap.remediation "stageAgents.stages[].context.command")
+           argv_gaps);
+      let invalid_cwd = write_settings {js|, "context": {"command": ["sh"], "cwd": "outside"}|js} in
+      let cwd_gaps = Config.readiness_gaps invalid_cwd in
+      Alcotest.(check bool) "invalid cwd readiness gap" true
+        (List.exists
+           (fun (gap : Config.readiness_gap) ->
+             gap.requirement = "stageAgents.engineer.context.cwd"
+             && contains_substring gap.remediation "stageAgents.stages[].context.cwd")
+           cwd_gaps);
+      let invalid_timeout = write_settings {js|, "context": {"command": ["sh"], "timeoutMs": 0}|js} in
+      let timeout_gaps = Config.readiness_gaps invalid_timeout in
+      Alcotest.(check bool) "invalid timeout readiness gap" true
+        (List.exists
+           (fun (gap : Config.readiness_gap) ->
+             gap.requirement = "stageAgents.engineer.context.timeoutMs"
+             && contains_substring gap.remediation "stageAgents.stages[].context.timeoutMs")
+           timeout_gaps);
+      let invalid_cap = write_settings {js|, "context": {"command": ["sh"], "maxOutputBytes": 0}|js} in
+      let cap_gaps = Config.readiness_gaps invalid_cap in
+      Alcotest.(check bool) "invalid cap readiness gap" true
+        (List.exists
+           (fun (gap : Config.readiness_gap) ->
+             gap.requirement = "stageAgents.engineer.context.maxOutputBytes"
+             && contains_substring gap.remediation "stageAgents.stages[].context.maxOutputBytes")
+           cap_gaps))
+
 let test_config_parses_allowed_loop_start_branch_policy () =
   with_temp_dir "symphony-loop-start-policy-" (fun root ->
       Util.mkdir_p (Filename.concat root ".symphony/agents");
@@ -854,6 +932,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
                     harness = Some "pi";
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -949,6 +1028,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
                     harness = Some "pi";
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = Some "In progress";
                     success_status = Some "In review";
@@ -2648,7 +2728,8 @@ let stage_capacity_config root ~global_cap =
               agent = "planner";
               harness = None;
               max_concurrent_agents = Some 1;
-                    context_snapshot = None;
+              context_snapshot = None;
+              context_command = None;
               skills = [];
               start_status = None;
               success_status = Some "Todo";
@@ -2661,7 +2742,8 @@ let stage_capacity_config root ~global_cap =
               agent = "engineer";
               harness = None;
               max_concurrent_agents = Some 2;
-                    context_snapshot = None;
+              context_snapshot = None;
+              context_command = None;
               skills = [];
               start_status = Some "In progress";
               success_status = Some "In review";
@@ -2674,7 +2756,8 @@ let stage_capacity_config root ~global_cap =
               agent = "reviewer";
               harness = None;
               max_concurrent_agents = Some 2;
-                    context_snapshot = None;
+              context_snapshot = None;
+              context_command = None;
               skills = [];
               start_status = None;
               success_status = Some "Done";
@@ -2918,6 +3001,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                     harness = None;
                     max_concurrent_agents = Some 1;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = Some "In progress";
                     success_status = Some "In review";
@@ -2931,6 +3015,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                     harness = None;
                     max_concurrent_agents = Some 2;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -3383,6 +3468,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -3482,6 +3568,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = Some { enabled = true; max_output_bytes = 12000; validation_error = None };
+                    context_command = None;
                     skills = [ "to-prd"; "github:gh-fix-ci" ];
                     start_status = None;
                     success_status = Some "In review";
@@ -3553,6 +3640,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
       Alcotest.(check (list string)) "goal labels" [ "enhancement"; "codex" ]
         (goal_json |> member "labels" |> to_list |> List.map to_string);
       Alcotest.(check int) "goal priority" 2 (goal_json |> member "priority" |> to_int);
+      Alcotest.(check int) "goal attempt" 1 (goal_json |> member "attempt" |> to_int);
       Alcotest.(check string) "goal blocker" "#0"
         (goal_json |> member "blocker_references" |> to_list |> List.hd |> member "identifier" |> to_string);
       Alcotest.(check bool) "created timestamp omitted" true
@@ -3610,6 +3698,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3635,7 +3724,8 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
       Alcotest.(check bool) "stage agent still included" true (String.contains !captured_prompt 'E');
       Alcotest.(check bool) "normal prompt still included" true (String.contains !captured_prompt '#'))
 
-let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000) root =
+let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000) ?(context_snapshot = true)
+    ?context_command root =
   let agents_root = Filename.concat root "agents" in
   Unix.mkdir agents_root 0o755;
   Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
@@ -3688,7 +3778,9 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
               agent = "engineer";
               harness = None;
               max_concurrent_agents = None;
-              context_snapshot = Some { enabled = true; max_output_bytes; validation_error = None };
+              context_snapshot =
+                (if context_snapshot then Some { enabled = true; max_output_bytes; validation_error = None } else None);
+              context_command;
               skills = [];
               start_status = None;
               success_status = Some "In review";
@@ -3699,6 +3791,207 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
           ];
       };
   }
+
+let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
+  { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
+
+let write_executable path content =
+  Util.write_file path content;
+  Unix.chmod path 0o755
+
+let prompt_from_context_command root command =
+  let config = stage_context_test_config ~context_snapshot:false ~context_command:command root in
+  let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+  let captured_prompt = ref "" in
+  let launch_count = ref 0 in
+  let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+    incr launch_count;
+    captured_prompt := prompt;
+    { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+  in
+  let orchestrator =
+    Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+      ~prompt_template:"Normal {{ issue.identifier }}" ()
+  in
+  Orchestrator.poll_once orchestrator;
+  (!captured_prompt, !launch_count, Orchestrator.get_state orchestrator)
+
+let test_orchestrator_runs_stage_context_command_before_launch () =
+  with_temp_dir "symphony-context-command-valid-" (fun root ->
+      let script = Filename.concat root "context command.sh" in
+      write_executable script
+        {|#!/bin/sh
+set -eu
+stdin_payload="$(cat)"
+file_payload="$(cat "$SYMPHONY_CONTEXT_COMMAND_INPUT_PATH")"
+if [ "$stdin_payload" != "$file_payload" ]; then
+  echo "input mismatch" >&2
+  exit 3
+fi
+printf '%s' "$stdin_payload" > context-input.json
+echo "stderr hidden marker" >&2
+printf '## Tool Context\n'
+printf 'cwd=%s\n' "$PWD"
+|};
+      let command = stage_context_command [ script ] in
+      let config = stage_context_test_config ~context_snapshot:false ~context_command:command root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let captured_workspace = ref None in
+      let launch ~stage:_ ~config:_ ~workspace ~prompt ~issue =
+        let input_path = Filename.concat workspace.Workspace.path "context-input.json" in
+        Alcotest.(check bool) "context command ran before launch" true (Sys.file_exists input_path);
+        captured_workspace := Some workspace;
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let workspace = match !captured_workspace with Some workspace -> workspace | None -> Alcotest.fail "expected launch" in
+      Alcotest.(check bool) "snapshot present" true (contains_substring !captured_prompt "## Agent Context Snapshot");
+      Alcotest.(check bool) "command section present" true (contains_substring !captured_prompt "### Context Command");
+      Alcotest.(check bool) "stdout included raw" true
+        (contains_substring !captured_prompt "### Context Command\n\n## Tool Context");
+      Alcotest.(check bool) "cwd is agent worktree" true (contains_substring !captured_prompt ("cwd=" ^ workspace.path));
+      Alcotest.(check bool) "stderr excluded" false (contains_substring !captured_prompt "stderr hidden marker");
+      let json = Yojson.Safe.from_file (Filename.concat workspace.path "context-input.json") in
+      let open Yojson.Safe.Util in
+      Alcotest.(check string) "input kind" "Context Command Input" (json |> member "kind" |> to_string);
+      Alcotest.(check string) "input issue" "#1" (json |> member "issue" |> member "identifier" |> to_string);
+      Alcotest.(check string) "input status" "Todo" (json |> member "issue" |> member "status" |> to_string);
+      Alcotest.(check string) "input stage" "engineer" (json |> member "stageAgent" |> to_string);
+      Alcotest.(check int) "input attempt" 1 (json |> member "attempt" |> to_int);
+      Alcotest.(check string) "input root" root (json |> member "workspaceRepositoryRoot" |> to_string);
+      Alcotest.(check string) "input worktree" workspace.path (json |> member "agentWorktree" |> to_string);
+      Alcotest.(check string) "input task branch" "symphony/task-1" (json |> member "taskBranch" |> to_string))
+
+let test_orchestrator_runs_context_command_from_workspace_repository_root () =
+  with_temp_dir "symphony-context-command-root-cwd-" (fun root ->
+      let script = Filename.concat root "root-cwd.sh" in
+      write_executable script
+        {|#!/bin/sh
+set -eu
+printf '%s' "$PWD" > root-cwd.txt
+printf 'cwd=%s\n' "$PWD"
+|};
+      let command = stage_context_command ~cwd:"workspaceRepositoryRoot" [ script ] in
+      let config = stage_context_test_config ~context_snapshot:false ~context_command:command root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+        Alcotest.(check bool) "root cwd command ran before launch" true
+          (Sys.file_exists (Filename.concat root "root-cwd.txt"));
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let root_realpath = Unix.realpath root in
+      Alcotest.(check string) "script cwd" root_realpath
+        (Util.read_file (Filename.concat root "root-cwd.txt") |> Util.trim |> Unix.realpath);
+      Alcotest.(check bool) "root cwd in prompt" true (contains_substring !captured_prompt ("cwd=" ^ root_realpath)))
+
+let test_orchestrator_warns_when_context_command_missing () =
+  with_temp_dir "symphony-context-command-missing-" (fun root ->
+      let missing = Filename.concat root "missing-context.sh" in
+      let prompt, launch_count, state = prompt_from_context_command root (stage_context_command [ missing ]) in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      Alcotest.(check int) "no retry" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check bool) "missing warning" true (contains_substring prompt "[warning: missing executable]");
+      Alcotest.(check bool) "snapshot present" true (contains_substring prompt "## Agent Context Snapshot"))
+
+let test_orchestrator_warns_when_context_command_exits_nonzero () =
+  with_temp_dir "symphony-context-command-nonzero-" (fun root ->
+      let script = Filename.concat root "nonzero.sh" in
+      write_executable script
+        {|#!/bin/sh
+printf 'stdout should not appear'
+echo 'stderr should not appear' >&2
+exit 7
+|};
+      let prompt, launch_count, state = prompt_from_context_command root (stage_context_command [ script ]) in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      Alcotest.(check int) "no retry" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check bool) "exit warning" true (contains_substring prompt "[warning: exited with code 7]");
+      Alcotest.(check bool) "stdout excluded on failure" false (contains_substring prompt "stdout should not appear");
+      Alcotest.(check bool) "stderr excluded" false (contains_substring prompt "stderr should not appear"))
+
+let test_orchestrator_redacts_context_command_secret_env_values () =
+  let original_github_token = Sys.getenv_opt "GITHUB_TOKEN" in
+  let original_gh_token = Sys.getenv_opt "GH_TOKEN" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match original_github_token with Some value -> Unix.putenv "GITHUB_TOKEN" value | None -> Unix.putenv "GITHUB_TOKEN" "");
+      match original_gh_token with Some value -> Unix.putenv "GH_TOKEN" value | None -> Unix.putenv "GH_TOKEN" "")
+    (fun () ->
+      Unix.putenv "GITHUB_TOKEN" "super-secret-context-token";
+      Unix.putenv "GH_TOKEN" "other-secret-context-token";
+      with_temp_dir "symphony-context-command-secret-redaction-" (fun root ->
+          let script = Filename.concat root "secret-redaction.sh" in
+          write_executable script
+            {|#!/bin/sh
+printf 'github=%s\n' "$GITHUB_TOKEN"
+printf 'gh=%s\n' "$GH_TOKEN"
+|};
+          let prompt, launch_count, _ = prompt_from_context_command root (stage_context_command [ script ]) in
+          Alcotest.(check int) "launch still happens" 1 launch_count;
+          Alcotest.(check bool) "redaction marker present" true (contains_substring prompt "[redacted]");
+          Alcotest.(check bool) "github token redacted" false
+            (contains_substring prompt "super-secret-context-token");
+          Alcotest.(check bool) "gh token redacted" false (contains_substring prompt "other-secret-context-token"));
+      Unix.putenv "GITHUB_TOKEN" "long-secret-context-token-value";
+      Unix.putenv "GH_TOKEN" "";
+      with_temp_dir "symphony-context-command-secret-boundary-" (fun root ->
+          let script = Filename.concat root "secret-boundary.sh" in
+          write_executable script
+            {|#!/bin/sh
+printf '%sBEYOND-CAP' "$GITHUB_TOKEN"
+|};
+          let prompt, launch_count, _ =
+            prompt_from_context_command root (stage_context_command ~max_output_bytes:20 [ script ])
+          in
+          Alcotest.(check int) "boundary launch still happens" 1 launch_count;
+          Alcotest.(check bool) "boundary secret redacted" false
+            (contains_substring prompt "long-secret-context-token-value");
+          Alcotest.(check bool) "content beyond original cap stays excluded" false (contains_substring prompt "BEYOND")))
+
+let test_orchestrator_warns_when_context_command_times_out () =
+  with_temp_dir "symphony-context-command-timeout-" (fun root ->
+      let script = Filename.concat root "timeout.sh" in
+      write_executable script
+        {|#!/bin/sh
+sleep 1
+printf 'late stdout'
+|};
+      let prompt, launch_count, state =
+        prompt_from_context_command root (stage_context_command ~timeout_ms:20 [ script ])
+      in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      Alcotest.(check int) "no retry" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check bool) "timeout warning" true (contains_substring prompt "[warning: timed out after 20ms]");
+      Alcotest.(check bool) "late stdout excluded" false (contains_substring prompt "late stdout"))
+
+let test_orchestrator_truncates_context_command_stdout () =
+  with_temp_dir "symphony-context-command-truncate-" (fun root ->
+      let script = Filename.concat root "large-output.sh" in
+      write_executable script
+        {|#!/bin/sh
+printf '0123456789EXTRA-CONTENT'
+|};
+      let prompt, launch_count, _ =
+        prompt_from_context_command root (stage_context_command ~max_output_bytes:10 [ script ])
+      in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      Alcotest.(check bool) "truncation warning" true
+        (contains_substring prompt "[warning: stdout exceeded maxOutputBytes; truncated to 10 bytes]");
+      Alcotest.(check bool) "stdout prefix included" true (contains_substring prompt "0123456789");
+      Alcotest.(check bool) "stdout remainder excluded" false (contains_substring prompt "EXTRA-CONTENT"))
 
 let test_orchestrator_omits_retry_output_on_first_launch () =
   with_temp_dir "symphony-context-first-launch-" (fun root ->
@@ -3860,6 +4153,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = Some { enabled = true; max_output_bytes = 96; validation_error = None };
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -3990,6 +4284,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -4059,7 +4354,8 @@ let test_stage_commit_classification_renders_messages () =
         agent = "engineer";
         harness = None;
         max_concurrent_agents = None;
-                    context_snapshot = None;
+        context_snapshot = None;
+        context_command = None;
         skills = [];
         start_status = None;
         success_status = Some "In review";
@@ -4203,6 +4499,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -4296,7 +4593,8 @@ let test_stage_commit_requires_code_changes () =
             agent = "engineer";
             harness = None;
             max_concurrent_agents = None;
-                    context_snapshot = None;
+            context_snapshot = None;
+            context_command = None;
             skills = [];
             start_status = None;
             success_status = Some "In review";
@@ -4355,6 +4653,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -4463,7 +4762,8 @@ let protected_stage =
       agent = "engineer";
       harness = None;
       max_concurrent_agents = None;
-                    context_snapshot = None;
+      context_snapshot = None;
+      context_command = None;
       skills = [];
       start_status = None;
       success_status = Some "In review";
@@ -4575,6 +4875,7 @@ let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -4673,7 +4974,8 @@ let completed_stage_config root git =
               agent = "engineer";
               harness = None;
               max_concurrent_agents = None;
-                    context_snapshot = None;
+              context_snapshot = None;
+              context_command = None;
               skills = [];
               start_status = Some "In progress";
               success_status = Some "In review";
@@ -4730,6 +5032,7 @@ let test_conflicting_stage_commit_classification_moves_attention_without_commit 
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "In review";
@@ -4807,6 +5110,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Todo";
@@ -4820,6 +5124,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                     harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
+                    context_command = None;
                     skills = [];
                     start_status = None;
                     success_status = Some "Done";
@@ -5647,7 +5952,8 @@ let test_stage_commit_pushes_task_branch () =
             agent = "engineer";
             harness = None;
             max_concurrent_agents = None;
-                    context_snapshot = None;
+            context_snapshot = None;
+            context_command = None;
             skills = [];
             start_status = None;
             success_status = Some "In review";
@@ -5898,7 +6204,8 @@ let manual_merge_config ?(keep_task_branch = true) root =
               agent = "reviewer";
               harness = None;
               max_concurrent_agents = None;
-                    context_snapshot = None;
+              context_snapshot = None;
+              context_command = None;
               skills = [];
               goal = None;
               commit = None;
@@ -6093,6 +6400,8 @@ let () =
           Alcotest.test_case "validates stage concurrency policy" `Quick test_config_validates_stage_concurrency_policy;
           Alcotest.test_case "parses stage context snapshot and readiness" `Quick
             test_config_parses_stage_context_snapshot_and_readiness;
+          Alcotest.test_case "parses stage context command and readiness" `Quick
+            test_config_parses_stage_context_command_and_readiness;
           Alcotest.test_case "parses allowed loop-start branch policy" `Quick
             test_config_parses_allowed_loop_start_branch_policy;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
@@ -6173,6 +6482,20 @@ let () =
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
+          Alcotest.test_case "runs stage context command before launch" `Quick
+            test_orchestrator_runs_stage_context_command_before_launch;
+          Alcotest.test_case "runs context command from workspace repository root" `Quick
+            test_orchestrator_runs_context_command_from_workspace_repository_root;
+          Alcotest.test_case "warns when context command is missing" `Quick
+            test_orchestrator_warns_when_context_command_missing;
+          Alcotest.test_case "warns when context command exits nonzero" `Quick
+            test_orchestrator_warns_when_context_command_exits_nonzero;
+          Alcotest.test_case "redacts context command secret env values" `Quick
+            test_orchestrator_redacts_context_command_secret_env_values;
+          Alcotest.test_case "warns when context command times out" `Quick
+            test_orchestrator_warns_when_context_command_times_out;
+          Alcotest.test_case "truncates context command stdout" `Quick
+            test_orchestrator_truncates_context_command_stdout;
           Alcotest.test_case "omits retry output on first launch" `Quick
             test_orchestrator_omits_retry_output_on_first_launch;
           Alcotest.test_case "includes retry output on retry launch" `Quick

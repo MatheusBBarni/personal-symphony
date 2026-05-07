@@ -74,12 +74,20 @@ type stage_context_snapshot = {
   max_output_bytes : int;
   validation_error : string option;
 }
+type stage_context_command = {
+  argv : string list;
+  cwd : string;
+  timeout_ms : int;
+  max_output_bytes : int;
+  validation_error : string option;
+}
 type stage_agent = {
   states : string list;
   agent : string;
   harness : string option;
   max_concurrent_agents : int option;
   context_snapshot : stage_context_snapshot option;
+  context_command : stage_context_command option;
   skills : string list;
   start_status : string option;
   success_status : string option;
@@ -138,6 +146,9 @@ let default_pull_request =
   }
 let default_conflict_behavior = "human_attention"
 let default_context_snapshot_max_output_bytes = 12000
+let default_context_command_cwd = "agentWorktree"
+let default_context_command_timeout_ms = 30000
+let default_context_command_max_output_bytes = 12000
 
 let default_git =
   {
@@ -182,6 +193,7 @@ let default_stage_agents =
       harness = None;
       max_concurrent_agents = None;
       context_snapshot = None;
+      context_command = None;
       skills = [];
       start_status = None;
       success_status = Some "To-Do";
@@ -195,6 +207,7 @@ let default_stage_agents =
       harness = None;
       max_concurrent_agents = None;
       context_snapshot = None;
+      context_command = None;
       skills = [];
       start_status = Some "In progress";
       success_status = Some "In review";
@@ -208,6 +221,7 @@ let default_stage_agents =
       harness = None;
       max_concurrent_agents = None;
       context_snapshot = None;
+      context_command = None;
       skills = [];
       start_status = None;
       success_status = Some "Done";
@@ -567,6 +581,68 @@ let json_protected_paths paths_raw =
       }
   | _ -> default_protected_paths
 
+let json_context_command_argv path json =
+  match json with
+  | `List values ->
+      let rec loop acc = function
+        | [] ->
+            if acc = [] then Error (path ^ " must contain at least one argument") else Ok (List.rev acc)
+        | `String value :: rest when Util.trim value <> "" -> loop (value :: acc) rest
+        | `String _ :: _ -> Error (path ^ " must not contain empty arguments")
+        | _ :: _ -> Error (path ^ " must be an array of strings")
+      in
+      loop [] values
+  | _ -> Error (path ^ " must be an argv array")
+
+let json_context_command_cwd path json =
+  match json with
+  | `Null -> Ok default_context_command_cwd
+  | `String value -> (
+      match Util.trim value with
+      | "workspaceRepositoryRoot" as cwd -> Ok cwd
+      | "agentWorktree" as cwd -> Ok cwd
+      | _ -> Error (path ^ " must be workspaceRepositoryRoot or agentWorktree"))
+  | _ -> Error (path ^ " must be a string")
+
+let json_stage_context_command json =
+  let context_raw = member "context" json in
+  match context_raw with
+  | `Assoc _ -> (
+      let command_raw = member "command" context_raw in
+      match command_raw with
+      | `Null -> None
+      | _ ->
+          let argv_result = json_context_command_argv "stageAgents.stages[].context.command" command_raw in
+          let cwd_result = json_context_command_cwd "stageAgents.stages[].context.cwd" (member "cwd" context_raw) in
+          let timeout_result =
+            json_positive_int_strict "stageAgents.stages[].context.timeoutMs" (member "timeoutMs" context_raw)
+              ~default:default_context_command_timeout_ms
+          in
+          let max_result =
+            json_positive_int_strict "stageAgents.stages[].context.maxOutputBytes"
+              (member "maxOutputBytes" context_raw)
+              ~default:default_context_command_max_output_bytes
+          in
+          let validation_error =
+            match (argv_result, cwd_result, timeout_result, max_result) with
+            | Error error, _, _, _ -> Some error
+            | _, Error error, _, _ -> Some error
+            | _, _, Error error, _ -> Some error
+            | _, _, _, Error error -> Some error
+            | Ok _, Ok _, Ok _, Ok _ -> None
+          in
+          Some
+            {
+              argv = (match argv_result with Ok argv -> argv | Error _ -> []);
+              cwd = (match cwd_result with Ok cwd -> cwd | Error _ -> default_context_command_cwd);
+              timeout_ms =
+                (match timeout_result with Ok timeout_ms -> timeout_ms | Error _ -> default_context_command_timeout_ms);
+              max_output_bytes =
+                (match max_result with Ok max_output_bytes -> max_output_bytes | Error _ -> default_context_command_max_output_bytes);
+              validation_error;
+            })
+  | _ -> None
+
 let json_stage_context_snapshot json =
   let context_raw = member "context" json in
   match context_raw with
@@ -661,6 +737,7 @@ let json_stage_agent json =
       | _ -> Some (json_int "maxConcurrentAgents" json ~default:0))
       |> positive_option "stageAgents.stages.maxConcurrentAgents";
     context_snapshot = json_stage_context_snapshot json;
+    context_command = json_stage_context_command json;
     skills = json_string_list "skills" json ~default:[];
     start_status = json_optional_string "startStatus" json;
     success_status = json_optional_string "successStatus" json;
@@ -673,6 +750,9 @@ let stage_goal_enabled (stage : stage_agent) = match stage.goal with Some goal -
 
 let stage_context_snapshot_enabled (stage : stage_agent) =
   match stage.context_snapshot with Some snapshot -> snapshot.enabled && snapshot.validation_error = None | None -> false
+
+let stage_context_command_enabled (stage : stage_agent) =
+  match stage.context_command with Some command -> command.validation_error = None | None -> false
 
 let stage_goal_handoff_enabled config =
   config.stage_agents.enabled && List.exists stage_goal_enabled config.stage_agents.stages
@@ -1149,6 +1229,26 @@ let validate_stage_context_snapshots config add =
         | _ -> ())
       config.stage_agents.stages
 
+let stage_context_setting_requirement (stage : stage_agent) default_path error =
+  let prefix = "stageAgents.stages[]." in
+  match Util.drop_prefix ~prefix error with
+  | Some rest ->
+      let path = match String.index_opt rest ' ' with Some index -> String.sub rest 0 index | None -> rest in
+      "stageAgents." ^ stage.agent ^ "." ^ path
+  | None -> "stageAgents." ^ stage.agent ^ "." ^ default_path
+
+let validate_stage_context_commands config add =
+  if config.stage_agents.enabled then
+    List.iter
+      (fun (stage : stage_agent) ->
+        match stage.context_command with
+        | Some { validation_error = Some error; _ } ->
+            add
+              (stage_context_setting_requirement stage "context.command" error)
+              (error ^ ". Fix the Stage Agent context command Runtime Settings before dispatch.")
+        | _ -> ())
+      config.stage_agents.stages
+
 let run_shell_capture ~cwd command =
   let command = Printf.sprintf "cd %s && %s 2>&1" (Util.shell_quote cwd) command in
   let ic = Unix.open_process_in command in
@@ -1325,6 +1425,7 @@ let readiness_gaps config =
           add ("stageAgents." ^ stage.agent) (Printf.sprintf "Create the stage agent prompt file: %s" path))
       config.stage_agents.stages);
   validate_stage_context_snapshots config add;
+  validate_stage_context_commands config add;
   validate_stage_skill_load config add;
   List.rev !gaps
 
