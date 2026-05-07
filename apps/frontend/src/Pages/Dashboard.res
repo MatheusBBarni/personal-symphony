@@ -6,6 +6,7 @@ type issueItem = {
   description: string,
   error: string,
   goalUsage: string,
+  contextStatus: string,
 }
 
 type queueEntry = {
@@ -204,6 +205,16 @@ let issueCard = (issue: issueItem) =>
         className="mt-3 rounded border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs leading-5 text-neutral-300"
       >
         <span className="font-medium text-neutral-100"> {React.string("Goal Usage")} </span>
+        <span className="ml-2"> {React.string(value)} </span>
+      </div>
+    }}
+    {switch issue.contextStatus {
+    | "" => React.null
+    | value =>
+      <div
+        className="mt-3 rounded border border-teal-900/70 bg-teal-950/40 px-3 py-2 text-xs leading-5 text-teal-100"
+      >
+        <span className="font-medium text-teal-50"> {React.string("Context Status")} </span>
         <span className="ml-2"> {React.string(value)} </span>
       </div>
     }}

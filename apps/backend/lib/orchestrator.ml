@@ -1082,13 +1082,41 @@ let context_command_stdout_lines ~max_output_bytes ~truncated output =
     in
     [ ""; "### Context Command"; "" ] @ warning @ [ output ]
 
-let context_command_status_lines (command : Config.stage_context_command) = function
-  | `Timed_out _ -> context_command_warning_lines (Printf.sprintf "timed out after %dms" command.timeout_ms)
+type context_generation = { lines : string list; context_status : Runtime_state.context_status }
+
+type composed_prompt = { prompt : string; context_status : Runtime_state.context_status }
+
+let context_status state summary = Runtime_state.make_context_status ~state ~summary ()
+
+let context_result state summary lines = { lines; context_status = context_status state summary }
+
+let context_warning_summary subject warning =
+  Printf.sprintf "%s %s; prompt contains bounded warning." subject (bounded_warning warning)
+
+let context_command_status_result (command : Config.stage_context_command) = function
+  | `Timed_out _ ->
+      let warning = Printf.sprintf "timed out after %dms" command.timeout_ms in
+      context_result "timed_out" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
   | `Exited (Unix.WEXITED 0, output) ->
-      context_command_stdout_lines ~max_output_bytes:command.max_output_bytes ~truncated:output.truncated output.output
-  | `Exited (Unix.WEXITED code, _) -> context_command_warning_lines (Printf.sprintf "exited with code %d" code)
-  | `Exited (Unix.WSIGNALED signal, _) -> context_command_warning_lines (Printf.sprintf "terminated by signal %d" signal)
-  | `Exited (Unix.WSTOPPED signal, _) -> context_command_warning_lines (Printf.sprintf "stopped by signal %d" signal)
+      let lines =
+        context_command_stdout_lines ~max_output_bytes:command.max_output_bytes ~truncated:output.truncated output.output
+      in
+      if output.truncated then
+        context_result "warning" (context_warning_summary "Context Command" "stdout exceeded maxOutputBytes") lines
+      else context_result "succeeded" "Context Command succeeded." lines
+  | `Exited (Unix.WEXITED code, _) ->
+      let warning = Printf.sprintf "exited with code %d" code in
+      context_result "warning" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
+  | `Exited (Unix.WSIGNALED signal, _) ->
+      let warning = Printf.sprintf "terminated by signal %d" signal in
+      context_result "warning" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
+  | `Exited (Unix.WSTOPPED signal, _) ->
+      let warning = Printf.sprintf "stopped by signal %d" signal in
+      context_result "warning" (context_warning_summary "Context Command" warning)
+        (context_command_warning_lines warning)
 
 let with_context_command_pipes f =
   let stdout_read, stdout_write = Unix.pipe () in
@@ -1100,7 +1128,10 @@ let with_context_command_pipes f =
       Unix.set_nonblock stderr_read;
       f ~stdout_read ~stdout_write ~stderr_read ~stderr_write)
 
-let run_context_command_lines config issue attempt (stage : Config.stage_agent) ~workspace command =
+let failed_context_command_result warning =
+  context_result "failed" (context_warning_summary "Context Command" warning) (context_command_warning_lines warning)
+
+let run_context_command_result config issue attempt (stage : Config.stage_agent) ~workspace command =
   try
     let input_json = context_command_input_json config issue attempt stage ~workspace in
     let input_path = write_context_command_input_file config input_json in
@@ -1110,10 +1141,10 @@ let run_context_command_lines config issue attempt (stage : Config.stage_agent) 
         let env = env_with_context_input input_path in
         let cwd = context_command_cwd config workspace command in
         match command.argv with
-        | [] -> context_command_warning_lines "command argv is empty"
+        | [] -> failed_context_command_result "command argv is empty"
         | program :: _ -> (
             match resolve_context_executable ~cwd env program with
-            | Error error -> context_command_warning_lines error
+            | Error error -> failed_context_command_result error
             | Ok executable ->
                 with_context_command_pipes (fun ~stdout_read ~stdout_write ~stderr_read ~stderr_write ->
                     let pid =
@@ -1123,13 +1154,16 @@ let run_context_command_lines config issue attempt (stage : Config.stage_agent) 
                     close_noerr stdout_write;
                     close_noerr stderr_write;
                     wait_context_command env pid command.timeout_ms stdout_read stderr_read command.max_output_bytes
-                    |> context_command_status_lines command)))
-  with exn -> context_command_warning_lines ("failed: " ^ Printexc.to_string exn)
+                    |> context_command_status_result command)))
+  with exn ->
+    let warning = "failed: " ^ Printexc.to_string exn in
+    context_result "failed" (context_warning_summary "Context generation" warning) (context_command_warning_lines warning)
 
-let context_command_lines config issue attempt (stage : Config.stage_agent) ~workspace =
+let context_command_result config issue attempt (stage : Config.stage_agent) ~workspace =
   match stage.context_command with
-  | Some command when Config.stage_context_command_enabled stage -> run_context_command_lines config issue attempt stage ~workspace command
-  | _ -> []
+  | Some command when Config.stage_context_command_enabled stage ->
+      Some (run_context_command_result config issue attempt stage ~workspace command)
+  | _ -> None
 
 let stage_context_snapshot_requested (stage : Config.stage_agent) =
   Config.stage_context_snapshot_enabled stage || Config.stage_context_command_enabled stage
@@ -1139,9 +1173,10 @@ let stage_context_snapshot_max_output_bytes (stage : Config.stage_agent) =
   | Some snapshot when Config.stage_context_snapshot_enabled stage -> snapshot.max_output_bytes
   | _ -> Config.default_context_snapshot_max_output_bytes
 
-let agent_context_snapshot ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch =
+let agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch =
   match match stage with Some _ -> stage | None -> stage_for_issue config issue with
   | Some stage when stage_context_snapshot_requested stage ->
+      let command_result = context_command_result config issue attempt stage ~workspace in
       let lines =
         [
           "## Agent Context Snapshot";
@@ -1157,20 +1192,45 @@ let agent_context_snapshot ?stage ?previous_attempt_output config issue attempt 
         ]
         @ optional_line "Loop-Start Branch" loop_start_branch
         @ previous_attempt_lines previous_attempt_output
-        @ context_command_lines config issue attempt stage ~workspace
+        @ (match command_result with Some result -> result.lines | None -> [])
       in
-      Some (String.concat "\n" lines |> truncate_snapshot (stage_context_snapshot_max_output_bytes stage))
+      let context_status =
+        match command_result with
+        | Some { context_status = { Runtime_state.state = "succeeded"; _ }; _ } ->
+            context_status "succeeded" "Agent Context Snapshot generated; Context Command succeeded."
+        | Some result -> result.context_status
+        | None -> context_status "succeeded" "Agent Context Snapshot generated."
+      in
+      {
+        lines = [ String.concat "\n" lines |> truncate_snapshot (stage_context_snapshot_max_output_bytes stage) ];
+        context_status;
+      }
+  | _ -> { lines = []; context_status = Runtime_state.skipped_context_status }
+
+let agent_context_snapshot ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch =
+  match (agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch).lines with
+  | [ snapshot ] -> Some snapshot
   | _ -> None
 
-let compose_prompt ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
+let compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
+  let snapshot_result = agent_context_snapshot_result ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch in
   let prompt =
-    match agent_context_snapshot ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch with
-    | None -> normal_prompt ?stage config issue base_prompt
-    | Some snapshot -> Printf.sprintf "%s\n\n---\n\n%s" (normal_prompt ?stage config issue base_prompt |> Util.trim) snapshot
+    match snapshot_result.lines with
+    | [] -> normal_prompt ?stage config issue base_prompt
+    | [ snapshot ] -> Printf.sprintf "%s\n\n---\n\n%s" (normal_prompt ?stage config issue base_prompt |> Util.trim) snapshot
+    | snapshots ->
+        Printf.sprintf "%s\n\n---\n\n%s" (normal_prompt ?stage config issue base_prompt |> Util.trim)
+          (String.concat "\n" snapshots)
   in
-  match stage_goal_handoff_stage ?stage config issue with
-  | None -> prompt
-  | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
+  let prompt =
+    match stage_goal_handoff_stage ?stage config issue with
+    | None -> prompt
+    | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
+  in
+  { prompt; context_status = snapshot_result.context_status }
+
+let compose_prompt ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
+  (compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch).prompt
 
 let require_clean_loop_start root =
   match run_shell_capture ~cwd:root "git status --porcelain" with
@@ -2095,15 +2155,17 @@ let dispatch_issue orchestrator issue =
         let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
         let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
         let previous_attempt_output = Hashtbl.find_opt orchestrator.previous_attempt_outputs issue.id in
-        let prompt =
-          compose_prompt ?stage ?previous_attempt_output orchestrator.config issue attempt rendered ~workspace
+        let composed_prompt =
+          compose_prompt_result ?stage ?previous_attempt_output orchestrator.config issue attempt rendered ~workspace
             ~loop_start_branch:(Some orchestrator.loop_start_branch)
         in
         let harness =
           Option.value (Config.selected_agent_harness orchestrator.config stage)
             ~default:(Config.default_agent_harness orchestrator.config)
         in
-        let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
+        let launched =
+          orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt:composed_prompt.prompt ~issue
+        in
         let now = Util.now_iso8601 () in
         let stage_agent, stage_states = selected_stage_fields stage in
         let row =
@@ -2132,7 +2194,8 @@ let dispatch_issue orchestrator issue =
             issue_errors =
               List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
             last_error = None;
-          });
+          }
+          |> Runtime_state.set_context_status issue.id composed_prompt.context_status);
         update_ordered_queue_entries orchestrator ~candidates:[ issue ] ();
         (match launched.pid with
         | Some pid ->
@@ -2244,7 +2307,8 @@ let mark_blocked orchestrator issue_id error =
             }
             :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
           last_error = Some error;
-        });
+        }
+        |> Runtime_state.clear_context_status issue_id);
       update_ordered_queue_entries orchestrator ~skipped:(row.issue.identifier, error) ~candidates:[ row.issue ] ()
 
 let complete_child ?next_status orchestrator child =
@@ -2271,7 +2335,8 @@ let complete_child ?next_status orchestrator child =
       retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
       issue_errors =
         List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
-    });
+    }
+    |> Runtime_state.clear_context_status issue_id);
   update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ~candidates:[ next_issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
@@ -2334,7 +2399,8 @@ let mark_merge_attention orchestrator child error =
         }
         :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> child.issue_id) state.issue_errors;
       last_error = Some error;
-    });
+    }
+    |> Runtime_state.clear_context_status child.issue_id);
   update_ordered_queue_entries orchestrator ~skipped:(child.issue_identifier, error) ~candidates:[ child.issue ] ()
 
 let mark_completed orchestrator child =
