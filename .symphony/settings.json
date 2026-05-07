@@ -33,10 +33,11 @@
   },
   "pullRequest": {
     "enabled": true,
+    "mode": "task",
     "openOnReview": true,
     "baseBranch": "main",
     "title": "Symphony: <issue_identifier> from <head_branch> into <base_branch>",
-    "body": "Automated Batch Pull Request opened by Symphony after Orchestration Idle.\n\nLoop-Start Branch: <head_branch>\nPull Request Base Branch: <base_branch>\n\nReview this batch before merging into the Protected Trunk Branch."
+    "body": "Automated Task Pull Request opened by Symphony after the task reached review.\n\nIssue: <issue_identifier>\nTask Branch: <head_branch>\nPull Request Base Branch: <base_branch>\n\nReview this task before merging into the Protected Trunk Branch."
   },
   "paths": {
     "protected": {
