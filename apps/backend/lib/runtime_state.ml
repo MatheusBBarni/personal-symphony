@@ -53,6 +53,8 @@ type task_branch_integration = {
 }
 type pull_request_handoff = {
   enabled : bool;
+  mode : string;
+  issue_identifier : string option;
   head_branch : string option;
   base_branch : string option;
   status : string;
@@ -71,6 +73,7 @@ type t = {
   seconds_running : float;
   rate_limits : Yojson.Safe.t option;
   pull_request : pull_request_handoff option;
+  pull_requests : pull_request_handoff list;
   ordered_queue : ordered_queue option;
   startup_reconciliation : startup_reconciliation list;
   task_branch_integrations : task_branch_integration list;
@@ -89,6 +92,7 @@ let empty ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue ?last_error
     seconds_running = 0.;
     rate_limits = None;
     pull_request = None;
+    pull_requests = [];
     ordered_queue;
     startup_reconciliation = [];
     task_branch_integrations = [];
@@ -235,6 +239,8 @@ let pull_request_handoff_to_yojson row =
   `Assoc
     [
       ("enabled", `Bool row.enabled);
+      ("mode", `String row.mode);
+      ("issue_identifier", (match row.issue_identifier with Some s -> `String s | None -> `Null));
       ("head_branch", (match row.head_branch with Some s -> `String s | None -> `Null));
       ("base_branch", (match row.base_branch with Some s -> `String s | None -> `Null));
       ("status", `String row.status);
@@ -263,6 +269,7 @@ let to_yojson state =
           ] );
       ("rate_limits", Option.value state.rate_limits ~default:`Null);
       ("pull_request", (match state.pull_request with Some row -> pull_request_handoff_to_yojson row | None -> `Null));
+      ("pull_requests", `List (List.map pull_request_handoff_to_yojson state.pull_requests));
       ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
       ("startup_reconciliation", `List (List.map startup_reconciliation_to_yojson state.startup_reconciliation));
       ("task_branch_integrations", `List (List.map task_branch_integration_to_yojson state.task_branch_integrations));

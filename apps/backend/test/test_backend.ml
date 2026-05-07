@@ -72,6 +72,7 @@ let test_config_parses_git_policy_and_stage_push () =
   },
   "pullRequest": {
     "enabled": true,
+    "mode": "task",
     "openOnReview": true,
     "baseBranch": "main",
     "title": "Symphony batch from <head_branch> into <base_branch>",
@@ -126,6 +127,7 @@ let test_config_parses_git_policy_and_stage_push () =
         (List.exists (( = ) "Needs merge") config.tracker.terminal_states);
       Alcotest.(check bool) "cleanup worktree" false config.git.cleanup.remove_worktree_after_merge;
       Alcotest.(check bool) "pull request enabled" true config.pull_request.enabled;
+      Alcotest.(check string) "pull request mode" "task" config.pull_request.mode;
       Alcotest.(check bool) "pull request opens on review" true config.pull_request.open_on_review;
       Alcotest.(check string) "pull request base" "main" config.pull_request.base_branch;
       Alcotest.(check string) "pull request title" "Symphony batch from <head_branch> into <base_branch>" config.pull_request.title;
@@ -595,6 +597,23 @@ let test_pull_request_base_branch_must_differ_from_loop_start () =
           Alcotest.(check bool) "mentions Loop-Start Branch" true
             (contains_substring gap.remediation "current Loop-Start Branch main")
       | None -> Alcotest.fail "expected pull request base branch gap")
+
+let test_task_pull_request_allows_base_branch_to_equal_loop_start () =
+  with_temp_dir "symphony-settings-task-pr-same-branch-" (fun root ->
+      init_repo root "main";
+      let settings = Filename.concat root "settings.json" in
+      Util.mkdir_p (Filename.concat root ".symphony");
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "pullRequest": {"enabled": true, "mode": "task", "baseBranch": "main"},
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let gaps = Config.readiness_gaps config in
+      Alcotest.(check bool) "no self-target gap for Task Pull Requests" false
+        (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "pullRequest.baseBranch") gaps))
 
 let test_workflow_and_config () =
   let content =
@@ -4299,6 +4318,7 @@ let pull_request_config config =
     Config.pull_request =
       {
         enabled = true;
+        mode = "batch";
         open_on_review = false;
         base_branch = "main";
         title = "Symphony batch from <head_branch>";
@@ -4308,6 +4328,20 @@ let pull_request_config config =
 
 let open_on_review_pull_request_config config =
   { config with Config.pull_request = { config.Config.pull_request with enabled = true; open_on_review = true } }
+
+let task_pull_request_config config =
+  {
+    config with
+    Config.pull_request =
+      {
+        enabled = true;
+        mode = "task";
+        open_on_review = false;
+        base_branch = "main";
+        title = "Symphony task from <head_branch>";
+        body = "Opened automatically by Symphony when the task reached review.";
+      };
+  }
 
 let test_orchestrator_opens_batch_pull_request_once_when_idle () =
   with_temp_dir "symphony-batch-pr-idle-" (fun root ->
@@ -4369,6 +4403,99 @@ let test_orchestrator_opens_batch_pull_request_on_review_status () =
           Alcotest.(check string) "status" "completed" handoff.status;
           Alcotest.(check (option string)) "url" (Some "https://github.example/acme/widgets/pull/33") handoff.url
       | None -> Alcotest.fail "expected pull request handoff state")
+
+let test_orchestrator_opens_task_pull_request_on_review_status_from_protected_loop_start () =
+  with_temp_dir "symphony-task-pr-review-" (fun root ->
+      init_repo root "main";
+      ignore_runtime_home root;
+      let config = base_orchestrator_config root (git_policy ~auto_merge:true ()) |> task_pull_request_config in
+      let issue = Issue.empty ~id:"I34" ~identifier:"#34" ~title:"Thirty four" ~state:"Todo" in
+      let attempts = ref [] in
+      let current_status = ref "Todo" in
+      let launch ~config:_ ~workspace ~prompt:_ ~issue =
+        commit_file ~cwd:workspace.Workspace.path "task-pr.txt" "ready\n" "task 34";
+        let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "true" |] Unix.stdin Unix.stdout Unix.stderr in
+        { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let fetch _ =
+        if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
+        then [ { issue with state = !current_status } ]
+        else []
+      in
+      let set_status _ _ status =
+        current_status := status;
+        Ok ()
+      in
+      let batch_pull_request_handoff _config ~head_branch =
+        attempts := head_branch :: !attempts;
+        Ok (Some "https://github.example/acme/widgets/pull/34")
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch ~set_status ~batch_pull_request_handoff ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "handoff attempted from Task Branch" [ "symphony/task-34" ] (List.rev !attempts);
+      Alcotest.(check bool) "not merged into main" false (Sys.file_exists (Filename.concat root "task-pr.txt"));
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "mode" "task" handoff.mode;
+          Alcotest.(check (option string)) "issue identifier" (Some "#34") handoff.issue_identifier;
+          Alcotest.(check (option string)) "head branch" (Some "symphony/task-34") handoff.head_branch;
+          Alcotest.(check string) "status" "completed" handoff.status;
+          Alcotest.(check (option string)) "url" (Some "https://github.example/acme/widgets/pull/34") handoff.url
+      | None -> Alcotest.fail "expected task pull request handoff state")
+
+let test_task_pull_request_opens_before_auto_merge_cleanup () =
+  with_temp_dir "symphony-task-pr-before-cleanup-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let git =
+        {
+          (git_policy ~auto_merge:true ()) with
+          cleanup = { Config.remove_worktree_after_merge = true; keep_task_branch = false };
+        }
+      in
+      let config = base_orchestrator_config root git |> task_pull_request_config in
+      let issue = Issue.empty ~id:"I35" ~identifier:"#35" ~title:"Thirty five" ~state:"In progress" in
+      let workspace = create_task_worktree config issue in
+      commit_file ~cwd:workspace.path "task-pr-before-cleanup.txt" "ready\n" "task 35";
+      let statuses = ref [] in
+      let branch_exists_during_handoff = ref false in
+      let attempts = ref [] in
+      let set_status _ issue status =
+        statuses := (issue.Issue.identifier, status) :: !statuses;
+        Ok ()
+      in
+      let batch_pull_request_handoff _config ~head_branch =
+        branch_exists_during_handoff :=
+          Sys.command
+            ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/"
+            ^ Util.shell_quote head_branch)
+          = 0;
+        attempts := head_branch :: !attempts;
+        Ok (Some "https://github.example/acme/widgets/pull/35")
+      in
+      let orchestrator =
+        Orchestrator.make ~set_status ~batch_pull_request_handoff ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.mark_completed orchestrator (completed_child issue workspace);
+      Alcotest.(check (list string)) "handoff attempted from Task Branch" [ "symphony/task-35" ] (List.rev !attempts);
+      Alcotest.(check bool) "Task Branch exists during handoff" true !branch_exists_during_handoff;
+      Alcotest.(check bool) "task merged into Loop-Start Branch" true
+        (Sys.file_exists (Filename.concat root "task-pr-before-cleanup.txt"));
+      Alcotest.(check bool) "Task Branch removed after cleanup" false
+        (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-35") = 0);
+      Alcotest.(check (list (pair string string))) "review status before completion" [ ("#35", "In review") ]
+        (List.rev !statuses);
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "status" "completed" handoff.status;
+          Alcotest.(check (option string)) "head branch" (Some "symphony/task-35") handoff.head_branch
+      | None -> Alcotest.fail "expected task pull request handoff state")
 
 let test_orchestrator_retries_batch_pull_request_handoff_failure () =
   with_temp_dir "symphony-batch-pr-retry-" (fun root ->
@@ -5066,6 +5193,8 @@ let () =
           Alcotest.test_case "requires pull request base branch when enabled" `Quick test_pull_request_base_branch_readiness_gap;
           Alcotest.test_case "requires pull request base branch to differ from loop start" `Quick
             test_pull_request_base_branch_must_differ_from_loop_start;
+          Alcotest.test_case "allows task pull request base branch to equal loop start" `Quick
+            test_task_pull_request_allows_base_branch_to_equal_loop_start;
           Alcotest.test_case "checks allowed loop-start branch readiness" `Quick
             test_allowed_loop_start_branch_readiness;
         ] );
@@ -5181,6 +5310,10 @@ let () =
           Alcotest.test_case "opens batch pull request once when idle" `Quick test_orchestrator_opens_batch_pull_request_once_when_idle;
           Alcotest.test_case "opens batch pull request on review status" `Quick
             test_orchestrator_opens_batch_pull_request_on_review_status;
+          Alcotest.test_case "opens task pull request on review status" `Quick
+            test_orchestrator_opens_task_pull_request_on_review_status_from_protected_loop_start;
+          Alcotest.test_case "opens task pull request before auto-merge cleanup" `Quick
+            test_task_pull_request_opens_before_auto_merge_cleanup;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
           Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
           Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;

@@ -6,4 +6,4 @@ The Pull Request Policy now includes `openOnReview`, disabled by default. When b
 
 The default idle trigger remains in place. If the Review Pull Request Handoff fails, Runtime State records a retryable pull request handoff failure and a later idle poll can retry. If the handoff succeeds, Symphony marks Batch Pull Request creation complete so later polls do not create duplicates.
 
-This keeps the product language anchored on one Batch Pull Request while allowing earlier operator review for long-running batches. It also avoids changing Bootstrap defaults or introducing per-task pull requests.
+This kept the product language anchored on one Batch Pull Request while allowing earlier operator review for long-running batches. ADR 0020 later adds a separate Task Pull Request mode for Workspace Repositories that need one pull request per Task Branch.

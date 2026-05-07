@@ -51,6 +51,7 @@ let settings_json =
   },
   "pullRequest": {
     "enabled": false,
+    "mode": "batch",
     "baseBranch": "main",
     "title": "Symphony batch from <head_branch>",
     "body": "Opened automatically by Symphony after orchestration became idle."
