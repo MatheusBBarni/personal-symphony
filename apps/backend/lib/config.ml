@@ -26,6 +26,16 @@ type git = {
   cleanup : git_cleanup;
 }
 type agent = { max_concurrent_agents : int; max_turns : int; max_retry_backoff_ms : int }
+type agent_harness = {
+  name : string;
+  kind : string;
+  command : string;
+  model : string;
+  reasoning_effort : string;
+  turn_timeout_ms : int;
+  read_timeout_ms : int;
+  stall_timeout_ms : int;
+}
 type codex = {
   command : string;
   model : string;
@@ -88,6 +98,8 @@ type t = {
   git : git;
   agent : agent;
   codex : codex;
+  agent_harnesses_explicit : bool;
+  agent_harnesses : agent_harness list;
   server : server;
   pull_request : pull_request;
   protected_paths : protected_paths;
@@ -108,6 +120,8 @@ let default_commit_message = "<type>: <generated_message_max_90char>"
 let default_model = "gpt-5.5"
 let default_reasoning_effort = "medium"
 let default_codex_command = "codex exec"
+let default_pi_model = "openai/gpt-5.5"
+let default_pi_command = "pi --model <model> --thinking <reasoning> --print --no-session"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
@@ -136,6 +150,28 @@ let default_git =
 
 let normalize_codex_command command =
   if Util.trim command = "codex app-server" then default_codex_command else command
+
+let codex_of_harness (harness : agent_harness) =
+  {
+    command = harness.command;
+    model = harness.model;
+    reasoning_effort = harness.reasoning_effort;
+    turn_timeout_ms = harness.turn_timeout_ms;
+    read_timeout_ms = harness.read_timeout_ms;
+    stall_timeout_ms = harness.stall_timeout_ms;
+  }
+
+let harness_of_codex ?(name = "codex") (codex : codex) =
+  {
+    name;
+    kind = "codex";
+    command = codex.command;
+    model = codex.model;
+    reasoning_effort = codex.reasoning_effort;
+    turn_timeout_ms = codex.turn_timeout_ms;
+    read_timeout_ms = codex.read_timeout_ms;
+    stall_timeout_ms = codex.stall_timeout_ms;
+  }
 
 let default_stage_agents =
   [
@@ -253,6 +289,18 @@ let from_workflow workflow =
     |> Option.value ~default:(Filename.concat (Filename.get_temp_dir_name ()) "symphony_workspaces")
     |> expand_path ~base_dir:workflow.dir
   in
+  let codex =
+    {
+      command =
+        Option.value (Simple_yaml.get_string "command" codex_raw) ~default:default_codex_command |> normalize_codex_command;
+      model = Option.value (Simple_yaml.get_string "model" codex_raw) ~default:default_model;
+      reasoning_effort =
+        Option.value (Simple_yaml.get_string "reasoning_effort" codex_raw) ~default:default_reasoning_effort;
+      turn_timeout_ms = Option.value (Simple_yaml.get_int "turn_timeout_ms" codex_raw) ~default:3600000;
+      read_timeout_ms = Option.value (Simple_yaml.get_int "read_timeout_ms" codex_raw) ~default:5000;
+      stall_timeout_ms = Option.value (Simple_yaml.get_int "stall_timeout_ms" codex_raw) ~default:300000;
+    }
+  in
   {
     workflow_path = workflow.path;
     repository_root = workflow.dir;
@@ -286,17 +334,9 @@ let from_workflow workflow =
         max_retry_backoff_ms =
           positive "agent.max_retry_backoff_ms" (Option.value (Simple_yaml.get_int "max_retry_backoff_ms" agent_raw) ~default:300000);
       };
-    codex =
-      {
-        command =
-          Option.value (Simple_yaml.get_string "command" codex_raw) ~default:default_codex_command |> normalize_codex_command;
-        model = Option.value (Simple_yaml.get_string "model" codex_raw) ~default:default_model;
-        reasoning_effort =
-          Option.value (Simple_yaml.get_string "reasoning_effort" codex_raw) ~default:default_reasoning_effort;
-        turn_timeout_ms = Option.value (Simple_yaml.get_int "turn_timeout_ms" codex_raw) ~default:3600000;
-        read_timeout_ms = Option.value (Simple_yaml.get_int "read_timeout_ms" codex_raw) ~default:5000;
-        stall_timeout_ms = Option.value (Simple_yaml.get_int "stall_timeout_ms" codex_raw) ~default:300000;
-      };
+    codex;
+    agent_harnesses_explicit = false;
+    agent_harnesses = [ harness_of_codex codex ];
     server = { port = Simple_yaml.get_int "port" server_raw };
     pull_request = default_pull_request;
     protected_paths = default_protected_paths;
@@ -379,6 +419,77 @@ let json_optional_string name json =
 
 let json_object_list name json =
   match member name json with `List values -> values | _ -> []
+
+let harness_named name (harnesses : agent_harness list) =
+  List.find_opt (fun (harness : agent_harness) -> harness.name = name) harnesses
+
+let json_agent_harnesses agents_raw ~legacy_codex =
+  match agents_raw with
+  | `Null -> (false, [ harness_of_codex legacy_codex ])
+  | `Assoc fields ->
+      let harnesses =
+        fields
+        |> List.map (fun (name, raw) ->
+               let default_kind =
+                 match name with
+                 | "codex" -> "codex"
+                 | "pi" -> "pi"
+                 | _ -> ""
+               in
+               let default_command =
+                 match default_kind with
+                 | "codex" -> default_codex_command
+                 | "pi" -> default_pi_command
+                 | _ -> ""
+               in
+               let default_model = match default_kind with "pi" -> default_pi_model | _ -> default_model in
+               match raw with
+               | `Assoc _ ->
+                   let kind = json_string "kind" raw ~default:default_kind |> Util.trim |> String.lowercase_ascii in
+                   let command =
+                     json_string "command" raw ~default:default_command
+                     |> fun command -> if kind = "codex" then normalize_codex_command command else command
+                   in
+                   {
+                     name = Util.trim name;
+                     kind;
+                     command;
+                     model = json_string "model" raw ~default:default_model;
+                     reasoning_effort = json_string "reasoningEffort" raw ~default:default_reasoning_effort;
+                     turn_timeout_ms = json_int "turnTimeoutMs" raw ~default:3600000;
+                     read_timeout_ms = json_int "readTimeoutMs" raw ~default:5000;
+                     stall_timeout_ms = json_int "stallTimeoutMs" raw ~default:300000;
+                   }
+               | _ ->
+                   {
+                     name = Util.trim name;
+                     kind = default_kind;
+                     command = "";
+                     model = default_model;
+                     reasoning_effort = default_reasoning_effort;
+                     turn_timeout_ms = 3600000;
+                     read_timeout_ms = 5000;
+                     stall_timeout_ms = 300000;
+                   })
+      in
+      let harnesses =
+        match harness_named "codex" harnesses with
+        | Some _ -> harnesses
+        | None -> harness_of_codex legacy_codex :: harnesses
+      in
+      (true, harnesses)
+  | _ -> raise (Invalid_config "agents must be an object")
+
+let selected_agent_harness config (stage : stage_agent option) =
+  if not config.agent_harnesses_explicit then
+    match harness_named "codex" config.agent_harnesses with Some harness -> Some harness | None -> Some (harness_of_codex config.codex)
+  else
+    match stage with
+    | Some (stage : stage_agent) -> harness_named stage.agent config.agent_harnesses
+    | None -> harness_named "codex" config.agent_harnesses
+
+let default_agent_harness config =
+  match harness_named "codex" config.agent_harnesses with Some harness -> harness | None -> harness_of_codex config.codex
 
 let json_protected_path_patterns json =
   json_object_list "patterns" json
@@ -602,10 +713,13 @@ let replace_angle_token ~token ~value text =
            | _ -> "<" ^ part)
   |> String.concat ""
 
+let harness_probe_command (harness : agent_harness) =
+  harness.command
+  |> replace_angle_token ~token:"model" ~value:(Util.shell_quote harness.model)
+  |> replace_angle_token ~token:"reasoning" ~value:(Util.shell_quote harness.reasoning_effort)
+
 let codex_probe_command config =
-  config.codex.command
-  |> replace_angle_token ~token:"model" ~value:(Util.shell_quote config.codex.model)
-  |> replace_angle_token ~token:"reasoning" ~value:(Util.shell_quote config.codex.reasoning_effort)
+  harness_of_codex config.codex |> harness_probe_command
 
 let is_env_assignment word =
   match String.index_opt word '=' with
@@ -628,14 +742,14 @@ let static_codex_exec_command command =
   | executable :: rest when Filename.basename executable = "codex" -> List.exists (( = ) "exec") rest
   | _ -> false
 
-let codex_goal_stdin_supported config =
-  let command = Util.trim config.codex.command in
+let codex_goal_stdin_supported_harness (harness : agent_harness) =
+  let command = Util.trim harness.command in
   if command = "" then false
   else if not (codex_goal_stdin_probe_enabled ()) then
     static_codex_exec_command command
   else
     let probe = "/goal Verify Codex goal stdin support.\n\nReturn ok.\n" in
-    let command = codex_probe_command config in
+    let command = harness_probe_command harness in
     let shell_command =
       Printf.sprintf
         "if command -v timeout >/dev/null 2>&1; then printf %%s %s | timeout 20s %s; else printf %%s %s | %s; fi \
@@ -643,6 +757,9 @@ let codex_goal_stdin_supported config =
         (Util.shell_quote probe) command (Util.shell_quote probe) command
     in
     match Unix.system shell_command with Unix.WEXITED 0 -> true | _ -> false
+
+let codex_goal_stdin_supported config =
+  codex_goal_stdin_supported_harness (harness_of_codex config.codex)
 
 let from_settings_file ~workspace_root path =
   let root =
@@ -656,6 +773,7 @@ let from_settings_file ~workspace_root path =
   let git_raw = member "git" root in
   let agent_raw = member "agent" root in
   let codex_raw = member "codex" root in
+  let agents_raw = member "agents" root in
   let server_raw = member "server" root in
   let pull_request_raw = member "pullRequest" root in
   let paths_raw = member "paths" root in
@@ -672,6 +790,20 @@ let from_settings_file ~workspace_root path =
   in
   let workspace_root_value =
     json_string "root" workspace_raw ~default:".symphony/workspaces" |> expand_path ~base_dir:workspace_root
+  in
+  let legacy_codex =
+    {
+      command = json_string "command" codex_raw ~default:default_codex_command |> normalize_codex_command;
+      model = json_string "model" codex_raw ~default:default_model;
+      reasoning_effort = json_string "reasoningEffort" codex_raw ~default:default_reasoning_effort;
+      turn_timeout_ms = json_int "turnTimeoutMs" codex_raw ~default:3600000;
+      read_timeout_ms = json_int "readTimeoutMs" codex_raw ~default:5000;
+      stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
+    }
+  in
+  let agent_harnesses_explicit, agent_harnesses = json_agent_harnesses agents_raw ~legacy_codex in
+  let codex =
+    match harness_named "codex" agent_harnesses with Some harness -> codex_of_harness harness | None -> legacy_codex
   in
   {
     workflow_path = path;
@@ -723,15 +855,9 @@ let from_settings_file ~workspace_root path =
         max_retry_backoff_ms =
           positive "agent.maxRetryBackoffMs" (json_int "maxRetryBackoffMs" agent_raw ~default:300000);
       };
-    codex =
-      {
-        command = json_string "command" codex_raw ~default:default_codex_command |> normalize_codex_command;
-        model = json_string "model" codex_raw ~default:default_model;
-        reasoning_effort = json_string "reasoningEffort" codex_raw ~default:default_reasoning_effort;
-        turn_timeout_ms = json_int "turnTimeoutMs" codex_raw ~default:3600000;
-        read_timeout_ms = json_int "readTimeoutMs" codex_raw ~default:5000;
-        stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
-      };
+    codex;
+    agent_harnesses_explicit;
+    agent_harnesses;
     server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
     pull_request =
       {
@@ -969,11 +1095,21 @@ let readiness_gaps config =
   if config.tracker.api_key = None then
     add ("environment." ^ config.tracker.api_key_env)
       (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env);
-  if Util.trim config.codex.command = "" then
-    add "codex.command" "Set codex.command in .symphony/settings.json to the non-interactive Codex command, such as codex exec.";
-  if Util.trim config.codex.model = "" then add "codex.model" "Set codex.model to a Codex model, such as gpt-5.5.";
-  if Util.trim config.codex.reasoning_effort = "" then
-    add "codex.reasoningEffort" "Set codex.reasoningEffort to low, medium, high, or xhigh.";
+  List.iter
+    (fun (harness : agent_harness) ->
+      let prefix =
+        if config.agent_harnesses_explicit then "agents." ^ harness.name else "codex"
+      in
+      if Util.trim harness.name = "" then
+        add "agents" "Agent Harness identifiers in .symphony/settings.json must not be empty.";
+      if not (List.exists (( = ) harness.kind) [ "codex"; "pi" ]) then
+        add (prefix ^ ".kind") "Set Agent Harness kind to codex or pi.";
+      if Util.trim harness.command = "" then
+        add (prefix ^ ".command") "Set the Agent Harness command to a non-interactive launch command.";
+      if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Agent Harness model.";
+      if Util.trim harness.reasoning_effort = "" then
+        add (prefix ^ ".reasoningEffort") "Set the Agent Harness reasoningEffort.")
+    config.agent_harnesses;
   if config.tracker.active_states = [] then
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then
@@ -1001,12 +1137,24 @@ let readiness_gaps config =
   (match allowed_loop_start_branch_policy_gap config with
   | Some gap -> add gap.requirement gap.remediation
   | None -> ());
-  if stage_goal_handoff_enabled config then (
+  let codex_stage_goal_harnesses =
+    if not config.stage_agents.enabled then []
+    else
+      config.stage_agents.stages
+      |> List.filter_map (fun stage ->
+             if not (stage_goal_enabled stage) then None
+             else
+               match selected_agent_harness config (Some stage) with
+               | Some harness when harness.kind = "codex" -> Some harness
+               | None when not config.agent_harnesses_explicit -> Some (default_agent_harness config)
+               | _ -> None)
+  in
+  if codex_stage_goal_harnesses <> [] then (
     let codex_config = codex_config_path () in
     if not (codex_goals_feature_enabled codex_config) then
       add "codex.goals"
         "Add the following to ~/.codex/config.toml to enable Stage Goal Handoff:\n\n[features]\ngoals = true";
-    if not (codex_goal_stdin_supported config) then
+    if List.exists (fun harness -> not (codex_goal_stdin_supported_harness harness)) codex_stage_goal_harnesses then
       add "codex.goalStdin"
         "Use a Codex command that accepts /goal from standard input before enabling Stage Goal Handoff.");
   if config.stage_agents.enabled then (
@@ -1014,6 +1162,15 @@ let readiness_gaps config =
       add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";
     List.iter
       (fun (stage : stage_agent) ->
+        if config.agent_harnesses_explicit then (
+          match selected_agent_harness config (Some stage) with
+          | None ->
+              add ("stageAgents." ^ stage.agent ^ ".agent")
+                (Printf.sprintf "Define agents.%s in .symphony/settings.json or select an existing Agent Harness." stage.agent)
+          | Some harness when stage_goal_enabled stage && harness.kind <> "codex" ->
+              add ("stageAgents." ^ stage.agent ^ ".goal")
+                "Stage Goal Handoff is only supported by a Codex Harness in this release. Disable goal.enabled or select a Codex Harness."
+          | Some _ -> ());
         let path = Filename.concat config.stage_agents.root (stage.agent ^ ".md") in
         if not (Sys.file_exists path) then
           add ("stageAgents." ^ stage.agent) (Printf.sprintf "Create the stage agent prompt file: %s" path))
