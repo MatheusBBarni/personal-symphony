@@ -18,7 +18,7 @@ Status: Draft only. These are local issue drafts and have not been created in Gi
 - **U1**: As an operator, I can understand and approve the Symphony-specific context model before Runtime Contract behavior changes.
 - **U2**: As an operator, I can enable bounded agent context per Stage Agent without changing global Codex hooks.
 - **U3**: As an agent, I receive deterministic issue, stage, Git, and retry context inside the Agent Prompt.
-- **U4**: As an operator, I can add a trusted local Context Command whose stdout supplements the Agent Prompt.
+- **U4**: As an operator, I can add a trusted local Context Command whose stdout supplements the Agent Context Snapshot.
 - **U5**: As an operator, I can see context readiness and runtime context status in the existing Runtime State and Web Dashboard.
 - **U6**: As an operator, I can debug context generation without persisting full prompts, token values, or local environment secrets.
 - **U7**: As a maintainer, I can evaluate independent stage completion review separately from context snapshot behavior.
@@ -75,12 +75,12 @@ Create the architectural decision and glossary updates for Symphony's bounded ag
 
 ## Acceptance criteria
 
-- [ ] Add an ADR under `docs/adr/` that states context generation happens in the Symphony launch harness, not through Codex lifecycle hooks.
-- [ ] Define which parts belong in Runtime Settings, Runtime State, Agent Prompt composition, and ignored Runtime Home diagnostics.
-- [ ] State that Agent Context Snapshot supplements the Agent Prompt and Stage Goal Handoff.
-- [ ] State that Context Command stdout may supplement the Agent Prompt, while stderr and failures remain diagnostic by default.
-- [ ] Update `CONTEXT.md` with accepted terms and avoid-list wording for ambiguous phrases such as "full context" or "context compression."
-- [ ] Preserve existing Runtime Contract defaults unless the operator explicitly approves a default change.
+- [x] Add an ADR under `docs/adr/` that states context generation happens in the Symphony launch harness, not through Codex lifecycle hooks.
+- [x] Define which parts belong in Runtime Settings, Runtime State, Agent Prompt composition, and ignored Runtime Home diagnostics.
+- [x] State that Agent Context Snapshot supplements the Agent Prompt and Stage Goal Handoff.
+- [x] State that Context Command stdout may supplement the Agent Context Snapshot, while stderr and failures remain diagnostic by default.
+- [x] Update `CONTEXT.md` with accepted terms and avoid-list wording for ambiguous phrases such as "full context" or "context compression."
+- [x] Preserve existing Runtime Contract defaults unless the operator explicitly approves a default change.
 
 ## Blocked by
 

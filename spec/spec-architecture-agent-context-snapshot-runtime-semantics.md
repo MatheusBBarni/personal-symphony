@@ -111,9 +111,9 @@ Any accepted runtime semantic change MUST be documented in `docs/adr/`.
 ## 9. Examples & Edge Cases
 
 ```text
-Agent Prompt
----
 Stage Goal Handoff content, when enabled
+---
+Agent Prompt
 ---
 Agent Context Snapshot, when enabled
 ```

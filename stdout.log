@@ -1,13 +1,15 @@
-Issue #35 is already implemented in this workspace on the current branch.
+**Blocking Finding**
 
-Relevant files in the completed changes:
-- [apps/backend/lib/config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/config.ml): parses/validates per-stage `maxConcurrentAgents`.
-- [apps/backend/lib/orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/lib/orchestrator.ml): enforces Stage Concurrency Policy with the global cap.
-- [apps/backend/test/test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/apps/backend/test/test_backend.ml): covers parsing, stage/global capacity, idle prevention, ordered queue behavior, and duplicate dispatch.
-- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/CONTEXT.md), [docs/adr/0016-stage-concurrency-policy.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/docs/adr/0016-stage-concurrency-policy.md), [README.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_35/README.md): document the Runtime Settings semantics.
+- [prompt.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/prompt.md:1), [stderr.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stderr.log:14), and [stdout.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stdout.log:1) are included in task commit `207c021`. These are launch/runtime artifacts, not #37 documentation deliverables. `prompt.md` contains the rendered Stage Goal Handoff/Agent Prompt payload, and `stderr.log` contains captured Codex transcript output. That conflicts with the issue’s context-safety intent to avoid persisting full rendered Agent Prompts or full Codex transcripts.
 
-Verification:
-- `opam exec -- dune runtest --root . --build-dir /private/tmp/symphony-35-dune-build` passed: 102 tests.
-- `pnpm test` could not run here because `pnpm` failed before tests with `[ERROR] fetch failed`.
+- `git diff --check HEAD^..HEAD` fails because those committed artifacts contain whitespace errors: `prompt.md:197` and multiple trailing-whitespace lines in `stderr.log`.
 
-Worktree note: only `stdout.log` and `stderr.log` are dirty, and they were already unrelated runtime log changes.
+The accepted docs themselves look aligned: `CONTEXT.md` and ADR 0019 already define Agent Context Snapshot and Context Command, and the remaining docs/spec cleanup uses the accepted terminology.
+
+Checks run:
+- `git diff --name-status HEAD^..HEAD`
+- `git diff --check HEAD^..HEAD` failed as above
+- protected-path/generated `.res.js` check over changed paths: clean
+- terminology scan for stale “Context Command stdout supplements the Agent Prompt” wording: clean
+
+I attempted to post the blocking review comment to GitHub issue #37, but the connector call was canceled. The issue should not move to Done until the committed launch artifacts are removed or otherwise handled.
