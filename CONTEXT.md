@@ -437,6 +437,7 @@ _Avoid_: reinitialize, reset
 - Symphony must not open a **Batch Pull Request** while any issue has unresolved orchestration attention.
 - A **Batch Pull Request** uses the **Loop-Start Branch** as its head branch.
 - A **Batch Pull Request** uses the configured **Pull Request Base Branch** as its base branch.
+- Symphony reports a **Readiness Gap** when automatic **Batch Pull Request** creation is enabled and the current **Loop-Start Branch** is the same branch as the configured **Pull Request Base Branch**.
 - Symphony may retry opening a **Batch Pull Request** after a failed attempt when **Orchestration Idle** is reached again.
 - Symphony must not create a duplicate **Batch Pull Request** for the same head and base branches.
 - A **Pull Request Base Branch** must be configured explicitly in Runtime Settings.

@@ -528,6 +528,26 @@ let test_pull_request_base_branch_readiness_gap () =
       Alcotest.(check bool) "base branch gap" true
         (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "pullRequest.baseBranch") gaps))
 
+let test_pull_request_base_branch_must_differ_from_loop_start () =
+  with_temp_dir "symphony-settings-pr-same-branch-gap-" (fun root ->
+      init_repo root "main";
+      let settings = Filename.concat root "settings.json" in
+      Util.mkdir_p (Filename.concat root ".symphony");
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "pullRequest": {"enabled": true, "baseBranch": "main"},
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let gaps = Config.readiness_gaps config in
+      match List.find_opt (fun (gap : Config.readiness_gap) -> gap.requirement = "pullRequest.baseBranch") gaps with
+      | Some gap ->
+          Alcotest.(check bool) "mentions Loop-Start Branch" true
+            (contains_substring gap.remediation "current Loop-Start Branch main")
+      | None -> Alcotest.fail "expected pull request base branch gap")
+
 let test_workflow_and_config () =
   let content =
     {|
@@ -4879,6 +4899,8 @@ let () =
           Alcotest.test_case "stage goal requires codex exec stdin support" `Quick test_stage_goal_requires_codex_exec_stdin_support;
           Alcotest.test_case "stage goal live stdin probe" `Quick test_stage_goal_live_stdin_probe;
           Alcotest.test_case "requires pull request base branch when enabled" `Quick test_pull_request_base_branch_readiness_gap;
+          Alcotest.test_case "requires pull request base branch to differ from loop start" `Quick
+            test_pull_request_base_branch_must_differ_from_loop_start;
           Alcotest.test_case "checks allowed loop-start branch readiness" `Quick
             test_allowed_loop_start_branch_readiness;
         ] );

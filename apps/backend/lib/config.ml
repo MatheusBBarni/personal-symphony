@@ -878,6 +878,15 @@ let readiness_gaps config =
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
   if config.pull_request.enabled && Util.trim config.pull_request.base_branch = "" then
     add "pullRequest.baseBranch" "Set pullRequest.baseBranch in .symphony/settings.json when pullRequest.enabled is true.";
+  if config.pull_request.enabled && Util.trim config.pull_request.base_branch <> "" then (
+    match current_loop_start_branch config.repository_root with
+    | Some loop_start_branch when loop_start_branch = Util.trim config.pull_request.base_branch ->
+        add "pullRequest.baseBranch"
+          (Printf.sprintf
+             "Batch Pull Request creation requires the Pull Request Base Branch to differ from the current Loop-Start \
+              Branch %s. Switch to a non-trunk Loop-Start Branch or set pullRequest.baseBranch to the target branch."
+             loop_start_branch)
+    | _ -> ());
   (match allowed_loop_start_branch_policy_gap config with
   | Some gap -> add gap.requirement gap.remediation
   | None -> ());
