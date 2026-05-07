@@ -77,6 +77,43 @@ with `medium` reasoning:
 }
 ```
 
+PI is not a prerequisite. If you have the `pi` CLI installed and authenticated, you can use it as an
+Agent Harness instead of Codex for selected Stage Agents. Define an `agents.pi` harness and point each
+stage that should use PI at that harness with `harness`:
+
+```json
+{
+  "agents": {
+    "codex": {
+      "kind": "codex",
+      "command": "codex exec",
+      "model": "gpt-5.5",
+      "reasoningEffort": "medium"
+    },
+    "pi": {
+      "kind": "pi",
+      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
+      "model": "openai/gpt-5.5",
+      "reasoningEffort": "medium"
+    }
+  },
+  "stageAgents": {
+    "enabled": true,
+    "stages": [
+      {
+        "states": ["Todo", "To-Do", "In progress", "In Progress"],
+        "agent": "engineer",
+        "harness": "pi"
+      }
+    ]
+  }
+}
+```
+
+When the `agents` object is present, each configured Stage Agent should select an existing Agent
+Harness with `harness` unless its `agent` name also matches a harness name. PI readiness checks require
+the `pi` executable on `PATH` and provider authentication for the configured model.
+
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.
 
