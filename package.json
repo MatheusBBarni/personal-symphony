@@ -1,7 +1,16 @@
 {
   "name": "symphony-orchestrator",
-  "version": "0.2.3",
+  "version": "0.2.4",
+  "description": "Installable Symphony orchestration CLI and dashboard.",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MatheusBBarni/symphony-orchestrator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MatheusBBarni/symphony-orchestrator/issues"
+  },
+  "homepage": "https://github.com/MatheusBBarni/symphony-orchestrator#readme",
   "bin": {
     "symphony": "bin/symphony.js"
   },
