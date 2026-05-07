@@ -1,12 +1,27 @@
-Blocking finding:
+Implemented PI as a first-class Stage Agent harness.
 
-- The branch commits root launch artifacts: [prompt.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/prompt.md), [stdout.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/stdout.log), and especially [stderr.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/stderr.log). `main...HEAD` shows `stderr.log` with ~18k added lines, and `git diff --check main...HEAD` fails on trailing whitespace from that log. This is not ready for Done because it persists runtime prompt/transcript-style output in the Product Repository, directly conflicting with the slice’s “avoid persisting full prompt text or full Codex transcript content” intent.
+Changed:
+- `apps/backend/lib/config.ml`
+- `apps/backend/lib/orchestrator.ml`
+- `apps/backend/test/test_backend.ml`
+- `docs/adr/0021-agent-harness-runtime-settings.md`
+- `spec/spec-architecture-agent-harness-runtime-settings.md`
 
-Functional review: the `orchestrator.ml` retry snapshot implementation and backend tests look aligned with the acceptance criteria once those artifacts are removed. I ran:
+What changed:
+- Added named `agents` harness parsing with `kind: "codex"` and `kind: "pi"`.
+- Preserved legacy `codex` settings as the default Codex Harness.
+- Made `agents.codex` canonical when both legacy `codex` and `agents.codex` exist.
+- Added PI default command/model support and `<model>` / `<reasoning>` rendering.
+- Routed Stage Agent dispatch through the selected harness.
+- Made running-child turn/read/stall timeout handling harness-specific.
+- Added readiness gaps for missing harnesses, invalid harness kinds, blank harness fields, and PI/non-Codex Stage Goal Handoff.
+- Kept Stage Goal Handoff Codex-specific.
+- Added backend tests for parsing, rendering, readiness, and PI launch selection.
 
-- `opam exec -- dune runtest --root . --no-buffer --build-dir /private/tmp/symphony-dune-build-39`
-- `opam exec -- dune exec --root . --build-dir /private/tmp/symphony-dune-build-39 apps/backend/test/test_backend.exe -- --compact`
+Verification:
+- `DUNE_BUILD_DIR=/private/tmp/symphony-dune-build-59d opam exec -- dune build --root . @all` passed.
+- `DUNE_BUILD_DIR=/private/tmp/symphony-dune-build-59e opam exec -- dune runtest --root . apps/backend/test` passed: 130 tests.
+- `git diff --check` passed for touched source/docs.
+- `pnpm test` was attempted with an alternate Dune build dir, but pnpm failed with `[ERROR] fetch failed`.
 
-Both passed.
-
-I made no file changes. I attempted to add the GitHub review comment, but the MCP tool call was canceled, so I could not update the issue or move project status to Human attention from here. Goal usage: 158 seconds.
+Note: the worktree still has unrelated/pre-existing dirty files: `prompt.md`, `stdout.log`, `stderr.log`, and untracked `.pnpm-store/`.

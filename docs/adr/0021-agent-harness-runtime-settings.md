@@ -16,7 +16,7 @@ Runtime Settings will introduce named Agent Harness definitions. Each Agent Harn
 
 `kind: "codex"` and `kind: "pi"` are distinct harness implementations. Symphony must not infer harness behavior only from the command string.
 
-The legacy Runtime Settings `codex` block remains supported as a backwards-compatible Codex Harness. Existing Workspace Repositories that define only the legacy `codex` block continue to run without migration.
+The legacy Runtime Settings `codex` block remains supported as a backwards-compatible Codex Harness. Existing Workspace Repositories that define only the legacy `codex` block continue to run without migration. When both `agents.codex` and the legacy `codex` block are present, `agents.codex` is canonical and the legacy block is ignored for that harness.
 
 Stage Agent mappings continue using their existing `agent` identifier to select the named Agent Harness. If a Stage Agent selects an unknown harness, Symphony reports a Readiness Gap instead of dispatching work.
 

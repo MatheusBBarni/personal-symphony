@@ -7,7 +7,7 @@ type launch_result = {
 }
 
 type launch =
-  config:Config.t -> workspace:Workspace.t -> prompt:string -> issue:Issue.t -> launch_result
+  stage:Config.stage_agent option -> config:Config.t -> workspace:Workspace.t -> prompt:string -> issue:Issue.t -> launch_result
 
 type fetch = Github_tracker.t -> Issue.t list
 type set_status = Github_tracker.t -> Issue.t -> string -> (unit, string) result
@@ -48,6 +48,7 @@ and child = {
   pid : int;
   issue : Issue.t;
   stage : Config.stage_agent option;
+  harness : Config.agent_harness;
   issue_id : string;
   issue_identifier : string;
   issue_title : string;
@@ -976,16 +977,16 @@ let replace_first_word command replacement =
   | [] -> replacement
   | _ :: rest -> String.concat " " (replacement :: rest)
 
-let codex_command config =
-  let command = Util.trim config.Config.codex.command in
-  let model = Util.trim config.codex.model in
-  let reasoning = Util.trim config.codex.reasoning_effort in
+let render_harness_command (harness : Config.agent_harness) =
+  let command = Util.trim harness.command in
+  let model = Util.trim harness.model in
+  let reasoning = Util.trim harness.reasoning_effort in
   let with_tokens =
     command
     |> replace_token ~token:"model" ~value:(Util.shell_quote model)
     |> replace_token ~token:"reasoning" ~value:(Util.shell_quote reasoning)
   in
-  if with_tokens <> command then with_tokens
+  if with_tokens <> command || harness.kind <> "codex" then with_tokens
   else
     match String.split_on_char ' ' command with
     | "codex" :: _ ->
@@ -996,12 +997,17 @@ let codex_command config =
         replace_first_word command overrides
     | _ -> command
 
-let shell_launch ~config ~workspace ~prompt ~issue =
+let codex_command config =
+  Config.default_agent_harness config |> render_harness_command
+
+let shell_launch ~stage ~config ~workspace ~prompt ~issue =
+  let stage = match stage with Some _ -> stage | None -> stage_for_issue config issue in
+  let harness = Option.value (Config.selected_agent_harness config stage) ~default:(Config.default_agent_harness config) in
   let prompt_path = write_prompt workspace prompt in
   let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
   let stderr_path = Filename.concat workspace.Workspace.path "stderr.log" in
   let command =
-    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.Workspace.path) (codex_command config)
+    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.Workspace.path) (render_harness_command harness)
       (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path)
   in
   let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; command |] Unix.stdin Unix.stdout Unix.stderr in
@@ -1015,7 +1021,8 @@ let shell_launch ~config ~workspace ~prompt ~issue =
     stderr_path = Some stderr_path;
   }
 
-let make ?ordered_queue ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues) ?(set_status = Github_tracker.update_issue_status)
+let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues)
+    ?(set_status = Github_tracker.update_issue_status)
     ?(commit_stage = git_commit_stage_changes) ?(batch_pull_request_handoff = gh_batch_pull_request_handoff)
     ?(notify_state = fun _ -> ()) ~config ~prompt_template () =
   {
@@ -1673,7 +1680,11 @@ let dispatch_issue orchestrator issue =
           compose_prompt ?stage ?previous_attempt_output orchestrator.config issue attempt rendered ~workspace
             ~loop_start_branch:(Some orchestrator.loop_start_branch)
         in
-        let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
+        let harness =
+          Option.value (Config.selected_agent_harness orchestrator.config stage)
+            ~default:(Config.default_agent_harness orchestrator.config)
+        in
+        let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue:launch_issue in
         let now = Util.now_iso8601 () in
         let stage_agent, stage_states = selected_stage_fields stage in
         let row =
@@ -1712,6 +1723,7 @@ let dispatch_issue orchestrator issue =
                 pid;
                 issue;
                 stage;
+                harness;
                 issue_id = issue.id;
                 issue_identifier = issue.identifier;
                 issue_title = issue.title;
@@ -1977,8 +1989,8 @@ let reap_children orchestrator =
       (fun (finished, running) child ->
         refresh_child_output orchestrator child;
         if
-          now -. child.started_at > float_of_int orchestrator.config.codex.turn_timeout_ms /. 1000.
-          || now -. child.last_output_at > float_of_int orchestrator.config.codex.stall_timeout_ms /. 1000.
+          now -. child.started_at > float_of_int child.harness.turn_timeout_ms /. 1000.
+          || now -. child.last_output_at > float_of_int child.harness.stall_timeout_ms /. 1000.
         then (
           refresh_child_output ~force:true orchestrator child;
           kill_child child;
@@ -2097,7 +2109,16 @@ let run_forever orchestrator =
       finished_reported := true)
     else
       let interval_ms = max 1 orchestrator.config.polling.interval_ms in
-      let read_timeout_ms = max 1 orchestrator.config.codex.read_timeout_ms in
+      let read_timeout_ms =
+        match orchestrator.children with
+        | [] -> orchestrator.config.codex.read_timeout_ms
+        | child :: rest ->
+            rest
+            |> List.fold_left
+                 (fun interval child -> min interval child.harness.Config.read_timeout_ms)
+                 child.harness.Config.read_timeout_ms
+        |> max 1
+      in
       let rec sleep_and_reap elapsed_ms =
         if elapsed_ms < interval_ms then (
           let remaining_ms = interval_ms - elapsed_ms in

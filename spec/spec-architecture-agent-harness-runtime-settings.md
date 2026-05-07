@@ -43,7 +43,7 @@ Out of scope:
 - **Runtime Home**: The `.symphony/` directory that contains Personal Symphony configuration and runtime-owned files for a Workspace Repository.
 - **Runtime Contract**: Repository-owned files inside the Runtime Home that define Personal Symphony behavior.
 - **Runtime Settings**: The `settings.json` portion of the Runtime Contract.
-- **Stage Agent**: A Runtime Settings mapping from project statuses to an agent instruction file and stage behavior.
+- **Stage Agent**: A Runtime Settings mapping from project statuses to a named agent instruction file, Agent Harness selection, and optional stage behavior.
 - **Agent Harness**: A named Runtime Settings launch configuration that tells Symphony which non-interactive agent tool to run for a Stage Agent.
 - **Codex Harness**: An Agent Harness whose launch semantics target Codex non-interactive execution.
 - **PI Harness**: An Agent Harness whose launch semantics target PI non-interactive execution.
@@ -131,6 +131,8 @@ Out of scope:
 
 The legacy shape MUST behave as if `agents.codex` exists with `kind: "codex"` and default timeout values.
 
+If both `agents.codex` and the legacy `codex` block are present, `agents.codex` MUST be canonical and the legacy `codex` block MUST be ignored for that harness. The legacy block is only a compatibility fallback when `agents.codex` is absent.
+
 ### Agent Harness Fields
 
 | Field | Required | Description |
@@ -154,6 +156,7 @@ The legacy shape MUST behave as if `agents.codex` exists with `kind: "codex"` an
 - **AC-007**: Given a Codex Harness Stage Agent has Stage Goal Handoff enabled and Codex goal support is configured, When readiness is evaluated, Then existing Codex goal readiness behavior remains valid.
 - **AC-008**: Given a PI-launched task exits successfully with code changes, When stage completion runs, Then existing Stage Commit, Stage Push, status transition, and Task Branch behavior applies.
 - **AC-009**: Given Bootstrap runs in a Workspace Repository with existing `.symphony/settings.json`, When PI support exists in the Product Repository, Then Bootstrap does not overwrite that file.
+- **AC-010**: Given Runtime Settings define both `agents.codex` and the legacy `codex` block, When Symphony parses settings, Then `agents.codex` is used for the Codex Harness and the legacy block is ignored.
 
 ## 6. Test Automation Strategy
 
@@ -215,21 +218,40 @@ pi --model 'openai/gpt-5.5' --thinking 'medium' --print --no-session
 ### Edge Cases
 
 - A Workspace Repository has no `agents` object and has a legacy `codex` block: Symphony uses the legacy Codex Harness.
-- A Workspace Repository defines both `codex` and `agents.codex`: implementation MUST choose one deterministic precedence rule and test it.
+- A Workspace Repository defines both `codex` and `agents.codex`: Symphony uses `agents.codex` as the canonical Codex Harness and ignores the legacy block.
 - A Stage Agent selects `pi` but `agents.pi` is missing: readiness blocks dispatch.
 - A PI command omits `<model>` and `<reasoning>`: the command is allowed only when non-empty, but no automatic PI argument injection is required beyond token replacement.
 - PI writes useful diagnostics to stderr and exits with non-zero status: Symphony captures stderr and applies existing retry behavior.
 
-## 10. Validation Criteria
+## 10. Implementation Handoff
+
+Likely backend files:
+
+- `apps/backend/lib/config.ml` for Runtime Settings parsing, Agent Harness normalization, readiness gaps, Stage Goal Handoff gating, and timeout lookup.
+- `apps/backend/lib/orchestrator.ml` for harness-specific command rendering, prompt stdin launch, output capture, and per-running-task timeout selection.
+- `apps/backend/lib/runtime_home.ml` only if missing-file Bootstrap defaults are intentionally extended; do not overwrite existing Runtime Contract files.
+- `apps/backend/lib/runtime_state.ml` and frontend live-state parsing only if Runtime State naming changes are required after reviewing Codex-specific fields.
+- `apps/backend/test/test_backend.ml` for focused Alcotest coverage near existing Runtime Settings, launch command, readiness, and Stage Goal Handoff tests.
+
+Implementation risks:
+
+- Accidentally treating `pi` as a Codex-compatible command string instead of a PI Harness kind.
+- Applying Stage Goal Handoff readiness globally instead of only to Stage Agents whose selected Agent Harness is a Codex Harness.
+- Continuing to read timeout settings from the legacy Codex block for PI-launched tasks.
+- Changing Bootstrap defaults in `runtime_home.ml` without preserving Idempotent Bootstrap behavior.
+- Renaming Runtime State fields in a way that breaks the Live Dashboard without corresponding parsing updates.
+
+## 11. Validation Criteria
 
 - `CONTEXT.md` defines Agent Harness, Codex Harness, and PI Harness.
 - An ADR records the Runtime Contract decision.
 - Runtime Settings examples are secret-free.
 - Backend tests prove legacy Codex compatibility and PI command rendering.
 - Readiness Gaps prevent unsupported Stage Goal Handoff on PI.
+- Focused backend tests cover `agents.codex` precedence over the legacy `codex` block.
 - `pnpm test` passes after implementation.
 
-## 11. Related Specifications / Further Reading
+## 12. Related Specifications / Further Reading
 
 - [Issue #59](https://github.com/MatheusBBarni/symphony-orchestrator/issues/59)
 - [CONTEXT.md](../CONTEXT.md)
