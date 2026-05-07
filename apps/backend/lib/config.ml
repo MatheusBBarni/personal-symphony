@@ -52,10 +52,16 @@ type stage_commit = {
   classification : stage_commit_classification option;
 }
 type stage_goal = { enabled : bool }
+type stage_context_snapshot = {
+  enabled : bool;
+  max_output_bytes : int;
+  validation_error : string option;
+}
 type stage_agent = {
   states : string list;
   agent : string;
   max_concurrent_agents : int option;
+  context_snapshot : stage_context_snapshot option;
   skills : string list;
   start_status : string option;
   success_status : string option;
@@ -102,6 +108,7 @@ let default_protected_paths = { patterns = []; authorization = default_protected
 let default_pull_request =
   { enabled = false; open_on_review = false; base_branch = "main"; title = default_pull_request_title; body = default_pull_request_body }
 let default_conflict_behavior = "human_attention"
+let default_context_snapshot_max_output_bytes = 12000
 
 let default_git =
   {
@@ -122,6 +129,7 @@ let default_stage_agents =
       states = [ "Backlog" ];
       agent = "planner";
       max_concurrent_agents = None;
+      context_snapshot = None;
       skills = [];
       start_status = None;
       success_status = Some "To-Do";
@@ -133,6 +141,7 @@ let default_stage_agents =
       states = [ "Todo"; "To-Do"; "In progress"; "In Progress" ];
       agent = "engineer";
       max_concurrent_agents = None;
+      context_snapshot = None;
       skills = [];
       start_status = Some "In progress";
       success_status = Some "In review";
@@ -144,6 +153,7 @@ let default_stage_agents =
       states = [ "In review"; "In Review" ];
       agent = "reviewer";
       max_concurrent_agents = None;
+      context_snapshot = None;
       skills = [];
       start_status = None;
       success_status = Some "Done";
@@ -331,6 +341,25 @@ let json_branch_name_list name json ~default =
 let json_bool name json ~default =
   match member name json with `Bool b -> b | `String "true" -> true | `String "false" -> false | _ -> default
 
+let json_bool_strict path json =
+  match json with
+  | `Bool b -> Ok b
+  | `String "true" -> Ok true
+  | `String "false" -> Ok false
+  | `Null -> Ok false
+  | _ -> Error (path ^ " must be a boolean")
+
+let json_positive_int_strict path json ~default =
+  match json with
+  | `Null -> Ok default
+  | `Int value when value > 0 -> Ok value
+  | `String value -> (
+      match int_of_string_opt value with
+      | Some parsed when parsed > 0 -> Ok parsed
+      | _ -> Error (path ^ " must be positive"))
+  | `Int _ -> Error (path ^ " must be positive")
+  | _ -> Error (path ^ " must be an integer")
+
 let json_optional_string name json =
   match member name json with `String s when Util.trim s <> "" -> Some s | _ -> None
 
@@ -406,6 +435,47 @@ let json_protected_paths paths_raw =
       }
   | _ -> default_protected_paths
 
+let json_stage_context_snapshot json =
+  let context_raw = member "context" json in
+  match context_raw with
+  | `Null -> None
+  | `Assoc _ -> (
+      let snapshot_raw = member "snapshot" context_raw in
+      match snapshot_raw with
+      | `Null -> None
+      | `Assoc _ ->
+          let enabled_result = json_bool_strict "stageAgents.stages[].context.snapshot.enabled" (member "enabled" snapshot_raw) in
+          let max_result =
+            json_positive_int_strict "stageAgents.stages[].context.snapshot.maxOutputBytes"
+              (member "maxOutputBytes" snapshot_raw)
+              ~default:default_context_snapshot_max_output_bytes
+          in
+          let enabled = match enabled_result with Ok enabled -> enabled | Error _ -> false in
+          let max_output_bytes =
+            match max_result with Ok max_output_bytes -> max_output_bytes | Error _ -> default_context_snapshot_max_output_bytes
+          in
+          let validation_error =
+            match (enabled_result, max_result) with
+            | Error error, _ -> Some error
+            | _, Error error -> Some error
+            | Ok _, Ok _ -> None
+          in
+          Some { enabled; max_output_bytes; validation_error }
+      | _ ->
+          Some
+            {
+              enabled = false;
+              max_output_bytes = default_context_snapshot_max_output_bytes;
+              validation_error = Some "stageAgents.stages[].context.snapshot must be an object";
+            })
+  | _ ->
+      Some
+        {
+          enabled = false;
+          max_output_bytes = default_context_snapshot_max_output_bytes;
+          validation_error = Some "stageAgents.stages[].context must be an object";
+        }
+
 let json_stage_agent json =
   let goal_raw = member "goal" json in
   let goal = match goal_raw with `Assoc _ -> Some { enabled = json_bool "enabled" goal_raw ~default:false } | _ -> None in
@@ -457,6 +527,7 @@ let json_stage_agent json =
       | `Null -> None
       | _ -> Some (json_int "maxConcurrentAgents" json ~default:0))
       |> positive_option "stageAgents.stages.maxConcurrentAgents";
+    context_snapshot = json_stage_context_snapshot json;
     skills = json_string_list "skills" json ~default:[];
     start_status = json_optional_string "startStatus" json;
     success_status = json_optional_string "successStatus" json;
@@ -466,6 +537,9 @@ let json_stage_agent json =
   }
 
 let stage_goal_enabled (stage : stage_agent) = match stage.goal with Some goal -> goal.enabled | None -> false
+
+let stage_context_snapshot_enabled (stage : stage_agent) =
+  match stage.context_snapshot with Some snapshot -> snapshot.enabled && snapshot.validation_error = None | None -> false
 
 let stage_goal_handoff_enabled config =
   config.stage_agents.enabled && List.exists stage_goal_enabled config.stage_agents.stages
@@ -799,6 +873,17 @@ let validate_stage_skill_load config add =
           stage.skills)
       config.stage_agents.stages
 
+let validate_stage_context_snapshots config add =
+  if config.stage_agents.enabled then
+    List.iter
+      (fun (stage : stage_agent) ->
+        match stage.context_snapshot with
+        | Some { validation_error = Some error; _ } ->
+            add ("stageAgents." ^ stage.agent ^ ".context.snapshot")
+              (error ^ ". Fix the Stage Agent context snapshot Runtime Settings before dispatch.")
+        | _ -> ())
+      config.stage_agents.stages
+
 let run_shell_capture ~cwd command =
   let command = Printf.sprintf "cd %s && %s 2>&1" (Util.shell_quote cwd) command in
   let ic = Unix.open_process_in command in
@@ -907,6 +992,7 @@ let readiness_gaps config =
         if not (Sys.file_exists path) then
           add ("stageAgents." ^ stage.agent) (Printf.sprintf "Create the stage agent prompt file: %s" path))
       config.stage_agents.stages);
+  validate_stage_context_snapshots config add;
   validate_stage_skill_load config add;
   List.rev !gaps
 
