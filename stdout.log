@@ -1,15 +1,13 @@
-**Blocking Finding**
+Implemented issue #39.
 
-- [prompt.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/prompt.md:1), [stderr.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stderr.log:14), and [stdout.log](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_37/stdout.log:1) are included in task commit `207c021`. These are launch/runtime artifacts, not #37 documentation deliverables. `prompt.md` contains the rendered Stage Goal Handoff/Agent Prompt payload, and `stderr.log` contains captured Codex transcript output. That conflicts with the issue’s context-safety intent to avoid persisting full rendered Agent Prompts or full Codex transcripts.
+Changed:
+- [apps/backend/lib/orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/apps/backend/lib/orchestrator.ml): carries previous failed attempt stdout/stderr paths in memory, renders bounded 4096-byte tails into retry Agent Context Snapshots, marks truncation as `[truncated to 4096 bytes]`, and reports missing streams as unavailable.
+- [apps/backend/test/test_backend.ml](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/apps/backend/test/test_backend.ml): added coverage for first launch omission, retry launch inclusion, stdout/stderr truncation, missing output, and Stage Goal Handoff ordering.
+- [CONTEXT.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/CONTEXT.md) and [docs/adr/0019-agent-context-snapshot-runtime-semantics.md](/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/workspaces/_39/docs/adr/0019-agent-context-snapshot-runtime-semantics.md): documented Previous Attempt Output semantics.
 
-- `git diff --check HEAD^..HEAD` fails because those committed artifacts contain whitespace errors: `prompt.md:197` and multiple trailing-whitespace lines in `stderr.log`.
+Verification:
+- Passed: `DUNE_BUILD_DIR=/private/tmp/symphony-dune-build-39 opam exec -- dune runtest --root .`
+- `git diff --check` passed for touched source/docs.
+- `pnpm test` was attempted but failed with `[ERROR] fetch failed`; direct Dune test execution passed.
 
-The accepted docs themselves look aligned: `CONTEXT.md` and ADR 0019 already define Agent Context Snapshot and Context Command, and the remaining docs/spec cleanup uses the accepted terminology.
-
-Checks run:
-- `git diff --name-status HEAD^..HEAD`
-- `git diff --check HEAD^..HEAD` failed as above
-- protected-path/generated `.res.js` check over changed paths: clean
-- terminology scan for stale “Context Command stdout supplements the Agent Prompt” wording: clean
-
-I attempted to post the blocking review comment to GitHub issue #37, but the connector call was canceled. The issue should not move to Done until the committed launch artifacts are removed or otherwise handled.
+Note: `prompt.md`, `stdout.log`, and `stderr.log` remain dirty runtime files from before this work; I left them untouched. Goal completed in 453 seconds.

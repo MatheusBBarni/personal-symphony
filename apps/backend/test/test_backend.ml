@@ -32,6 +32,17 @@ let contains_substring text substring =
   in
   loop 0
 
+let substring_index text substring =
+  let text_len = String.length text in
+  let substring_len = String.length substring in
+  let rec loop index =
+    if substring_len = 0 then Some 0
+    else if index + substring_len > text_len then None
+    else if String.sub text index substring_len = substring then Some index
+    else loop (index + 1)
+  in
+  loop 0
+
 let init_repo root branch =
   ignore (run_ok ~cwd:root "git init" (Printf.sprintf "git init -q -b %s" (Util.shell_quote branch)));
   ignore (run_ok ~cwd:root "git user email" "git config user.email test@example.com");
@@ -2990,6 +3001,180 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
       Alcotest.(check bool) "stage agent still included" true (String.contains !captured_prompt 'E');
       Alcotest.(check bool) "normal prompt still included" true (String.contains !captured_prompt '#'))
 
+let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000) root =
+  let agents_root = Filename.concat root "agents" in
+  Unix.mkdir agents_root 0o755;
+  Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
+  {
+    Config.workflow_path = "settings.json";
+    repository_root = root;
+    tracker =
+      {
+        kind = "github";
+        owner = "acme";
+        repo = "widgets";
+        project_number = 7;
+        api_key_env = "GITHUB_TOKEN";
+        api_key = Some "token";
+        active_states = [ "Todo" ];
+        terminal_states = [ "Done" ];
+        project_status_field = "Status";
+        project_status_on_dispatch = None;
+        project_status_on_success = Some "In review";
+        project_status_on_retry = Some "Todo";
+        ensure_project_statuses = true;
+      };
+    polling = { interval_ms = 1000 };
+    workspace = { root = Filename.concat root "workspaces" };
+    git = Config.default_git;
+    agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 0 };
+    codex =
+      {
+        command = "true";
+        model = Config.default_model;
+        reasoning_effort = Config.default_reasoning_effort;
+        turn_timeout_ms = 1000;
+        read_timeout_ms = 100;
+        stall_timeout_ms = 1000;
+      };
+    server = { port = None };
+    pull_request = Config.default_pull_request;
+    protected_paths = Config.default_protected_paths;
+    stage_agents =
+      {
+        enabled = true;
+        root = agents_root;
+        default_agent = None;
+        stages =
+          [
+            {
+              Config.states = [ "Todo" ];
+              agent = "engineer";
+              max_concurrent_agents = None;
+              context_snapshot = Some { enabled = true; max_output_bytes; validation_error = None };
+              skills = [];
+              start_status = None;
+              success_status = Some "In review";
+              retry_status = Some "Todo";
+              goal = Some { enabled = goal_enabled };
+              commit = None;
+            };
+          ];
+      };
+  }
+
+let test_orchestrator_omits_retry_output_on_first_launch () =
+  with_temp_dir "symphony-context-first-launch-" (fun root ->
+      let config = stage_context_test_config root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "snapshot present" true (contains_substring !captured_prompt "## Agent Context Snapshot");
+      Alcotest.(check bool) "previous attempt absent" false
+        (contains_substring !captured_prompt "### Previous Attempt"))
+
+let test_orchestrator_includes_retry_output_on_retry_launch () =
+  with_temp_dir "symphony-context-retry-launch-" (fun root ->
+      let config = stage_context_test_config root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launch_count = ref 0 in
+      let retry_prompt = ref "" in
+      let launch ~config:_ ~workspace ~prompt ~issue =
+        incr launch_count;
+        if !launch_count = 1 then (
+          let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
+          let stderr_path = Filename.concat workspace.Workspace.path "stderr.log" in
+          Util.write_file stdout_path "first stdout\n";
+          Util.write_file stderr_path "first stderr\n";
+          let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "exit 1" |] Unix.stdin Unix.stdout Unix.stderr in
+          { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = Some stdout_path; stderr_path = Some stderr_path })
+        else (
+          retry_prompt := prompt;
+          { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-retry"; stdout_path = None; stderr_path = None })
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "retry launched" 2 !launch_count;
+      Alcotest.(check bool) "previous attempt present" true
+        (contains_substring !retry_prompt "### Previous Attempt");
+      Alcotest.(check bool) "previous attempt number" true
+        (contains_substring !retry_prompt "- Previous attempt: 1");
+      Alcotest.(check bool) "stdout included" true (contains_substring !retry_prompt "first stdout");
+      Alcotest.(check bool) "stderr included" true (contains_substring !retry_prompt "first stderr"))
+
+let test_orchestrator_truncates_retry_stdout_and_stderr () =
+  with_temp_dir "symphony-context-retry-truncate-" (fun root ->
+      let config = stage_context_test_config ~max_output_bytes:12000 root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let stdout_path = Filename.concat root "stdout.log" in
+      let stderr_path = Filename.concat root "stderr.log" in
+      Util.write_file stdout_path ("stdout-head\n" ^ String.make 4100 'a' ^ "stdout-tail\n");
+      Util.write_file stderr_path ("stderr-head\n" ^ String.make 4100 'b' ^ "stderr-tail\n");
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let previous_attempt_output = { Orchestrator.attempt = 1; stdout_path = Some stdout_path; stderr_path = Some stderr_path } in
+      let prompt =
+        Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) ~previous_attempt_output config issue (Some 1)
+          "Normal #1" ~workspace ~loop_start_branch:(Some "symphony/dogfood")
+      in
+      Alcotest.(check bool) "stdout marker" true
+        (contains_substring prompt "[truncated to 4096 bytes]\n");
+      Alcotest.(check bool) "stdout tail kept" true (contains_substring prompt "stdout-tail");
+      Alcotest.(check bool) "stderr tail kept" true (contains_substring prompt "stderr-tail");
+      Alcotest.(check bool) "stdout head dropped" false (contains_substring prompt "stdout-head");
+      Alcotest.(check bool) "stderr head dropped" false (contains_substring prompt "stderr-head"))
+
+let test_orchestrator_reports_missing_retry_output_unavailable () =
+  with_temp_dir "symphony-context-retry-missing-" (fun root ->
+      let config = stage_context_test_config root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let stdout_path = Filename.concat root "missing-stdout.log" in
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let previous_attempt_output = { Orchestrator.attempt = 1; stdout_path = Some stdout_path; stderr_path = None } in
+      let prompt =
+        Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) ~previous_attempt_output config issue (Some 1)
+          "Normal #1" ~workspace ~loop_start_branch:(Some "symphony/dogfood")
+      in
+      Alcotest.(check bool) "stdout unavailable" true
+        (contains_substring prompt "#### stdout tail\n\n_unavailable_");
+      Alcotest.(check bool) "stderr unavailable" true
+        (contains_substring prompt "#### stderr tail\n\n_unavailable_"))
+
+let test_orchestrator_orders_retry_context_after_prompt_with_stage_goal () =
+  with_temp_dir "symphony-context-retry-goal-order-" (fun root ->
+      let config = stage_context_test_config ~goal_enabled:true root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let stdout_path = Filename.concat root "stdout.log" in
+      let stderr_path = Filename.concat root "stderr.log" in
+      Util.write_file stdout_path "retry stdout\n";
+      Util.write_file stderr_path "retry stderr\n";
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let previous_attempt_output = { Orchestrator.attempt = 1; stdout_path = Some stdout_path; stderr_path = Some stderr_path } in
+      let prompt =
+        Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) ~previous_attempt_output config issue (Some 1)
+          "Normal #1" ~workspace ~loop_start_branch:(Some "symphony/dogfood")
+      in
+      let index label =
+        match substring_index prompt label with Some index -> index | None -> Alcotest.fail ("missing " ^ label)
+      in
+      Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "stage before normal" true (index "Engineer stage instructions" < index "Normal #1");
+      Alcotest.(check bool) "normal before snapshot" true (index "Normal #1" < index "## Agent Context Snapshot");
+      Alcotest.(check bool) "snapshot before retry context" true
+        (index "## Agent Context Snapshot" < index "### Previous Attempt"))
+
 let test_orchestrator_truncates_agent_context_snapshot () =
   with_temp_dir "symphony-context-snapshot-truncated-" (fun root ->
       let agents_root = Filename.concat root "agents" in
@@ -5261,6 +5446,16 @@ let () =
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
+          Alcotest.test_case "omits retry output on first launch" `Quick
+            test_orchestrator_omits_retry_output_on_first_launch;
+          Alcotest.test_case "includes retry output on retry launch" `Quick
+            test_orchestrator_includes_retry_output_on_retry_launch;
+          Alcotest.test_case "truncates retry stdout and stderr" `Quick
+            test_orchestrator_truncates_retry_stdout_and_stderr;
+          Alcotest.test_case "reports missing retry output unavailable" `Quick
+            test_orchestrator_reports_missing_retry_output_unavailable;
+          Alcotest.test_case "orders retry context after prompt with stage goal" `Quick
+            test_orchestrator_orders_retry_context_after_prompt_with_stage_goal;
           Alcotest.test_case "truncates agent context snapshot" `Quick test_orchestrator_truncates_agent_context_snapshot;
           Alcotest.test_case "parses goal usage output" `Quick test_parse_goal_usage_from_codex_output;
           Alcotest.test_case "parses goal usage variants" `Quick test_parse_goal_usage_variants_and_ignores_invalid;

@@ -15,6 +15,12 @@ type commit_stage = Config.t -> Workspace.t -> Issue.t -> Config.stage_agent opt
 type batch_pull_request_handoff = Config.t -> head_branch:string -> (string option, string) result
 type notify_state = Runtime_state.t -> unit
 
+type previous_attempt_output = {
+  attempt : int;
+  stdout_path : string option;
+  stderr_path : string option;
+}
+
 type t = {
   config : Config.t;
   prompt_template : string;
@@ -24,6 +30,7 @@ type t = {
   retry_due : (string, float) Hashtbl.t;
   mutable tracker_retry_due : float option;
   attempts : (string, int) Hashtbl.t;
+  previous_attempt_outputs : (string, previous_attempt_output) Hashtbl.t;
   blocked : (string, string) Hashtbl.t;
   launch : launch;
   fetch : fetch;
@@ -710,7 +717,59 @@ let truncate_snapshot max_output_bytes snapshot =
       let keep = max_output_bytes - String.length marker in
       String.sub snapshot 0 keep |> Util.trim |> fun text -> text ^ marker
 
-let agent_context_snapshot ?stage config issue attempt ~workspace ~loop_start_branch =
+let previous_attempt_tail_bytes = 4096
+
+let read_file_tail path max_bytes =
+  try
+    let fd = Unix.openfile path [ Unix.O_RDONLY ] 0 in
+    Fun.protect
+      ~finally:(fun () -> Unix.close fd)
+      (fun () ->
+        let size = (Unix.fstat fd).Unix.st_size in
+        let offset = max 0 (size - max_bytes) in
+        ignore (Unix.lseek fd offset Unix.SEEK_SET);
+        let length = size - offset in
+        let bytes = Bytes.create length in
+        let rec read_all position =
+          if position >= length then ()
+          else
+            let read = Unix.read fd bytes position (length - position) in
+            if read = 0 then () else read_all (position + read)
+        in
+        read_all 0;
+        Some (size > max_bytes, Bytes.unsafe_to_string bytes))
+  with Unix.Unix_error _ | Sys_error _ -> None
+
+let render_previous_attempt_stream label path =
+  let header = Printf.sprintf "#### %s tail" label in
+  match path with
+  | None -> [ header; ""; "_unavailable_" ]
+  | Some path -> (
+      match read_file_tail path previous_attempt_tail_bytes with
+      | None -> [ header; ""; "_unavailable_" ]
+      | Some (truncated, output) ->
+          let marker =
+            if truncated then [ Printf.sprintf "[truncated to %d bytes]" previous_attempt_tail_bytes ] else []
+          in
+          [ header; ""; "```text" ] @ marker @ [ output; "```" ])
+
+let previous_attempt_lines = function
+  | None -> []
+  | Some previous ->
+      [
+        "";
+        "### Previous Attempt";
+        "";
+        Printf.sprintf "- Previous attempt: %d" previous.attempt;
+        Printf.sprintf "- stdout tail bytes: %d" previous_attempt_tail_bytes;
+        Printf.sprintf "- stderr tail bytes: %d" previous_attempt_tail_bytes;
+        "";
+      ]
+      @ render_previous_attempt_stream "stdout" previous.stdout_path
+      @ [ "" ]
+      @ render_previous_attempt_stream "stderr" previous.stderr_path
+
+let agent_context_snapshot ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch =
   match match stage with Some _ -> stage | None -> stage_for_issue config issue with
   | Some stage when Config.stage_context_snapshot_enabled stage -> (
       match stage.Config.context_snapshot with
@@ -729,14 +788,15 @@ let agent_context_snapshot ?stage config issue attempt ~workspace ~loop_start_br
               Printf.sprintf "- Agent Worktree: %s" workspace.Workspace.path;
             ]
             @ optional_line "Loop-Start Branch" loop_start_branch
+            @ previous_attempt_lines previous_attempt_output
           in
           Some (String.concat "\n" lines |> truncate_snapshot snapshot.max_output_bytes)
       | None -> None)
   | _ -> None
 
-let compose_prompt ?stage config issue attempt base_prompt ~workspace ~loop_start_branch =
+let compose_prompt ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
   let prompt =
-    match agent_context_snapshot ?stage config issue attempt ~workspace ~loop_start_branch with
+    match agent_context_snapshot ?stage ?previous_attempt_output config issue attempt ~workspace ~loop_start_branch with
     | None -> normal_prompt ?stage config issue base_prompt
     | Some snapshot -> Printf.sprintf "%s\n\n---\n\n%s" (normal_prompt ?stage config issue base_prompt |> Util.trim) snapshot
   in
@@ -970,6 +1030,7 @@ let make ?ordered_queue ?(launch = shell_launch) ?(fetch = Github_tracker.fetch_
     retry_due = Hashtbl.create 16;
     tracker_retry_due = None;
     attempts = Hashtbl.create 16;
+    previous_attempt_outputs = Hashtbl.create 16;
     blocked = Hashtbl.create 16;
     launch;
     fetch;
@@ -1607,8 +1668,9 @@ let dispatch_issue orchestrator issue =
         let issue = match target_start_status with Some state -> { issue with Issue.state } | None -> issue in
         let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
         let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
+        let previous_attempt_output = Hashtbl.find_opt orchestrator.previous_attempt_outputs issue.id in
         let prompt =
-          compose_prompt ?stage orchestrator.config issue attempt rendered ~workspace
+          compose_prompt ?stage ?previous_attempt_output orchestrator.config issue attempt rendered ~workspace
             ~loop_start_branch:(Some orchestrator.loop_start_branch)
         in
         let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue in
@@ -1630,6 +1692,7 @@ let dispatch_issue orchestrator issue =
           }
         in
         Hashtbl.remove orchestrator.retry_due issue.id;
+        Hashtbl.remove orchestrator.previous_attempt_outputs issue.id;
         update_state orchestrator (fun state ->
           {
             state with
@@ -1670,6 +1733,12 @@ let mark_retrying orchestrator issue_id error =
   | Some row ->
       let next_attempt = Option.value (Hashtbl.find_opt orchestrator.attempts issue_id) ~default:0 + 1 in
       Hashtbl.replace orchestrator.attempts issue_id next_attempt;
+      let previous_attempt_output =
+        match List.find_opt (fun child -> child.issue_id = issue_id) orchestrator.children with
+        | None -> { attempt = next_attempt; stdout_path = None; stderr_path = None }
+        | Some child -> { attempt = next_attempt; stdout_path = child.stdout_path; stderr_path = child.stderr_path }
+      in
+      Hashtbl.replace orchestrator.previous_attempt_outputs issue_id previous_attempt_output;
       let backoff_ms =
         min orchestrator.config.agent.max_retry_backoff_ms (1000 * int_of_float (2. ** float_of_int (next_attempt - 1)))
       in
@@ -1722,6 +1791,7 @@ let mark_blocked orchestrator issue_id error =
   | Some row ->
       Hashtbl.remove orchestrator.attempts issue_id;
       Hashtbl.remove orchestrator.retry_due issue_id;
+      Hashtbl.remove orchestrator.previous_attempt_outputs issue_id;
       Hashtbl.replace orchestrator.blocked (block_key row.issue) error;
       let stage = stage_from_running orchestrator.config row in
       (match retry_status ?stage orchestrator row.issue with
@@ -1762,6 +1832,7 @@ let complete_child ?next_status orchestrator child =
   let pending_identifier = if has_active_next_stage then Some child.issue_identifier else None in
   Hashtbl.remove orchestrator.attempts issue_id;
   Hashtbl.remove orchestrator.retry_due issue_id;
+  Hashtbl.remove orchestrator.previous_attempt_outputs issue_id;
   update_state orchestrator (fun state ->
     {
       state with
