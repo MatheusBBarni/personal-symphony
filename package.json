@@ -1,6 +1,6 @@
 {
   "name": "symphony-orchestrator",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "bin": {
     "symphony": "bin/symphony.js"
