@@ -28,6 +28,10 @@ pi --model <model> --thinking <reasoning> --print --no-session
 
 Command rendering replaces `<model>` and `<reasoning>` tokens for all supported harnesses. Codex keeps its existing command rendering behavior for legacy command shapes.
 
+Agent Harness launches run in their own process group. When a turn or stall timeout fires, Symphony terminates the process group so child agent processes do not survive and continue writing to the Agent Worktree after the task has moved to retry.
+
+Stall timeout activity is measured from agent output growth and Agent Worktree file modifications. This preserves the stall guard for inactive agents while allowing quiet non-interactive harnesses, such as PI print mode, to continue when they are actively changing files but have not emitted stdout or stderr yet.
+
 Stage Goal Handoff remains Codex Harness-specific for the first PI integration. A Stage Agent that enables Stage Goal Handoff on a non-Codex harness is a Readiness Gap until an equivalent non-Codex goal contract exists.
 
 PI Harness readiness validation checks that the configured command executable is available and that PI has authentication for the configured model provider through a subscription login, stored auth file, command-line API key, or supported environment variable. Missing PI installation or auth is reported as a Readiness Gap before dispatch.

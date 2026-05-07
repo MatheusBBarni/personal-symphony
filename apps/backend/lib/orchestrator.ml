@@ -1000,6 +1000,15 @@ let render_harness_command (harness : Config.agent_harness) =
 let codex_command config =
   Config.default_agent_harness config |> render_harness_command
 
+let spawn_shell_command command =
+  match Unix.fork () with
+  | 0 ->
+      (try
+         ignore (Unix.setsid ());
+         Unix.execv "/bin/sh" [| "/bin/sh"; "-lc"; command |]
+       with _ -> Unix._exit 127)
+  | pid -> pid
+
 let shell_launch ~stage ~config ~workspace ~prompt ~issue =
   let stage = match stage with Some _ -> stage | None -> stage_for_issue config issue in
   let harness = Option.value (Config.selected_agent_harness config stage) ~default:(Config.default_agent_harness config) in
@@ -1010,7 +1019,7 @@ let shell_launch ~stage ~config ~workspace ~prompt ~issue =
     Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.Workspace.path) (render_harness_command harness)
       (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path)
   in
-  let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; command |] Unix.stdin Unix.stdout Unix.stderr in
+  let pid = spawn_shell_command command in
   {
     pid = Some pid;
     session_id = Some (Printf.sprintf "pid:%d" pid);
@@ -1140,6 +1149,27 @@ let file_size = function
   | None -> 0
   | Some path -> (
       try (Unix.stat path).Unix.st_size with Unix.Unix_error _ -> 0)
+
+let ignored_activity_dir = function ".git" | "_build" | "node_modules" -> true | _ -> false
+
+let latest_workspace_file_mtime workspace_path excluded_paths =
+  let excluded = List.filter_map Fun.id excluded_paths in
+  let excluded_path path = List.exists (( = ) path) excluded in
+  let rec latest newest path =
+    try
+      let stat = Unix.lstat path in
+      match stat.Unix.st_kind with
+      | Unix.S_REG -> if excluded_path path then newest else max newest stat.Unix.st_mtime
+      | Unix.S_DIR ->
+          let name = Filename.basename path in
+          if path <> workspace_path && ignored_activity_dir name then newest
+          else
+            Sys.readdir path
+            |> Array.fold_left (fun acc entry -> latest acc (Filename.concat path entry)) newest
+      | _ -> newest
+    with Unix.Unix_error _ | Sys_error _ -> newest
+  in
+  latest 0. workspace_path
 
 let file_contents = function
   | None -> ""
@@ -1961,12 +1991,31 @@ let mark_completed orchestrator child =
                     maybe_open_review_pull_request orchestrator child.issue status;
                     complete_child ~next_status:status orchestrator child))))
 
+let signal_child child signal =
+  try Unix.kill (-child.pid) signal
+  with Unix.Unix_error _ -> (try Unix.kill child.pid signal with Unix.Unix_error _ -> ())
+
+let child_reaped child =
+  try
+    match Unix.waitpid [ Unix.WNOHANG ] child.pid with
+    | 0, _ -> false
+    | _ -> true
+  with Unix.Unix_error (Unix.ECHILD, _, _) -> true
+
 let kill_child child =
-  try Unix.kill child.pid Sys.sigterm with Unix.Unix_error _ -> ()
+  signal_child child Sys.sigterm;
+  Unix.sleepf 0.02;
+  if not (child_reaped child) then (
+    signal_child child Sys.sigkill;
+    ignore (try Unix.waitpid [] child.pid with Unix.Unix_error _ -> (0, Unix.WEXITED 0)))
 
 let refresh_child_output ?(force = false) orchestrator child =
   let stdout_size = file_size child.stdout_path in
   let stderr_size = file_size child.stderr_path in
+  let workspace_activity_at =
+    latest_workspace_file_mtime child.workspace.Workspace.path [ child.stdout_path; child.stderr_path ]
+  in
+  let workspace_activity_changed = workspace_activity_at > child.last_output_at in
   if force || stdout_size <> child.stdout_size || stderr_size <> child.stderr_size then (
     child.stdout_size <- stdout_size;
     child.stderr_size <- stderr_size;
@@ -1983,6 +2032,16 @@ let refresh_child_output ?(force = false) orchestrator child =
           last_event_at = Some now;
           tokens = max_tokens row.tokens tokens;
           goal_usage = (match goal_usage with Some _ -> goal_usage | None -> row.goal_usage);
+        }))
+  else if workspace_activity_changed then (
+    child.last_output_at <- Unix.time ();
+    let now = Util.now_iso8601 () in
+    update_running orchestrator child.issue_id (fun row ->
+        {
+          row with
+          Runtime_state.last_event = Some "agent_activity";
+          last_message = Some "workspace files updated";
+          last_event_at = Some now;
         }))
 
 let reap_children orchestrator =

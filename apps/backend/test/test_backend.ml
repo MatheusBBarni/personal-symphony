@@ -28,6 +28,19 @@ let with_env bindings f =
       List.iter (fun (key, value) -> Unix.putenv key value) bindings;
       f ())
 
+let process_alive pid =
+  try
+    Unix.kill pid 0;
+    true
+  with Unix.Unix_error (Unix.ESRCH, _, _) -> false | Unix.Unix_error (Unix.EPERM, _, _) -> true
+
+let rec wait_until_process_exits attempts pid =
+  if attempts <= 0 then not (process_alive pid)
+  else if process_alive pid then (
+    Unix.sleepf 0.02;
+    wait_until_process_exits (attempts - 1) pid)
+  else true
+
 let run_ok ?(cwd = ".") label command =
   match Orchestrator.run_shell_capture ~cwd command with
   | Ok output -> output
@@ -2176,6 +2189,115 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
       in
       Alcotest.(check bool) "timeout goal usage exposed before retry" true saw_goal_usage)
 
+let test_orchestrator_uses_workspace_changes_as_agent_activity () =
+  with_temp_dir "symphony-workspace-activity-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = None;
+              project_status_on_retry = None;
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "true";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 100000;
+              read_timeout_ms = 1000;
+              stall_timeout_ms = 1;
+            };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Quiet activity" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:(Filename.concat root "workspaces") issue.identifier in
+      let stdout_path = Filename.concat workspace.path "stdout.log" in
+      let stderr_path = Filename.concat workspace.path "stderr.log" in
+      Util.write_file stdout_path "";
+      Util.write_file stderr_path "";
+      Util.write_file (Filename.concat workspace.path "changed.ml") "let value = 1\n";
+      let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "sleep 30" |] Unix.stdin Unix.stdout Unix.stderr in
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+          ignore (try Unix.waitpid [] pid with Unix.Unix_error _ -> (0, Unix.WEXITED 0)))
+        (fun () ->
+          let orchestrator =
+            Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+              ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.set_state orchestrator
+            {
+              (Runtime_state.empty ()) with
+              running =
+                [
+                  {
+                    Runtime_state.issue;
+                    stage_agent = None;
+                    stage_states = [];
+                    session_id = Some "pid:quiet";
+                    turn_count = 0;
+                    last_event = Some "launched";
+                    last_message = None;
+                    started_at = "2026-05-04T00:00:00Z";
+                    last_event_at = None;
+                    tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                    goal_usage = None;
+                  };
+                ];
+            };
+          orchestrator.Orchestrator.children <-
+            [
+              {
+                Orchestrator.pid;
+                issue;
+                stage = None;
+                harness = Config.default_agent_harness config;
+                issue_id = issue.id;
+                issue_identifier = issue.identifier;
+                issue_title = issue.title;
+                workspace;
+                started_at = Unix.time ();
+                last_output_at = Unix.time () -. 10.;
+                stdout_path = Some stdout_path;
+                stderr_path = Some stderr_path;
+                stdout_size = 0;
+                stderr_size = 0;
+              };
+            ];
+          Orchestrator.reap_children orchestrator;
+          let state = Orchestrator.get_state orchestrator in
+          Alcotest.(check int) "still running" 1 (List.length state.running);
+          Alcotest.(check int) "not retrying" 0 (List.length state.retrying);
+          match state.running with
+          | [ row ] ->
+              Alcotest.(check (option string)) "activity event" (Some "agent_activity") row.last_event;
+              Alcotest.(check (option string)) "activity message" (Some "workspace files updated") row.last_message
+          | _ -> Alcotest.fail "expected one running row"))
+
 let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
   with_temp_dir "symphony-blocked-goal-usage-" (fun root ->
       let config =
@@ -3087,6 +3209,73 @@ let test_orchestrator_retries_failed_agent () =
           Alcotest.(check string) "retry issue" "I1" retry.issue_id;
           Alcotest.(check int) "retry attempt" 1 retry.attempt
       | [] -> Alcotest.fail "expected retry row")
+
+let test_orchestrator_timeout_kills_agent_process_group () =
+  with_temp_dir "symphony-orchestrator-timeout-group-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = None;
+              project_status_on_retry = None;
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "sh -c 'sleep 30 & echo $! > child.pid; wait'";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 1;
+              read_timeout_ms = 100;
+              stall_timeout_ms = 100000;
+            };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let child_pid_path =
+        Filename.concat (Filename.concat config.workspace.root (Workspace.sanitize issue.identifier)) "child.pid"
+      in
+      let rec wait_for_child_pid attempts =
+        if attempts <= 0 then Alcotest.fail "expected child pid file"
+        else if Sys.file_exists child_pid_path then Util.read_file child_pid_path |> Util.trim |> int_of_string
+        else (
+          Unix.sleepf 0.02;
+          wait_for_child_pid (attempts - 1))
+      in
+      let child_pid = wait_for_child_pid 50 in
+      List.iter (fun (child : Orchestrator.child) -> child.started_at <- Unix.time () -. 10.) orchestrator.children;
+      Unix.sleepf 0.05;
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "retry queued" 1 (List.length state.retrying);
+      Alcotest.(check bool) "nested child killed" true (wait_until_process_exits 50 child_pid))
 
 let test_orchestrator_moves_status_to_review_on_success () =
   with_temp_dir "symphony-orchestrator-status-" (fun root ->
@@ -5940,6 +6129,8 @@ let () =
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
+          Alcotest.test_case "timeout kills agent process group" `Quick
+            test_orchestrator_timeout_kills_agent_process_group;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
@@ -5981,6 +6172,8 @@ let () =
             `Quick test_orchestrator_parses_final_output_when_size_was_already_seen;
           Alcotest.test_case "parses final output before timeout retry"
             `Quick test_orchestrator_parses_final_output_before_timeout_retry;
+          Alcotest.test_case "uses workspace changes as agent activity"
+            `Quick test_orchestrator_uses_workspace_changes_as_agent_activity;
           Alcotest.test_case "preserves goal usage on blocked issue error"
             `Quick test_orchestrator_preserves_goal_usage_on_blocked_issue_error;
           Alcotest.test_case "startup reconciliation merges completed worktrees in order"

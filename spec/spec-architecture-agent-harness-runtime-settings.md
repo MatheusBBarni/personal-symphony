@@ -143,7 +143,7 @@ If both `agents.codex` and the legacy `codex` block are present, `agents.codex` 
 | `reasoningEffort` | Yes | Harness reasoning or thinking level. |
 | `turnTimeoutMs` | Yes | Maximum elapsed time for one agent turn. |
 | `readTimeoutMs` | Yes | Polling sleep chunk used while reading agent output. |
-| `stallTimeoutMs` | Yes | Maximum elapsed time without stdout or stderr growth. |
+| `stallTimeoutMs` | Yes | Maximum elapsed time without agent output growth or Agent Worktree file activity. |
 
 ## 5. Acceptance Criteria
 
