@@ -44,5 +44,5 @@ pnpm frontend:test
 When running from an Agent Worktree nested under `.symphony/workspaces/`, Dune may need an explicit source root. In that case, the backend equivalent is:
 
 ```sh
-pnpm test --root . --no-buffer
+pnpm test -- --root . --no-buffer
 ```
