@@ -161,19 +161,19 @@ let render_web_dashboard_starting ~port =
   Printf.eprintf "%s %s %s %s %s\n%!" (blue "web_dashboard") (yellow "starting") (dim "url") (cyan url)
     (dim (Printf.sprintf "event=web_dashboard status=starting url=%s" url))
 
-let symphoony_banner =
+let symphony_banner =
   [
-    " ____  __   __ __  __ ____  _   _  ___   ___  _   _ __   __";
-    "/ ___| \\ \\ / /|  \\/  |  _ \\| | | |/ _ \\ / _ \\| \\ | |\\ \\ / /";
-    "\\___ \\  \\ V / | |\\/| | |_) | |_| | | | | | | |  \\| | \\ V / ";
-    " ___) |  | |  | |  | |  __/|  _  | |_| | |_| | |\\  |  | |  ";
-    "|____/   |_|  |_|  |_|_|   |_| |_|\\___/ \\___/|_| \\_|  |_|  ";
+    " ____  __   __ __  __ ____  _   _  ___  _   _ __   __";
+    "/ ___| \\ \\ / /|  \\/  |  _ \\| | | |/ _ \\| \\ | |\\ \\ / /";
+    "\\___ \\  \\ V / | |\\/| | |_) | |_| | | | |  \\| | \\ V / ";
+    " ___) |  | |  | |  | |  __/|  _  | |_| | |\\  |  | |  ";
+    "|____/   |_|  |_|  |_|_|   |_| |_|\\___/|_| \\_|  |_|  ";
   ]
 
 let print_section title = Printf.printf "\n%s\n%!" (cyan title)
 
 let render_banner () =
-  List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphoony_banner;
+  List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphony_banner;
   Printf.printf "\n%!"
 
 let render_terminal_console config state =
