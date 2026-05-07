@@ -76,6 +76,10 @@ _Avoid_: workflow file, harness config
 The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, agent, server, and path configuration.
 _Avoid_: config, preferences
 
+**Runtime Settings Invocation Override**:
+A command-line value that replaces one loaded Runtime Settings field for the current Symphony process only.
+_Avoid_: temporary config, settings rewrite, runtime patch
+
 **Stage Agent**:
 A Runtime Settings mapping from project statuses to a named agent instruction file, Agent Harness selection, and optional stage behavior.
 _Avoid_: status agent, workflow step, lane
@@ -308,6 +312,7 @@ _Avoid_: reinitialize, reset
 - Personal Symphony exits before Bootstrap when the current directory is not the root of a **Workspace Repository**.
 - A **Runtime Home** contains the **Runtime Contract**, user-editable settings, and internal state.
 - The **Runtime Contract** contains **Runtime Settings**.
+- A **Runtime Settings Invocation Override** is applied after **Runtime Settings** load and before orchestration, but it is not written into the **Runtime Contract**.
 - The **Runtime Contract** contains an **Agent Prompt**.
 - A **Runtime Home** contains one **Environment Template** and may contain one **Local Environment**.
 - A **Runtime Home** may contain **Runtime State**.
@@ -608,6 +613,8 @@ _Avoid_: reinitialize, reset
 > **Domain expert:** "No, play the **Task Needs Attention** tone because it has higher priority."
 > **Dev:** "Should the dashboard show a list of past sounds?"
 > **Domain expert:** "No, it should show whether **Audio Notifications** are enabled but not keep a notification history."
+> **Dev:** "When an operator passes `--agent.maxTurns`, should Symphony edit `.symphony/settings.json`?"
+> **Domain expert:** "No, that is a **Runtime Settings Invocation Override** for the current process only; the **Runtime Contract** stays unchanged."
 
 ## Flagged Ambiguities
 
@@ -634,3 +641,4 @@ _Avoid_: reinitialize, reset
 - "maxConcurrentAgents for each stage" was used to mean concurrency caps per Stage Agent; resolved: use **Stage Concurrency Policy**.
 - "full context" and "context compression" were used broadly for launch-time context; resolved: use **Agent Context Snapshot** for bounded deterministic launch context and **Context Command** for optional operator-generated stdout.
 - "agent command" was used to mean both a local executable string and the selectable launch behavior for a Stage Agent; resolved: use **Agent Harness** for the named Runtime Settings launch configuration, with **Codex Harness** and **PI Harness** as concrete harness kinds.
+- "CLI override" was used to mean replacing Runtime Settings for one run without editing `.symphony/settings.json`; resolved: use **Runtime Settings Invocation Override**.
