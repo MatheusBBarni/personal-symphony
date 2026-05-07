@@ -62,6 +62,21 @@ type pull_request_handoff = {
   error : string option;
 }
 
+type context_diagnostic = {
+  issue_id : string;
+  issue_identifier : string;
+  stage_agent : string option;
+  diagnostic_id : string;
+  diagnostic_path : string;
+  command_name : string option;
+  cwd_kind : string option;
+  timed_out : bool option;
+  exit_code : int option;
+  stdout_bytes : int option;
+  stderr_bytes : int option;
+  stdout_truncated : bool option;
+}
+
 type t = {
   workspace_repository_name : string option;
   issues : Issue.t list;
@@ -78,6 +93,7 @@ type t = {
   ordered_queue : ordered_queue option;
   startup_reconciliation : startup_reconciliation list;
   task_branch_integrations : task_branch_integration list;
+  context_diagnostics : context_diagnostic list;
   last_error : string option;
 }
 
@@ -98,6 +114,7 @@ let empty ?workspace_repository_name ?(readiness_gaps = []) ?(status_order = [])
     ordered_queue;
     startup_reconciliation = [];
     task_branch_integrations = [];
+    context_diagnostics = [];
     last_error;
   }
 
@@ -250,6 +267,23 @@ let pull_request_handoff_to_yojson row =
       ("error", (match row.error with Some s -> `String s | None -> `Null));
     ]
 
+let context_diagnostic_to_yojson row =
+  `Assoc
+    [
+      ("issue_id", `String row.issue_id);
+      ("issue_identifier", `String row.issue_identifier);
+      ("stage_agent", (match row.stage_agent with Some s -> `String s | None -> `Null));
+      ("diagnostic_id", `String row.diagnostic_id);
+      ("diagnostic_path", `String row.diagnostic_path);
+      ("command_name", (match row.command_name with Some s -> `String s | None -> `Null));
+      ("cwd_kind", (match row.cwd_kind with Some s -> `String s | None -> `Null));
+      ("timed_out", (match row.timed_out with Some s -> `Bool s | None -> `Null));
+      ("exit_code", (match row.exit_code with Some s -> `Int s | None -> `Null));
+      ("stdout_bytes", (match row.stdout_bytes with Some s -> `Int s | None -> `Null));
+      ("stderr_bytes", (match row.stderr_bytes with Some s -> `Int s | None -> `Null));
+      ("stdout_truncated", (match row.stdout_truncated with Some s -> `Bool s | None -> `Null));
+    ]
+
 let to_yojson state =
   `Assoc
     [
@@ -276,5 +310,6 @@ let to_yojson state =
       ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
       ("startup_reconciliation", `List (List.map startup_reconciliation_to_yojson state.startup_reconciliation));
       ("task_branch_integrations", `List (List.map task_branch_integration_to_yojson state.task_branch_integrations));
+      ("context_diagnostics", `List (List.map context_diagnostic_to_yojson state.context_diagnostics));
       ("last_error", (match state.last_error with Some s -> `String s | None -> `Null));
     ]
