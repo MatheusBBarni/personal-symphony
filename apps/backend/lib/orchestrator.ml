@@ -1684,7 +1684,7 @@ let dispatch_issue orchestrator issue =
           Option.value (Config.selected_agent_harness orchestrator.config stage)
             ~default:(Config.default_agent_harness orchestrator.config)
         in
-        let launched = orchestrator.launch ~config:orchestrator.config ~workspace ~prompt ~issue:launch_issue in
+        let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
         let now = Util.now_iso8601 () in
         let stage_agent, stage_states = selected_stage_fields stage in
         let row =
