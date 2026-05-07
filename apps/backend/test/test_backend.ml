@@ -3941,6 +3941,26 @@ let prompt_from_context_command root command =
   Orchestrator.poll_once orchestrator;
   (!captured_prompt, !launch_count, Orchestrator.get_state orchestrator)
 
+let json_has_member name = function `Assoc fields -> List.mem_assoc name fields | _ -> false
+
+let context_diagnostic_file state =
+  let open Yojson.Safe.Util in
+  match Runtime_state.to_yojson state |> member "context_diagnostics" |> to_list with
+  | [ row ] ->
+      let path = row |> member "diagnostic_path" |> to_string in
+      (row, path, Yojson.Safe.from_file path)
+  | rows -> Alcotest.fail (Printf.sprintf "expected one context diagnostic, got %d" (List.length rows))
+
+let context_diagnostics_dir root = Filename.concat (Filename.concat (Filename.concat root ".symphony") "state") "context-diagnostics"
+
+let context_diagnostic_json_file_count root =
+  let dir = context_diagnostics_dir root in
+  if Sys.file_exists dir then
+    Sys.readdir dir |> Array.to_list
+    |> List.filter (fun name -> Filename.check_suffix name ".json")
+    |> List.length
+  else 0
+
 let first_running_context_status_field field state =
   let open Yojson.Safe.Util in
   Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd |> member "context_status" |> member field
@@ -4130,6 +4150,178 @@ printf '0123456789EXTRA-CONTENT'
         (contains_substring prompt "[warning: stdout exceeded maxOutputBytes; truncated to 10 bytes]");
       Alcotest.(check bool) "stdout prefix included" true (contains_substring prompt "0123456789");
       Alcotest.(check bool) "stdout remainder excluded" false (contains_substring prompt "EXTRA-CONTENT"))
+
+let test_orchestrator_persists_context_command_success_diagnostics () =
+  with_temp_dir "symphony-context-diagnostics-success-" (fun root ->
+      let runtime_home = Filename.concat root ".symphony" in
+      Util.mkdir_p runtime_home;
+      let settings_path = Filename.concat runtime_home "settings.json" in
+      let prompt_path = Filename.concat runtime_home "prompt.md" in
+      Util.write_file settings_path "{\"sentinel\":\"runtime settings stay unchanged\"}\n";
+      Util.write_file prompt_path "Runtime Contract prompt sentinel\n";
+      let script = Filename.concat root "success-diagnostics.sh" in
+      write_executable script
+        {|#!/bin/sh
+printf 'VISIBLE-BUT-NOT-PERSISTED'
+printf 'diagnostic stderr' >&2
+|};
+      let _prompt, launch_count, state = prompt_from_context_command root (stage_context_command [ script ]) in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      let open Yojson.Safe.Util in
+      let state_row, diagnostic_path, diagnostic = context_diagnostic_file state in
+      Alcotest.(check bool) "diagnostic file exists" true (Sys.file_exists diagnostic_path);
+      Alcotest.(check bool) "diagnostic under Runtime State" true
+        (String.starts_with ~prefix:(Filename.concat runtime_home "state") diagnostic_path);
+      Alcotest.(check string) "state diagnostic path" diagnostic_path (state_row |> member "diagnostic_path" |> to_string);
+      Alcotest.(check string) "kind" "Context Diagnostics" (diagnostic |> member "kind" |> to_string);
+      Alcotest.(check string) "issue" "#1" (diagnostic |> member "issueIdentifier" |> to_string);
+      Alcotest.(check string) "stage" "engineer" (diagnostic |> member "stageAgent" |> to_string);
+      Alcotest.(check int) "attempt" 1 (diagnostic |> member "attempt" |> to_int);
+      Alcotest.(check bool) "snapshot enabled" true (diagnostic |> member "snapshot" |> member "enabled" |> to_bool);
+      Alcotest.(check bool) "snapshot bytes recorded" true
+        ((diagnostic |> member "snapshot" |> member "renderedBytes" |> to_int) > 0);
+      let command = diagnostic |> member "command" in
+      Alcotest.(check string) "command name" script (command |> member "name" |> to_string);
+      Alcotest.(check string) "cwd kind" "agentWorktree" (command |> member "cwdKind" |> to_string);
+      Alcotest.(check int) "exit code" 0 (command |> member "exitCode" |> to_int);
+      Alcotest.(check bool) "not timed out" false (command |> member "timedOut" |> to_bool);
+      Alcotest.(check bool) "stdout bytes recorded" true ((command |> member "stdoutBytes" |> to_int) > 0);
+      Alcotest.(check bool) "stderr bytes recorded" true ((command |> member "stderrBytes" |> to_int) > 0);
+      Alcotest.(check bool) "stdout not truncated" false (command |> member "stdoutTruncated" |> to_bool);
+      Alcotest.(check bool) "stdout persistence disabled" false (command |> member "stdoutPersisted" |> to_bool);
+      Alcotest.(check bool) "stdout field absent" false (json_has_member "stdout" command);
+      let diagnostic_text = Util.read_file diagnostic_path in
+      Alcotest.(check bool) "full stdout absent" false
+        (contains_substring diagnostic_text "VISIBLE-BUT-NOT-PERSISTED");
+      Alcotest.(check string) "settings unchanged" "{\"sentinel\":\"runtime settings stay unchanged\"}\n"
+        (Util.read_file settings_path);
+      Alcotest.(check string) "prompt unchanged" "Runtime Contract prompt sentinel\n" (Util.read_file prompt_path);
+      Alcotest.(check bool) "settings has no diagnostics" false
+        (contains_substring (Util.read_file settings_path) "Context Diagnostics"))
+
+let test_orchestrator_prunes_context_diagnostic_files () =
+  with_temp_dir "symphony-context-diagnostics-prune-" (fun root ->
+      let command = stage_context_command [ "true" ] in
+      let base_config = stage_context_test_config ~context_snapshot:false ~context_command:command root in
+      let config = { base_config with Config.agent = { base_config.agent with max_concurrent_agents = 105 } } in
+      let rec build_issues index acc =
+        if index = 0 then acc
+        else
+          let identifier = "#" ^ string_of_int index in
+          let issue =
+            Issue.empty ~id:("I" ^ string_of_int index) ~identifier ~title:("Issue " ^ string_of_int index)
+              ~state:"Todo"
+          in
+          build_issues (index - 1) (issue :: acc)
+      in
+      let issues = build_issues 105 [] in
+      let launch_count = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launch_count;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      let open Yojson.Safe.Util in
+      let state_rows = Runtime_state.to_yojson state |> member "context_diagnostics" |> to_list in
+      Alcotest.(check int) "all launches happened" 105 !launch_count;
+      Alcotest.(check int) "state diagnostics capped" 100 (List.length state_rows);
+      Alcotest.(check int) "diagnostic files capped" 100 (context_diagnostic_json_file_count root);
+      List.iter
+        (fun row ->
+          let path = row |> member "diagnostic_path" |> to_string in
+          Alcotest.(check bool) "retained diagnostic file exists" true (Sys.file_exists path))
+        state_rows)
+
+let test_orchestrator_persists_context_command_timeout_diagnostics () =
+  with_temp_dir "symphony-context-diagnostics-timeout-" (fun root ->
+      let script = Filename.concat root "timeout-diagnostics.sh" in
+      write_executable script
+        {|#!/bin/sh
+sleep 1
+printf 'late stdout'
+|};
+      let _prompt, launch_count, state =
+        prompt_from_context_command root (stage_context_command ~timeout_ms:20 [ script ])
+      in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      let open Yojson.Safe.Util in
+      let _, _, diagnostic = context_diagnostic_file state in
+      let command = diagnostic |> member "command" in
+      Alcotest.(check bool) "timed out" true (command |> member "timedOut" |> to_bool);
+      Alcotest.(check bool) "duration recorded" true ((command |> member "durationMs" |> to_int) >= 0);
+      Alcotest.(check bool) "stdout persistence disabled" false (command |> member "stdoutPersisted" |> to_bool))
+
+let test_orchestrator_persists_context_command_truncation_diagnostics () =
+  with_temp_dir "symphony-context-diagnostics-truncate-" (fun root ->
+      let script = Filename.concat root "truncation-diagnostics.sh" in
+      write_executable script
+        {|#!/bin/sh
+printf '0123456789EXTRA-CONTENT'
+|};
+      let _prompt, launch_count, state =
+        prompt_from_context_command root (stage_context_command ~max_output_bytes:10 [ script ])
+      in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      let open Yojson.Safe.Util in
+      let _, diagnostic_path, diagnostic = context_diagnostic_file state in
+      let command = diagnostic |> member "command" in
+      Alcotest.(check bool) "stdout truncated" true (command |> member "stdoutTruncated" |> to_bool);
+      Alcotest.(check bool) "stdout byte count is raw output" true ((command |> member "stdoutBytes" |> to_int) > 10);
+      Alcotest.(check bool) "full stdout still absent" false
+        (contains_substring (Util.read_file diagnostic_path) "EXTRA-CONTENT"))
+
+let test_orchestrator_persists_context_command_nonzero_diagnostics () =
+  with_temp_dir "symphony-context-diagnostics-nonzero-" (fun root ->
+      let script = Filename.concat root "nonzero-diagnostics.sh" in
+      write_executable script
+        {|#!/bin/sh
+printf 'failure stdout'
+printf 'failure stderr' >&2
+exit 7
+|};
+      let _prompt, launch_count, state = prompt_from_context_command root (stage_context_command [ script ]) in
+      Alcotest.(check int) "launch still happens" 1 launch_count;
+      let open Yojson.Safe.Util in
+      let _, diagnostic_path, diagnostic = context_diagnostic_file state in
+      let command = diagnostic |> member "command" in
+      Alcotest.(check int) "exit code" 7 (command |> member "exitCode" |> to_int);
+      Alcotest.(check bool) "not timed out" false (command |> member "timedOut" |> to_bool);
+      Alcotest.(check bool) "stdout bytes recorded" true ((command |> member "stdoutBytes" |> to_int) > 0);
+      Alcotest.(check bool) "stderr bytes recorded" true ((command |> member "stderrBytes" |> to_int) > 0);
+      let diagnostic_text = Util.read_file diagnostic_path in
+      Alcotest.(check bool) "failure stdout absent" false (contains_substring diagnostic_text "failure stdout");
+      Alcotest.(check bool) "failure stderr absent" false (contains_substring diagnostic_text "failure stderr"))
+
+let test_orchestrator_keeps_context_diagnostics_secret_free () =
+  with_env [ ("GITHUB_TOKEN", "github-diagnostic-token"); ("GH_TOKEN", "gh-diagnostic-token") ] (fun () ->
+      with_temp_dir "symphony-context-diagnostics-secrets-" (fun root ->
+          let runtime_home = Filename.concat root ".symphony" in
+          Util.mkdir_p runtime_home;
+          Util.write_file (Filename.concat runtime_home ".env") "LOCAL_ENV_DIAGNOSTIC_SECRET=local-env-value\n";
+          let script = Filename.concat root "github-diagnostic-token-script.sh" in
+          write_executable script
+            {|#!/bin/sh
+printf 'github=%s\n' "$GITHUB_TOKEN"
+printf 'gh=%s\n' "$GH_TOKEN" >&2
+|};
+          let _prompt, launch_count, state = prompt_from_context_command root (stage_context_command [ script ]) in
+          Alcotest.(check int) "launch still happens" 1 launch_count;
+          let _, diagnostic_path, diagnostic = context_diagnostic_file state in
+          let open Yojson.Safe.Util in
+          Alcotest.(check string) "redacted command name" (Filename.concat root "[redacted]-script.sh")
+            (diagnostic |> member "command" |> member "name" |> to_string);
+          let diagnostic_text = Util.read_file diagnostic_path in
+          Alcotest.(check bool) "github token absent" false
+            (contains_substring diagnostic_text "github-diagnostic-token");
+          Alcotest.(check bool) "gh token absent" false (contains_substring diagnostic_text "gh-diagnostic-token");
+          Alcotest.(check bool) "local env contents absent" false
+            (contains_substring diagnostic_text "LOCAL_ENV_DIAGNOSTIC_SECRET");
+          Alcotest.(check bool) "local env value absent" false (contains_substring diagnostic_text "local-env-value")))
 
 let test_orchestrator_omits_retry_output_on_first_launch () =
   with_temp_dir "symphony-context-first-launch-" (fun root ->
@@ -6637,6 +6829,18 @@ let () =
             test_orchestrator_warns_when_context_command_times_out;
           Alcotest.test_case "truncates context command stdout" `Quick
             test_orchestrator_truncates_context_command_stdout;
+          Alcotest.test_case "persists successful context command diagnostics" `Quick
+            test_orchestrator_persists_context_command_success_diagnostics;
+          Alcotest.test_case "prunes context diagnostic files" `Quick
+            test_orchestrator_prunes_context_diagnostic_files;
+          Alcotest.test_case "persists timed out context command diagnostics" `Quick
+            test_orchestrator_persists_context_command_timeout_diagnostics;
+          Alcotest.test_case "persists truncated context command diagnostics" `Quick
+            test_orchestrator_persists_context_command_truncation_diagnostics;
+          Alcotest.test_case "persists nonzero context command diagnostics" `Quick
+            test_orchestrator_persists_context_command_nonzero_diagnostics;
+          Alcotest.test_case "keeps context diagnostics secret-free" `Quick
+            test_orchestrator_keeps_context_diagnostics_secret_free;
           Alcotest.test_case "omits retry output on first launch" `Quick
             test_orchestrator_omits_retry_output_on_first_launch;
           Alcotest.test_case "includes retry output on retry launch" `Quick

@@ -442,7 +442,7 @@ _Avoid_: reinitialize, reset
 - **Runtime State** exposes live **Context Status** for running or retrying work.
 - **Context Status** is the per-task **Runtime State** field that reports **Agent Context Snapshot** and **Context Command** generation without replacing task state, **Goal Usage**, or readiness summaries.
 - When current **Runtime State** rows carry **Context Status** and context behavior is disabled or not applicable, the **Context Status** is `skipped`; older Runtime State snapshots may omit the field.
-- **Runtime Diagnostics** may store bounded, secret-free **Agent Context Snapshot** and **Context Command** metadata.
+- **Runtime Diagnostics** may store bounded, secret-free **Agent Context Snapshot** and **Context Command** metadata; Context Diagnostics files are pruned to the same retention cap as Runtime State summaries.
 - A **Context Command** belongs to a **Stage Agent** mapping.
 - A **Context Command** stdout may supplement an **Agent Context Snapshot**.
 - A **Context Command** stderr and failures are **Runtime Diagnostics** by default.
