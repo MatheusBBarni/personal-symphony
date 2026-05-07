@@ -111,8 +111,9 @@ stage that should use PI at that harness with `harness`:
 ```
 
 When the `agents` object is present, each configured Stage Agent should select an existing Agent
-Harness with `harness` unless its `agent` name also matches a harness name. PI readiness checks require
-the `pi` executable on `PATH` and provider authentication for the configured model.
+Harness with `harness` unless its `agent` name also matches a harness name. Selected PI Harnesses require
+the `pi` executable on `PATH` and provider authentication for the configured model; unused PI Harness
+definitions do not make PI a prerequisite for Codex-only dispatch.
 
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.

@@ -20,6 +20,8 @@ The legacy Runtime Settings `codex` block remains supported as a backwards-compa
 
 Stage Agent mappings may use `harness` to select the named Agent Harness independently from the `agent` instruction file. Existing Runtime Settings that omit `harness` continue using their `agent` identifier as the harness selector. If a Stage Agent selects an unknown harness, Symphony reports a Readiness Gap instead of dispatching work.
 
+Readiness validation uses enabled Stage Agent mappings as the dispatch boundary for Agent Harness launch requirements. Required Agent Harness fields and launch environment checks are validated for selected Agent Harnesses; unused Agent Harness definitions do not block dispatch solely because their launch path is unavailable.
+
 The first PI Harness uses PI non-interactive print mode with the default command shape:
 
 ```sh
@@ -34,7 +36,7 @@ Stall timeout activity is measured from agent output growth and Agent Worktree f
 
 Stage Goal Handoff remains Codex Harness-specific for the first PI integration. A Stage Agent that enables Stage Goal Handoff on a non-Codex harness is a Readiness Gap until an equivalent non-Codex goal contract exists.
 
-PI Harness readiness validation checks that the configured command executable is available and that PI has authentication for the configured model provider through a subscription login, stored auth file, command-line API key, or supported environment variable. Missing PI installation or auth is reported as a Readiness Gap before dispatch.
+PI Harness readiness validation checks only PI Harnesses selected by enabled Stage Agent mappings. For those selected PI Harnesses, Symphony checks that the configured command executable is available and that PI has authentication for the configured model provider through a subscription login, stored auth file, command-line API key, or supported environment variable. Missing PI installation or auth is reported as a Readiness Gap before dispatch. Unused PI Harness definitions may remain in Runtime Settings without requiring every operator to install or authenticate PI.
 
 ## Consequences
 

@@ -346,9 +346,11 @@ _Avoid_: reinitialize, reset
 - An **Agent Worktree** is an **Agent Workspace**.
 - The **Runtime Settings** may define many named **Agent Harnesses**.
 - A **Stage Agent** mapping selects an **Agent Harness** with `harness` when present, falling back to its `agent` identifier for older Runtime Settings.
+- Agent Harness readiness follows enabled **Stage Agent** mappings instead of every unused Agent Harness definition.
 - A legacy Runtime Settings `codex` block is a backwards-compatible **Codex Harness** definition.
 - A **PI Harness** uses PI non-interactive print mode for the first PI integration.
-- A **PI Harness** must have an installed command executable and PI authentication before dispatch.
+- A selected **PI Harness** must have an installed command executable and PI authentication before dispatch.
+- An unused **PI Harness** definition must not create PI install or authentication **Readiness Gaps**.
 - A **PI Harness** must preserve Agent Worktree, Task Branch, Agent Prompt, Stage Commit, Stage Push, retry, and status transition behavior.
 - The **Runtime Settings** contain a **Git Policy**.
 - A **Git Policy** may contain an **Allowed Loop-Start Branch Policy**.

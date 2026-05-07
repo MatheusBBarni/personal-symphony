@@ -1201,6 +1201,7 @@ let test_agent_harness_readiness_gaps () =
           let agents_root = Filename.concat root ".symphony/agents" in
           Util.mkdir_p agents_root;
           Util.write_file (Filename.concat agents_root "pi.md") "PI";
+          Util.write_file (Filename.concat agents_root "bad.md") "Bad";
           let settings = Filename.concat root "settings.json" in
           Util.write_file settings
             {|{
@@ -1215,7 +1216,8 @@ let test_agent_harness_readiness_gaps () =
     "root": ".symphony/agents",
     "stages": [
       {"states": ["Todo"], "agent": "pi", "goal": {"enabled": true}},
-      {"states": ["In review"], "agent": "missing"}
+      {"states": ["In review"], "agent": "missing"},
+      {"states": ["Blocked"], "agent": "bad"}
     ]
   }
 }|};
@@ -1235,7 +1237,9 @@ let test_pi_harness_readiness_checks_install_and_auth () =
   with_temp_dir "symphony-pi-readiness-" (fun root ->
       let agent_dir = Filename.concat root "pi-agent" in
       let settings = Filename.concat root "settings.json" in
-      Util.mkdir_p (Filename.concat root ".symphony");
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
       let write_settings command =
         Util.write_file settings
           (Printf.sprintf
@@ -1250,7 +1254,11 @@ let test_pi_harness_readiness_checks_install_and_auth () =
       "reasoningEffort": "medium"
     }
   },
-  "stageAgents": {"enabled": false}
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+  }
 }|}
              (Yojson.Safe.to_string (`String command)))
       in
@@ -1267,9 +1275,95 @@ let test_pi_harness_readiness_checks_install_and_auth () =
           Alcotest.(check bool) "missing pi auth" true
             (List.exists (( = ) "agents.pi.auth") (requirements ()));
           Util.mkdir_p agent_dir;
-          Util.write_file (Filename.concat agent_dir "auth.json") {|{"openai-codex":{"access":"test-token"}}|};
+          Util.write_file (Filename.concat agent_dir "auth.json") {|{"openai-codex":{"access":true}}|};
           Alcotest.(check bool) "configured pi auth" false
             (List.exists (( = ) "agents.pi.auth") (requirements ()))))
+
+let test_pi_harness_readiness_ignores_unselected_harnesses () =
+  with_temp_dir "symphony-pi-optional-readiness-" (fun root ->
+      let agent_dir = Filename.concat root "pi-agent" in
+      let settings = Filename.concat root "settings.json" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      let requirements () =
+        Config.from_settings_file ~workspace_root:root settings
+        |> Config.readiness_gaps
+        |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+      in
+      let has requirement requirements = List.exists (( = ) requirement) requirements in
+      let check_no_pi_gaps label requirements =
+        Alcotest.(check bool) (label ^ " install") false (has "agents.pi.install" requirements);
+        Alcotest.(check bool) (label ^ " auth") false (has "agents.pi.auth" requirements)
+      in
+      with_env [ ("GITHUB_TOKEN", "token"); ("PI_CODING_AGENT_DIR", agent_dir) ] (fun () ->
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {"command": "codex exec"},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+          check_no_pi_gaps "legacy Codex-only Runtime Settings" (requirements ());
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "agents": {
+    "codex": {"kind": "codex", "command": "codex exec"},
+    "pi": {
+      "kind": "pi",
+      "command": "/definitely/missing/pi --print",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "medium"
+    }
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "codex"}]
+  }
+}|};
+          check_no_pi_gaps "unused PI Harness" (requirements ());
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "agents": {
+    "codex": {"kind": "codex", "command": "codex exec"},
+    "pi": {
+      "kind": "pi",
+      "command": "/definitely/missing/pi --print",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "medium"
+    }
+  },
+  "stageAgents": {"enabled": false}
+}|};
+          check_no_pi_gaps "disabled Stage Agent mappings" (requirements ());
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {"command": ""},
+  "agents": {
+    "pi": {
+      "kind": "pi",
+      "command": "sh -c 'cat >/dev/null' --api-key=$PI_TEST_API_KEY",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "medium"
+    }
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+  }
+}|};
+          let pi_only_requirements = requirements () in
+          check_no_pi_gaps "PI-only Runtime Settings" pi_only_requirements;
+          Alcotest.(check bool) "PI-only does not require legacy Codex command" false
+            (has "agents.codex.command" pi_only_requirements)))
 
 let test_project_status_order_uses_transition_flow () =
   let tracker =
@@ -6725,6 +6819,8 @@ let () =
           Alcotest.test_case "validates agent harness readiness" `Quick test_agent_harness_readiness_gaps;
           Alcotest.test_case "validates PI harness install and auth" `Quick
             test_pi_harness_readiness_checks_install_and_auth;
+          Alcotest.test_case "ignores unselected PI harness readiness" `Quick
+            test_pi_harness_readiness_ignores_unselected_harnesses;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
           Alcotest.test_case "validates stage concurrency policy" `Quick test_config_validates_stage_concurrency_policy;
