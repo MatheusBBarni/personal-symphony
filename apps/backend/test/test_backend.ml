@@ -822,6 +822,8 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -902,6 +904,8 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -998,6 +1002,8 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -1063,21 +1069,102 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
       Alcotest.(check string) "pi prompt piped" "Engineer stage instructions\n\n---\n\nStage agent: engineer\n\nIssue #1"
         (Util.read_file (Filename.concat child.workspace.path "pi.prompt") |> Util.trim))
 
+let has_readiness_requirement requirement gaps =
+  List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = requirement) gaps
+
+let test_config_defaults_to_github_tracker_kind () =
+  with_temp_dir "symphony-settings-default-tracker-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "default tracker kind" "github" config.tracker.kind;
+      Alcotest.(check string) "owner" "acme" config.tracker.owner;
+      Alcotest.(check string) "repo" "widgets" config.tracker.repo;
+      Alcotest.(check int) "project number" 7 config.tracker.project_number)
+
+let test_config_parses_minibeads_tracker_defaults () =
+  with_temp_dir "symphony-settings-minibeads-defaults-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings {|{"tracker": {"kind": "minibeads"}}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "tracker kind" "minibeads" config.tracker.kind;
+      Alcotest.(check string) "default command" Config.default_minibeads_command config.tracker.minibeads_command;
+      Alcotest.(check string) "default root"
+        (Filename.concat (Unix.realpath root) Config.default_minibeads_root)
+        config.tracker.minibeads_root)
+
+let test_config_parses_minibeads_tracker_settings () =
+  with_temp_dir "symphony-settings-minibeads-explicit-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      Util.mkdir_p (Filename.concat root ".local");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"kind": "minibeads", "root": ".local/issues", "command": "custom-mb"}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "tracker kind" "minibeads" config.tracker.kind;
+      Alcotest.(check string) "custom command" "custom-mb" config.tracker.minibeads_command;
+      Alcotest.(check string) "custom root"
+        (Filename.concat (Filename.concat (Unix.realpath root) ".local") "issues")
+        config.tracker.minibeads_root)
+
 let test_invalid_tracker_kind () =
-  let content =
-    {|
----
-tracker:
-  kind: linear
----
-body
-|}
-  in
-  with_temp_file content (fun path ->
-      let workflow = Workflow.load path in
+  with_temp_dir "symphony-settings-invalid-tracker-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings {|{"tracker": {"kind": "linear"}}|};
       Alcotest.check_raises "linear rejected"
-        (Config.Invalid_config "tracker.kind must be github for this implementation")
-        (fun () -> ignore (Config.from_workflow workflow)))
+        (Config.Invalid_config "Unsupported tracker.kind linear. Set tracker.kind to github or minibeads.")
+        (fun () -> ignore (Config.from_settings_file ~workspace_root:root settings)))
+
+let test_github_tracker_readiness_keeps_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-settings-github-gaps-" (fun root ->
+          Util.mkdir_p (Filename.concat root ".symphony");
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"kind": "github", "owner": "your-org", "repo": "your-repo", "projectNumber": 0}
+}|};
+          let gaps = Config.from_settings_file ~workspace_root:root settings |> Config.readiness_gaps in
+          Alcotest.(check bool) "owner gap" true (has_readiness_requirement "tracker.owner" gaps);
+          Alcotest.(check bool) "repo gap" true (has_readiness_requirement "tracker.repo" gaps);
+          Alcotest.(check bool) "project gap" true (has_readiness_requirement "tracker.projectNumber" gaps);
+          Alcotest.(check bool) "token gap" true (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
+
+let test_minibeads_tracker_readiness_skips_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-settings-minibeads-gaps-" (fun root ->
+          Util.mkdir_p (Filename.concat root ".symphony");
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings {|{"tracker": {"kind": "minibeads"}}|};
+          let gaps = Config.from_settings_file ~workspace_root:root settings |> Config.readiness_gaps in
+          Alcotest.(check bool) "owner gap skipped" false (has_readiness_requirement "tracker.owner" gaps);
+          Alcotest.(check bool) "repo gap skipped" false (has_readiness_requirement "tracker.repo" gaps);
+          Alcotest.(check bool) "project gap skipped" false (has_readiness_requirement "tracker.projectNumber" gaps);
+          Alcotest.(check bool) "token gap skipped" false (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
+
+let test_minibeads_settings_load_without_github_token () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-runtime-minibeads-" (fun root ->
+          let runtime_home = Filename.concat root ".symphony" in
+          Util.mkdir_p runtime_home;
+          let settings = Filename.concat runtime_home "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"kind": "minibeads", "root": ".beads", "command": "mb"},
+  "project": {"activeStates": ["open"], "terminalStates": ["closed"], "startStatus": "in_progress", "reviewStatus": "closed", "retryStatus": "open"}
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check string) "tracker kind" "minibeads" config.tracker.kind;
+          Alcotest.(check bool) "github token not required" false
+            (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
 
 let test_legacy_codex_app_server_command_normalizes_to_exec () =
   let content =
@@ -1393,6 +1480,8 @@ let test_project_status_order_uses_transition_flow () =
       project_number = 7;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Backlog"; "Todo"; "To-Do"; "In progress"; "In Progress"; "In review" ];
       terminal_states = [ "Done"; "Closed"; "Cancelled" ];
       project_status_field = "Status";
@@ -1863,6 +1952,8 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -2251,6 +2342,8 @@ let test_orchestrator_notifies_each_state_mutation () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -2297,6 +2390,8 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -2405,6 +2500,8 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -2521,6 +2618,8 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -2630,6 +2729,8 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -2700,6 +2801,8 @@ let test_github_project_field_parsing () =
       project_number = 7;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Todo"; "In Progress" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -2760,6 +2863,8 @@ let test_github_active_state_filtering () =
       project_number = 7;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -2811,6 +2916,8 @@ let test_github_empty_project_field_values_are_ignored () =
       project_number = 2;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "To-Do" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -2849,6 +2956,8 @@ let test_github_status_metadata_parsing () =
       project_number = 2;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -2928,6 +3037,8 @@ let stage_capacity_config root ~global_cap =
         project_number = 7;
         api_key_env = "GITHUB_TOKEN";
         api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
         active_states = [ "Backlog"; "Todo"; "In progress"; "In review" ];
         terminal_states = [ "Done"; "Human attention" ];
         project_status_field = "Status";
@@ -3021,6 +3132,8 @@ let test_orchestrator_dispatch_limits () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3200,6 +3313,8 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo"; "In progress"; "In review" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3316,6 +3431,8 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3388,6 +3505,8 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3442,6 +3561,8 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3496,6 +3617,8 @@ let test_orchestrator_retries_failed_agent () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3547,6 +3670,8 @@ let test_orchestrator_timeout_kills_agent_process_group () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3614,6 +3739,8 @@ let test_orchestrator_moves_status_to_review_on_success () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3675,6 +3802,8 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3775,6 +3904,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3905,6 +4036,8 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3978,6 +4111,8 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         project_number = 7;
         api_key_env = "GITHUB_TOKEN";
         api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
         active_states = [ "Todo" ];
         terminal_states = [ "Done" ];
         project_status_field = "Status";
@@ -4565,6 +4700,8 @@ let test_orchestrator_truncates_agent_context_snapshot () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4696,6 +4833,8 @@ let test_orchestrator_commits_stage_before_success_status () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4842,6 +4981,8 @@ let test_orchestrator_retries_when_success_status_move_fails () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4911,6 +5052,8 @@ let test_orchestrator_retries_push_failure_before_success_status () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -5007,6 +5150,8 @@ let test_stage_commit_requires_code_changes () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -5065,6 +5210,8 @@ let test_orchestrator_does_not_retry_empty_commit () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -5161,6 +5308,8 @@ let base_orchestrator_config root git =
         project_number = 7;
         api_key_env = "GITHUB_TOKEN";
         api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
         active_states = [ "Todo"; "In progress" ];
         terminal_states = [ "Done" ];
         project_status_field = "Status";
@@ -6830,7 +6979,19 @@ let () =
         ] );
       ( "config",
         [
-          Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind;
+          Alcotest.test_case "defaults omitted tracker kind to github" `Quick
+            test_config_defaults_to_github_tracker_kind;
+          Alcotest.test_case "parses minibeads tracker defaults" `Quick
+            test_config_parses_minibeads_tracker_defaults;
+          Alcotest.test_case "parses minibeads tracker settings" `Quick
+            test_config_parses_minibeads_tracker_settings;
+          Alcotest.test_case "rejects unsupported tracker kind" `Quick test_invalid_tracker_kind;
+          Alcotest.test_case "keeps github readiness gaps" `Quick
+            test_github_tracker_readiness_keeps_github_gaps;
+          Alcotest.test_case "skips github readiness gaps for minibeads" `Quick
+            test_minibeads_tracker_readiness_skips_github_gaps;
+          Alcotest.test_case "loads minibeads settings without github token" `Quick
+            test_minibeads_settings_load_without_github_token;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "parses agent harnesses" `Quick
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
