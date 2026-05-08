@@ -3091,9 +3091,10 @@ let reap_children orchestrator =
   ignore finished
 
 let poll_once orchestrator =
-  reap_children orchestrator;
-  render_poll_started orchestrator;
-  match Config.allowed_loop_start_branch_policy_gap orchestrator.config with
+  try
+    reap_children orchestrator;
+    render_poll_started orchestrator;
+    match Config.allowed_loop_start_branch_policy_gap orchestrator.config with
   | Some gap ->
       let runtime_gap = runtime_gap_of_config_gap gap in
       update_state orchestrator (fun state ->
@@ -3166,6 +3167,10 @@ let poll_once orchestrator =
       | Error (Issue_tracker.Failed msg) ->
           set_error orchestrator msg;
           render_poll_failed msg))
+  with exn ->
+    let msg = Printexc.to_string exn in
+    set_error orchestrator msg;
+    render_poll_failed msg
 
 let run_forever orchestrator =
   let finished_reported = ref false in

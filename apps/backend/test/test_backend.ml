@@ -8677,6 +8677,19 @@ let test_orchestrator_retries_batch_pull_request_handoff_failure () =
       | Some handoff -> Alcotest.(check string) "eventual status" "completed" handoff.status
       | None -> Alcotest.fail "expected completed handoff state")
 
+let test_orchestrator_records_non_fetch_poll_exceptions () =
+  with_temp_dir "symphony-poll-exception-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) |> pull_request_config in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> Ok [])
+          ~batch_pull_request_handoff:(fun _ ~head_branch:_ -> failwith "pull request handoff exploded")
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (option string)) "last error" (Some "Failure(\"pull request handoff exploded\")")
+        (Orchestrator.get_state orchestrator).Runtime_state.last_error)
+
 let test_orchestrator_blocks_batch_pull_request_on_attention () =
   with_temp_dir "symphony-batch-pr-attention-" (fun root ->
       init_repo root "feature/start";
@@ -9945,6 +9958,8 @@ let () =
           Alcotest.test_case "records minibeads task pull request handoff failure" `Quick
             test_minibeads_task_pull_request_failure_records_retryable_handoff;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
+          Alcotest.test_case "records non-fetch poll exceptions" `Quick
+            test_orchestrator_records_non_fetch_poll_exceptions;
           Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
           Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;
           Alcotest.test_case "pushes pull request branches without force" `Quick
