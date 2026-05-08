@@ -846,6 +846,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -920,7 +921,19 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
           codex;
           agent_harnesses_explicit = true;
           agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
-          logical_agents = [];
+          logical_agents =
+            [
+              {
+                Config.name = "engineer";
+                harness = "pi";
+                model = None;
+                reasoning_effort = None;
+                turn_timeout_ms = None;
+                read_timeout_ms = None;
+                stall_timeout_ms = None;
+              };
+            ];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -934,7 +947,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
-                    harness = Some "pi";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     context_command = None;
@@ -1019,7 +1032,19 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
           codex;
           agent_harnesses_explicit = true;
           agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
-          logical_agents = [];
+          logical_agents =
+            [
+              {
+                Config.name = "engineer";
+                harness = "pi";
+                model = None;
+                reasoning_effort = None;
+                turn_timeout_ms = None;
+                read_timeout_ms = None;
+                stall_timeout_ms = None;
+              };
+            ];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1033,7 +1058,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
-                    harness = Some "pi";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     context_command = None;
@@ -1144,7 +1169,7 @@ let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
   }
 }|};
       let config = Config.from_settings_file ~workspace_root:root settings in
-      Alcotest.(check bool) "explicit harnesses" true config.agent_harnesses_explicit;
+      Alcotest.(check bool) "legacy Harness settings are migration input" false config.agent_harnesses_explicit;
       Alcotest.(check string) "agents codex wins" "gpt-5.4" config.codex.model;
       Alcotest.(check string) "legacy command ignored" "codex exec --model <model> --reasoning <reasoning>"
         config.codex.command;
@@ -1161,9 +1186,14 @@ let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
       | [ stage ] -> (
           Alcotest.(check string) "stage agent prompt" "engineer" stage.agent;
           Alcotest.(check (option string)) "stage harness" (Some "pi") stage.harness;
-          match Config.selected_agent_harness config (Some stage) with
-          | Some harness -> Alcotest.(check string) "stage selects pi" "pi" harness.name
-          | None -> Alcotest.fail "expected selected harness")
+          (match Config.selected_agent_harness config (Some stage) with
+          | Some harness -> Alcotest.(check string) "legacy selected harness falls back to codex" "codex" harness.name
+          | None -> Alcotest.fail "expected selected harness");
+          let requirements = Config.readiness_gaps config |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement) in
+          Alcotest.(check bool) "legacy agents codex gap" true (List.exists (( = ) "agents.codex.kind") requirements);
+          Alcotest.(check bool) "legacy agents pi gap" true (List.exists (( = ) "agents.pi.kind") requirements);
+          Alcotest.(check bool) "stage harness migration gap" true
+            (List.exists (( = ) "stageAgents.engineer.harness") requirements))
       | _ -> Alcotest.fail "expected one stage")
 
 let test_config_parses_harnesses_and_logical_agents () =
@@ -1273,6 +1303,126 @@ let test_config_loads_mixed_harness_settings_without_dispatch () =
       Alcotest.(check int) "logical agents" 3 (List.length config.logical_agents);
       Alcotest.(check int) "stage routes" 3 (List.length config.stage_agents.stages))
 
+let test_stage_agent_resolves_through_logical_agent_and_merges_overrides () =
+  with_temp_dir "symphony-logical-agent-resolution-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "claude": {
+      "kind": "claude",
+      "command": "claude -p --output-format stream-json",
+      "model": "sonnet-default",
+      "reasoningEffort": "medium",
+      "turnTimeoutMs": 111,
+      "readTimeoutMs": 222,
+      "stallTimeoutMs": 333
+    }
+  },
+  "agents": {
+    "engineer": {"harness": "claude", "model": "opus-override"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          match config.stage_agents.stages with
+          | [ stage ] -> (
+              match Config.selected_agent_harness config (Some stage) with
+              | Some harness ->
+                  Alcotest.(check string) "stage agent selects Harness through logical agent" "claude" harness.name;
+                  Alcotest.(check string) "Harness kind" "claude" harness.kind;
+                  Alcotest.(check string) "agent model override" "opus-override" harness.model;
+                  Alcotest.(check string) "Harness reasoning inherited" "medium" harness.reasoning_effort;
+                  Alcotest.(check int) "Harness turn timeout inherited" 111 harness.turn_timeout_ms;
+                  Alcotest.(check int) "Harness read timeout inherited" 222 harness.read_timeout_ms;
+                  Alcotest.(check int) "Harness stall timeout inherited" 333 harness.stall_timeout_ms
+              | None -> Alcotest.fail "expected selected Harness")
+          | _ -> Alcotest.fail "expected one stage"))
+
+let test_logical_agent_readiness_and_migration_gaps () =
+  with_temp_dir "symphony-logical-agent-readiness-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          let requirements content =
+            Util.write_file settings content;
+            Config.from_settings_file ~workspace_root:root settings
+            |> Config.readiness_gaps
+            |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+          in
+          let missing_agent =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "unknown logical agent gap" true (List.exists (( = ) "agents.engineer") missing_agent);
+          let missing_harness =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "agents": {"engineer": {"harness": "claude"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "unknown referenced Harness gap" true
+            (List.exists (( = ) "harnesses.claude") missing_harness);
+          let stage_harness =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "agents": {"engineer": {"harness": "codex"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "stage-level Harness migration gap" true
+            (List.exists (( = ) "stageAgents.engineer.harness") stage_harness);
+          let legacy_agents =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "agents": {
+    "engineer": {"harness": "codex"},
+    "pi": {"kind": "pi", "command": "pi --print"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "legacy harness-shaped agents gap" true
+            (List.exists (( = ) "agents.pi.kind") legacy_agents)))
+
 let test_config_loads_legacy_top_level_codex_settings () =
   with_temp_dir "symphony-legacy-codex-settings-" (fun root ->
       Unix.putenv "GITHUB_TOKEN" "token";
@@ -1348,10 +1498,14 @@ let test_agent_harness_readiness_gaps () =
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {"kind": "pi", "command": "pi --print", "model": "openai/gpt-5.5", "reasoningEffort": "medium"},
     "bad": {"kind": "unknown", "command": "", "model": "", "reasoningEffort": ""}
+  },
+  "agents": {
+    "pi": {"harness": "pi"},
+    "bad": {"harness": "bad"}
   },
   "stageAgents": {
     "enabled": true,
@@ -1365,13 +1519,12 @@ let test_agent_harness_readiness_gaps () =
 }|};
           let config = Config.from_settings_file ~workspace_root:root settings in
           let requirements = Config.readiness_gaps config |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement) in
-          Alcotest.(check bool) "invalid kind" true (List.exists (( = ) "agents.bad.kind") requirements);
-          Alcotest.(check bool) "blank command" true (List.exists (( = ) "agents.bad.command") requirements);
-          Alcotest.(check bool) "blank model" true (List.exists (( = ) "agents.bad.model") requirements);
-          Alcotest.(check bool) "blank reasoning" true (List.exists (( = ) "agents.bad.reasoningEffort") requirements);
-          Alcotest.(check bool) "missing harness" true
-            (List.exists (( = ) "stageAgents.missing.harness") requirements);
-          Alcotest.(check bool) "pi goal blocked" true (List.exists (( = ) "stageAgents.pi.goal") requirements);
+          Alcotest.(check bool) "invalid kind" true (List.exists (( = ) "harnesses.bad.kind") requirements);
+          Alcotest.(check bool) "blank command" true (List.exists (( = ) "harnesses.bad.command") requirements);
+          Alcotest.(check bool) "blank model" true (List.exists (( = ) "harnesses.bad.model") requirements);
+          Alcotest.(check bool) "blank reasoning" true (List.exists (( = ) "harnesses.bad.reasoningEffort") requirements);
+          Alcotest.(check bool) "missing logical agent" true
+            (List.exists (( = ) "agents.missing") requirements);
           Alcotest.(check bool) "pi goal does not require codex goals" false
             (List.exists (( = ) "codex.goals") requirements)))
 
@@ -1387,7 +1540,7 @@ let test_pi_harness_readiness_checks_install_and_auth () =
           (Printf.sprintf
              {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {
       "kind": "pi",
@@ -1396,10 +1549,13 @@ let test_pi_harness_readiness_checks_install_and_auth () =
       "reasoningEffort": "medium"
     }
   },
+  "agents": {
+    "engineer": {"harness": "pi"}
+  },
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
-    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
   }
 }|}
              (Yojson.Safe.to_string (`String command)))
@@ -1412,14 +1568,14 @@ let test_pi_harness_readiness_checks_install_and_auth () =
       with_env [ ("GITHUB_TOKEN", "token"); ("PI_CODING_AGENT_DIR", agent_dir) ] (fun () ->
           write_settings "/definitely/missing/pi --print";
           Alcotest.(check bool) "missing pi executable" true
-            (List.exists (( = ) "agents.pi.install") (requirements ()));
+            (List.exists (( = ) "harnesses.pi.install") (requirements ()));
           write_settings "sh -c 'cat >/dev/null'";
           Alcotest.(check bool) "missing pi auth" true
-            (List.exists (( = ) "agents.pi.auth") (requirements ()));
+            (List.exists (( = ) "harnesses.pi.auth") (requirements ()));
           Util.mkdir_p agent_dir;
           Util.write_file (Filename.concat agent_dir "auth.json") {|{"openai-codex":{"access":true}}|};
           Alcotest.(check bool) "configured pi auth" false
-            (List.exists (( = ) "agents.pi.auth") (requirements ()))))
+            (List.exists (( = ) "harnesses.pi.auth") (requirements ()))))
 
 let test_pi_harness_readiness_ignores_unselected_harnesses () =
   with_temp_dir "symphony-pi-optional-readiness-" (fun root ->
@@ -1435,8 +1591,8 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
       in
       let has requirement requirements = List.exists (( = ) requirement) requirements in
       let check_no_pi_gaps label requirements =
-        Alcotest.(check bool) (label ^ " install") false (has "agents.pi.install" requirements);
-        Alcotest.(check bool) (label ^ " auth") false (has "agents.pi.auth" requirements)
+        Alcotest.(check bool) (label ^ " install") false (has "harnesses.pi.install" requirements);
+        Alcotest.(check bool) (label ^ " auth") false (has "harnesses.pi.auth" requirements)
       in
       with_env [ ("GITHUB_TOKEN", "token"); ("PI_CODING_AGENT_DIR", agent_dir) ] (fun () ->
           Util.write_file settings
@@ -1453,7 +1609,7 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {
       "kind": "pi",
@@ -1462,17 +1618,18 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
       "reasoningEffort": "medium"
     }
   },
+  "agents": {"engineer": {"harness": "codex"}},
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
-    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "codex"}]
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
   }
 }|};
           check_no_pi_gaps "unused PI Harness" (requirements ());
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {
       "kind": "pi",
@@ -1487,8 +1644,8 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "codex": {"command": ""},
-  "agents": {
+  "harnesses": {
+    "codex": {"kind": "codex", "command": ""},
     "pi": {
       "kind": "pi",
       "command": "/definitely/missing/pi --print",
@@ -1501,13 +1658,13 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
           let disabled_stage_requirements = requirements () in
           check_no_pi_gaps "disabled Stage Agent mappings with invalid fallback" disabled_stage_requirements;
           Alcotest.(check bool) "disabled Stage Agent mappings validate fallback harness" true
-            (has "agents.codex.command" disabled_stage_requirements);
+            (has "harnesses.codex.command" disabled_stage_requirements);
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
   "project": {"activeStates": ["Todo"]},
   "codex": {"command": ""},
-  "agents": {
+  "harnesses": {
     "pi": {
       "kind": "pi",
       "command": "sh -c 'cat >/dev/null' --api-key=$PI_TEST_API_KEY",
@@ -1515,16 +1672,17 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
       "reasoningEffort": "medium"
     }
   },
+  "agents": {"engineer": {"harness": "pi"}},
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
-    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
   }
 }|};
           let pi_only_requirements = requirements () in
           check_no_pi_gaps "PI-only Runtime Settings" pi_only_requirements;
           Alcotest.(check bool) "PI-only does not require legacy Codex command" false
-            (has "agents.codex.command" pi_only_requirements)))
+            (has "harnesses.codex.command" pi_only_requirements)))
 
 let test_project_status_order_uses_transition_flow () =
   let tracker =
@@ -1565,6 +1723,7 @@ let test_project_status_order_uses_transition_flow () =
       agent_harnesses_explicit = false;
       agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
       server = { port = None };
       pull_request = Config.default_pull_request;
       protected_paths = Config.default_protected_paths;
@@ -2022,6 +2181,7 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2411,6 +2571,7 @@ let test_orchestrator_notifies_each_state_mutation () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2458,6 +2619,7 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2567,6 +2729,7 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2692,6 +2855,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2794,6 +2958,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3101,6 +3266,7 @@ let stage_capacity_config root ~global_cap =
       agent_harnesses_explicit = false;
       agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
       server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -3187,6 +3353,7 @@ let test_orchestrator_dispatch_limits () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3375,6 +3542,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
             agent_harnesses_explicit = false;
             agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3492,6 +3660,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
       agent_harnesses_explicit = false;
       agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
       server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3557,6 +3726,7 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3612,6 +3782,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3667,6 +3838,7 @@ let test_orchestrator_retries_failed_agent () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3727,6 +3899,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3787,6 +3960,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
             agent_harnesses_explicit = false;
             agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3849,6 +4023,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3950,6 +4125,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4081,6 +4257,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4163,6 +4340,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
       agent_harnesses_explicit = false;
       agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
       server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -4743,6 +4921,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4875,6 +5054,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5022,6 +5202,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5092,6 +5273,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           agent_harnesses_explicit = false;
           agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5189,6 +5371,7 @@ let test_stage_commit_requires_code_changes () =
             agent_harnesses_explicit = false;
             agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5248,6 +5431,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
             agent_harnesses_explicit = false;
             agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5353,6 +5537,7 @@ let base_orchestrator_config root git =
   agent_harnesses_explicit = false;
   agent_harnesses = [];
           logical_agents = [];
+          legacy_agent_harness_paths = [];
   server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -7007,6 +7192,10 @@ let () =
             test_config_parses_harnesses_and_logical_agents;
           Alcotest.test_case "loads mixed-Harness Runtime Settings" `Quick
             test_config_loads_mixed_harness_settings_without_dispatch;
+          Alcotest.test_case "resolves stage agents through logical agents" `Quick
+            test_stage_agent_resolves_through_logical_agent_and_merges_overrides;
+          Alcotest.test_case "validates logical agent migration readiness" `Quick
+            test_logical_agent_readiness_and_migration_gaps;
           Alcotest.test_case "loads legacy top-level codex settings" `Quick
             test_config_loads_legacy_top_level_codex_settings;
           Alcotest.test_case "renders harness commands" `Quick test_harness_command_rendering;

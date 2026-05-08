@@ -121,6 +121,7 @@ type t = {
   agent_harnesses_explicit : bool;
   agent_harnesses : agent_harness list;
   logical_agents : logical_agent list;
+  legacy_agent_harness_paths : string list;
   server : server;
   pull_request : pull_request;
   protected_paths : protected_paths;
@@ -374,6 +375,7 @@ let from_workflow workflow =
     agent_harnesses_explicit = false;
     agent_harnesses = [ harness_of_codex codex ];
     logical_agents = [];
+    legacy_agent_harness_paths = [];
     server = { port = Simple_yaml.get_int "port" server_raw };
     pull_request = default_pull_request;
     protected_paths = default_protected_paths;
@@ -460,7 +462,23 @@ let json_object_list name json =
 let harness_named name (harnesses : agent_harness list) =
   List.find_opt (fun (harness : agent_harness) -> harness.name = name) harnesses
 
-let stage_harness_name (stage : stage_agent) = Option.value stage.harness ~default:stage.agent
+let logical_agent_named name (agents : logical_agent list) =
+  List.find_opt (fun (agent : logical_agent) -> agent.name = name) agents
+
+let merge_agent_harness (harness : agent_harness) (agent : logical_agent) =
+  {
+    harness with
+    model = Option.value agent.model ~default:harness.model;
+    reasoning_effort = Option.value agent.reasoning_effort ~default:harness.reasoning_effort;
+    turn_timeout_ms = Option.value agent.turn_timeout_ms ~default:harness.turn_timeout_ms;
+    read_timeout_ms = Option.value agent.read_timeout_ms ~default:harness.read_timeout_ms;
+    stall_timeout_ms = Option.value agent.stall_timeout_ms ~default:harness.stall_timeout_ms;
+  }
+
+type selected_harness_resolution =
+  | Resolved_harness of agent_harness
+  | Missing_logical_agent of string
+  | Missing_referenced_harness of string
 
 let default_harness_kind name =
   match name with "codex" -> "codex" | "pi" -> "pi" | "claude" -> "claude" | _ -> ""
@@ -541,6 +559,19 @@ let is_legacy_agent_harness raw =
   | `Assoc _ -> member "kind" raw <> `Null || member "command" raw <> `Null
   | _ -> true
 
+let legacy_agent_harness_path name raw =
+  let path = "agents." ^ Util.trim name in
+  match raw with
+  | `Assoc _ when member "kind" raw <> `Null -> Some (path ^ ".kind")
+  | `Assoc _ when member "command" raw <> `Null -> Some (path ^ ".command")
+  | _ when is_legacy_agent_harness raw -> Some path
+  | _ -> None
+
+let legacy_agent_harness_paths agents_raw =
+  match agents_raw with
+  | `Assoc fields -> List.filter_map (fun (name, raw) -> legacy_agent_harness_path name raw) fields
+  | _ -> []
+
 let json_agent_harnesses agents_raw ~legacy_codex =
   match agents_raw with
   | `Null -> (false, [ harness_of_codex legacy_codex ])
@@ -557,7 +588,7 @@ let json_agent_harnesses agents_raw ~legacy_codex =
           | Some _ -> harnesses
           | None -> harness_of_codex legacy_codex :: harnesses
         in
-        (true, harnesses)
+        (false, harnesses)
   | _ -> raise (Invalid_config "agents must be an object")
 
 let json_harnesses harnesses_raw agents_raw ~legacy_codex =
@@ -594,14 +625,29 @@ let json_logical_agents agents_raw =
              | _ -> raise (Invalid_config ("agents." ^ name ^ " must be an object")))
   | _ -> raise (Invalid_config "agents must be an object")
 
-let selected_agent_harness config (stage : stage_agent option) =
+let selected_agent_harness_resolution config (stage : stage_agent option) =
   if not config.agent_harnesses_explicit then
-    match harness_named "codex" config.agent_harnesses with Some harness -> Some harness | None -> Some (harness_of_codex config.codex)
+    match harness_named "codex" config.agent_harnesses with
+    | Some harness -> Resolved_harness harness
+    | None -> Resolved_harness (harness_of_codex config.codex)
   else
     match stage with
     | Some (stage : stage_agent) ->
-        harness_named (stage_harness_name stage) config.agent_harnesses
-    | None -> harness_named "codex" config.agent_harnesses
+        (match logical_agent_named stage.agent config.logical_agents with
+        | None -> Missing_logical_agent stage.agent
+        | Some agent -> (
+            match harness_named agent.harness config.agent_harnesses with
+            | Some harness -> Resolved_harness (merge_agent_harness harness agent)
+            | None -> Missing_referenced_harness agent.harness))
+    | None -> (
+        match harness_named "codex" config.agent_harnesses with
+        | Some harness -> Resolved_harness harness
+        | None -> Missing_referenced_harness "codex")
+
+let selected_agent_harness config stage =
+  match selected_agent_harness_resolution config stage with
+  | Resolved_harness harness -> Some harness
+  | Missing_logical_agent _ | Missing_referenced_harness _ -> None
 
 let default_agent_harness config =
   match harness_named "codex" config.agent_harnesses with Some harness -> harness | None -> harness_of_codex config.codex
@@ -1131,8 +1177,10 @@ let from_settings_file ~workspace_root path =
       stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
     }
   in
+  let legacy_agent_harness_paths = legacy_agent_harness_paths agents_raw in
   let agent_harnesses_explicit, agent_harnesses = json_harnesses harnesses_raw agents_raw ~legacy_codex in
   let logical_agents = json_logical_agents agents_raw in
+  let agent_harnesses_explicit = agent_harnesses_explicit || logical_agents <> [] in
   let codex =
     match harness_named "codex" agent_harnesses with Some harness -> codex_of_harness harness | None -> legacy_codex
   in
@@ -1190,6 +1238,7 @@ let from_settings_file ~workspace_root path =
     agent_harnesses_explicit;
     agent_harnesses;
     logical_agents;
+    legacy_agent_harness_paths;
     server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
     pull_request =
       {
@@ -1450,25 +1499,31 @@ let readiness_gaps config =
       (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env);
   let selected_harnesses = readiness_agent_harnesses config in
   List.iter
+    (fun path ->
+      add path
+        "Move legacy Harness settings out of agents.* and into harnesses.*. Keep agents.* for logical agent definitions \
+         with a harness reference and optional execution overrides.")
+    config.legacy_agent_harness_paths;
+  List.iter
     (fun (harness : agent_harness) ->
       let prefix =
-        if config.agent_harnesses_explicit then "agents." ^ harness.name else "codex"
+        if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "codex"
       in
       if Util.trim harness.name = "" then
-        add "agents" "Agent Harness identifiers in .symphony/settings.json must not be empty.";
+        add "harnesses" "Harness identifiers in .symphony/settings.json must not be empty.";
       if not (List.exists (( = ) harness.kind) [ "codex"; "claude"; "pi" ]) then
-        add (prefix ^ ".kind") "Set Agent Harness kind to codex, claude, or pi.";
+        add (prefix ^ ".kind") "Set Harness kind to codex, claude, or pi.";
       if Util.trim harness.command = "" then
-        add (prefix ^ ".command") "Set the Agent Harness command to a non-interactive launch command.";
-      if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Agent Harness model.";
+        add (prefix ^ ".command") "Set the Harness command to a non-interactive launch command.";
+      if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Harness model.";
       if Util.trim harness.reasoning_effort = "" then
-        add (prefix ^ ".reasoningEffort") "Set the Agent Harness reasoningEffort.")
+        add (prefix ^ ".reasoningEffort") "Set the Harness reasoningEffort.")
     selected_harnesses;
   List.iter
     (fun (harness : agent_harness) ->
       if harness.kind = "pi" && Util.trim harness.command <> "" then (
         let prefix =
-          if config.agent_harnesses_explicit then "agents." ^ harness.name else "agents.pi"
+          if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "agents.pi"
         in
         (match harness_executable harness with
         | Some executable when executable_available executable -> ()
@@ -1526,7 +1581,6 @@ let readiness_gaps config =
              else
                match selected_agent_harness config (Some stage) with
                | Some harness when harness.kind = "codex" -> Some harness
-               | None when not config.agent_harnesses_explicit -> Some (default_agent_harness config)
                | _ -> None)
   in
   if codex_stage_goal_harnesses <> [] then (
@@ -1542,16 +1596,26 @@ let readiness_gaps config =
       add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";
     List.iter
       (fun (stage : stage_agent) ->
+        (match stage.harness with
+        | Some _ ->
+            add ("stageAgents." ^ stage.agent ^ ".harness")
+              "stageAgents.stages[].harness is legacy Runtime Settings input. Move Harness selection to \
+               agents.<name>.harness and keep stages routing by agent name."
+        | None -> ());
         if config.agent_harnesses_explicit then (
-          match selected_agent_harness config (Some stage) with
-          | None ->
-              let harness_name = stage_harness_name stage in
-              add ("stageAgents." ^ stage.agent ^ ".harness")
-                (Printf.sprintf "Define agents.%s in .symphony/settings.json or select an existing Agent Harness." harness_name)
-          | Some harness when stage_goal_enabled stage && harness.kind <> "codex" ->
-              add ("stageAgents." ^ stage.agent ^ ".goal")
-                "Stage Goal Handoff is only supported by a Codex Harness in this release. Disable goal.enabled or select a Codex Harness."
-          | Some _ -> ());
+          match selected_agent_harness_resolution config (Some stage) with
+          | Missing_logical_agent name ->
+              add ("agents." ^ name)
+                (Printf.sprintf
+                   "Define agents.%s in .symphony/settings.json with a harness reference, or route the stage to an \
+                    existing logical agent."
+                   name)
+          | Missing_referenced_harness name ->
+              add ("harnesses." ^ name)
+                (Printf.sprintf
+                   "Define harnesses.%s in .symphony/settings.json or update agents.%s.harness to an existing Harness."
+                   name stage.agent)
+          | Resolved_harness _ -> ());
         let path = Filename.concat config.stage_agents.root (stage.agent ^ ".md") in
         if not (Sys.file_exists path) then
           add ("stageAgents." ^ stage.agent) (Printf.sprintf "Create the stage agent prompt file: %s" path))
