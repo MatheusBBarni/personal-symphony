@@ -102,6 +102,115 @@ let git_policy ?(auto_merge = false) ?(protected_trunk_branches = [ "main"; "mas
     cleanup = { Config.remove_worktree_after_merge = remove_worktree_after_merge; keep_task_branch = true };
   }
 
+let runtime_invocation_overrides ?polling_interval_ms ?workspace_root ?agent_max_concurrent_agents ?agent_max_turns
+    ?agent_max_retry_backoff_ms () : Config.runtime_invocation_overrides =
+  {
+    polling_interval_ms;
+    workspace_root;
+    agent_max_concurrent_agents;
+    agent_max_turns;
+    agent_max_retry_backoff_ms;
+  }
+
+let write_runtime_invocation_override_settings root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  let settings = Filename.concat root "settings.json" in
+  Util.write_file settings
+    {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "polling": {"intervalMs": 1234},
+  "workspace": {"root": "settings-workspaces"},
+  "agent": {
+    "maxConcurrentAgents": 3,
+    "maxTurns": 12,
+    "maxRetryBackoffMs": 45000
+  },
+  "stageAgents": {"enabled": false}
+}|};
+  settings
+
+let load_runtime_invocation_override_config root =
+  let settings = write_runtime_invocation_override_settings root in
+  (settings, Config.from_settings_file ~workspace_root:root settings)
+
+let test_runtime_invocation_overrides_replace_polling_only () =
+  with_temp_dir "symphony-runtime-overrides-polling-" (fun root ->
+      let _, config = load_runtime_invocation_override_config root in
+      let effective =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root config
+          (runtime_invocation_overrides ~polling_interval_ms:2500 ())
+      in
+      Alcotest.(check int) "polling override" 2500 effective.polling.interval_ms;
+      Alcotest.(check bool) "agent preserved" true (config.agent = effective.agent);
+      Alcotest.(check bool) "workspace preserved" true (config.workspace = effective.workspace))
+
+let test_runtime_invocation_overrides_replace_agent_only () =
+  with_temp_dir "symphony-runtime-overrides-agent-" (fun root ->
+      let _, config = load_runtime_invocation_override_config root in
+      let effective =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root config
+          (runtime_invocation_overrides ~agent_max_concurrent_agents:8 ~agent_max_turns:21
+             ~agent_max_retry_backoff_ms:90000 ())
+      in
+      Alcotest.(check bool) "polling preserved" true (config.polling = effective.polling);
+      Alcotest.(check bool) "workspace preserved" true (config.workspace = effective.workspace);
+      Alcotest.(check int) "agent concurrency override" 8 effective.agent.max_concurrent_agents;
+      Alcotest.(check int) "agent turns override" 21 effective.agent.max_turns;
+      Alcotest.(check int) "agent backoff override" 90000 effective.agent.max_retry_backoff_ms)
+
+let test_runtime_invocation_overrides_preserve_config_when_absent () =
+  with_temp_dir "symphony-runtime-overrides-none-" (fun root ->
+      let _, config = load_runtime_invocation_override_config root in
+      let effective =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root config (runtime_invocation_overrides ())
+      in
+      Alcotest.(check bool) "config equivalent" true (config = effective))
+
+let test_runtime_invocation_overrides_resolve_relative_workspace_root () =
+  with_temp_dir "symphony-runtime-overrides-relative-" (fun root ->
+      let _, config = load_runtime_invocation_override_config root in
+      let effective =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root config
+          (runtime_invocation_overrides ~workspace_root:"override-workspaces" ())
+      in
+      Alcotest.(check string) "relative workspace root"
+        (Filename.concat (Unix.realpath root) "override-workspaces")
+        effective.workspace.root;
+      Alcotest.(check bool) "polling preserved" true (config.polling = effective.polling);
+      Alcotest.(check bool) "agent preserved" true (config.agent = effective.agent))
+
+let test_runtime_invocation_overrides_resolve_absolute_and_home_workspace_roots () =
+  with_temp_dir "symphony-runtime-overrides-paths-" (fun root ->
+      with_temp_dir "symphony-runtime-overrides-home-" (fun home ->
+          with_env [ ("HOME", home) ] (fun () ->
+              let _, config = load_runtime_invocation_override_config root in
+              let absolute_root = Filename.concat root "absolute-workspaces" in
+              let absolute_effective =
+                Config.apply_runtime_invocation_overrides ~workspace_root:root config
+                  (runtime_invocation_overrides ~workspace_root:absolute_root ())
+              in
+              let home_effective =
+                Config.apply_runtime_invocation_overrides ~workspace_root:root config
+                  (runtime_invocation_overrides ~workspace_root:"~/home-workspaces" ())
+              in
+              Alcotest.(check string) "absolute workspace root"
+                (Filename.concat (Unix.realpath root) "absolute-workspaces")
+                absolute_effective.workspace.root;
+              Alcotest.(check string) "home workspace root"
+                (Filename.concat (Unix.realpath home) "home-workspaces")
+                home_effective.workspace.root)))
+
+let test_runtime_invocation_overrides_preserve_settings_file () =
+  with_temp_dir "symphony-runtime-overrides-file-" (fun root ->
+      let settings, config = load_runtime_invocation_override_config root in
+      let before = Util.read_file settings in
+      let _effective =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root config
+          (runtime_invocation_overrides ~polling_interval_ms:2500 ~workspace_root:"override-workspaces"
+             ~agent_max_concurrent_agents:4 ~agent_max_turns:15 ~agent_max_retry_backoff_ms:60000 ())
+      in
+      Alcotest.(check string) "settings unchanged" before (Util.read_file settings))
+
 let test_config_parses_git_policy_and_stage_push () =
   with_temp_dir "symphony-settings-git-" (fun root ->
       let settings = Filename.concat root "settings.json" in
@@ -6841,6 +6950,18 @@ let () =
           Alcotest.test_case "ignores unselected PI harness readiness" `Quick
             test_pi_harness_readiness_ignores_unselected_harnesses;
           Alcotest.test_case "derives kanban status order from transitions" `Quick test_project_status_order_uses_transition_flow;
+          Alcotest.test_case "applies polling runtime invocation override" `Quick
+            test_runtime_invocation_overrides_replace_polling_only;
+          Alcotest.test_case "applies agent runtime invocation overrides" `Quick
+            test_runtime_invocation_overrides_replace_agent_only;
+          Alcotest.test_case "preserves config without runtime invocation overrides" `Quick
+            test_runtime_invocation_overrides_preserve_config_when_absent;
+          Alcotest.test_case "resolves relative workspace runtime invocation override" `Quick
+            test_runtime_invocation_overrides_resolve_relative_workspace_root;
+          Alcotest.test_case "resolves absolute and home workspace runtime invocation overrides" `Quick
+            test_runtime_invocation_overrides_resolve_absolute_and_home_workspace_roots;
+          Alcotest.test_case "preserves settings file when applying runtime invocation overrides" `Quick
+            test_runtime_invocation_overrides_preserve_settings_file;
           Alcotest.test_case "parses git policy and stage push" `Quick test_config_parses_git_policy_and_stage_push;
           Alcotest.test_case "validates stage concurrency policy" `Quick test_config_validates_stage_concurrency_policy;
           Alcotest.test_case "parses stage context snapshot and readiness" `Quick
