@@ -386,11 +386,11 @@ let callbacks =
   {
     Cli_command.run =
       (fun args ->
+        ignore args.overrides;
         run args.workflow_path args.port args.once args.web args.queue_arg args.merge_args);
     init;
     update = (fun ~yes -> update yes);
   }
 
 let () =
-  let cmd = Cli_command.cmd ~version callbacks in
-  exit (Cmdliner.Cmd.eval' ~argv:(Cli_command.normalize_help_argv Sys.argv) cmd)
+  exit (Cli_command.eval ~version callbacks ~argv:Sys.argv)

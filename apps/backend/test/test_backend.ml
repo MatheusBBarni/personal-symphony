@@ -68,6 +68,44 @@ let substring_index text substring =
   in
   loop 0
 
+let capture_process_output f =
+  let stdout_path = Filename.temp_file "symphony-stdout" ".log" in
+  let stderr_path = Filename.temp_file "symphony-stderr" ".log" in
+  let stdout_copy = Unix.dup Unix.stdout in
+  let stderr_copy = Unix.dup Unix.stderr in
+  let restore () =
+    flush stdout;
+    flush stderr;
+    Unix.dup2 stdout_copy Unix.stdout;
+    Unix.dup2 stderr_copy Unix.stderr;
+    Unix.close stdout_copy;
+    Unix.close stderr_copy
+  in
+  let stdout_fd = Unix.openfile stdout_path [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  let stderr_fd = Unix.openfile stderr_path [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  Fun.protect
+    ~finally:(fun () ->
+      if Sys.file_exists stdout_path then Sys.remove stdout_path;
+      if Sys.file_exists stderr_path then Sys.remove stderr_path)
+    (fun () ->
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.close stdout_fd;
+          Unix.close stderr_fd)
+        (fun () ->
+          Unix.dup2 stdout_fd Unix.stdout;
+          Unix.dup2 stderr_fd Unix.stderr;
+          let result =
+            Fun.protect ~finally:restore (fun () ->
+                let result = f () in
+                flush stdout;
+                flush stderr;
+                result)
+          in
+          let captured_stdout = Util.read_file stdout_path in
+          let captured_stderr = Util.read_file stderr_path in
+          (result, captured_stdout, captured_stderr)))
+
 let test_child_harness =
   Config.harness_of_codex
     {
@@ -1709,9 +1747,8 @@ let test_cli_command_evaluates_runtime_from_library () =
       update = (fun ~yes:_ -> Alcotest.fail "update callback should not run");
     }
   in
-  let cmd = Cli_command.cmd ~version:"test-version" callbacks in
   let code =
-    Cmdliner.Cmd.eval'
+    Cli_command.eval ~version:"test-version" callbacks
       ~argv:
         [|
           "symphony";
@@ -1727,7 +1764,6 @@ let test_cli_command_evaluates_runtime_from_library () =
           "4";
           "WORKFLOW.md";
         |]
-      cmd
   in
   Alcotest.(check int) "runtime exit code" 17 code;
   match !observed with
@@ -1739,6 +1775,47 @@ let test_cli_command_evaluates_runtime_from_library () =
       Alcotest.(check bool) "web" true args.web;
       Alcotest.(check (option string)) "queue" (Some "#1,#2") args.queue_arg;
       Alcotest.(check (list string)) "merge args" [ "#3"; "4" ] args.merge_args
+
+let cli_test_callbacks ?(run = fun _ -> Alcotest.fail "runtime callback should not run")
+    ?(init = fun () -> Alcotest.fail "init callback should not run")
+    ?(update = fun ~yes:_ -> Alcotest.fail "update callback should not run") () =
+  { Cli_command.run; init; update }
+
+let test_cli_command_parses_runtime_invocation_overrides () =
+  let observed = ref None in
+  let callbacks =
+    cli_test_callbacks
+      ~run:(fun args ->
+        observed := Some args.Cli_command.overrides;
+        17)
+      ()
+  in
+  let code =
+    Cli_command.eval ~version:"test-version" callbacks
+      ~argv:
+        [|
+          "symphony";
+          "--polling.intervalMs";
+          "2500";
+          "--workspace.root";
+          "/tmp/symphony-workspaces";
+          "--agent.maxConcurrentAgents";
+          "4";
+          "--agent.maxTurns";
+          "9";
+          "--agent.maxRetryBackoffMs";
+          "90000";
+        |]
+  in
+  Alcotest.(check int) "runtime exit code" 17 code;
+  match !observed with
+  | None -> Alcotest.fail "runtime callback was not invoked"
+  | Some overrides ->
+      Alcotest.(check (option int)) "polling interval override" (Some 2500) overrides.polling_interval_ms;
+      Alcotest.(check (option string)) "workspace root override" (Some "/tmp/symphony-workspaces") overrides.workspace_root;
+      Alcotest.(check (option int)) "agent concurrency override" (Some 4) overrides.agent_max_concurrent_agents;
+      Alcotest.(check (option int)) "agent turns override" (Some 9) overrides.agent_max_turns;
+      Alcotest.(check (option int)) "agent backoff override" (Some 90000) overrides.agent_max_retry_backoff_ms
 
 let test_cli_command_exposes_init_and_update () =
   let init_called = ref false in
@@ -1756,16 +1833,119 @@ let test_cli_command_exposes_init_and_update () =
           24);
     }
   in
-  let cmd = Cli_command.cmd ~version:"test-version" callbacks in
-  Alcotest.(check int) "init exit code" 23 (Cmdliner.Cmd.eval' ~argv:[| "symphony"; "init" |] cmd);
+  Alcotest.(check int) "init exit code" 23
+    (Cli_command.eval ~version:"test-version" callbacks ~argv:[| "symphony"; "init" |]);
   Alcotest.(check bool) "init called" true !init_called;
   Alcotest.(check int) "update exit code" 24
-    (Cmdliner.Cmd.eval' ~argv:[| "symphony"; "update"; "--yes" |] cmd);
+    (Cli_command.eval ~version:"test-version" callbacks ~argv:[| "symphony"; "update"; "--yes" |]);
   Alcotest.(check (option bool)) "update yes" (Some true) !update_yes
 
 let test_cli_help_argv_normalization () =
   let normalized = Cli_command.normalize_help_argv [| "symphony"; "-h"; "-v"; "--once" |] in
   Alcotest.(check (array string)) "normalized argv" [| "symphony"; "--help"; "--version"; "--once" |] normalized
+
+let test_cli_help_documents_runtime_invocation_overrides () =
+  let code, stdout, stderr =
+    capture_process_output (fun () ->
+        Cli_command.eval ~version:"test-version" (cli_test_callbacks ()) ~argv:[| "symphony"; "--help" |])
+  in
+  Alcotest.(check int) "help exit code" 0 code;
+  Alcotest.(check string) "help stderr" "" stderr;
+  List.iter
+    (fun expected -> Alcotest.(check bool) expected true (contains_substring stdout expected))
+    [
+      "--polling.intervalMs";
+      "Override Runtime Settings polling.intervalMs";
+      "current invocation only.";
+      "--workspace.root";
+      "current-invocation";
+      "Agent Worktree placement";
+      "--agent.maxConcurrentAgents";
+      "--agent.maxTurns";
+      "--agent.maxRetryBackoffMs";
+    ]
+
+let test_cli_rejects_invalid_runtime_invocation_override_values () =
+  List.iter
+    (fun value ->
+      let callback_ran = ref false in
+      let code, _stdout, stderr =
+        capture_process_output (fun () ->
+            Cli_command.eval ~version:"test-version"
+              (cli_test_callbacks
+                 ~run:(fun _ ->
+                   callback_ran := true;
+                   17)
+                 ())
+              ~argv:[| "symphony"; "--polling.intervalMs"; value |])
+      in
+      Alcotest.(check bool) ("callback not run for " ^ value) false !callback_ran;
+      Alcotest.(check bool) ("invalid value rejected: " ^ value) true (code <> 0);
+      Alcotest.(check bool)
+        ("field named in error: " ^ value)
+        true
+        (contains_substring stderr "polling.intervalMs" && contains_substring stderr "positive integer"))
+    [ "0"; "-1"; "1.5"; ""; "abc" ]
+
+let test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior () =
+  let callback_ran = ref false in
+  let callbacks =
+    cli_test_callbacks
+      ~run:(fun _ ->
+        callback_ran := true;
+        17)
+      ()
+  in
+  let code, _stdout, stderr =
+    capture_process_output (fun () ->
+        Cli_command.eval ~version:"test-version" callbacks
+          ~argv:[| "symphony"; "--polling.intervalMs"; "1000"; "--polling.intervalMs"; "2000" |])
+  in
+  Alcotest.(check int) "duplicate option exit code" 124 code;
+  Alcotest.(check bool) "duplicate option does not dispatch" false !callback_ran;
+  Alcotest.(check bool)
+    "Cmdliner rejects repeated option values"
+    true
+    (contains_substring stderr "option '--polling.intervalMs' cannot be repeated")
+
+let test_cli_rejects_runtime_invocation_overrides_for_unsupported_modes () =
+  let cases =
+    [
+      ([| "symphony"; "init"; "--polling.intervalMs"; "1000" |], "--polling.intervalMs");
+      ([| "symphony"; "update"; "--agent.maxConcurrentAgents"; "1" |], "--agent.maxConcurrentAgents");
+      ([| "symphony"; "WORKFLOW.md"; "--workspace.root"; "/tmp/workspaces" |], "--workspace.root");
+    ]
+  in
+  List.iter
+    (fun (argv, flag) ->
+      let callback_ran = ref false in
+      let callbacks =
+        {
+          Cli_command.run =
+            (fun _ ->
+              callback_ran := true;
+              17);
+          init =
+            (fun () ->
+              callback_ran := true;
+              23);
+          update =
+            (fun ~yes:_ ->
+              callback_ran := true;
+              24);
+        }
+      in
+      let code, _stdout, stderr =
+        capture_process_output (fun () -> Cli_command.eval ~version:"test-version" callbacks ~argv)
+      in
+      Alcotest.(check int) ("unsupported mode exit code: " ^ flag) 1 code;
+      Alcotest.(check bool) ("callback not run: " ^ flag) false !callback_ran;
+      Alcotest.(check bool) ("flag named: " ^ flag) true (contains_substring stderr flag);
+      Alcotest.(check bool)
+        ("default command wording: " ^ flag)
+        true
+        (contains_substring stderr "applies only to the default runtime command"))
+    cases
 
 let make_fake_npm_install root =
   let prefix = Filename.concat root "prefix" in
@@ -7075,8 +7255,18 @@ let () =
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
           Alcotest.test_case "evaluates runtime command from backend library" `Quick
             test_cli_command_evaluates_runtime_from_library;
+          Alcotest.test_case "parses runtime invocation override flags" `Quick
+            test_cli_command_parses_runtime_invocation_overrides;
           Alcotest.test_case "exposes init and update subcommands" `Quick test_cli_command_exposes_init_and_update;
           Alcotest.test_case "normalizes short help and version flags" `Quick test_cli_help_argv_normalization;
+          Alcotest.test_case "documents runtime invocation override help" `Quick
+            test_cli_help_documents_runtime_invocation_overrides;
+          Alcotest.test_case "rejects invalid runtime invocation override values" `Quick
+            test_cli_rejects_invalid_runtime_invocation_override_values;
+          Alcotest.test_case "documents duplicate runtime invocation override behavior" `Quick
+            test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior;
+          Alcotest.test_case "rejects runtime invocation overrides for unsupported modes" `Quick
+            test_cli_rejects_runtime_invocation_overrides_for_unsupported_modes;
           Alcotest.test_case "detects update Install Prefix" `Quick test_update_detects_npm_install_prefix;
           Alcotest.test_case "detects prefix from package launcher" `Quick
             test_update_detects_prefix_from_package_launcher;
