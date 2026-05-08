@@ -39,6 +39,58 @@ let settings_json =
   "workspace": {
     "root": ".symphony/workspaces"
   },
+  "harnesses": {
+    "codex": {
+      "kind": "codex",
+      "command": "codex exec",
+      "loop": {
+        "enabled": true,
+        "command": "/goal"
+      }
+    },
+    "claude": {
+      "kind": "claude",
+      "command": "claude -p --output-format stream-json",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    },
+    "pi": {
+      "kind": "pi",
+      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    }
+  },
+  "agents": {
+    "planner": {
+      "harness": "codex",
+      "model": "gpt-5.5",
+      "reasoningEffort": "medium",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "engineer": {
+      "harness": "claude",
+      "model": "opus-4.7",
+      "reasoningEffort": "xhigh",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "reviewer": {
+      "harness": "pi",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "high",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    }
+  },
   "git": {
     "taskBranchPrefix": "symphony/task-",
     "protectedTrunkBranches": ["main", "master"],
@@ -116,14 +168,6 @@ let settings_json =
     "maxConcurrentAgents": 2,
     "maxTurns": 10,
     "maxRetryBackoffMs": 300000
-  },
-  "codex": {
-    "command": "codex exec",
-    "model": "gpt-5.5",
-    "reasoningEffort": "medium",
-    "turnTimeoutMs": 3600000,
-    "readTimeoutMs": 5000,
-    "stallTimeoutMs": 300000
   },
   "server": {
     "port": 8080

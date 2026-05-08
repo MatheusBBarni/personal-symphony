@@ -1916,13 +1916,64 @@ let test_bootstrap_idempotency_preserves_user_files () =
       Alcotest.(check bool) "planner agent created" true (Sys.file_exists (Filename.concat home.agents_dir "planner.md"));
       Alcotest.(check bool) "engineer agent created" true (Sys.file_exists (Filename.concat home.agents_dir "engineer.md"));
       Alcotest.(check bool) "reviewer agent created" true (Sys.file_exists (Filename.concat home.agents_dir "reviewer.md"));
+      Util.write_file home.settings_path {|{"custom": true}|};
       Util.write_file home.prompt_path "custom prompt {{ issue.title }}";
+      Util.write_file (Filename.concat home.agents_dir "planner.md") "custom planner";
+      Util.write_file (Filename.concat home.agents_dir "engineer.md") "custom engineer";
+      Util.write_file (Filename.concat home.agents_dir "reviewer.md") "custom reviewer";
       let _, second = Runtime_home.bootstrap root in
+      Alcotest.(check string) "settings preserved" {|{"custom": true}|} (Util.read_file home.settings_path);
       Alcotest.(check string) "prompt preserved" "custom prompt {{ issue.title }}" (Util.read_file home.prompt_path);
+      Alcotest.(check string) "planner agent preserved" "custom planner"
+        (Util.read_file (Filename.concat home.agents_dir "planner.md"));
+      Alcotest.(check string) "engineer agent preserved" "custom engineer"
+        (Util.read_file (Filename.concat home.agents_dir "engineer.md"));
+      Alcotest.(check string) "reviewer agent preserved" "custom reviewer"
+        (Util.read_file (Filename.concat home.agents_dir "reviewer.md"));
       Alcotest.(check bool) "created files on first run" true
         (List.exists (fun item -> item.Runtime_home.status = Runtime_home.Created) first);
       Alcotest.(check bool) "skipped files on second run" true
-        (List.exists (fun item -> item.Runtime_home.status = Runtime_home.Skipped_existing) second))
+        (List.exists (fun item -> item.Runtime_home.status = Runtime_home.Skipped_existing) second);
+      Alcotest.(check bool) "settings skipped on second run" true
+        (List.exists
+           (fun item ->
+             item.Runtime_home.path = home.settings_path && item.Runtime_home.status = Runtime_home.Skipped_existing)
+           second))
+
+let test_bootstrap_default_runtime_contract_shape () =
+  with_temp_dir "symphony-bootstrap-default-contract-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let settings = Util.read_file home.settings_path in
+      let json = Yojson.Safe.from_string settings in
+      let member path =
+        List.fold_left (fun node key -> Yojson.Safe.Util.member key node) json path
+      in
+      let string path = Yojson.Safe.Util.to_string (member path) in
+      let bool path = Yojson.Safe.Util.to_bool (member path) in
+      Alcotest.(check bool) "legacy top-level codex absent" true (member [ "codex" ] = `Null);
+      Alcotest.(check string) "codex loop command" "/goal" (string [ "harnesses"; "codex"; "loop"; "command" ]);
+      Alcotest.(check bool) "codex loop enabled" true (bool [ "harnesses"; "codex"; "loop"; "enabled" ]);
+      Alcotest.(check string) "claude kind" "claude" (string [ "harnesses"; "claude"; "kind" ]);
+      Alcotest.(check bool) "claude loop disabled" false (bool [ "harnesses"; "claude"; "loop"; "enabled" ]);
+      Alcotest.(check string) "pi kind" "pi" (string [ "harnesses"; "pi"; "kind" ]);
+      Alcotest.(check string) "planner Harness" "codex" (string [ "agents"; "planner"; "harness" ]);
+      Alcotest.(check string) "engineer Harness" "claude" (string [ "agents"; "engineer"; "harness" ]);
+      Alcotest.(check string) "reviewer Harness" "pi" (string [ "agents"; "reviewer"; "harness" ]);
+      let stages = Yojson.Safe.Util.to_list (member [ "stageAgents"; "stages" ]) in
+      List.iteri
+        (fun index stage ->
+          match Yojson.Safe.Util.member "harness" stage with
+          | `Null -> ()
+          | _ -> Alcotest.fail (Printf.sprintf "stage %d must route by agent without steady-state Harness" index))
+        stages;
+      List.iter
+        (fun secret_marker ->
+          Alcotest.(check bool) ("no secret value marker " ^ secret_marker) false
+            (contains_substring settings secret_marker))
+        [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ];
+      let config = Config.from_settings_file ~workspace_root:root home.settings_path in
+      Alcotest.(check int) "bootstrapped Harness definitions load" 3 (List.length config.agent_harnesses);
+      Alcotest.(check int) "bootstrapped logical agents load" 3 (List.length config.logical_agents))
 
 let test_root_validation () =
   with_temp_dir "symphony-nongit-" (fun nongit ->
@@ -7659,6 +7710,8 @@ let () =
       ( "runtime-home",
         [
           Alcotest.test_case "bootstrap is idempotent" `Quick test_bootstrap_idempotency_preserves_user_files;
+          Alcotest.test_case "bootstrap writes new Runtime Contract defaults" `Quick
+            test_bootstrap_default_runtime_contract_shape;
           Alcotest.test_case "requires git repository root" `Quick test_root_validation;
           Alcotest.test_case "loads settings and prompt" `Quick test_settings_and_prompt_loading;
           Alcotest.test_case "loads runtime env file" `Quick test_runtime_env_loading;
