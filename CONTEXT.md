@@ -93,7 +93,7 @@ A human-editable issue record stored by a Local Issue Tracker and used by Person
 _Avoid_: task markdown, PRD file, scratch note
 
 **Runtime Settings Invocation Override**:
-A command-line value that replaces one loaded Runtime Settings field for the current Symphony process only.
+A command-line value on the default runtime command that replaces one loaded Runtime Settings field for the current Symphony process only, after Runtime Settings load and before orchestration uses the effective runtime config.
 _Avoid_: temporary config, settings rewrite, runtime patch
 
 **Stage Agent**:
@@ -354,7 +354,8 @@ _Avoid_: reinitialize, reset
 - A **Local Issue Tracker** must preserve Stage Agent dispatch, tracker status transitions, Agent Prompt rendering, Task Branch naming, retry, Stage Commit, Stage Push, and Task Branch Integration behavior.
 - A **Local Issue Tracker** must not require GitHub API access for issue fetches or tracker status updates.
 - Bootstrap must not overwrite existing **Local Issue Files**.
-- A **Runtime Settings Invocation Override** is applied after **Runtime Settings** load and before orchestration, but it is not written into the **Runtime Contract**.
+- A **Runtime Settings Invocation Override** is applied after **Runtime Settings** load and before orchestration uses the effective runtime config, but it is not written into the **Runtime Contract**.
+- A **Runtime Settings Invocation Override** may change effective Agent Worktree placement for one run, but it does not select a different **Workspace Repository**.
 - The **Runtime Contract** contains an **Agent Prompt**.
 - A **Runtime Home** contains one **Environment Template** and may contain one **Local Environment**.
 - A **Runtime Home** may contain **Runtime State**.

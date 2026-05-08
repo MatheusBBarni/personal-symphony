@@ -2,4 +2,4 @@
  (name symphony_backend)
  (public_name personal_symphony.backend)
  (wrapped false)
- (libraries unix threads yojson))
+ (libraries unix threads yojson cmdliner))

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Wire Effective Config Through Runtime Startup"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This task passes parsed override values through runtime startup and applies them
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add override pass-through to runtime command execution.
-- [ ] 4.2 Apply task_01's helper immediately after settings load.
-- [ ] 4.3 Ensure startup reporting and runtime modes use the effective config.
-- [ ] 4.4 Add settings-preservation coverage for override startup.
-- [ ] 4.5 Add root-validation-before-override coverage for `--workspace.root`.
+- [x] 4.1 Add override pass-through to runtime command execution.
+- [x] 4.2 Apply task_01's helper immediately after settings load.
+- [x] 4.3 Ensure startup reporting and runtime modes use the effective config.
+- [x] 4.4 Add settings-preservation coverage for override startup.
+- [x] 4.5 Add root-validation-before-override coverage for `--workspace.root`.
 
 ## Implementation Details
 Modify the runtime startup flow described in the TechSpec "System Architecture" and "Development Sequencing" sections. Keep Workspace Repository root validation before any override application. This task should not add new runtime consumer behavior beyond ensuring existing consumers receive the effective config object.
@@ -62,14 +62,14 @@ Modify the runtime startup flow described in the TechSpec "System Architecture" 
 
 ## Tests
 - Unit tests:
-  - [ ] Runtime startup with no overrides uses the loaded settings values.
-  - [ ] Runtime startup with multiple overrides produces an effective config containing all supplied values.
-  - [ ] Startup reporting uses the effective workspace root after `--workspace.root`.
+  - [x] Runtime startup with no overrides uses the loaded settings values.
+  - [x] Runtime startup with multiple overrides produces an effective config containing all supplied values.
+  - [x] Startup reporting uses the effective workspace root after `--workspace.root`.
 - Integration tests:
-  - [ ] A `--once` startup with overrides leaves `.symphony/settings.json` byte-for-byte unchanged.
-  - [ ] Running outside a Workspace Repository with `--workspace.root /tmp/workspaces` still fails root validation.
-  - [ ] `--web --workspace.root /tmp/symphony-workspaces` passes the effective workspace root into Web Dashboard startup state.
-  - [ ] `--merge 66 --agent.maxConcurrentAgents 1` accepts the override and still follows Manual Task Merge semantics.
+  - [x] A `--once` startup with overrides leaves `.symphony/settings.json` byte-for-byte unchanged.
+  - [x] Running outside a Workspace Repository with `--workspace.root /tmp/workspaces` still fails root validation.
+  - [x] `--web --workspace.root /tmp/symphony-workspaces` passes the effective workspace root into Web Dashboard startup state.
+  - [x] `--merge 66 --agent.maxConcurrentAgents 1` accepts the override and still follows Manual Task Merge semantics.
 - Test coverage target: >=80%
 - All tests must pass
 

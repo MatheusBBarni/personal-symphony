@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Prove Runtime Consumers Observe Effective Config"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ This task adds focused coverage proving existing runtime consumers observe the e
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add or extend polling interval coverage using effective config.
-- [ ] 5.2 Add or extend Agent Worktree root coverage using effective config.
-- [ ] 5.3 Add or extend global concurrency coverage using effective config.
-- [ ] 5.4 Add or extend retry backoff cap coverage using effective config.
-- [ ] 5.5 Add a regression assertion that `agent.max_turns` can be overridden in config without claiming retry-stop behavior.
+- [x] 5.1 Add or extend polling interval coverage using effective config.
+- [x] 5.2 Add or extend Agent Worktree root coverage using effective config.
+- [x] 5.3 Add or extend global concurrency coverage using effective config.
+- [x] 5.4 Add or extend retry backoff cap coverage using effective config.
+- [x] 5.5 Add a regression assertion that `agent.max_turns` can be overridden in config without claiming retry-stop behavior.
 
 ## Implementation Details
 Reference the TechSpec "Known Risks" section before working on `agent.maxTurns`; this task must not silently add retry-stop semantics. Prefer focused tests near existing orchestrator and manual merge coverage instead of broad end-to-end tests that are hard to diagnose.
@@ -60,13 +60,13 @@ Reference the TechSpec "Known Risks" section before working on `agent.maxTurns`;
 
 ## Tests
 - Unit tests:
-  - [ ] Effective `agent.max_concurrent_agents = 1` limits dispatch to one running task when multiple issues are eligible.
-  - [ ] Effective `agent.max_retry_backoff_ms = 5000` caps retry scheduling delay at 5000 ms.
-  - [ ] Effective `agent.max_turns` field changes are visible in config-level assertions without adding retry-stop expectations.
+  - [x] Effective `agent.max_concurrent_agents = 1` limits dispatch to one running task when multiple issues are eligible.
+  - [x] Effective `agent.max_retry_backoff_ms = 5000` caps retry scheduling delay at 5000 ms.
+  - [x] Effective `agent.max_turns` field changes are visible in config-level assertions without adding retry-stop expectations.
 - Integration tests:
-  - [ ] Effective `workspace.root` places an Agent Worktree or Manual Task Merge workspace under the override path.
-  - [ ] Effective `polling.interval_ms` is used by orchestrator loop timing or a testable scheduling seam.
-  - [ ] Runtime consumer tests continue to pass when no overrides are supplied.
+  - [x] Effective `workspace.root` places an Agent Worktree or Manual Task Merge workspace under the override path.
+  - [x] Effective `polling.interval_ms` is used by orchestrator loop timing or a testable scheduling seam.
+  - [x] Runtime consumer tests continue to pass when no overrides are supplied.
 - Test coverage target: >=80%
 - All tests must pass
 
