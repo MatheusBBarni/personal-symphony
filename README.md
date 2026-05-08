@@ -64,37 +64,62 @@ variable name; secret values belong only in the Local Environment:
 }
 ```
 
-Choose the Codex model and reasoning effort in the same file. If omitted, Symphony uses `gpt-5.5`
-with `medium` reasoning:
+Define execution backends under `harnesses` and logical agent roles under `agents`. Harnesses own
+provider commands and loop capability. Logical agents select a Harness and may override model,
+reasoning, and timeout fields for planner, engineer, or reviewer work:
 
 ```json
 {
-  "codex": {
-    "command": "codex exec",
-    "model": "gpt-5.5",
-    "reasoningEffort": "medium"
-  }
-}
-```
-
-PI is not a prerequisite. If you have the `pi` CLI installed and authenticated, you can use it as an
-Agent Harness instead of Codex for selected Stage Agents. Define an `agents.pi` harness and point each
-stage that should use PI at that harness with `harness`:
-
-```json
-{
-  "agents": {
+  "harnesses": {
     "codex": {
       "kind": "codex",
       "command": "codex exec",
-      "model": "gpt-5.5",
-      "reasoningEffort": "medium"
+      "loop": {
+        "enabled": true,
+        "command": "/goal"
+      }
+    },
+    "claude": {
+      "kind": "claude",
+      "command": "claude -p --output-format stream-json",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
     },
     "pi": {
       "kind": "pi",
       "command": "pi --model <model> --thinking <reasoning> --print --no-session",
-      "model": "openai/gpt-5.5",
-      "reasoningEffort": "medium"
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    }
+  },
+  "agents": {
+    "planner": {
+      "harness": "codex",
+      "model": "gpt-5.5",
+      "reasoningEffort": "medium",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "engineer": {
+      "harness": "claude",
+      "model": "opus-4.7",
+      "reasoningEffort": "xhigh",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "reviewer": {
+      "harness": "pi",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "high",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
     }
   },
   "stageAgents": {
@@ -102,18 +127,25 @@ stage that should use PI at that harness with `harness`:
     "stages": [
       {
         "states": ["Todo", "To-Do", "In progress", "In Progress"],
-        "agent": "engineer",
-        "harness": "pi"
+        "agent": "engineer"
       }
     ]
   }
 }
 ```
 
-When the `agents` object is present, each configured Stage Agent should select an existing Agent
-Harness with `harness` unless its `agent` name also matches a harness name. Selected PI Harnesses require
-the `pi` executable on `PATH` and provider authentication for the configured model; unused PI Harness
-definitions do not make PI a prerequisite for Codex-only dispatch.
+PI and Claude are not prerequisites for Codex-only dispatch. Symphony validates install and
+authentication readiness only for Harnesses selected by enabled Stage Agent routes. A selected PI
+Harness requires the `pi` executable on `PATH` and provider authentication for the configured model. A
+selected Claude Harness requires the `claude` executable and Claude Code authentication, such as
+`ANTHROPIC_API_KEY` or Claude's configured login state. Runtime Settings must reference only
+environment variable names, never secret values.
+
+Legacy settings that place Harness definitions under `agents.*`, such as `agents.pi.kind`, are
+migration input. When the new Runtime Settings shape is in use, Symphony reports a blocking Readiness
+Gap that tells you to move execution fields into `harnesses.*` and keep `agents.*` for logical agent
+definitions. Stage-level `stageAgents.stages[].harness` is also legacy input; move Harness selection to
+`agents.<logical-agent>.harness`.
 
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.
@@ -242,22 +274,26 @@ dispatch, resolving Workspace Repository skills before Codex Home skills.
 
 Rendered Agent Prompts include GitHub issue comments as issue context in addition to the issue body.
 
-Set `goal.enabled` to `true` on a specific stage to enable Stage Goal Handoff for that stage only.
-When enabled, Symphony sends `/goal` with deterministic Stage Goal Context before the normal Agent
-Prompt. Stage Goal Context includes issue identifier, title, description, comments, URL, current
-GitHub Project status, labels, priority when present, blocker references when present, attempt, and
-stage agent name. It omits issue creation and update timestamps.
+Set `goal.enabled` to `true` on a specific stage to allow Stage Goal Handoff for that stage only.
+The selected Harness decides whether a loop command is actually sent. The Bootstrap default Codex
+Harness has `loop.enabled: true` and `loop.command: "/goal"`, so Codex receives `/goal` with
+deterministic Stage Goal Context before the normal Agent Prompt. The Bootstrap default Claude and PI
+Harnesses have loop disabled, so those Harnesses run the normal prompt even when a stage has
+`goal.enabled: true`. Stage Goal Context includes issue identifier, title, description, comments, URL,
+current GitHub Project status, labels, priority when present, blocker references when present,
+attempt, and stage agent name. It omits issue creation and update timestamps.
 
-Stage Goal Handoff requires Codex goals in `~/.codex/config.toml`:
+Codex loop handoff requires a Codex command that accepts the configured Harness loop command from
+standard input. For Codex goals, enable goals in `~/.codex/config.toml`:
 
 ```toml
 [features]
 goals = true
 ```
 
-If a stage enables goal handoff but Codex goals are not enabled, Symphony reports a Readiness Gap.
-Goal Usage reported by Codex is stored in Runtime State for running, retrying, and attention-needed
-task details when available; missing or unparseable Goal Usage does not fail a task.
+If a selected loop-enabled Codex Harness cannot accept the configured loop command, Symphony reports a
+Readiness Gap. Goal Usage reported by Codex is stored in Runtime State for running, retrying, and
+attention-needed task details when available; missing or unparseable Goal Usage does not fail a task.
 
 Stage commits run after an agent exits successfully and before Symphony moves the issue to the
 stage's `successStatus`. Set `commit.enabled` per stage to control which transitions create commits;

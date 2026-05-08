@@ -57,6 +57,14 @@ let contains_substring text substring =
   in
   loop 0
 
+let rec find_repo_root dir =
+  if Sys.file_exists (Filename.concat dir "package.json") && Sys.file_exists (Filename.concat dir "CONTEXT.md") then dir
+  else
+    let parent = Filename.dirname dir in
+    if parent = dir then Alcotest.fail "could not locate repository root" else find_repo_root parent
+
+let repository_file path = Filename.concat (find_repo_root (Sys.getcwd ())) path
+
 let substring_index text substring =
   let text_len = String.length text in
   let substring_len = String.length substring in
@@ -1974,6 +1982,71 @@ let test_bootstrap_default_runtime_contract_shape () =
       let config = Config.from_settings_file ~workspace_root:root home.settings_path in
       Alcotest.(check int) "bootstrapped Harness definitions load" 3 (List.length config.agent_harnesses);
       Alcotest.(check int) "bootstrapped logical agents load" 3 (List.length config.logical_agents))
+
+let test_runtime_contract_docs_use_current_harness_examples () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  List.iter
+    (fun text ->
+      Alcotest.(check bool) "documents harnesses section" true (contains_substring text "\"harnesses\": {");
+      Alcotest.(check bool) "documents logical agents section" true (contains_substring text "\"agents\": {"))
+    [ readme ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
+    [
+      "\"planner\": {";
+      "\"harness\": \"codex\"";
+      "\"engineer\": {";
+      "\"harness\": \"claude\"";
+      "\"reviewer\": {";
+      "\"harness\": \"pi\"";
+      "\"command\": \"claude -p --output-format stream-json\"";
+      "\"command\": \"/goal\"";
+    ];
+  List.iter
+    (fun obsolete ->
+      Alcotest.(check bool) ("README omits legacy example " ^ obsolete) false (contains_substring readme obsolete))
+    [
+      "Define an `agents.pi` harness";
+      "\"agent\": \"engineer\",\n        \"harness\": \"pi\"";
+      "each configured Stage Agent should select an existing Agent\nHarness with `harness`";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (contains_substring context expected))
+    [
+      "**Logical Agent**";
+      "**Claude Harness**";
+      "**Harness Loop**";
+      "legacy `stageAgents.stages[].harness` is a migration **Readiness Gap**";
+      "Legacy harness-shaped Runtime Settings under `agents.*`";
+    ]
+
+let test_runtime_contract_docs_are_secret_free () =
+  let combined = Util.read_file (repository_file "README.md") ^ Util.read_file (repository_file "CONTEXT.md") in
+  List.iter
+    (fun secret_marker ->
+      Alcotest.(check bool) ("no secret value marker " ^ secret_marker) false
+        (contains_substring combined secret_marker))
+    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ]
+
+let test_project_adr_documents_migration_and_loop_semantics () =
+  let adr = Util.read_file (repository_file "docs/adr/0021-agent-harness-runtime-settings.md") in
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
+    [
+      "Accepted, amended 2026-05-08";
+      "Runtime Settings define named Agent Harness definitions under `harnesses`";
+      "Runtime Settings define logical agents under `agents`";
+      "harness-shaped `agents.*` entries";
+      "blocking Readiness Gaps";
+      "stageAgents.stages[].harness";
+      "loop.enabled";
+      "loop.command";
+      "Bootstrap defaults enable Codex loop with `/goal` and disable Claude and PI loops";
+    ]
 
 let test_root_validation () =
   with_temp_dir "symphony-nongit-" (fun nongit ->
@@ -7717,6 +7790,14 @@ let () =
           Alcotest.test_case "loads runtime env file" `Quick test_runtime_env_loading;
           Alcotest.test_case "rejects repo URL in settings" `Quick test_repo_url_readiness_gap;
           Alcotest.test_case "writes ignore rules" `Quick test_runtime_gitignore_contents;
+        ] );
+      ( "docs",
+        [
+          Alcotest.test_case "Runtime Contract examples use Harnesses and logical agents" `Quick
+            test_runtime_contract_docs_use_current_harness_examples;
+          Alcotest.test_case "Runtime Contract docs are secret-free" `Quick test_runtime_contract_docs_are_secret_free;
+          Alcotest.test_case "project ADR documents migration and loop semantics" `Quick
+            test_project_adr_documents_migration_and_loop_semantics;
         ] );
       ( "config",
         [
