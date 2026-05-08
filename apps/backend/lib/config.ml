@@ -35,6 +35,17 @@ type agent_harness = {
   turn_timeout_ms : int;
   read_timeout_ms : int;
   stall_timeout_ms : int;
+  loop_enabled : bool;
+  loop_command : string;
+}
+type logical_agent = {
+  name : string;
+  harness : string;
+  model : string option;
+  reasoning_effort : string option;
+  turn_timeout_ms : int option;
+  read_timeout_ms : int option;
+  stall_timeout_ms : int option;
 }
 type codex = {
   command : string;
@@ -109,6 +120,7 @@ type t = {
   codex : codex;
   agent_harnesses_explicit : bool;
   agent_harnesses : agent_harness list;
+  logical_agents : logical_agent list;
   server : server;
   pull_request : pull_request;
   protected_paths : protected_paths;
@@ -129,8 +141,10 @@ let default_commit_message = "<type>: <generated_message_max_90char>"
 let default_model = "gpt-5.5"
 let default_reasoning_effort = "medium"
 let default_codex_command = "codex exec"
+let default_codex_loop_command = "/goal"
 let default_pi_model = "openai/gpt-5.5"
 let default_pi_command = "pi --model <model> --thinking <reasoning> --print --no-session"
+let default_claude_command = "claude -p --output-format stream-json"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
@@ -183,6 +197,8 @@ let harness_of_codex ?(name = "codex") (codex : codex) =
     turn_timeout_ms = codex.turn_timeout_ms;
     read_timeout_ms = codex.read_timeout_ms;
     stall_timeout_ms = codex.stall_timeout_ms;
+    loop_enabled = true;
+    loop_command = default_codex_loop_command;
   }
 
 let default_stage_agents =
@@ -357,6 +373,7 @@ let from_workflow workflow =
     codex;
     agent_harnesses_explicit = false;
     agent_harnesses = [ harness_of_codex codex ];
+    logical_agents = [];
     server = { port = Simple_yaml.get_int "port" server_raw };
     pull_request = default_pull_request;
     protected_paths = default_protected_paths;
@@ -445,61 +462,136 @@ let harness_named name (harnesses : agent_harness list) =
 
 let stage_harness_name (stage : stage_agent) = Option.value stage.harness ~default:stage.agent
 
+let default_harness_kind name =
+  match name with "codex" -> "codex" | "pi" -> "pi" | "claude" -> "claude" | _ -> ""
+
+let default_harness_command = function
+  | "codex" -> default_codex_command
+  | "pi" -> default_pi_command
+  | "claude" -> default_claude_command
+  | _ -> ""
+
+let default_harness_model = function "pi" -> default_pi_model | _ -> default_model
+
+let default_harness_loop kind =
+  if kind = "codex" then (true, default_codex_loop_command) else (false, "")
+
+let json_harness_loop path raw ~kind =
+  let default_enabled, default_command = default_harness_loop kind in
+  match member "loop" raw with
+  | `Null -> (default_enabled, default_command)
+  | `Assoc _ as loop_raw ->
+      ( json_bool "enabled" loop_raw ~default:default_enabled,
+        json_string "command" loop_raw ~default:default_command )
+  | _ -> raise (Invalid_config (path ^ ".loop must be an object"))
+
+let json_agent_harness path name raw =
+  let default_kind = default_harness_kind name in
+  let default_command = default_harness_command default_kind in
+  let default_model = default_harness_model default_kind in
+  match raw with
+  | `Assoc _ ->
+      let kind = json_string "kind" raw ~default:default_kind |> Util.trim |> String.lowercase_ascii in
+      let command =
+        json_string "command" raw ~default:default_command
+        |> fun command -> if kind = "codex" then normalize_codex_command command else command
+      in
+      let loop_enabled, loop_command = json_harness_loop path raw ~kind in
+      {
+        name = Util.trim name;
+        kind;
+        command;
+        model = json_string "model" raw ~default:default_model;
+        reasoning_effort = json_string "reasoningEffort" raw ~default:default_reasoning_effort;
+        turn_timeout_ms = json_int "turnTimeoutMs" raw ~default:3600000;
+        read_timeout_ms = json_int "readTimeoutMs" raw ~default:5000;
+        stall_timeout_ms = json_int "stallTimeoutMs" raw ~default:300000;
+        loop_enabled;
+        loop_command;
+      }
+  | _ ->
+      let loop_enabled, loop_command = default_harness_loop default_kind in
+      {
+        name = Util.trim name;
+        kind = default_kind;
+        command = "";
+        model = default_model;
+        reasoning_effort = default_reasoning_effort;
+        turn_timeout_ms = 3600000;
+        read_timeout_ms = 5000;
+        stall_timeout_ms = 300000;
+        loop_enabled;
+        loop_command;
+      }
+
+let json_harness_map path raw ~legacy_codex =
+  match raw with
+  | `Assoc fields ->
+      let harnesses =
+        fields
+        |> List.map (fun (name, raw) -> json_agent_harness (path ^ "." ^ Util.trim name) name raw)
+      in
+      (match harness_named "codex" harnesses with
+      | Some _ -> harnesses
+      | None -> harness_of_codex legacy_codex :: harnesses)
+  | _ -> raise (Invalid_config (path ^ " must be an object"))
+
+let is_legacy_agent_harness raw =
+  match raw with
+  | `Assoc _ -> member "kind" raw <> `Null || member "command" raw <> `Null
+  | _ -> true
+
 let json_agent_harnesses agents_raw ~legacy_codex =
   match agents_raw with
   | `Null -> (false, [ harness_of_codex legacy_codex ])
   | `Assoc fields ->
-      let harnesses =
-        fields
-        |> List.map (fun (name, raw) ->
-               let default_kind =
-                 match name with
-                 | "codex" -> "codex"
-                 | "pi" -> "pi"
-                 | _ -> ""
-               in
-               let default_command =
-                 match default_kind with
-                 | "codex" -> default_codex_command
-                 | "pi" -> default_pi_command
-                 | _ -> ""
-               in
-               let default_model = match default_kind with "pi" -> default_pi_model | _ -> default_model in
-               match raw with
-               | `Assoc _ ->
-                   let kind = json_string "kind" raw ~default:default_kind |> Util.trim |> String.lowercase_ascii in
-                   let command =
-                     json_string "command" raw ~default:default_command
-                     |> fun command -> if kind = "codex" then normalize_codex_command command else command
-                   in
+      let harness_fields = List.filter (fun (_, raw) -> is_legacy_agent_harness raw) fields in
+      if harness_fields = [] then (false, [ harness_of_codex legacy_codex ])
+      else
+        let harnesses =
+          harness_fields
+          |> List.map (fun (name, raw) -> json_agent_harness ("agents." ^ Util.trim name) name raw)
+        in
+        let harnesses =
+          match harness_named "codex" harnesses with
+          | Some _ -> harnesses
+          | None -> harness_of_codex legacy_codex :: harnesses
+        in
+        (true, harnesses)
+  | _ -> raise (Invalid_config "agents must be an object")
+
+let json_harnesses harnesses_raw agents_raw ~legacy_codex =
+  match harnesses_raw with
+  | `Null -> json_agent_harnesses agents_raw ~legacy_codex
+  | `Assoc _ -> (true, json_harness_map "harnesses" harnesses_raw ~legacy_codex)
+  | _ -> raise (Invalid_config "harnesses must be an object")
+
+let json_optional_positive_int path name json =
+  match member name json with
+  | `Null -> None
+  | _ -> Some (positive path (json_int name json ~default:0))
+
+let json_logical_agents agents_raw =
+  match agents_raw with
+  | `Null -> []
+  | `Assoc fields ->
+      fields
+      |> List.filter_map (fun (name, raw) ->
+             match raw with
+             | `Assoc _ when member "harness" raw <> `Null ->
+                 let name = nonempty_trimmed_string ("agents." ^ name) name in
+                 Some
                    {
-                     name = Util.trim name;
-                     kind;
-                     command;
-                     model = json_string "model" raw ~default:default_model;
-                     reasoning_effort = json_string "reasoningEffort" raw ~default:default_reasoning_effort;
-                     turn_timeout_ms = json_int "turnTimeoutMs" raw ~default:3600000;
-                     read_timeout_ms = json_int "readTimeoutMs" raw ~default:5000;
-                     stall_timeout_ms = json_int "stallTimeoutMs" raw ~default:300000;
+                     name;
+                     harness = json_string "harness" raw ~default:"" |> nonempty_trimmed_string ("agents." ^ name ^ ".harness");
+                     model = json_optional_string "model" raw;
+                     reasoning_effort = json_optional_string "reasoningEffort" raw;
+                     turn_timeout_ms = json_optional_positive_int ("agents." ^ name ^ ".turnTimeoutMs") "turnTimeoutMs" raw;
+                     read_timeout_ms = json_optional_positive_int ("agents." ^ name ^ ".readTimeoutMs") "readTimeoutMs" raw;
+                     stall_timeout_ms = json_optional_positive_int ("agents." ^ name ^ ".stallTimeoutMs") "stallTimeoutMs" raw;
                    }
-               | _ ->
-                   {
-                     name = Util.trim name;
-                     kind = default_kind;
-                     command = "";
-                     model = default_model;
-                     reasoning_effort = default_reasoning_effort;
-                     turn_timeout_ms = 3600000;
-                     read_timeout_ms = 5000;
-                     stall_timeout_ms = 300000;
-                   })
-      in
-      let harnesses =
-        match harness_named "codex" harnesses with
-        | Some _ -> harnesses
-        | None -> harness_of_codex legacy_codex :: harnesses
-      in
-      (true, harnesses)
+             | `Assoc _ -> None
+             | _ -> raise (Invalid_config ("agents." ^ name ^ " must be an object")))
   | _ -> raise (Invalid_config "agents must be an object")
 
 let selected_agent_harness config (stage : stage_agent option) =
@@ -1010,6 +1102,7 @@ let from_settings_file ~workspace_root path =
   let git_raw = member "git" root in
   let agent_raw = member "agent" root in
   let codex_raw = member "codex" root in
+  let harnesses_raw = member "harnesses" root in
   let agents_raw = member "agents" root in
   let server_raw = member "server" root in
   let pull_request_raw = member "pullRequest" root in
@@ -1038,7 +1131,8 @@ let from_settings_file ~workspace_root path =
       stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
     }
   in
-  let agent_harnesses_explicit, agent_harnesses = json_agent_harnesses agents_raw ~legacy_codex in
+  let agent_harnesses_explicit, agent_harnesses = json_harnesses harnesses_raw agents_raw ~legacy_codex in
+  let logical_agents = json_logical_agents agents_raw in
   let codex =
     match harness_named "codex" agent_harnesses with Some harness -> codex_of_harness harness | None -> legacy_codex
   in
@@ -1095,6 +1189,7 @@ let from_settings_file ~workspace_root path =
     codex;
     agent_harnesses_explicit;
     agent_harnesses;
+    logical_agents;
     server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
     pull_request =
       {
@@ -1361,8 +1456,8 @@ let readiness_gaps config =
       in
       if Util.trim harness.name = "" then
         add "agents" "Agent Harness identifiers in .symphony/settings.json must not be empty.";
-      if not (List.exists (( = ) harness.kind) [ "codex"; "pi" ]) then
-        add (prefix ^ ".kind") "Set Agent Harness kind to codex or pi.";
+      if not (List.exists (( = ) harness.kind) [ "codex"; "claude"; "pi" ]) then
+        add (prefix ^ ".kind") "Set Agent Harness kind to codex, claude, or pi.";
       if Util.trim harness.command = "" then
         add (prefix ^ ".command") "Set the Agent Harness command to a non-interactive launch command.";
       if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Agent Harness model.";

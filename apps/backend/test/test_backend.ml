@@ -845,6 +845,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
             };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -888,6 +889,8 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
           turn_timeout_ms = 1000;
           read_timeout_ms = 100;
           stall_timeout_ms = 1000;
+          loop_enabled = false;
+          loop_command = "";
         }
       in
       let config =
@@ -917,6 +920,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
           codex;
           agent_harnesses_explicit = true;
           agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -984,6 +988,8 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
           turn_timeout_ms = 1000;
           read_timeout_ms = 100;
           stall_timeout_ms = 1000;
+          loop_enabled = false;
+          loop_command = "";
         }
       in
       let config =
@@ -1013,6 +1019,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
           codex;
           agent_harnesses_explicit = true;
           agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1159,6 +1166,137 @@ let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
           | None -> Alcotest.fail "expected selected harness")
       | _ -> Alcotest.fail "expected one stage")
 
+let test_config_parses_harnesses_and_logical_agents () =
+  with_temp_dir "symphony-runtime-settings-schema-" (fun root ->
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {
+      "kind": "codex",
+      "command": "codex exec",
+      "loop": {"enabled": true, "command": "/goal"}
+    },
+    "claude": {
+      "kind": "claude",
+      "command": "claude -p --output-format stream-json",
+      "loop": {"enabled": false, "command": ""}
+    },
+    "pi": {
+      "kind": "pi",
+      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "high",
+      "loop": {"enabled": false, "command": ""}
+    }
+  },
+  "agents": {
+    "planner": {
+      "harness": "codex",
+      "model": "gpt-5.5",
+      "reasoningEffort": "medium",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "reviewer": {"harness": "claude"}
+  },
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let harness name =
+        match Config.harness_named name config.agent_harnesses with
+        | Some harness -> harness
+        | None -> Alcotest.fail ("expected Harness " ^ name)
+      in
+      let codex = harness "codex" in
+      Alcotest.(check string) "codex kind" "codex" codex.kind;
+      Alcotest.(check bool) "codex loop enabled" true codex.loop_enabled;
+      Alcotest.(check string) "codex loop command" "/goal" codex.loop_command;
+      let claude = harness "claude" in
+      Alcotest.(check string) "claude kind" "claude" claude.kind;
+      Alcotest.(check string) "claude command" "claude -p --output-format stream-json" claude.command;
+      let pi = harness "pi" in
+      Alcotest.(check string) "pi kind" "pi" pi.kind;
+      Alcotest.(check string) "pi command" Config.default_pi_command pi.command;
+      let logical_agent name =
+        match List.find_opt (fun (agent : Config.logical_agent) -> agent.name = name) config.logical_agents with
+        | Some agent -> agent
+        | None -> Alcotest.fail ("expected logical agent " ^ name)
+      in
+      let planner = logical_agent "planner" in
+      Alcotest.(check string) "planner Harness" "codex" planner.harness;
+      Alcotest.(check (option string)) "planner model" (Some "gpt-5.5") planner.model;
+      Alcotest.(check (option string)) "planner reasoning" (Some "medium") planner.reasoning_effort;
+      Alcotest.(check (option int)) "planner turn timeout" (Some 3600000) planner.turn_timeout_ms;
+      Alcotest.(check (option int)) "planner read timeout" (Some 5000) planner.read_timeout_ms;
+      Alcotest.(check (option int)) "planner stall timeout" (Some 300000) planner.stall_timeout_ms;
+      let reviewer = logical_agent "reviewer" in
+      Alcotest.(check string) "reviewer Harness" "claude" reviewer.harness;
+      Alcotest.(check (option string)) "reviewer model absent" None reviewer.model;
+      Alcotest.(check (option string)) "reviewer reasoning absent" None reviewer.reasoning_effort;
+      Alcotest.(check (option int)) "reviewer turn timeout absent" None reviewer.turn_timeout_ms)
+
+let test_config_loads_mixed_harness_settings_without_dispatch () =
+  with_temp_dir "symphony-mixed-harness-settings-" (fun root ->
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "codex exec", "loop": {"enabled": true, "command": "/goal"}},
+    "claude": {"kind": "claude", "command": "claude -p --output-format stream-json"},
+    "pi": {"kind": "pi", "command": "pi --model <model> --thinking <reasoning> --print --no-session"}
+  },
+  "agents": {
+    "planner": {"harness": "codex", "model": "gpt-5.5"},
+    "engineer": {"harness": "claude", "model": "opus-4.7"},
+    "reviewer": {"harness": "pi", "model": "openai-codex/gpt-5.5"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Backlog"], "agent": "planner"},
+      {"states": ["Todo"], "agent": "engineer"},
+      {"states": ["In review"], "agent": "reviewer"}
+    ]
+  }
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check int) "Harness definitions" 3 (List.length config.agent_harnesses);
+      Alcotest.(check int) "logical agents" 3 (List.length config.logical_agents);
+      Alcotest.(check int) "stage routes" 3 (List.length config.stage_agents.stages))
+
+let test_config_loads_legacy_top_level_codex_settings () =
+  with_temp_dir "symphony-legacy-codex-settings-" (fun root ->
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {
+    "command": "codex app-server",
+    "model": "legacy-model",
+    "reasoningEffort": "low",
+    "turnTimeoutMs": 123,
+    "readTimeoutMs": 45,
+    "stallTimeoutMs": 678
+  },
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "legacy command normalized" Config.default_codex_command config.codex.command;
+      Alcotest.(check string) "legacy model" "legacy-model" config.codex.model;
+      Alcotest.(check string) "legacy reasoning" "low" config.codex.reasoning_effort;
+      Alcotest.(check int) "legacy turn timeout" 123 config.codex.turn_timeout_ms)
+
 let test_harness_command_rendering () =
   let pi =
     {
@@ -1170,6 +1308,8 @@ let test_harness_command_rendering () =
       turn_timeout_ms = 1000;
       read_timeout_ms = 100;
       stall_timeout_ms = 1000;
+      loop_enabled = false;
+      loop_command = "";
     }
   in
   Alcotest.(check string) "pi tokens"
@@ -1185,6 +1325,8 @@ let test_harness_command_rendering () =
       turn_timeout_ms = 1000;
       read_timeout_ms = 100;
       stall_timeout_ms = 1000;
+      loop_enabled = true;
+      loop_command = Config.default_codex_loop_command;
     }
   in
   Alcotest.(check string) "codex injection" "codex -m 'gpt-5.5' -c 'model_reasoning_effort=\"high\"' exec"
@@ -1422,6 +1564,7 @@ let test_project_status_order_uses_transition_flow () =
         };
       agent_harnesses_explicit = false;
       agent_harnesses = [];
+          logical_agents = [];
       server = { port = None };
       pull_request = Config.default_pull_request;
       protected_paths = Config.default_protected_paths;
@@ -1878,6 +2021,7 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2266,6 +2410,7 @@ let test_orchestrator_notifies_each_state_mutation () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2312,6 +2457,7 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2420,6 +2566,7 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1; read_timeout_ms = 1000; stall_timeout_ms = 100000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2544,6 +2691,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
             };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2645,6 +2793,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2951,6 +3100,7 @@ let stage_capacity_config root ~global_cap =
         };
       agent_harnesses_explicit = false;
       agent_harnesses = [];
+          logical_agents = [];
       server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -3036,6 +3186,7 @@ let test_orchestrator_dispatch_limits () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3223,6 +3374,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
               };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3339,6 +3491,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
         };
       agent_harnesses_explicit = false;
       agent_harnesses = [];
+          logical_agents = [];
       server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3403,6 +3556,7 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3457,6 +3611,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3511,6 +3666,7 @@ let test_orchestrator_retries_failed_agent () =
           codex = { command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3570,6 +3726,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
             };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3629,6 +3786,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
             codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3690,6 +3848,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3790,6 +3949,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3920,6 +4080,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4001,6 +4162,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         };
       agent_harnesses_explicit = false;
       agent_harnesses = [];
+          logical_agents = [];
       server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -4580,6 +4742,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4711,6 +4874,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4857,6 +5021,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4926,6 +5091,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5022,6 +5188,7 @@ let test_stage_commit_requires_code_changes () =
             codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5080,6 +5247,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
             codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5184,6 +5352,7 @@ let base_orchestrator_config root git =
   };
   agent_harnesses_explicit = false;
   agent_harnesses = [];
+          logical_agents = [];
   server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -6834,6 +7003,12 @@ let () =
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "parses agent harnesses" `Quick
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
+          Alcotest.test_case "parses Harnesses and logical agents" `Quick
+            test_config_parses_harnesses_and_logical_agents;
+          Alcotest.test_case "loads mixed-Harness Runtime Settings" `Quick
+            test_config_loads_mixed_harness_settings_without_dispatch;
+          Alcotest.test_case "loads legacy top-level codex settings" `Quick
+            test_config_loads_legacy_top_level_codex_settings;
           Alcotest.test_case "renders harness commands" `Quick test_harness_command_rendering;
           Alcotest.test_case "validates agent harness readiness" `Quick test_agent_harness_readiness_gaps;
           Alcotest.test_case "validates PI harness install and auth" `Quick
