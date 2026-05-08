@@ -2822,6 +2822,43 @@ let fake_minibeads_runner ?(available = true) ?(status = Minibeads_tracker.Exite
         { Minibeads_tracker.status; stdout; stderr });
   }
 
+let minibeads_cli_command (config : Config.t) args =
+  config.tracker.minibeads_command ^ " " ^ String.concat " " (List.map Util.shell_quote args)
+
+let minibeads_json_command config subcommand args =
+  minibeads_cli_command config
+    ([ "--mb-beads-dir"; config.Config.tracker.minibeads_root; "--mb-no-cmd-logging"; "--json"; subcommand ]
+    @ args)
+
+let minibeads_update_command config identifier status =
+  minibeads_cli_command config
+    [
+      "--mb-beads-dir";
+      config.Config.tracker.minibeads_root;
+      "--mb-no-cmd-logging";
+      "update";
+      identifier;
+      "--status";
+      status;
+    ]
+
+let fake_minibeads_route_runner ?(available = true) routes calls =
+  {
+    Minibeads_tracker.command_available = (fun _ -> available);
+    run =
+      (fun ~cwd ~command ->
+        calls := (cwd, command) :: !calls;
+        match List.assoc_opt command routes with
+        | Some (`Ok stdout) -> { Minibeads_tracker.status = Exited 0; stdout; stderr = "" }
+        | Some (`Fail (code, output)) -> { Minibeads_tracker.status = Exited code; stdout = ""; stderr = output }
+        | None ->
+            {
+              Minibeads_tracker.status = Exited 127;
+              stdout = "";
+              stderr = "unexpected fake mb command: " ^ command;
+            });
+  }
+
 let lookup_diagnostic_label = function
   | Issue_tracker.Missing_issue -> "missing-issue"
   | Issue_tracker.Missing_project_membership number -> "missing-project-" ^ string_of_int number
@@ -2951,7 +2988,7 @@ let test_minibeads_readiness_nonzero_command_is_sanitized () =
       | [ gap ] ->
           Alcotest.(check string) "requirement" "tracker.minibeads.command" gap.requirement;
           Alcotest.(check string) "remediation"
-            "minibeads readiness command \"mb\" failed with exit 2: bad output from mb second line. Fix the command or local minibeads installation before dispatch."
+            "minibeads readiness command \"mb '--version'\" failed with exit 2: bad output from mb second line. Fix the command or local minibeads installation before dispatch."
             gap.remediation
       | gaps ->
           Alcotest.fail
@@ -2966,8 +3003,188 @@ let test_minibeads_readiness_valid_fake_output_has_no_gap () =
         Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~stdout:"mb 0.13.1" ~calls ()) config
       in
       Alcotest.(check (list string)) "requirements" [] (runtime_requirements (tracker.readiness_gaps ()));
-      Alcotest.(check (list (pair string string))) "command rooted in workspace" [ (root, "mb") ]
+      Alcotest.(check (list (pair string string))) "command rooted in workspace" [ (root, "mb '--version'") ]
         (List.rev !calls))
+
+let active_minibeads_issue_json =
+  {|
+[
+  {
+    "id": "mb-20",
+    "title": "Implement local tracker",
+    "description": "Use minibeads JSON output.",
+    "status": "open",
+    "priority": 1,
+    "labels": ["backend", "tracker"],
+    "dependencies": [],
+    "created_at": "2026-05-08T10:00:00Z",
+    "updated_at": "2026-05-08T11:00:00Z"
+  }
+]
+|}
+
+let test_minibeads_fetch_maps_issue_output () =
+  with_temp_dir "symphony-minibeads-fetch-map-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let tracker =
+        Issue_tracker.minibeads
+          ~runner:(fake_minibeads_route_runner [ (list_command, `Ok active_minibeads_issue_json) ] calls)
+          config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      | Ok [ issue ] ->
+          Alcotest.(check string) "identifier" "mb-20" issue.Issue.identifier;
+          Alcotest.(check string) "title" "Implement local tracker" issue.title;
+          Alcotest.(check string) "state" "open" issue.state;
+          Alcotest.(check (option string)) "description" (Some "Use minibeads JSON output.")
+            issue.description;
+          Alcotest.(check (option int)) "priority" (Some 1) issue.priority;
+          Alcotest.(check (list string)) "labels" [ "backend"; "tracker" ] issue.labels;
+          Alcotest.(check (option string)) "created" (Some "2026-05-08T10:00:00Z")
+            issue.created_at;
+          Alcotest.(check (option string)) "updated" (Some "2026-05-08T11:00:00Z")
+            issue.updated_at;
+          Alcotest.(check int) "comments empty for minibeads V1" 0 (List.length issue.comments);
+          Alcotest.(check (list (pair string string))) "command rooted in workspace"
+            [ (root, list_command) ] (List.rev !calls)
+      | Ok issues -> Alcotest.fail (Printf.sprintf "expected one candidate, got %d" (List.length issues)))
+
+let test_minibeads_duplicate_identifiers_are_diagnostic () =
+  with_temp_dir "symphony-minibeads-duplicates-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let output =
+        {|[
+  {"id":"mb-20","title":"One","status":"open","priority":1},
+  {"id":"MB-020","title":"Two","status":"open","priority":2}
+]|}
+      in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok output) ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Failed message) ->
+          Alcotest.(check string) "diagnostic"
+            "minibeads issue output error: duplicate minibeads issue identifier mb-20 in list output"
+            message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      | Ok _ -> Alcotest.fail "expected duplicate diagnostic")
+
+let test_minibeads_malformed_output_is_diagnostic () =
+  with_temp_dir "symphony-minibeads-malformed-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok "not json") ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Failed message) ->
+          Alcotest.(check bool) "diagnostic prefix" true
+            (Util.starts_with ~prefix:"minibeads issue output error: list returned invalid JSON" message)
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      | Ok _ -> Alcotest.fail "expected malformed output diagnostic")
+
+let test_minibeads_unsupported_status_is_not_dispatchable () =
+  with_temp_dir "symphony-minibeads-unsupported-status-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let output = {|[{"id":"mb-20","title":"Needs triage","status":"triage","priority":2}]|} in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok output) ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Ok [] -> ()
+      | Ok issues -> Alcotest.fail (Printf.sprintf "expected no dispatchable issues, got %d" (List.length issues))
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit")
+
+let test_minibeads_nonterminal_blocker_prevents_dispatch () =
+  with_temp_dir "symphony-minibeads-blocked-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let output =
+        {|[
+  {"id":"mb-10","title":"Blocking work","status":"open","priority":1},
+  {"id":"mb-20","title":"Dependent work","status":"open","priority":1,"dependencies":[{"id":"mb-10","type":"blocks"}]}
+]|}
+      in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok output) ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Ok issues ->
+          Alcotest.(check (list string)) "only unblocked candidate" [ "mb-10" ]
+            (List.map (fun issue -> issue.Issue.identifier) issues)
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit")
+
+let test_minibeads_lookup_and_status_update_through_boundary () =
+  with_temp_dir "symphony-minibeads-boundary-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let update_command = minibeads_update_command config "mb-20" "in_progress" in
+      let show_output =
+        {|{
+  "id": "mb-20",
+  "title": "Implement local tracker",
+  "description": "Use minibeads JSON output.",
+  "status": "open",
+  "priority": 1,
+  "labels": ["backend", "tracker"],
+  "dependencies": [],
+  "created_at": "2026-05-08T10:00:00Z",
+  "updated_at": "2026-05-08T11:00:00Z"
+}|}
+      in
+      let tracker =
+        Issue_tracker.minibeads
+          ~runner:
+            (fake_minibeads_route_runner
+               [
+                 (list_command, `Ok active_minibeads_issue_json);
+                 (show_command, `Ok show_output);
+                 (update_command, `Ok "Updated mb-20");
+               ]
+               calls)
+          config
+      in
+      let issue =
+        match tracker.fetch_candidates () with
+        | Ok [ issue ] -> issue
+        | Ok _ -> Alcotest.fail "expected one candidate"
+        | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+        | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      in
+      (match tracker.fetch_by_identifiers [ "MB-020" ] with
+      | Ok [ Some issue ] -> Alcotest.(check string) "lookup canonical" "mb-20" issue.Issue.identifier
+      | Ok _ -> Alcotest.fail "expected lookup hit"
+      | Error message -> Alcotest.fail message);
+      (match tracker.update_status issue "In progress" with
+      | Ok () -> ()
+      | Error message -> Alcotest.fail message);
+      Alcotest.(check (list (pair string string))) "commands"
+        [ (root, list_command); (root, show_command); (root, update_command) ]
+        (List.rev !calls))
+
+let test_minibeads_repeated_status_update_is_idempotent () =
+  with_temp_dir "symphony-minibeads-idempotent-update-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let tracker = Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [] calls) config in
+      let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Already running" ~state:"in_progress" in
+      match tracker.update_status issue "In progress" with
+      | Ok () -> Alcotest.(check int) "no command needed" 0 (List.length !calls)
+      | Error message -> Alcotest.fail message)
 
 let test_minibeads_runtime_readiness_omits_github_gaps () =
   with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
@@ -7274,6 +7491,19 @@ let () =
             test_minibeads_readiness_valid_fake_output_has_no_gap;
           Alcotest.test_case "surfaces minibeads runtime readiness without github gaps" `Quick
             test_minibeads_runtime_readiness_omits_github_gaps;
+          Alcotest.test_case "maps minibeads issue output" `Quick test_minibeads_fetch_maps_issue_output;
+          Alcotest.test_case "diagnoses duplicate minibeads identifiers" `Quick
+            test_minibeads_duplicate_identifiers_are_diagnostic;
+          Alcotest.test_case "diagnoses malformed minibeads output" `Quick
+            test_minibeads_malformed_output_is_diagnostic;
+          Alcotest.test_case "does not dispatch unsupported minibeads statuses" `Quick
+            test_minibeads_unsupported_status_is_not_dispatchable;
+          Alcotest.test_case "does not dispatch nonterminal minibeads blockers" `Quick
+            test_minibeads_nonterminal_blocker_prevents_dispatch;
+          Alcotest.test_case "fetches and updates minibeads through boundary" `Quick
+            test_minibeads_lookup_and_status_update_through_boundary;
+          Alcotest.test_case "treats repeated minibeads updates as idempotent" `Quick
+            test_minibeads_repeated_status_update_is_idempotent;
           Alcotest.test_case "parses project status field" `Quick test_github_project_field_parsing;
           Alcotest.test_case "filters active states" `Quick test_github_active_state_filtering;
           Alcotest.test_case "ignores empty project field values" `Quick test_github_empty_project_field_values_are_ignored;

@@ -124,15 +124,59 @@ let github ?(fetch_candidates = Github_tracker.fetch_candidate_issues)
   }
 
 let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
-  let not_implemented operation =
-    Error (Printf.sprintf "minibeads %s is implemented in task_04" operation)
+  let normalize_one raw =
+    let identifier = Util.trim raw |> String.lowercase_ascii in
+    match Util.drop_prefix ~prefix:"mb-" identifier with
+    | Some number when digits_only number -> (
+        match int_of_string_opt number with
+        | Some parsed when parsed > 0 -> Ok ("mb-" ^ string_of_int parsed)
+        | _ -> Error (Printf.sprintf "invalid minibeads issue identifier %S" raw))
+    | _ ->
+        Error
+          (Printf.sprintf
+             "invalid minibeads issue identifier %S; expected an issue identifier like mb-20"
+             raw)
+  in
+  let fetch_by_identifiers identifiers =
+    let rec normalize acc = function
+      | [] -> Ok (List.rev acc)
+      | identifier :: rest -> (
+          match normalize_one identifier with
+          | Error _ as error -> error
+          | Ok identifier -> normalize (identifier :: acc) rest)
+    in
+    match normalize [] identifiers with
+    | Error _ as error -> error
+    | Ok identifiers -> Minibeads_tracker.fetch_by_identifiers ~runner config identifiers
+  in
+  let fetch_by_identifiers_detailed identifiers =
+    match fetch_by_identifiers identifiers with
+    | Error _ as error -> error
+    | Ok issues ->
+        Ok
+          (List.map2
+             (fun raw issue ->
+               let identifier =
+                 match issue with
+                 | Some issue -> issue.Issue.identifier
+                 | None -> (
+                     match normalize_one raw with
+                     | Ok identifier -> identifier
+                     | Error _ -> raw)
+               in
+               { identifier; issue; diagnostics = (if Option.is_none issue then [ Missing_issue ] else []) })
+             identifiers issues)
   in
   {
     kind = "minibeads";
-    fetch_candidates = (fun () -> Error (Failed "minibeads candidate fetch is implemented in task_04"));
-    fetch_by_identifiers = (fun _ -> not_implemented "issue lookup");
-    fetch_by_identifiers_detailed = (fun _ -> not_implemented "issue lookup");
-    update_status = (fun _ _ -> not_implemented "status update");
+    fetch_candidates =
+      (fun () ->
+        match Minibeads_tracker.fetch_candidates ~runner config with
+        | Ok _ as ok -> ok
+        | Error message -> Error (Failed message));
+    fetch_by_identifiers;
+    fetch_by_identifiers_detailed;
+    update_status = Minibeads_tracker.update_status ~runner config;
     readiness_gaps = (fun () -> Minibeads_tracker.readiness_gaps ~runner config);
     normalize_identifier =
       (fun raw ->
@@ -147,12 +191,8 @@ let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
               (Printf.sprintf
                  "invalid minibeads issue identifier %S; expected an issue identifier like mb-20"
                  raw));
-    is_active =
-      (fun status ->
-        List.exists (fun active -> Config.string_equal_ci active status) config.tracker.active_states);
-    is_terminal =
-      (fun status ->
-        List.exists (fun terminal -> Config.string_equal_ci terminal status) config.tracker.terminal_states);
+    is_active = Minibeads_tracker.is_active_status config.tracker;
+    is_terminal = Minibeads_tracker.is_terminal_status config.tracker;
   }
 
 let make (config : Config.t) =
