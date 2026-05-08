@@ -2792,6 +2792,96 @@ let test_ready_terminal_mode_runs_orchestrator () =
        ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
     = Runtime_policy.Serve_readiness_state)
 
+let github_issue_tracker_config root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  let settings = Filename.concat root "settings.json" in
+  Util.write_file settings
+    {|{
+  "tracker": {"kind": "github", "owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "project": {"activeStates": ["Todo", "Doing"], "terminalStates": ["Done", "Closed"]}
+}|};
+  Config.from_settings_file ~workspace_root:root settings
+
+let lookup_diagnostic_label = function
+  | Issue_tracker.Missing_issue -> "missing-issue"
+  | Issue_tracker.Missing_project_membership number -> "missing-project-" ^ string_of_int number
+  | Issue_tracker.Closed_issue -> "closed"
+
+let test_issue_tracker_selects_github_adapter () =
+  with_temp_dir "symphony-issue-tracker-github-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let tracker = Issue_tracker.make config in
+      Alcotest.(check string) "kind" "github" tracker.kind;
+      Alcotest.(check (result string string)) "numeric identifier" (Ok "#20") (tracker.normalize_identifier "20");
+      Alcotest.(check (result string string)) "hash identifier" (Ok "#20") (tracker.normalize_identifier "#20"))
+
+let test_issue_tracker_github_state_semantics_match_existing () =
+  with_temp_dir "symphony-issue-tracker-states-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let tracker = Issue_tracker.make config in
+      List.iter
+        (fun status ->
+          Alcotest.(check bool)
+            ("active " ^ status)
+            (Github_tracker.status_is_active ~active_states:config.tracker.active_states status)
+            (tracker.is_active status);
+          Alcotest.(check bool)
+            ("terminal " ^ status)
+            (Github_tracker.status_is_terminal ~config:config.tracker status)
+            (tracker.is_terminal status))
+        [ "Todo"; "todo"; "Doing"; "Done"; "closed"; "Backlog" ])
+
+let test_issue_tracker_maps_github_rate_limit () =
+  with_temp_dir "symphony-issue-tracker-rate-limit-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let tracker =
+        Issue_tracker.github
+          ~fetch_candidates:(fun _ ->
+            raise (Github_tracker.Tracker_rate_limited ("GitHub API rate limit exceeded.", 123456)))
+          config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Rate_limited (message, retry_after_ms)) ->
+          Alcotest.(check string) "message" "GitHub API rate limit exceeded." message;
+          Alcotest.(check int) "retry delay" 123456 retry_after_ms
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail ("expected rate limit, got failure: " ^ message)
+      | Ok _ -> Alcotest.fail "expected rate-limit poll error")
+
+let test_issue_tracker_github_lookup_preserves_diagnostics () =
+  with_temp_dir "symphony-issue-tracker-lookup-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let issue2 = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Two" ~state:"OPEN" in
+      let issue3 = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Three" ~state:"Todo" in
+      let fetch_by_numbers _ numbers =
+        List.map
+          (fun number ->
+            match number with
+            | 1 -> (number, None)
+            | 2 -> (number, Some { Github_tracker.issue = issue2; project_status = None; closed = false })
+            | 3 -> (number, Some { Github_tracker.issue = issue3; project_status = Some "Todo"; closed = false })
+            | _ -> (number, None))
+          numbers
+      in
+      let tracker = Issue_tracker.github ~fetch_by_numbers config in
+      match tracker.fetch_by_identifiers_detailed [ "#1"; "#2"; "3" ] with
+      | Error error -> Alcotest.fail error
+      | Ok results ->
+          let diagnostics =
+            results
+            |> List.map (fun result -> result.Issue_tracker.diagnostics |> List.map lookup_diagnostic_label)
+          in
+          Alcotest.(check (list string)) "identifiers" [ "#1"; "#2"; "#3" ]
+            (List.map (fun result -> result.Issue_tracker.identifier) results);
+          Alcotest.(check (list (list string))) "diagnostics"
+            [ [ "missing-issue" ]; [ "missing-project-7" ]; [] ]
+            diagnostics;
+          (match tracker.fetch_by_identifiers [ "#1"; "#2"; "3" ] with
+          | Error error -> Alcotest.fail error
+          | Ok issues ->
+              Alcotest.(check (list (option string))) "public lookup issue identifiers"
+                [ None; None; Some "#3" ]
+                (List.map (Option.map (fun issue -> issue.Issue.identifier)) issues)))
+
 let test_github_project_field_parsing () =
   let config =
     {
@@ -7058,6 +7148,13 @@ let () =
         ] );
       ( "github-tracker",
         [
+          Alcotest.test_case "selects GitHub issue tracker adapter" `Quick test_issue_tracker_selects_github_adapter;
+          Alcotest.test_case "preserves active and terminal state semantics" `Quick
+            test_issue_tracker_github_state_semantics_match_existing;
+          Alcotest.test_case "maps GitHub rate limits to poll errors" `Quick
+            test_issue_tracker_maps_github_rate_limit;
+          Alcotest.test_case "preserves lookup diagnostics" `Quick
+            test_issue_tracker_github_lookup_preserves_diagnostics;
           Alcotest.test_case "parses project status field" `Quick test_github_project_field_parsing;
           Alcotest.test_case "filters active states" `Quick test_github_active_state_filtering;
           Alcotest.test_case "ignores empty project field values" `Quick test_github_empty_project_field_values_are_ignored;
