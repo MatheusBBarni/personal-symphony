@@ -2802,6 +2802,26 @@ let github_issue_tracker_config root =
 }|};
   Config.from_settings_file ~workspace_root:root settings
 
+let minibeads_issue_tracker_config root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  let settings = Filename.concat root "settings.json" in
+  Util.write_file settings
+    {|{
+  "tracker": {"kind": "minibeads", "root": ".beads", "command": "mb"},
+  "project": {"activeStates": ["open", "doing"], "terminalStates": ["done", "closed"]}
+}|};
+  Config.from_settings_file ~workspace_root:root settings
+
+let fake_minibeads_runner ?(available = true) ?(status = Minibeads_tracker.Exited 0) ?(stdout = "")
+    ?(stderr = "") ?calls () =
+  {
+    Minibeads_tracker.command_available = (fun _ -> available);
+    run =
+      (fun ~cwd ~command ->
+        (match calls with Some calls -> calls := (cwd, command) :: !calls | None -> ());
+        { Minibeads_tracker.status; stdout; stderr });
+  }
+
 let lookup_diagnostic_label = function
   | Issue_tracker.Missing_issue -> "missing-issue"
   | Issue_tracker.Missing_project_membership number -> "missing-project-" ^ string_of_int number
@@ -2814,6 +2834,16 @@ let test_issue_tracker_selects_github_adapter () =
       Alcotest.(check string) "kind" "github" tracker.kind;
       Alcotest.(check (result string string)) "numeric identifier" (Ok "#20") (tracker.normalize_identifier "20");
       Alcotest.(check (result string string)) "hash identifier" (Ok "#20") (tracker.normalize_identifier "#20"))
+
+let test_issue_tracker_selects_minibeads_adapter () =
+  with_temp_dir "symphony-issue-tracker-minibeads-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let tracker = Issue_tracker.make config in
+      Alcotest.(check string) "kind" "minibeads" tracker.kind;
+      Alcotest.(check (result string string)) "canonical identifier" (Ok "mb-20")
+        (tracker.normalize_identifier "mb-20");
+      Alcotest.(check (result string string)) "canonicalizes leading zeros" (Ok "mb-20")
+        (tracker.normalize_identifier "MB-020"))
 
 let test_issue_tracker_github_state_semantics_match_existing () =
   with_temp_dir "symphony-issue-tracker-states-" (fun root ->
@@ -2881,6 +2911,83 @@ let test_issue_tracker_github_lookup_preserves_diagnostics () =
               Alcotest.(check (list (option string))) "public lookup issue identifiers"
                 [ None; None; Some "#3" ]
                 (List.map (Option.map (fun issue -> issue.Issue.identifier)) issues)))
+
+let runtime_requirements gaps =
+  List.map (fun (gap : Runtime_state.readiness_gap) -> gap.requirement) gaps
+
+let test_minibeads_readiness_missing_command_gap () =
+  with_temp_dir "symphony-minibeads-command-gap-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".beads");
+      let config = minibeads_issue_tracker_config root in
+      let tracker = Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~available:false ()) config in
+      let gaps = tracker.readiness_gaps () in
+      Alcotest.(check (list string)) "requirements" [ "tracker.minibeads.command" ]
+        (runtime_requirements gaps))
+
+let test_minibeads_readiness_missing_store_gap () =
+  with_temp_dir "symphony-minibeads-store-gap-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~calls ()) config
+      in
+      let gaps = tracker.readiness_gaps () in
+      Alcotest.(check (list string)) "requirements" [ "tracker.minibeads.store" ]
+        (runtime_requirements gaps);
+      Alcotest.(check int) "readiness command skipped" 0 (List.length !calls))
+
+let test_minibeads_readiness_nonzero_command_is_sanitized () =
+  with_temp_dir "symphony-minibeads-command-failure-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".beads");
+      let config = minibeads_issue_tracker_config root in
+      let tracker =
+        Issue_tracker.minibeads
+          ~runner:
+            (fake_minibeads_runner ~status:(Minibeads_tracker.Exited 2)
+               ~stdout:"bad\noutput\tfrom mb" ~stderr:"second\rline" ())
+          config
+      in
+      match tracker.readiness_gaps () with
+      | [ gap ] ->
+          Alcotest.(check string) "requirement" "tracker.minibeads.command" gap.requirement;
+          Alcotest.(check string) "remediation"
+            "minibeads readiness command \"mb\" failed with exit 2: bad output from mb second line. Fix the command or local minibeads installation before dispatch."
+            gap.remediation
+      | gaps ->
+          Alcotest.fail
+            (Printf.sprintf "expected one command gap, got %d" (List.length gaps)))
+
+let test_minibeads_readiness_valid_fake_output_has_no_gap () =
+  with_temp_dir "symphony-minibeads-ready-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".beads");
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~stdout:"mb 0.13.1" ~calls ()) config
+      in
+      Alcotest.(check (list string)) "requirements" [] (runtime_requirements (tracker.readiness_gaps ()));
+      Alcotest.(check (list (pair string string))) "command rooted in workspace" [ (root, "mb") ]
+        (List.rev !calls))
+
+let test_minibeads_runtime_readiness_omits_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-runtime-readiness-" (fun root ->
+          let config = minibeads_issue_tracker_config root in
+          let tracker = Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~available:false ()) config in
+          let readiness_gaps = Config.readiness_gaps config |> List.map Issue_tracker.runtime_gap_of_config_gap in
+          let readiness_gaps = readiness_gaps @ tracker.readiness_gaps () in
+          let state = Runtime_state.empty ~readiness_gaps () in
+          let requirements = runtime_requirements state.Runtime_state.readiness_gaps in
+          Alcotest.(check bool) "owner gap omitted" false (List.exists (( = ) "tracker.owner") requirements);
+          Alcotest.(check bool) "repo gap omitted" false (List.exists (( = ) "tracker.repo") requirements);
+          Alcotest.(check bool) "project gap omitted" false
+            (List.exists (( = ) "tracker.projectNumber") requirements);
+          Alcotest.(check bool) "token gap omitted" false
+            (List.exists (( = ) "environment.GITHUB_TOKEN") requirements);
+          Alcotest.(check bool) "minibeads command gap included" true
+            (List.exists (( = ) "tracker.minibeads.command") requirements);
+          Alcotest.(check bool) "minibeads store gap included" true
+            (List.exists (( = ) "tracker.minibeads.store") requirements)))
 
 let test_github_project_field_parsing () =
   let config =
@@ -7149,12 +7256,24 @@ let () =
       ( "github-tracker",
         [
           Alcotest.test_case "selects GitHub issue tracker adapter" `Quick test_issue_tracker_selects_github_adapter;
+          Alcotest.test_case "selects minibeads issue tracker adapter" `Quick
+            test_issue_tracker_selects_minibeads_adapter;
           Alcotest.test_case "preserves active and terminal state semantics" `Quick
             test_issue_tracker_github_state_semantics_match_existing;
           Alcotest.test_case "maps GitHub rate limits to poll errors" `Quick
             test_issue_tracker_maps_github_rate_limit;
           Alcotest.test_case "preserves lookup diagnostics" `Quick
             test_issue_tracker_github_lookup_preserves_diagnostics;
+          Alcotest.test_case "reports missing minibeads command readiness" `Quick
+            test_minibeads_readiness_missing_command_gap;
+          Alcotest.test_case "reports missing minibeads store readiness" `Quick
+            test_minibeads_readiness_missing_store_gap;
+          Alcotest.test_case "sanitizes minibeads command diagnostics" `Quick
+            test_minibeads_readiness_nonzero_command_is_sanitized;
+          Alcotest.test_case "accepts valid minibeads readiness output" `Quick
+            test_minibeads_readiness_valid_fake_output_has_no_gap;
+          Alcotest.test_case "surfaces minibeads runtime readiness without github gaps" `Quick
+            test_minibeads_runtime_readiness_omits_github_gaps;
           Alcotest.test_case "parses project status field" `Quick test_github_project_field_parsing;
           Alcotest.test_case "filters active states" `Quick test_github_active_state_filtering;
           Alcotest.test_case "ignores empty project field values" `Quick test_github_empty_project_field_values_are_ignored;

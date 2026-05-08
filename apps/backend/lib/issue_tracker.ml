@@ -123,7 +123,40 @@ let github ?(fetch_candidates = Github_tracker.fetch_candidate_issues)
     is_terminal = (fun status -> Github_tracker.status_is_terminal ~config:config.tracker status);
   }
 
+let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
+  let not_implemented operation =
+    Error (Printf.sprintf "minibeads %s is implemented in task_04" operation)
+  in
+  {
+    kind = "minibeads";
+    fetch_candidates = (fun () -> Error (Failed "minibeads candidate fetch is implemented in task_04"));
+    fetch_by_identifiers = (fun _ -> not_implemented "issue lookup");
+    fetch_by_identifiers_detailed = (fun _ -> not_implemented "issue lookup");
+    update_status = (fun _ _ -> not_implemented "status update");
+    readiness_gaps = (fun () -> Minibeads_tracker.readiness_gaps ~runner config);
+    normalize_identifier =
+      (fun raw ->
+        let identifier = Util.trim raw |> String.lowercase_ascii in
+        match Util.drop_prefix ~prefix:"mb-" identifier with
+        | Some number when digits_only number -> (
+            match int_of_string_opt number with
+            | Some parsed when parsed > 0 -> Ok ("mb-" ^ string_of_int parsed)
+            | _ -> Error (Printf.sprintf "invalid minibeads issue identifier %S" raw))
+        | _ ->
+            Error
+              (Printf.sprintf
+                 "invalid minibeads issue identifier %S; expected an issue identifier like mb-20"
+                 raw));
+    is_active =
+      (fun status ->
+        List.exists (fun active -> Config.string_equal_ci active status) config.tracker.active_states);
+    is_terminal =
+      (fun status ->
+        List.exists (fun terminal -> Config.string_equal_ci terminal status) config.tracker.terminal_states);
+  }
+
 let make (config : Config.t) =
   match config.tracker.kind with
   | "github" -> github config
+  | "minibeads" -> minibeads config
   | kind -> invalid_arg (Printf.sprintf "Issue tracker adapter is not implemented for tracker.kind=%S" kind)

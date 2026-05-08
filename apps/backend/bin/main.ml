@@ -51,23 +51,40 @@ let queue_validation_gaps config queue =
                }
          | Some _ -> None)
 
+let config_gap_of_runtime_gap (gap : Runtime_state.readiness_gap) =
+  { Config.requirement = gap.requirement; remediation = gap.remediation }
+
+let selected_tracker_readiness_gaps config =
+  try
+    let tracker = Issue_tracker.make config in
+    tracker.readiness_gaps () |> List.map config_gap_of_runtime_gap
+  with exn ->
+    [
+      {
+        Config.requirement = "tracker.adapter";
+        remediation = "Issue Tracker readiness failed: " ^ Printexc.to_string exn;
+      };
+    ]
+
 let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
   let local_gaps = Config.readiness_gaps config in
   let queue_gaps = queue_parse_gaps queue_parse_problems in
   let gaps =
     match local_gaps @ queue_gaps with
     | [] -> (
-        let remote_gaps = Github_tracker.remote_readiness_gaps config in
-        match (remote_gaps, ordered_queue) with
+        let tracker_gaps = selected_tracker_readiness_gaps config in
+        match (tracker_gaps, ordered_queue) with
         | [], Some queue -> (
-            try queue_validation_gaps config queue
-            with exn ->
-              [
-                {
-                  Config.requirement = "orderedQueue.validation";
-                  remediation = "Ordered Queue validation failed: " ^ Printexc.to_string exn;
-                };
-              ])
+            if config.tracker.kind <> "github" then []
+            else
+              try queue_validation_gaps config queue
+              with exn ->
+                [
+                  {
+                    Config.requirement = "orderedQueue.validation";
+                    remediation = "Ordered Queue validation failed: " ^ Printexc.to_string exn;
+                  };
+                ])
         | gaps, _ -> gaps)
     | gaps -> gaps
   in
