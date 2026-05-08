@@ -2251,12 +2251,15 @@ let test_runtime_state_exposes_running_issue_details () =
   let state =
     {
       (Runtime_state.empty ()) with
+      usage_totals = { input_tokens = 7; output_tokens = 11; total_tokens = 18 };
       issues = [ issue ];
       running =
         [
           {
             Runtime_state.issue;
             stage_agent = None;
+            harness_name = Some "codex";
+            harness_kind = Some "codex";
             stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
@@ -2271,8 +2274,15 @@ let test_runtime_state_exposes_running_issue_details () =
     }
   in
   let open Yojson.Safe.Util in
-  let row = Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd in
+  let json = Runtime_state.to_yojson state in
+  let has_member name = function `Assoc fields -> List.mem_assoc name fields | _ -> false in
+  Alcotest.(check bool) "usage totals present" true (has_member "usage_totals" json);
+  Alcotest.(check bool) "codex totals absent" false (has_member "codex_totals" json);
+  Alcotest.(check int) "usage total tokens" 18 (json |> member "usage_totals" |> member "total_tokens" |> to_int);
+  let row = json |> member "running" |> to_list |> List.hd in
   Alcotest.(check string) "identifier" "#1" (row |> member "issue_identifier" |> to_string);
+  Alcotest.(check string) "harness name" "codex" (row |> member "harness_name" |> to_string);
+  Alcotest.(check string) "harness kind" "codex" (row |> member "harness_kind" |> to_string);
   Alcotest.(check string) "state" "In progress" (row |> member "state" |> to_string);
   Alcotest.(check string) "title" "Add dashboard issue list" (row |> member "title" |> to_string);
   Alcotest.(check string) "description" "Show the status, title, and a concise description for each running issue."
@@ -2403,6 +2413,8 @@ let test_runtime_state_exposes_goal_usage_when_available () =
           {
             Runtime_state.issue;
             stage_agent = None;
+            harness_name = None;
+            harness_kind = None;
             stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
@@ -2460,6 +2472,8 @@ let test_runtime_state_exposes_context_status () =
     {
       Runtime_state.issue;
       stage_agent = Some "engineer";
+      harness_name = None;
+      harness_kind = None;
       stage_states = [ "Todo" ];
       session_id = Some ("pid:" ^ issue.Issue.id);
       turn_count = 0;
@@ -2622,6 +2636,8 @@ let test_websocket_broadcast_after_state_change () =
               {
                 Runtime_state.issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Running" ~state:"In progress";
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:2";
                 turn_count = 0;
@@ -2666,6 +2682,8 @@ let test_websocket_context_status_snapshot_and_http_state () =
           {
             Runtime_state.issue;
             stage_agent = Some "engineer";
+            harness_name = None;
+            harness_kind = None;
             stage_states = [ "Todo" ];
             session_id = Some "pid:1";
             turn_count = 0;
@@ -2823,6 +2841,8 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
               {
                 Runtime_state.issue;
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:test";
                 turn_count = 0;
@@ -2856,7 +2876,7 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
         ];
       Orchestrator.reap_children orchestrator;
       let state = Orchestrator.get_state orchestrator in
-      Alcotest.(check int) "final total tokens parsed" 24 state.codex_totals.total_tokens;
+      Alcotest.(check int) "final total tokens parsed" 24 state.usage_totals.total_tokens;
       Alcotest.(check int) "completed row removed" 0 (List.length state.running);
       let saw_goal_usage =
         List.exists
@@ -2932,6 +2952,8 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
               {
                 Runtime_state.issue;
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:timeout";
                 turn_count = 0;
@@ -2965,7 +2987,7 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
         ];
       Orchestrator.reap_children orchestrator;
       let state = Orchestrator.get_state orchestrator in
-      Alcotest.(check int) "timeout total tokens parsed" 8 state.codex_totals.total_tokens;
+      Alcotest.(check int) "timeout total tokens parsed" 8 state.usage_totals.total_tokens;
       Alcotest.(check int) "running removed" 0 (List.length state.running);
       Alcotest.(check int) "retrying added" 1 (List.length state.retrying);
       (match state.retrying with
@@ -3059,6 +3081,8 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
                   {
                     Runtime_state.issue;
                     stage_agent = None;
+                    harness_name = None;
+                    harness_kind = None;
                     stage_states = [];
                     session_id = Some "pid:quiet";
                     turn_count = 0;
@@ -3147,6 +3171,8 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
               {
                 Runtime_state.issue;
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:block";
                 turn_count = 0;
@@ -3652,6 +3678,8 @@ let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
         {
           Runtime_state.issue;
           stage_agent = Some "engineer";
+          harness_name = None;
+          harness_kind = None;
           stage_states = [ "Todo"; "In progress" ];
           session_id = Some issue.Issue.id;
           turn_count = 0;
@@ -4635,6 +4663,37 @@ let test_orchestrator_dispatch_skips_disabled_claude_loop () =
       Alcotest.(check bool) "no loop handoff" false (contains_substring !captured_prompt "Stage Goal Context");
       Alcotest.(check bool) "normal prompt included" true (contains_substring !captured_prompt "Normal #1"))
 
+let check_dispatch_exposes_harness_identity ~label harness =
+  with_temp_dir ("symphony-harness-identity-" ^ label ^ "-") (fun root ->
+      let config = stage_goal_config_for_harness root harness in
+      let issue = Issue.empty ~id:("I-" ^ label) ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let open Yojson.Safe.Util in
+      let state = Orchestrator.get_state orchestrator in
+      match state.Runtime_state.running with
+      | [ row ] ->
+          Alcotest.(check (option string)) (label ^ " harness name row") (Some harness.Config.name) row.harness_name;
+          Alcotest.(check (option string)) (label ^ " harness kind row") (Some harness.kind) row.harness_kind;
+          let json_row = Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd in
+          Alcotest.(check string) (label ^ " harness name json") harness.name (json_row |> member "harness_name" |> to_string);
+          Alcotest.(check string) (label ^ " harness kind json") harness.kind (json_row |> member "harness_kind" |> to_string)
+      | _ -> Alcotest.fail "expected one running row")
+
+let test_orchestrator_dispatch_exposes_codex_harness_identity () =
+  check_dispatch_exposes_harness_identity ~label:"codex" (test_harness ~name:"codex" ~kind:"codex" ())
+
+let test_orchestrator_dispatch_exposes_claude_harness_identity () =
+  check_dispatch_exposes_harness_identity ~label:"claude"
+    (test_harness ~name:"claude" ~kind:"claude" ~command:"claude -p --output-format stream-json" ~loop_enabled:false
+       ~loop_command:"" ())
+
 let test_compose_prompt_skips_blank_loop_command () =
   with_temp_dir "symphony-goal-blank-loop-" (fun root ->
       let prompt =
@@ -5397,6 +5456,8 @@ printf '%s\n' 'raw stderr diagnostic' >&2
                 {
                   Runtime_state.issue;
                   stage_agent = Some "engineer";
+                  harness_name = None;
+                  harness_kind = None;
                   stage_states = [ "Todo" ];
                   session_id = launched.session_id;
                   turn_count = 0;
@@ -7726,6 +7787,10 @@ let () =
           Alcotest.test_case "skips disabled Claude loop" `Quick test_compose_prompt_skips_disabled_claude_loop;
           Alcotest.test_case "dispatch skips disabled Claude loop" `Quick
             test_orchestrator_dispatch_skips_disabled_claude_loop;
+          Alcotest.test_case "dispatch exposes Codex harness identity" `Quick
+            test_orchestrator_dispatch_exposes_codex_harness_identity;
+          Alcotest.test_case "dispatch exposes Claude harness identity" `Quick
+            test_orchestrator_dispatch_exposes_claude_harness_identity;
           Alcotest.test_case "skips blank loop command" `Quick test_compose_prompt_skips_blank_loop_command;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick

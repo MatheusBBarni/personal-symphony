@@ -2692,6 +2692,8 @@ let dispatch_issue orchestrator issue =
           {
             Runtime_state.issue;
             stage_agent;
+            harness_name = Some harness.name;
+            harness_kind = Some harness.kind;
             stage_states;
             session_id = launched.session_id;
             turn_count = 0;
@@ -3004,7 +3006,7 @@ let refresh_child_output ?(force = false) orchestrator child =
     in
     let tokens = max_tokens tokens claude_activity.claude_tokens in
     let goal_usage = parse_goal_usage child.stdout_path child.stderr_path in
-    update_state orchestrator (fun state -> { state with codex_totals = max_tokens state.codex_totals tokens });
+    update_state orchestrator (fun state -> { state with usage_totals = max_tokens state.usage_totals tokens });
     update_running orchestrator child.issue_id (fun row ->
         {
           row with
