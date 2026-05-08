@@ -7,9 +7,11 @@ its own repository-owned Runtime Contract under `.symphony/`.
 
 ## Prerequisites
 
-- GitHub CLI: `gh`
-- A GitHub personal access token available as `GITHUB_TOKEN` or `GH_TOKEN`
 - `codex` CLI available on `PATH` when running real agent sessions
+- For the default GitHub Tracker: GitHub CLI `gh` and a GitHub personal access token available as
+  `GITHUB_TOKEN` or `GH_TOKEN`
+- For the minibeads Local Issue Tracker: the `mb` CLI and a local issue store in the Workspace
+  Repository
 
 ## Install
 
@@ -48,9 +50,15 @@ Environment files:
 /workspaces/
 ```
 
-Edit `.symphony/settings.json` to set the GitHub owner, Workspace Repository name, GitHub Project
-number, GitHub Project states, and runtime commands. Runtime Settings reference secrets by environment
-variable name; secret values belong only in the Local Environment:
+Edit `.symphony/settings.json` to choose an Issue Tracker, set tracker-specific fields, configure
+status states, and set runtime commands. Runtime Settings reference secrets by environment variable
+name; secret values belong only in the Local Environment.
+
+### Issue Tracker Selection
+
+GitHub is the default Issue Tracker. It uses GitHub Issues as issue records and GitHub Projects
+status values as dispatch state. Omitted `tracker.kind` values are treated as `"github"`, but new
+Workspace Repositories should set it explicitly:
 
 ```json
 {
@@ -63,6 +71,26 @@ variable name; secret values belong only in the Local Environment:
   }
 }
 ```
+
+Choose minibeads when you want issue records to live in repository-owned Local Issue Files and you do
+not want Symphony issue dispatch or tracker status updates to require GitHub API access. minibeads is
+first-class when explicitly selected, but it is not a migration requirement for existing GitHub
+Tracker users:
+
+```json
+{
+  "tracker": {
+    "kind": "minibeads",
+    "root": ".beads",
+    "command": "mb"
+  }
+}
+```
+
+`tracker.root` is resolved from the Workspace Repository root and defaults to `.beads`.
+`tracker.command` defaults to `mb`; set it only when the executable name or path differs in your
+environment. Symphony runs minibeads commands from the Workspace Repository root and treats Local
+Issue Files as repository-owned user data.
 
 Define execution backends under `harnesses` and logical agent roles under `agents`. Harnesses own
 provider commands and loop capability. Logical agents select a Harness and may override model,
@@ -150,9 +178,21 @@ definitions. Stage-level `stageAgents.stages[].harness` is also legacy input; mo
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.
 
+For the GitHub Tracker, readiness includes the configured owner, Workspace Repository name, GitHub
+Project number, status field, and token environment variable. For the minibeads Local Issue Tracker,
+GitHub owner, repo, Project, and token settings are not required. The local tracker readiness checks
+include:
+
+- `tracker.minibeads.command`: install minibeads or update `tracker.command` so Symphony can run the
+  configured command.
+- `tracker.minibeads.store`: create the local issue store at `tracker.root` or update `tracker.root`
+  to the existing minibeads store.
+
 ## Project Status Workflow
 
-Symphony moves the configured GitHub Projects `Status` field as work progresses:
+Symphony moves the selected Issue Tracker status as work progresses. With the GitHub Tracker, this is
+the configured GitHub Projects `Status` field. With the minibeads Local Issue Tracker, Symphony maps
+the same Runtime Settings state names to minibeads statuses and writes them through `mb`:
 
 - `startStatus`: applied before launching an agent, default `In progress`.
 - `reviewStatus`: applied after the agent exits successfully, default `In review`.
@@ -179,6 +219,7 @@ Configure these in `.symphony/settings.json`:
 
 The token needs GitHub Projects write access for status moves and status option creation. If
 `reviewStatus` is not listed in `activeStates`, completed issues stop being picked up on later polls.
+The token requirement applies to GitHub Tracker runs only.
 
 ## Stage Agents
 
@@ -272,7 +313,8 @@ skill files and does not include Stage Skill Load in Stage Goal Context. Missing
 duplicate skill identifiers are Readiness Gaps; Symphony checks all configured stages before
 dispatch, resolving Workspace Repository skills before Codex Home skills.
 
-Rendered Agent Prompts include GitHub issue comments as issue context in addition to the issue body.
+Rendered Agent Prompts include issue comments as issue context when the selected Issue Tracker
+provides comments. minibeads Local Issue Tracker comments are not included in V1.
 
 Set `goal.enabled` to `true` on a specific stage to allow Stage Goal Handoff for that stage only.
 The selected Harness decides whether a loop command is actually sent. The Bootstrap default Codex
@@ -280,7 +322,7 @@ Harness has `loop.enabled: true` and `loop.command: "/goal"`, so Codex receives 
 deterministic Stage Goal Context before the normal Agent Prompt. The Bootstrap default Claude and PI
 Harnesses have loop disabled, so those Harnesses run the normal prompt even when a stage has
 `goal.enabled: true`. Stage Goal Context includes issue identifier, title, description, comments, URL,
-current GitHub Project status, labels, priority when present, blocker references when present,
+current tracker status, labels, priority when present, blocker references when present,
 attempt, and stage agent name. It omits issue creation and update timestamps.
 
 Codex loop handoff requires a Codex command that accepts the configured Harness loop command from
@@ -362,9 +404,10 @@ The `title` and `body` fields are deterministic templates. They support `<head_b
 
 ## GitHub Token Permissions
 
-Symphony Orchestrator reads GitHub Issues and GitHub Projects. Use a **personal access token (classic)**
-when the GitHub Project is owned by a user account, such as `@your-user's Kanban`. GitHub
-fine-grained personal access tokens currently cannot access Projects owned by a user account.
+This section applies to the GitHub Tracker. Symphony Orchestrator reads GitHub Issues and GitHub
+Projects when `tracker.kind` is `"github"`. Use a **personal access token (classic)** when the
+GitHub Project is owned by a user account, such as `@your-user's Kanban`. GitHub fine-grained
+personal access tokens currently cannot access Projects owned by a user account.
 
 Recommended classic PAT scopes:
 
@@ -402,7 +445,7 @@ Symphony still reports Workspace Repository or GitHub Project access gaps, remov
   state API, CLI, and tests.
 - `apps/frontend`: ReScript React/Vite dashboard that consumes the backend state API.
 - `.github/ISSUE_TEMPLATE`: issue template for work items Symphony can dispatch.
-- `.github/project-tracking.md`: required GitHub Project setup and workflow notes.
+- `.github/project-tracking.md`: GitHub Tracker setup and workflow notes.
 - `WORKFLOW.example.md`: legacy/developer fixture for the earlier root workflow format.
 - `bin/symphony.js`: npm `bin` launcher that runs a packaged platform binary or the local dune
   executable in Product Repository development.
@@ -427,6 +470,12 @@ Run the backend test suite:
 
 ```sh
 pnpm test
+```
+
+Run documentation validation:
+
+```sh
+pnpm docs:test
 ```
 
 Run frontend live-state tests:
@@ -495,6 +544,7 @@ symphony --web --port 8080
 ```sh
 pnpm install
 pnpm test
+pnpm docs:test
 pnpm frontend:test
 pnpm frontend:build
 pnpm backend:build
@@ -511,8 +561,10 @@ opam exec -- dune exec symphony -- init
 opam exec -- dune exec symphony -- --web --port 8080
 ```
 
-If no GitHub token is configured, the runtime still starts, but readiness gaps report the missing
-token and live issue dispatch is disabled.
+If no GitHub token is configured for the GitHub Tracker, the runtime still starts, but readiness
+gaps report the missing token and live issue dispatch is disabled. For minibeads runs, dispatch does
+not require a GitHub token; unresolved `mb` command or local issue store gaps disable dispatch
+instead.
 
 ## Package Distribution
 

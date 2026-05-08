@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createLiveStateConnection } from "../src/LiveState.res.js";
+import { trackerKindOrDefault } from "../src/RuntimeState.res.js";
 import { snapshotFromState } from "../src/RuntimeStateSnapshot.res.js";
 
 const sockets = [];
@@ -45,6 +46,7 @@ assert.equal(sockets[0].url, "ws://127.0.0.1:8080/api/v1/state/live");
 sockets[0].onmessage({
   data: JSON.stringify({
     counts: { running: 1, retrying: 1 },
+    tracker_kind: "minibeads",
     usage_totals: { total_tokens: 42 },
     generated_at: "2026-05-04T00:00:00Z",
     issues: [
@@ -87,6 +89,7 @@ sockets[0].onmessage({
 });
 assert.equal(snapshots.length, 1);
 assert.equal(snapshots[0].counts.running, 1);
+assert.equal(trackerKindOrDefault(snapshots[0].tracker_kind), "minibeads");
 assert.equal(snapshots[0][`codex_${"totals"}`], undefined);
 assert.equal(snapshots[0].usage_totals.total_tokens, 42);
 assert.equal(snapshots[0].running[0].context_status.state, "succeeded");
@@ -95,6 +98,7 @@ assert.equal(snapshots[0].running[0].harness_kind, "claude");
 assert.equal(snapshots[0].retrying[0].context_status.state, "timed_out");
 
 const dashboardSnapshot = snapshotFromState(snapshots[0]);
+assert.equal(dashboardSnapshot.trackerKind, "minibeads");
 assert.equal(dashboardSnapshot.tokens, "42");
 assert.equal(dashboardSnapshot.issues[0].harnessIdentity, "engineer (claude)");
 
@@ -251,6 +255,7 @@ sockets[0].onmessage({
   }),
 });
 assert.equal(snapshots.length, 2);
+assert.equal(trackerKindOrDefault(snapshots[1].tracker_kind), "github");
 assert.equal(snapshots[1].running[0].context_status, undefined);
 assert.equal(snapshots[1].running[0].harness_name, undefined);
 

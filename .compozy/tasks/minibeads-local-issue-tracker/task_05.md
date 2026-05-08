@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Refactor orchestrator to use the selected Issue Tracker"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ Refactor orchestration polling, dispatch filtering, active/terminal checks, stat
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Change orchestrator tracker fields and injected function types to the shared boundary.
-- [ ] 5.2 Replace direct GitHub active/terminal checks with selected tracker checks.
-- [ ] 5.3 Replace GitHub-specific poll error handling with generic tracker poll errors.
-- [ ] 5.4 Ensure status transitions call the selected tracker.
-- [ ] 5.5 Add an end-to-end minibeads adapter stub dispatch test.
+- [x] 5.1 Change orchestrator tracker fields and injected function types to the shared boundary.
+- [x] 5.2 Replace direct GitHub active/terminal checks with selected tracker checks.
+- [x] 5.3 Replace GitHub-specific poll error handling with generic tracker poll errors.
+- [x] 5.4 Ensure status transitions call the selected tracker.
+- [x] 5.5 Add an end-to-end minibeads adapter stub dispatch test.
 
 ## Implementation Details
 Follow TechSpec "System Architecture" and "Development Sequencing" step 6. Preserve existing stage, retry, Stage Commit, Stage Push, Task Branch Integration, and Batch Pull Request behavior.
@@ -64,13 +64,13 @@ Follow TechSpec "System Architecture" and "Development Sequencing" step 6. Prese
 
 ## Tests
 - Unit tests:
-  - [ ] Generic rate-limit poll error pauses tracking for the existing retry delay.
-  - [ ] Generic failed poll error updates Runtime State last error.
-  - [ ] Active/terminal checks call selected tracker behavior.
-  - [ ] Status update failure routes to existing retry/attention behavior.
+  - [x] Generic rate-limit poll error pauses tracking for the existing retry delay.
+  - [x] Generic failed poll error updates Runtime State last error.
+  - [x] Active/terminal checks call selected tracker behavior.
+  - [x] Status update failure routes to existing retry/attention behavior.
 - Integration tests:
-  - [ ] minibeads stub issue dispatches, starts, completes, and writes status without GitHub settings or token.
-  - [ ] Existing GitHub dispatch, retry, terminal filtering, and status movement tests continue to pass.
+  - [x] minibeads stub issue dispatches, starts, completes, and writes status without GitHub settings or token.
+  - [x] Existing GitHub dispatch, retry, terminal filtering, and status movement tests continue to pass.
 - Test coverage target: >=80%
 - All tests must pass
 

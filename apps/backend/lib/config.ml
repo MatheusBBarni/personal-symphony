@@ -5,6 +5,8 @@ type tracker = {
   project_number : int;
   api_key_env : string;
   api_key : string option;
+  minibeads_root : string;
+  minibeads_command : string;
   active_states : string list;
   terminal_states : string list;
   project_status_field : string;
@@ -156,6 +158,8 @@ let default_pi_command = "pi --model <model> --thinking <reasoning> --print --no
 let default_claude_command = "claude -p --model <model> --output-format stream-json"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
+let default_minibeads_root = ".beads"
+let default_minibeads_command = "mb"
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
 let default_protected_paths = { patterns = []; authorization = default_protected_path_authorization }
 let default_pull_request =
@@ -292,6 +296,16 @@ let positive name value =
 
 let positive_option name = function None -> None | Some value -> Some (positive name value)
 
+let parse_tracker_kind raw =
+  match Util.trim raw |> String.lowercase_ascii with
+  | "github" -> "github"
+  | "minibeads" -> "minibeads"
+  | unsupported ->
+      let shown = if unsupported = "" then "<empty>" else unsupported in
+      raise
+        (Invalid_config
+           (Printf.sprintf "Unsupported tracker.kind %s. Set tracker.kind to github or minibeads." shown))
+
 let apply_runtime_invocation_overrides ~workspace_root config overrides =
   let polling =
     match overrides.polling_interval_ms with
@@ -327,8 +341,11 @@ let from_workflow workflow =
   let agent_raw = Simple_yaml.get_map "agent" root in
   let codex_raw = Simple_yaml.get_map "codex" root in
   let server_raw = Simple_yaml.get_map "server" root in
-  let kind = Option.value (Simple_yaml.get_string "kind" tracker_raw) ~default:"" in
-  if kind <> "github" then raise (Invalid_config "tracker.kind must be github for this implementation");
+  let kind = Option.value (Simple_yaml.get_string "kind" tracker_raw) ~default:"" |> Util.trim |> String.lowercase_ascii in
+  if kind <> "github" then
+    raise
+      (Invalid_config
+         "tracker.kind must be github for legacy workflow files; use .symphony/settings.json for minibeads.");
   let required_string name =
     match Simple_yaml.get_string name tracker_raw with
     | Some s when Util.trim s <> "" -> s
@@ -384,6 +401,8 @@ let from_workflow workflow =
         project_number;
         api_key_env = "GITHUB_TOKEN";
         api_key;
+        minibeads_root = Filename.concat workflow.dir default_minibeads_root;
+        minibeads_command = default_minibeads_command;
         active_states;
         terminal_states;
         project_status_field = Option.value (Simple_yaml.get_string "project_status_field" tracker_raw) ~default:"Status";
@@ -1255,8 +1274,7 @@ let from_settings_file ~workspace_root path =
   let pull_request_raw = member "pullRequest" root in
   let paths_raw = member "paths" root in
   let stage_agents_raw = member "stageAgents" root in
-  let kind = json_string "kind" tracker_raw ~default:"github" in
-  if kind <> "github" then raise (Invalid_config "tracker.kind must be github for this implementation");
+  let kind = json_string "kind" tracker_raw ~default:"github" |> parse_tracker_kind in
   let api_key_env = json_string "apiKeyEnv" tracker_raw ~default:"GITHUB_TOKEN" in
   let merge_attention_status =
     json_string "mergeAttentionStatus" git_raw ~default:default_git.merge_attention_status
@@ -1296,6 +1314,9 @@ let from_settings_file ~workspace_root path =
         project_number = json_int "projectNumber" tracker_raw ~default:0;
         api_key_env;
         api_key = resolve_env_secret api_key_env;
+        minibeads_root =
+          json_string "root" tracker_raw ~default:default_minibeads_root |> expand_path ~base_dir:workspace_root;
+        minibeads_command = json_string "command" tracker_raw ~default:default_minibeads_command;
         active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
         terminal_states;
         project_status_field = json_string "statusField" project_raw ~default:"Status";
@@ -1587,17 +1608,19 @@ let allowed_loop_start_branch_policy_gap config =
 let readiness_gaps config =
   let gaps = ref [] in
   let add requirement remediation = gaps := { requirement; remediation } :: !gaps in
-  if is_placeholder config.tracker.owner then
-    add "tracker.owner" "Set tracker.owner in .symphony/settings.json to the GitHub organization or user that owns the repository.";
-  if is_placeholder config.tracker.repo then
-    add "tracker.repo" "Set tracker.repo in .symphony/settings.json to the GitHub repository name.";
-  if (not (is_placeholder config.tracker.repo)) && not (is_repository_name config.tracker.repo) then
-    add "tracker.repo" "Set tracker.repo in .symphony/settings.json to the repository name only, not a GitHub URL or owner/name pair.";
-  if config.tracker.project_number <= 0 then
-    add "tracker.projectNumber" "Set tracker.projectNumber in .symphony/settings.json to a positive GitHub Projects number.";
-  if config.tracker.api_key = None then
-    add ("environment." ^ config.tracker.api_key_env)
-      (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env);
+  if config.tracker.kind = "github" then (
+    if is_placeholder config.tracker.owner then
+      add "tracker.owner"
+        "Set tracker.owner in .symphony/settings.json to the GitHub organization or user that owns the repository.";
+    if is_placeholder config.tracker.repo then
+      add "tracker.repo" "Set tracker.repo in .symphony/settings.json to the GitHub repository name.";
+    if (not (is_placeholder config.tracker.repo)) && not (is_repository_name config.tracker.repo) then
+      add "tracker.repo" "Set tracker.repo in .symphony/settings.json to the repository name only, not a GitHub URL or owner/name pair.";
+    if config.tracker.project_number <= 0 then
+      add "tracker.projectNumber" "Set tracker.projectNumber in .symphony/settings.json to a positive GitHub Projects number.";
+    if config.tracker.api_key = None then
+      add ("environment." ^ config.tracker.api_key_env)
+        (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env));
   let selected_harnesses = readiness_agent_harnesses config in
   List.iter
     (fun path ->

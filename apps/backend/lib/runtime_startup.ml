@@ -36,5 +36,10 @@ let prepare_runtime ?(overrides = empty_runtime_invocation_overrides) () =
 
 let startup_completed_event ~mode ~config ~runtime_home =
   Printf.sprintf
-    "event=startup outcome=completed mode=%s owner=%s repo=%s project_number=%d runtime_home=%s workspace_root=%s"
-    mode config.Config.tracker.owner config.tracker.repo config.tracker.project_number runtime_home config.workspace.root
+    "event=startup outcome=completed mode=%s tracker=%s issue_source=%s project_number=%d runtime_home=%s workspace_root=%s"
+    mode config.Config.tracker.kind
+    (match config.tracker.kind with
+    | "github" -> Printf.sprintf "%s/%s" config.tracker.owner config.tracker.repo
+    | "minibeads" -> config.tracker.minibeads_root
+    | kind -> kind)
+    config.tracker.project_number runtime_home config.workspace.root

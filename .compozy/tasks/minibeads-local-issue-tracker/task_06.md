@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Support selected-tracker identifiers in Ordered Queue"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Update Ordered Queue parsing and persistence to support both GitHub numeric sele
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Replace numeric-only queue entry storage with canonical identifier storage.
-- [ ] 6.2 Preserve GitHub selector normalization for `20` and `#20`.
-- [ ] 6.3 Add `mb-<number>` selector normalization.
-- [ ] 6.4 Update queue validation to use selected tracker lookup.
-- [ ] 6.5 Add persistence and resume tests for local identifiers.
+- [x] 6.1 Replace numeric-only queue entry storage with canonical identifier storage.
+- [x] 6.2 Preserve GitHub selector normalization for `20` and `#20`.
+- [x] 6.3 Add `mb-<number>` selector normalization.
+- [x] 6.4 Update queue validation to use selected tracker lookup.
+- [x] 6.5 Add persistence and resume tests for local identifiers.
 
 ## Implementation Details
 Follow TechSpec "Data Models: Selector rules". Avoid accepting arbitrary local identifiers in V1.
@@ -63,14 +63,14 @@ Follow TechSpec "Data Models: Selector rules". Avoid accepting arbitrary local i
 
 ## Tests
 - Unit tests:
-  - [ ] `20` normalizes to `#20`.
-  - [ ] `#20` remains `#20`.
-  - [ ] `mb-20` remains `mb-20`.
-  - [ ] `owner/repo#20`, URLs, empty entries, and malformed local IDs are rejected.
-  - [ ] Duplicate canonical identifiers are rejected.
-  - [ ] Persisted queue resume uses canonical identifier sequence.
+  - [x] `20` normalizes to `#20`.
+  - [x] `#20` remains `#20`.
+  - [x] `mb-20` remains `mb-20`.
+  - [x] `owner/repo#20`, URLs, empty entries, and malformed local IDs are rejected.
+  - [x] Duplicate canonical identifiers are rejected.
+  - [x] Persisted queue resume uses canonical identifier sequence.
 - Integration tests:
-  - [ ] Ordered Queue dispatches a minibeads issue only when selected tracker lookup resolves it as dispatchable.
+  - [x] Ordered Queue dispatches a minibeads issue only when selected tracker lookup resolves it as dispatchable.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,7 +1,8 @@
 # GitHub Issues + Projects Tracking
 
-Personal Symphony uses GitHub Issues as the unit of work and GitHub Projects as the dispatch board.
-The active tracker contract is configured in Workspace Repository Runtime Settings at
+This document applies to the GitHub Tracker path, where `tracker.kind` is `"github"` or omitted.
+Personal Symphony uses GitHub Issues as issue records and GitHub Projects as the dispatch board for
+that tracker. The active Issue Tracker is configured in Workspace Repository Runtime Settings at
 `.symphony/settings.json`.
 
 ## Required Project Fields
@@ -17,7 +18,7 @@ that behavior.
 
 ## Runtime Settings
 
-Configure the GitHub tracker and GitHub Project states in `.symphony/settings.json`:
+Configure the GitHub Tracker and GitHub Project states in `.symphony/settings.json`:
 
 ```json
 {
@@ -40,9 +41,10 @@ Configure the GitHub tracker and GitHub Project states in `.symphony/settings.js
 }
 ```
 
-`tracker.owner`, `tracker.repo`, and `tracker.projectNumber` identify the Workspace Repository and
-GitHub Project that Symphony polls. `tracker.apiKeyEnv` names the Local Environment variable that
-contains the GitHub token; store the value in `.symphony/.env`, not in Runtime Settings.
+`tracker.kind = "github"` selects the GitHub Tracker. `tracker.owner`, `tracker.repo`, and
+`tracker.projectNumber` identify the Workspace Repository and GitHub Project that Symphony polls.
+`tracker.apiKeyEnv` names the Local Environment variable that contains the GitHub token; store the
+value in `.symphony/.env`, not in Runtime Settings.
 
 ## Workflow
 
@@ -58,6 +60,10 @@ contains the GitHub token; store the value in `.symphony/.env`, not in Runtime S
 
 Legacy `WORKFLOW.md` files are fixture/import compatibility only. They are not the active Runtime
 Contract for new Workspace Repository setup.
+
+For minibeads Local Issue Tracker setup, configure `tracker.kind = "minibeads"` in Runtime Settings
+and follow the main README. minibeads does not use GitHub Issues, GitHub Projects, or GitHub tracker
+token settings for issue dispatch.
 
 ## Authentication
 

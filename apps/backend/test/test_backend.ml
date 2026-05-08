@@ -1136,6 +1136,8 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -1220,6 +1222,8 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -1331,6 +1335,8 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -1394,7 +1400,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       let child =
@@ -1409,21 +1415,120 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
       Alcotest.(check string) "pi prompt piped" "Engineer stage instructions\n\n---\n\nStage agent: engineer\n\nIssue #1"
         (Util.read_file (Filename.concat child.workspace.path "pi.prompt") |> Util.trim))
 
+let has_readiness_requirement requirement gaps =
+  List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = requirement) gaps
+
+let test_config_defaults_to_github_tracker_kind () =
+  with_temp_dir "symphony-settings-default-tracker-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "default tracker kind" "github" config.tracker.kind;
+      Alcotest.(check string) "owner" "acme" config.tracker.owner;
+      Alcotest.(check string) "repo" "widgets" config.tracker.repo;
+      Alcotest.(check int) "project number" 7 config.tracker.project_number)
+
+let test_config_parses_minibeads_tracker_defaults () =
+  with_temp_dir "symphony-settings-minibeads-defaults-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings {|{"tracker": {"kind": "minibeads"}}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "tracker kind" "minibeads" config.tracker.kind;
+      Alcotest.(check string) "default command" Config.default_minibeads_command config.tracker.minibeads_command;
+      Alcotest.(check string) "default root"
+        (Filename.concat (Unix.realpath root) Config.default_minibeads_root)
+        config.tracker.minibeads_root)
+
+let test_config_parses_minibeads_tracker_settings () =
+  with_temp_dir "symphony-settings-minibeads-explicit-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      Util.mkdir_p (Filename.concat root ".local");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"kind": "minibeads", "root": ".local/issues", "command": "custom-mb"}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "tracker kind" "minibeads" config.tracker.kind;
+      Alcotest.(check string) "custom command" "custom-mb" config.tracker.minibeads_command;
+      Alcotest.(check string) "custom root"
+        (Filename.concat (Filename.concat (Unix.realpath root) ".local") "issues")
+        config.tracker.minibeads_root)
+
 let test_invalid_tracker_kind () =
-  let content =
-    {|
----
-tracker:
-  kind: linear
----
-body
-|}
-  in
-  with_temp_file content (fun path ->
-      let workflow = Workflow.load path in
+  with_temp_dir "symphony-settings-invalid-tracker-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings {|{"tracker": {"kind": "linear"}}|};
       Alcotest.check_raises "linear rejected"
-        (Config.Invalid_config "tracker.kind must be github for this implementation")
-        (fun () -> ignore (Config.from_workflow workflow)))
+        (Config.Invalid_config "Unsupported tracker.kind linear. Set tracker.kind to github or minibeads.")
+        (fun () -> ignore (Config.from_settings_file ~workspace_root:root settings)))
+
+let test_github_tracker_readiness_keeps_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-settings-github-gaps-" (fun root ->
+          Util.mkdir_p (Filename.concat root ".symphony");
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"kind": "github", "owner": "your-org", "repo": "your-repo", "projectNumber": 0}
+}|};
+          let gaps = Config.from_settings_file ~workspace_root:root settings |> Config.readiness_gaps in
+          Alcotest.(check bool) "owner gap" true (has_readiness_requirement "tracker.owner" gaps);
+          Alcotest.(check bool) "repo gap" true (has_readiness_requirement "tracker.repo" gaps);
+          Alcotest.(check bool) "project gap" true (has_readiness_requirement "tracker.projectNumber" gaps);
+          Alcotest.(check bool) "token gap" true (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
+
+let test_minibeads_tracker_readiness_skips_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-settings-minibeads-gaps-" (fun root ->
+          Util.mkdir_p (Filename.concat root ".symphony");
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings {|{"tracker": {"kind": "minibeads"}}|};
+          let gaps = Config.from_settings_file ~workspace_root:root settings |> Config.readiness_gaps in
+          Alcotest.(check bool) "owner gap skipped" false (has_readiness_requirement "tracker.owner" gaps);
+          Alcotest.(check bool) "repo gap skipped" false (has_readiness_requirement "tracker.repo" gaps);
+          Alcotest.(check bool) "project gap skipped" false (has_readiness_requirement "tracker.projectNumber" gaps);
+          Alcotest.(check bool) "token gap skipped" false (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
+
+let test_minibeads_pull_request_readiness_skips_github_tracker_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-settings-minibeads-pr-gaps-" (fun root ->
+          Util.mkdir_p (Filename.concat root ".symphony");
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"kind": "minibeads"},
+  "pullRequest": {"enabled": true, "mode": "task", "baseBranch": "main"}
+}|};
+          let gaps = Config.from_settings_file ~workspace_root:root settings |> Config.readiness_gaps in
+          Alcotest.(check bool) "owner gap skipped" false (has_readiness_requirement "tracker.owner" gaps);
+          Alcotest.(check bool) "repo gap skipped" false (has_readiness_requirement "tracker.repo" gaps);
+          Alcotest.(check bool) "project gap skipped" false (has_readiness_requirement "tracker.projectNumber" gaps);
+          Alcotest.(check bool) "token gap skipped" false (has_readiness_requirement "environment.GITHUB_TOKEN" gaps);
+          Alcotest.(check bool) "pull request base accepted" false
+            (has_readiness_requirement "pullRequest.baseBranch" gaps)))
+
+let test_minibeads_settings_load_without_github_token () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-runtime-minibeads-" (fun root ->
+          let runtime_home = Filename.concat root ".symphony" in
+          Util.mkdir_p runtime_home;
+          let settings = Filename.concat runtime_home "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"kind": "minibeads", "root": ".beads", "command": "mb"},
+  "project": {"activeStates": ["open"], "terminalStates": ["closed"], "startStatus": "in_progress", "reviewStatus": "closed", "retryStatus": "open"}
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check string) "tracker kind" "minibeads" config.tracker.kind;
+          Alcotest.(check bool) "github token not required" false
+            (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
 
 let test_legacy_codex_app_server_command_normalizes_to_exec () =
   let content =
@@ -2154,6 +2259,8 @@ let test_project_status_order_uses_transition_flow () =
       project_number = 7;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Backlog"; "Todo"; "To-Do"; "In progress"; "In Progress"; "In review" ];
       terminal_states = [ "Done"; "Closed"; "Cancelled" ];
       project_status_field = "Status";
@@ -2938,17 +3045,70 @@ let test_runtime_state_exposes_running_issue_details () =
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
 
+let test_runtime_state_exposes_tracker_kind () =
+  let open Yojson.Safe.Util in
+  let default_json = Runtime_state.empty () |> Runtime_state.to_yojson in
+  Alcotest.(check string) "default tracker kind" "github" (default_json |> member "tracker_kind" |> to_string);
+  let local_json = Runtime_state.empty ~tracker_kind:"minibeads" () |> Runtime_state.to_yojson in
+  Alcotest.(check string) "selected tracker kind" "minibeads" (local_json |> member "tracker_kind" |> to_string)
+
 let test_ordered_queue_parses_cli_identifiers () =
-  match Ordered_queue.parse "19,#22,31" with
+  match Ordered_queue.parse "19,#22,mb-20" with
   | Error _ -> Alcotest.fail "expected ordered queue parse success"
   | Ok queue ->
-      Alcotest.(check (list int)) "numbers" [ 19; 22; 31 ] (Ordered_queue.numbers queue);
-      Alcotest.(check (list string)) "identifiers" [ "#19"; "#22"; "#31" ] (Ordered_queue.identifiers queue);
-      (match Ordered_queue.parse "19,,abc,#19" with
+      Alcotest.(check (list string)) "identifiers" [ "#19"; "#22"; "mb-20" ] (Ordered_queue.identifiers queue);
+      (match Ordered_queue.parse "20,#20" with
+      | Ok _ -> Alcotest.fail "expected duplicate canonical GitHub selector"
+      | Error problems ->
+          Alcotest.(check string) "duplicate GitHub" "duplicate issue identifier"
+            (List.hd problems).Ordered_queue.reason);
+      (match Ordered_queue.parse "mb-020,mb-20" with
+      | Ok _ -> Alcotest.fail "expected duplicate canonical minibeads selector"
+      | Error problems ->
+          Alcotest.(check string) "duplicate minibeads" "duplicate issue identifier"
+            (List.hd problems).Ordered_queue.reason);
+      (match Ordered_queue.parse "owner/repo#20,https://github.com/acme/widgets/issues/20,,mb-,mb-zero,MB-20" with
       | Ok _ -> Alcotest.fail "expected ordered queue parse problems"
       | Error problems ->
-          Alcotest.(check int) "problem count" 3 (List.length problems);
-          Alcotest.(check string) "duplicate" "duplicate issue identifier" (List.hd (List.rev problems)).Ordered_queue.reason)
+          Alcotest.(check int) "problem count" 6 (List.length problems);
+          Alcotest.(check (list string)) "rejected values"
+            [ "owner/repo#20"; "https://github.com/acme/widgets/issues/20"; ""; "mb-"; "mb-zero"; "MB-20" ]
+            (List.map (fun (problem : Ordered_queue.parse_problem) -> problem.value) problems))
+
+let test_ordered_queue_validation_uses_selected_tracker () =
+  let open Issue_tracker in
+  let issue ?(state = "open") identifier = Issue.empty ~id:identifier ~identifier ~title:identifier ~state in
+  let queue =
+    match Ordered_queue.parse "mb-20,mb-21,mb-22" with
+    | Ok queue -> queue
+    | Error _ -> Alcotest.fail "queue parse failed"
+  in
+  let tracker =
+    {
+      kind = "minibeads";
+      fetch_candidates = (fun () -> Ok []);
+      fetch_by_identifiers = (fun _ -> Ok []);
+      fetch_by_identifiers_detailed =
+        (fun identifiers ->
+          Alcotest.(check (list string)) "lookup identifiers" [ "mb-20"; "mb-21"; "mb-22" ] identifiers;
+          Ok
+            [
+              { identifier = "mb-20"; issue = Some (issue "mb-20"); diagnostics = [] };
+              { identifier = "mb-21"; issue = Some (issue ~state:"closed" "mb-21"); diagnostics = [] };
+              { identifier = "mb-22"; issue = None; diagnostics = [ Missing_issue ] };
+            ]);
+      update_status = (fun _ _ -> Ok ());
+      readiness_gaps = (fun () -> []);
+      normalize_identifier = (fun raw -> Ok raw);
+      is_active = (fun status -> status = "open");
+      is_terminal = (fun status -> status = "closed");
+    }
+  in
+  let gaps = Ordered_queue.validation_gaps tracker queue in
+  Alcotest.(check (list string)) "requirements" [ "orderedQueue.mb-21"; "orderedQueue.mb-22" ]
+    (List.map (fun (gap : Ordered_queue.validation_gap) -> gap.requirement) gaps);
+  Alcotest.(check string) "terminal remediation" "Issue is terminal in tracker state \"closed\"."
+    (List.hd gaps).Ordered_queue.remediation
 
 let test_runtime_state_exposes_ordered_queue () =
   let queue =
@@ -2987,6 +3147,8 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3037,11 +3199,47 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
       let different =
         Orchestrator.make ~ordered_queue:different_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
-      match (Orchestrator.get_state different).Runtime_state.ordered_queue with
+      (match (Orchestrator.get_state different).Runtime_state.ordered_queue with
       | Some queue ->
           Alcotest.(check (list string)) "different queue resets" [ "pending"; "pending" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
-      | None -> Alcotest.fail "expected new ordered queue")
+      | None -> Alcotest.fail "expected new ordered queue");
+      let local_config =
+        {
+          config with
+          Config.tracker =
+            {
+              config.tracker with
+              kind = "minibeads";
+              owner = "";
+              repo = "";
+              project_number = 0;
+              api_key = None;
+            };
+        }
+      in
+      let local_persisted =
+        {
+          Runtime_state.entries =
+            [
+              { Runtime_state.issue_identifier = "mb-2"; title = Some "Two"; state = "completed"; skip_reason = None };
+              { Runtime_state.issue_identifier = "mb-1"; title = Some "One"; state = "pending"; skip_reason = None };
+            ];
+        }
+      in
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson local_persisted |> Yojson.Safe.to_string);
+      let same_local_queue =
+        match Ordered_queue.parse "mb-2,mb-1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let same_local =
+        Orchestrator.make ~ordered_queue:same_local_queue ~config:local_config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      (match (Orchestrator.get_state same_local).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "local queue resumes by canonical identifiers" [ "completed"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected resumed local ordered queue"))
 
 let test_runtime_state_exposes_goal_usage_when_available () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add goal usage" ~state:"In progress" in
@@ -3298,6 +3496,7 @@ let test_websocket_broadcast_after_state_change () =
 let test_websocket_readiness_snapshot_and_http_state () =
   let state =
     Runtime_state.empty
+      ~tracker_kind:"minibeads"
       ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set tracker owner" } ]
       ~last_error:"tracker.owner: set tracker owner" ()
   in
@@ -3305,12 +3504,17 @@ let test_websocket_readiness_snapshot_and_http_state () =
       let open Yojson.Safe.Util in
       let json = Yojson.Safe.from_string initial in
       Alcotest.(check string) "readiness requirement" "tracker.owner"
-        (json |> member "readiness_gaps" |> to_list |> List.hd |> member "requirement" |> to_string));
+        (json |> member "readiness_gaps" |> to_list |> List.hd |> member "requirement" |> to_string);
+      Alcotest.(check string) "websocket tracker kind" "minibeads" (json |> member "tracker_kind" |> to_string));
   let http =
     Server.handle_request (fun () -> state)
       { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
   in
-  Alcotest.(check bool) "diagnostic endpoint preserved" true (String.contains http '{')
+  Alcotest.(check bool) "diagnostic endpoint preserved" true (String.contains http '{');
+  let body = match List.rev (String.split_on_char '\n' http) with body :: _ -> body | [] -> "" in
+  let open Yojson.Safe.Util in
+  let json = Yojson.Safe.from_string body in
+  Alcotest.(check string) "http tracker kind" "minibeads" (json |> member "tracker_kind" |> to_string)
 
 let test_websocket_context_status_snapshot_and_http_state () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Context status" ~state:"Todo" in
@@ -3385,6 +3589,8 @@ let test_orchestrator_notifies_each_state_mutation () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3409,7 +3615,7 @@ let test_orchestrator_notifies_each_state_mutation () =
         }
       in
       let notifications = ref 0 in
-      let fetch _ = [] in
+      let fetch _ = Ok [] in
       let orchestrator =
         Orchestrator.make ~fetch ~config ~prompt_template:"Issue {{ issue.identifier }}"
           ~notify_state:(fun _ -> incr notifications)
@@ -3433,6 +3639,8 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3469,7 +3677,7 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
       Unix.sleepf 0.05;
       let snapshots = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
           ~notify_state:(fun state -> snapshots := state :: !snapshots)
           ()
       in
@@ -3545,6 +3753,8 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3580,7 +3790,7 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
       let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "sleep 30" |] Unix.stdin Unix.stdout Unix.stderr in
       let snapshots = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
           ~notify_state:(fun state -> snapshots := state :: !snapshots)
           ()
       in
@@ -3665,6 +3875,8 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3710,7 +3922,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
           ignore (try Unix.waitpid [] pid with Unix.Unix_error _ -> (0, Unix.WEXITED 0)))
         (fun () ->
           let orchestrator =
-            Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+            Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
               ~prompt_template:"Issue {{ issue.identifier }}" ()
           in
           Orchestrator.set_state orchestrator
@@ -3778,6 +3990,8 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -3802,7 +4016,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
         }
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Blocked usage" ~state:"Todo" in
-      let orchestrator = Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      let orchestrator = Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.set_state orchestrator
         {
           (Runtime_state.empty ()) with
@@ -3843,6 +4057,451 @@ let test_ready_terminal_mode_runs_orchestrator () =
        ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
     = Runtime_policy.Serve_readiness_state)
 
+let github_issue_tracker_config root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  let settings = Filename.concat root "settings.json" in
+  Util.write_file settings
+    {|{
+  "tracker": {"kind": "github", "owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "project": {"activeStates": ["Todo", "Doing"], "terminalStates": ["Done", "Closed"]}
+}|};
+  Config.from_settings_file ~workspace_root:root settings
+
+let minibeads_issue_tracker_config root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  let settings = Filename.concat root "settings.json" in
+  Util.write_file settings
+    {|{
+  "tracker": {"kind": "minibeads", "root": ".beads", "command": "mb"},
+  "project": {"activeStates": ["open", "doing"], "terminalStates": ["done", "closed"]}
+}|};
+  Config.from_settings_file ~workspace_root:root settings
+
+let minibeads_orchestrator_config ?(active_states = [ "open"; "doing" ])
+    ?(terminal_states = [ "done"; "closed" ]) root =
+  let config = minibeads_issue_tracker_config root in
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        owner = "";
+        repo = "";
+        project_number = 0;
+        api_key = None;
+        active_states;
+        terminal_states;
+        project_status_on_dispatch = Some "in_progress";
+        project_status_on_success = Some "closed";
+        project_status_on_retry = Some "open";
+      };
+    workspace = { root = Filename.concat root "workspaces" };
+    agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+    codex =
+      {
+        command = "true";
+        model = Config.default_model;
+        reasoning_effort = Config.default_reasoning_effort;
+        turn_timeout_ms = 1000;
+        read_timeout_ms = 100;
+        stall_timeout_ms = 1000;
+      };
+  }
+
+let fake_minibeads_runner ?(available = true) ?(status = Minibeads_tracker.Exited 0) ?(stdout = "")
+    ?(stderr = "") ?calls () =
+  {
+    Minibeads_tracker.command_available = (fun _ -> available);
+    run =
+      (fun ~cwd ~command ->
+        (match calls with Some calls -> calls := (cwd, command) :: !calls | None -> ());
+        { Minibeads_tracker.status; stdout; stderr });
+  }
+
+let minibeads_cli_command (config : Config.t) args =
+  config.tracker.minibeads_command ^ " " ^ String.concat " " (List.map Util.shell_quote args)
+
+let minibeads_json_command config subcommand args =
+  minibeads_cli_command config
+    ([ "--mb-beads-dir"; config.Config.tracker.minibeads_root; "--mb-no-cmd-logging"; "--json"; subcommand ]
+    @ args)
+
+let minibeads_update_command config identifier status =
+  minibeads_cli_command config
+    [
+      "--mb-beads-dir";
+      config.Config.tracker.minibeads_root;
+      "--mb-no-cmd-logging";
+      "update";
+      identifier;
+      "--status";
+      status;
+    ]
+
+let fake_minibeads_route_runner ?(available = true) routes calls =
+  {
+    Minibeads_tracker.command_available = (fun _ -> available);
+    run =
+      (fun ~cwd ~command ->
+        calls := (cwd, command) :: !calls;
+        match List.assoc_opt command routes with
+        | Some (`Ok stdout) -> { Minibeads_tracker.status = Exited 0; stdout; stderr = "" }
+        | Some (`Fail (code, output)) -> { Minibeads_tracker.status = Exited code; stdout = ""; stderr = output }
+        | None ->
+            {
+              Minibeads_tracker.status = Exited 127;
+              stdout = "";
+              stderr = "unexpected fake mb command: " ^ command;
+            });
+  }
+
+let lookup_diagnostic_label = function
+  | Issue_tracker.Missing_issue -> "missing-issue"
+  | Issue_tracker.Missing_project_membership number -> "missing-project-" ^ string_of_int number
+  | Issue_tracker.Closed_issue -> "closed"
+
+let test_issue_tracker_selects_github_adapter () =
+  with_temp_dir "symphony-issue-tracker-github-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let tracker = Issue_tracker.make config in
+      Alcotest.(check string) "kind" "github" tracker.kind;
+      Alcotest.(check (result string string)) "numeric identifier" (Ok "#20") (tracker.normalize_identifier "20");
+      Alcotest.(check (result string string)) "hash identifier" (Ok "#20") (tracker.normalize_identifier "#20"))
+
+let test_issue_tracker_selects_minibeads_adapter () =
+  with_temp_dir "symphony-issue-tracker-minibeads-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let tracker = Issue_tracker.make config in
+      Alcotest.(check string) "kind" "minibeads" tracker.kind;
+      Alcotest.(check (result string string)) "canonical identifier" (Ok "mb-20")
+        (tracker.normalize_identifier "mb-20");
+      Alcotest.(check (result string string)) "canonicalizes leading zeros" (Ok "mb-20")
+        (tracker.normalize_identifier "MB-020"))
+
+let test_issue_tracker_github_state_semantics_match_existing () =
+  with_temp_dir "symphony-issue-tracker-states-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let tracker = Issue_tracker.make config in
+      List.iter
+        (fun status ->
+          Alcotest.(check bool)
+            ("active " ^ status)
+            (Github_tracker.status_is_active ~active_states:config.tracker.active_states status)
+            (tracker.is_active status);
+          Alcotest.(check bool)
+            ("terminal " ^ status)
+            (Github_tracker.status_is_terminal ~config:config.tracker status)
+            (tracker.is_terminal status))
+        [ "Todo"; "todo"; "Doing"; "Done"; "closed"; "Backlog" ])
+
+let test_issue_tracker_maps_github_rate_limit () =
+  with_temp_dir "symphony-issue-tracker-rate-limit-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let tracker =
+        Issue_tracker.github
+          ~fetch_candidates:(fun _ ->
+            raise (Github_tracker.Tracker_rate_limited ("GitHub API rate limit exceeded.", 123456)))
+          config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Rate_limited (message, retry_after_ms)) ->
+          Alcotest.(check string) "message" "GitHub API rate limit exceeded." message;
+          Alcotest.(check int) "retry delay" 123456 retry_after_ms
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail ("expected rate limit, got failure: " ^ message)
+      | Ok _ -> Alcotest.fail "expected rate-limit poll error")
+
+let test_issue_tracker_github_lookup_preserves_diagnostics () =
+  with_temp_dir "symphony-issue-tracker-lookup-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let issue2 = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Two" ~state:"OPEN" in
+      let issue3 = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Three" ~state:"Todo" in
+      let fetch_by_numbers _ numbers =
+        List.map
+          (fun number ->
+            match number with
+            | 1 -> (number, None)
+            | 2 -> (number, Some { Github_tracker.issue = issue2; project_status = None; closed = false })
+            | 3 -> (number, Some { Github_tracker.issue = issue3; project_status = Some "Todo"; closed = false })
+            | _ -> (number, None))
+          numbers
+      in
+      let tracker = Issue_tracker.github ~fetch_by_numbers config in
+      match tracker.fetch_by_identifiers_detailed [ "#1"; "#2"; "3" ] with
+      | Error error -> Alcotest.fail error
+      | Ok results ->
+          let diagnostics =
+            results
+            |> List.map (fun result -> result.Issue_tracker.diagnostics |> List.map lookup_diagnostic_label)
+          in
+          Alcotest.(check (list string)) "identifiers" [ "#1"; "#2"; "#3" ]
+            (List.map (fun result -> result.Issue_tracker.identifier) results);
+          Alcotest.(check (list (list string))) "diagnostics"
+            [ [ "missing-issue" ]; [ "missing-project-7" ]; [] ]
+            diagnostics;
+          (match tracker.fetch_by_identifiers [ "#1"; "#2"; "3" ] with
+          | Error error -> Alcotest.fail error
+          | Ok issues ->
+              Alcotest.(check (list (option string))) "public lookup issue identifiers"
+                [ None; None; Some "#3" ]
+                (List.map (Option.map (fun issue -> issue.Issue.identifier)) issues)))
+
+let runtime_requirements gaps =
+  List.map (fun (gap : Runtime_state.readiness_gap) -> gap.requirement) gaps
+
+let test_minibeads_readiness_missing_command_gap () =
+  with_temp_dir "symphony-minibeads-command-gap-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".beads");
+      let config = minibeads_issue_tracker_config root in
+      let tracker = Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~available:false ()) config in
+      let gaps = tracker.readiness_gaps () in
+      Alcotest.(check (list string)) "requirements" [ "tracker.minibeads.command" ]
+        (runtime_requirements gaps))
+
+let test_minibeads_readiness_missing_store_gap () =
+  with_temp_dir "symphony-minibeads-store-gap-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~calls ()) config
+      in
+      let gaps = tracker.readiness_gaps () in
+      Alcotest.(check (list string)) "requirements" [ "tracker.minibeads.store" ]
+        (runtime_requirements gaps);
+      Alcotest.(check int) "readiness command skipped" 0 (List.length !calls))
+
+let test_minibeads_readiness_nonzero_command_is_sanitized () =
+  with_temp_dir "symphony-minibeads-command-failure-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".beads");
+      let config = minibeads_issue_tracker_config root in
+      let tracker =
+        Issue_tracker.minibeads
+          ~runner:
+            (fake_minibeads_runner ~status:(Minibeads_tracker.Exited 2)
+               ~stdout:"bad\noutput\tfrom mb" ~stderr:"second\rline" ())
+          config
+      in
+      match tracker.readiness_gaps () with
+      | [ gap ] ->
+          Alcotest.(check string) "requirement" "tracker.minibeads.command" gap.requirement;
+          Alcotest.(check string) "remediation"
+            "minibeads readiness command \"mb '--version'\" failed with exit 2: bad output from mb second line. Fix the command or local minibeads installation before dispatch."
+            gap.remediation
+      | gaps ->
+          Alcotest.fail
+            (Printf.sprintf "expected one command gap, got %d" (List.length gaps)))
+
+let test_minibeads_readiness_valid_fake_output_has_no_gap () =
+  with_temp_dir "symphony-minibeads-ready-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".beads");
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~stdout:"mb 0.13.1" ~calls ()) config
+      in
+      Alcotest.(check (list string)) "requirements" [] (runtime_requirements (tracker.readiness_gaps ()));
+      Alcotest.(check (list (pair string string))) "command rooted in workspace" [ (root, "mb '--version'") ]
+        (List.rev !calls))
+
+let active_minibeads_issue_json =
+  {|
+[
+  {
+    "id": "mb-20",
+    "title": "Implement local tracker",
+    "description": "Use minibeads JSON output.",
+    "status": "open",
+    "priority": 1,
+    "labels": ["backend", "tracker"],
+    "dependencies": [],
+    "created_at": "2026-05-08T10:00:00Z",
+    "updated_at": "2026-05-08T11:00:00Z"
+  }
+]
+|}
+
+let test_minibeads_fetch_maps_issue_output () =
+  with_temp_dir "symphony-minibeads-fetch-map-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let tracker =
+        Issue_tracker.minibeads
+          ~runner:(fake_minibeads_route_runner [ (list_command, `Ok active_minibeads_issue_json) ] calls)
+          config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      | Ok [ issue ] ->
+          Alcotest.(check string) "identifier" "mb-20" issue.Issue.identifier;
+          Alcotest.(check string) "title" "Implement local tracker" issue.title;
+          Alcotest.(check string) "state" "open" issue.state;
+          Alcotest.(check (option string)) "description" (Some "Use minibeads JSON output.")
+            issue.description;
+          Alcotest.(check (option int)) "priority" (Some 1) issue.priority;
+          Alcotest.(check (list string)) "labels" [ "backend"; "tracker" ] issue.labels;
+          Alcotest.(check (option string)) "created" (Some "2026-05-08T10:00:00Z")
+            issue.created_at;
+          Alcotest.(check (option string)) "updated" (Some "2026-05-08T11:00:00Z")
+            issue.updated_at;
+          Alcotest.(check int) "comments empty for minibeads V1" 0 (List.length issue.comments);
+          Alcotest.(check (list (pair string string))) "command rooted in workspace"
+            [ (root, list_command) ] (List.rev !calls)
+      | Ok issues -> Alcotest.fail (Printf.sprintf "expected one candidate, got %d" (List.length issues)))
+
+let test_minibeads_duplicate_identifiers_are_diagnostic () =
+  with_temp_dir "symphony-minibeads-duplicates-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let output =
+        {|[
+  {"id":"mb-20","title":"One","status":"open","priority":1},
+  {"id":"MB-020","title":"Two","status":"open","priority":2}
+]|}
+      in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok output) ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Failed message) ->
+          Alcotest.(check string) "diagnostic"
+            "minibeads issue output error: duplicate minibeads issue identifier mb-20 in list output"
+            message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      | Ok _ -> Alcotest.fail "expected duplicate diagnostic")
+
+let test_minibeads_malformed_output_is_diagnostic () =
+  with_temp_dir "symphony-minibeads-malformed-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok "not json") ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Error (Issue_tracker.Failed message) ->
+          Alcotest.(check bool) "diagnostic prefix" true
+            (Util.starts_with ~prefix:"minibeads issue output error: list returned invalid JSON" message)
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      | Ok _ -> Alcotest.fail "expected malformed output diagnostic")
+
+let test_minibeads_unsupported_status_is_not_dispatchable () =
+  with_temp_dir "symphony-minibeads-unsupported-status-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let output = {|[{"id":"mb-20","title":"Needs triage","status":"triage","priority":2}]|} in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok output) ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Ok [] -> ()
+      | Ok issues -> Alcotest.fail (Printf.sprintf "expected no dispatchable issues, got %d" (List.length issues))
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit")
+
+let test_minibeads_nonterminal_blocker_prevents_dispatch () =
+  with_temp_dir "symphony-minibeads-blocked-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let output =
+        {|[
+  {"id":"mb-10","title":"Blocking work","status":"open","priority":1},
+  {"id":"mb-20","title":"Dependent work","status":"open","priority":1,"dependencies":[{"id":"mb-10","type":"blocks"}]}
+]|}
+      in
+      let tracker =
+        Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [ (list_command, `Ok output) ] calls) config
+      in
+      match tracker.fetch_candidates () with
+      | Ok issues ->
+          Alcotest.(check (list string)) "only unblocked candidate" [ "mb-10" ]
+            (List.map (fun issue -> issue.Issue.identifier) issues)
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit")
+
+let test_minibeads_lookup_and_status_update_through_boundary () =
+  with_temp_dir "symphony-minibeads-boundary-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let list_command = minibeads_json_command config "list" [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let update_command = minibeads_update_command config "mb-20" "in_progress" in
+      let show_output =
+        {|{
+  "id": "mb-20",
+  "title": "Implement local tracker",
+  "description": "Use minibeads JSON output.",
+  "status": "open",
+  "priority": 1,
+  "labels": ["backend", "tracker"],
+  "dependencies": [],
+  "created_at": "2026-05-08T10:00:00Z",
+  "updated_at": "2026-05-08T11:00:00Z"
+}|}
+      in
+      let tracker =
+        Issue_tracker.minibeads
+          ~runner:
+            (fake_minibeads_route_runner
+               [
+                 (list_command, `Ok active_minibeads_issue_json);
+                 (show_command, `Ok show_output);
+                 (update_command, `Ok "Updated mb-20");
+               ]
+               calls)
+          config
+      in
+      let issue =
+        match tracker.fetch_candidates () with
+        | Ok [ issue ] -> issue
+        | Ok _ -> Alcotest.fail "expected one candidate"
+        | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+        | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "minibeads should not rate-limit"
+      in
+      (match tracker.fetch_by_identifiers [ "MB-020" ] with
+      | Ok [ Some issue ] -> Alcotest.(check string) "lookup canonical" "mb-20" issue.Issue.identifier
+      | Ok _ -> Alcotest.fail "expected lookup hit"
+      | Error message -> Alcotest.fail message);
+      (match tracker.update_status issue "In progress" with
+      | Ok () -> ()
+      | Error message -> Alcotest.fail message);
+      Alcotest.(check (list (pair string string))) "commands"
+        [ (root, list_command); (root, show_command); (root, update_command) ]
+        (List.rev !calls))
+
+let test_minibeads_repeated_status_update_is_idempotent () =
+  with_temp_dir "symphony-minibeads-idempotent-update-" (fun root ->
+      let config = minibeads_issue_tracker_config root in
+      let calls = ref [] in
+      let tracker = Issue_tracker.minibeads ~runner:(fake_minibeads_route_runner [] calls) config in
+      let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Already running" ~state:"in_progress" in
+      match tracker.update_status issue "In progress" with
+      | Ok () -> Alcotest.(check int) "no command needed" 0 (List.length !calls)
+      | Error message -> Alcotest.fail message)
+
+let test_minibeads_runtime_readiness_omits_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-runtime-readiness-" (fun root ->
+          let config = minibeads_issue_tracker_config root in
+          let tracker = Issue_tracker.minibeads ~runner:(fake_minibeads_runner ~available:false ()) config in
+          let readiness_gaps = Config.readiness_gaps config |> List.map Issue_tracker.runtime_gap_of_config_gap in
+          let readiness_gaps = readiness_gaps @ tracker.readiness_gaps () in
+          let state = Runtime_state.empty ~readiness_gaps () in
+          let requirements = runtime_requirements state.Runtime_state.readiness_gaps in
+          Alcotest.(check bool) "owner gap omitted" false (List.exists (( = ) "tracker.owner") requirements);
+          Alcotest.(check bool) "repo gap omitted" false (List.exists (( = ) "tracker.repo") requirements);
+          Alcotest.(check bool) "project gap omitted" false
+            (List.exists (( = ) "tracker.projectNumber") requirements);
+          Alcotest.(check bool) "token gap omitted" false
+            (List.exists (( = ) "environment.GITHUB_TOKEN") requirements);
+          Alcotest.(check bool) "minibeads command gap included" true
+            (List.exists (( = ) "tracker.minibeads.command") requirements);
+          Alcotest.(check bool) "minibeads store gap included" true
+            (List.exists (( = ) "tracker.minibeads.store") requirements)))
+
 let test_github_project_field_parsing () =
   let config =
     {
@@ -3852,6 +4511,8 @@ let test_github_project_field_parsing () =
       project_number = 7;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Todo"; "In Progress" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -3912,6 +4573,8 @@ let test_github_active_state_filtering () =
       project_number = 7;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -3963,6 +4626,8 @@ let test_github_empty_project_field_values_are_ignored () =
       project_number = 2;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "To-Do" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -4001,6 +4666,8 @@ let test_github_status_metadata_parsing () =
       project_number = 2;
       api_key_env = "GITHUB_TOKEN";
       api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
       project_status_field = "Status";
@@ -4080,6 +4747,8 @@ let stage_capacity_config root ~global_cap =
         project_number = 7;
         api_key_env = "GITHUB_TOKEN";
         api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
         active_states = [ "Backlog"; "Todo"; "In progress"; "In review" ];
         terminal_states = [ "Done"; "Human attention" ];
         project_status_field = "Status";
@@ -4175,6 +4844,8 @@ let test_orchestrator_dispatch_limits () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4210,7 +4881,7 @@ let test_orchestrator_dispatch_limits () =
         launched := issue.Issue.id :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let fetch _ = issues in
+      let fetch _ = Ok issues in
       let set_status _ _ _ = Ok () in
       let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -4240,7 +4911,7 @@ let test_orchestrator_dispatch_uses_effective_global_concurrency_override () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4267,7 +4938,7 @@ let test_orchestrator_stage_capacity_dispatches_all_available_slots () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4285,7 +4956,7 @@ let test_orchestrator_stage_capacity_does_not_spawn_idle_agents () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4311,7 +4982,7 @@ let test_orchestrator_stage_capacity_respects_lower_global_cap () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4335,7 +5006,7 @@ let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       let running_issue = List.nth issues 0 in
@@ -4386,6 +5057,8 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo"; "In progress"; "In review" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4470,7 +5143,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4504,6 +5177,8 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4551,7 +5226,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4563,6 +5238,55 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
       | Some queue ->
           Alcotest.(check (list string)) "queue states" [ "running"; "running" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries))
+
+let test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable () =
+  with_temp_dir "symphony-orchestrator-local-queue-" (fun root ->
+      let base_config = minibeads_orchestrator_config root in
+      let config =
+        {
+          base_config with
+          Config.agent = { base_config.agent with max_concurrent_agents = 2 };
+        }
+      in
+      let ordered_queue =
+        match Ordered_queue.parse "mb-20,mb-21" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let issue20 = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Local dispatchable" ~state:"open" in
+      let issue21 = Issue.empty ~id:"mb-21" ~identifier:"mb-21" ~title:"Local terminal" ~state:"closed" in
+      let lookup_tracker =
+        {
+          (Issue_tracker.make config) with
+          fetch_by_identifiers_detailed =
+            (fun identifiers ->
+              Alcotest.(check (list string)) "lookup identifiers" [ "mb-20"; "mb-21" ] identifiers;
+              Ok
+                [
+                  { Issue_tracker.identifier = "mb-20"; issue = Some issue20; diagnostics = [] };
+                  { Issue_tracker.identifier = "mb-21"; issue = Some issue21; diagnostics = [] };
+                ]);
+        }
+      in
+      let gaps = Ordered_queue.validation_gaps lookup_tracker ordered_queue in
+      Alcotest.(check (list string)) "validation blocks terminal local issue" [ "orderedQueue.mb-21" ]
+        (List.map (fun (gap : Ordered_queue.validation_gap) -> gap.requirement) gaps);
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue21; issue20 ])
+          ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "only dispatchable local issue launched" [ "mb-20" ] (List.rev !launched);
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "local queue states" [ "running"; "skipped" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state")
 
 let test_orchestrator_pauses_tracker_after_rate_limit () =
   with_temp_dir "symphony-orchestrator-rate-limit-" (fun root ->
@@ -4578,6 +5302,8 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4604,8 +5330,8 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
       let calls = ref 0 in
       let fetch _ =
         incr calls;
-        raise
-          (Github_tracker.Tracker_rate_limited
+        Error
+          (Issue_tracker.Rate_limited
              ("GitHub API rate limit exceeded. Original message: API rate limit exceeded for user ID 29718530.", 300000))
       in
       let orchestrator =
@@ -4617,8 +5343,90 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
       match (Orchestrator.get_state orchestrator).last_error with
       | Some error ->
           Alcotest.(check bool) "pause message" true
-            (String.starts_with ~prefix:"GitHub API rate limit exceeded; retrying tracker poll" error)
+            (String.starts_with ~prefix:"Issue Tracker poll rate-limited; retrying tracker poll" error)
       | None -> Alcotest.fail "expected tracker pause error")
+
+let test_orchestrator_records_generic_tracker_poll_failure () =
+  with_temp_dir "symphony-orchestrator-poll-failure-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let fetch _ = Error (Issue_tracker.Failed "minibeads list failed") in
+      let orchestrator =
+        Orchestrator.make ~fetch ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (option string)) "last error" (Some "minibeads list failed")
+        (Orchestrator.get_state orchestrator).last_error)
+
+let test_orchestrator_uses_selected_tracker_active_mapping () =
+  with_temp_dir "symphony-orchestrator-minibeads-active-" (fun root ->
+      let config = minibeads_orchestrator_config ~active_states:[ "Todo" ] root in
+      let issue = Issue.empty ~id:"mb-1" ~identifier:"mb-1" ~title:"Local active" ~state:"open" in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "minibeads normalized active status dispatched" [ "mb-1" ]
+        (List.rev !launched))
+
+let test_orchestrator_uses_selected_tracker_terminal_mapping () =
+  with_temp_dir "symphony-orchestrator-minibeads-terminal-" (fun root ->
+      let config = minibeads_orchestrator_config ~active_states:[ "Done" ] ~terminal_states:[ "Done" ] root in
+      let issue = Issue.empty ~id:"mb-1" ~identifier:"mb-1" ~title:"Local terminal" ~state:"closed" in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "unexpected"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "terminal local issue not dispatched" 0 !launched)
+
+let test_orchestrator_minibeads_stub_dispatch_without_github_settings () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-orchestrator-minibeads-dispatch-" (fun root ->
+          let config = minibeads_orchestrator_config root in
+          let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Local task" ~state:"open" in
+          let current_status = ref issue.Issue.state in
+          let statuses = ref [] in
+          let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+            {
+              Orchestrator.pid = None;
+              session_id = Some issue.Issue.id;
+              event = "test-launch";
+              stdout_path = None;
+              stderr_path = None;
+            }
+          in
+          let fetch tracker =
+            Alcotest.(check string) "selected tracker" "minibeads" tracker.Issue_tracker.kind;
+            if tracker.kind = "github" then Alcotest.fail "unexpected GitHub tracker";
+            Ok [ { issue with state = !current_status } ]
+          in
+          let set_status tracker issue status =
+            Alcotest.(check string) "status tracker" "minibeads" tracker.Issue_tracker.kind;
+            current_status := status;
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ()
+          in
+          let orchestrator =
+            Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.poll_once orchestrator;
+          Alcotest.(check (list (pair string string))) "status transitions"
+            [ ("mb-20", "in_progress") ] (List.rev !statuses);
+          let state = Orchestrator.get_state orchestrator in
+          Alcotest.(check string) "runtime state tracker kind" "minibeads" state.Runtime_state.tracker_kind;
+          let running = state.Runtime_state.running in
+          Alcotest.(check int) "running local issue" 1 (List.length running)))
 
 let test_orchestrator_does_not_dispatch_terminal_issues () =
   with_temp_dir "symphony-orchestrator-terminal-" (fun root ->
@@ -4634,6 +5442,8 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4668,7 +5478,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
         launched := issue.Issue.id :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let fetch _ = issues in
+      let fetch _ = Ok issues in
       let set_status _ _ _ = Ok () in
       let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -4690,6 +5500,8 @@ let test_orchestrator_retries_failed_agent () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4714,7 +5526,7 @@ let test_orchestrator_retries_failed_agent () =
         }
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
-      let fetch _ = [ issue ] in
+      let fetch _ = Ok [ issue ] in
       let set_status _ _ _ = Ok () in
       let orchestrator = Orchestrator.make ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -4743,6 +5555,8 @@ let test_orchestrator_timeout_kills_agent_process_group () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4776,7 +5590,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4812,6 +5626,8 @@ let test_orchestrator_moves_status_to_review_on_success () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4839,8 +5655,8 @@ let test_orchestrator_moves_status_to_review_on_success () =
       let current_status = ref "Todo" in
       let fetch _ =
         if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
-        then [ { issue with state = !current_status } ]
-        else []
+        then Ok [ { issue with state = !current_status } ]
+        else Ok []
       in
       let statuses = ref [] in
       let set_status _ issue status =
@@ -4875,6 +5691,8 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -4922,7 +5740,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In review" in
       let current_status = ref "In review" in
-      let fetch _ = if !current_status = "In review" then [ { issue with state = !current_status } ] else [] in
+      let fetch _ = if !current_status = "In review" then Ok [ { issue with state = !current_status } ] else Ok [] in
       let statuses = ref [] in
       let captured_prompt = ref "" in
       let set_status _ issue status =
@@ -4977,6 +5795,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -5047,7 +5867,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
+      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
       Alcotest.(check bool) "stage agent included" true (String.contains !captured_prompt 'E');
@@ -5109,6 +5929,8 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -5160,7 +5982,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
+      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check bool) "no goal command" false (String.starts_with ~prefix:"/goal" !captured_prompt);
       Alcotest.(check bool) "no context snapshot" false
@@ -5184,6 +6006,8 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         project_number = 7;
         api_key_env = "GITHUB_TOKEN";
         api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
         active_states = [ "Todo" ];
         terminal_states = [ "Done" ];
         project_status_field = "Status";
@@ -5324,7 +6148,7 @@ let test_orchestrator_dispatch_skips_disabled_claude_loop () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5339,7 +6163,7 @@ let check_dispatch_exposes_harness_identity ~label harness =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5390,7 +6214,7 @@ let prompt_from_context_command root command =
     { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
   in
   let orchestrator =
-    Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+    Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
       ~prompt_template:"Normal {{ issue.identifier }}" ()
   in
   Orchestrator.poll_once orchestrator;
@@ -5453,7 +6277,7 @@ printf 'cwd=%s\n' "$PWD"
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5497,7 +6321,7 @@ printf 'cwd=%s\n' "$PWD"
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5676,7 +6500,7 @@ let test_orchestrator_prunes_context_diagnostic_files () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5788,7 +6612,7 @@ let test_orchestrator_omits_retry_output_on_first_launch () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5816,7 +6640,7 @@ let test_orchestrator_includes_retry_output_on_retry_launch () =
           { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-retry"; stdout_path = None; stderr_path = None })
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5907,6 +6731,8 @@ let test_orchestrator_truncates_agent_context_snapshot () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -6189,6 +7015,8 @@ let test_orchestrator_commits_stage_before_success_status () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -6337,6 +7165,8 @@ let test_orchestrator_retries_when_success_status_move_fails () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -6364,7 +7194,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
       let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let fetch _ = [ issue ] in
+      let fetch _ = Ok [ issue ] in
       let set_status _ _ status = if status = "Done" then Error "bad option id" else Ok () in
       let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -6408,6 +7238,8 @@ let test_orchestrator_retries_push_failure_before_success_status () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -6464,7 +7296,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~commit_stage ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~commit_stage ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -6506,6 +7338,8 @@ let test_stage_commit_requires_code_changes () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -6566,6 +7400,8 @@ let test_orchestrator_does_not_retry_empty_commit () =
               project_number = 7;
               api_key_env = "GITHUB_TOKEN";
               api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               project_status_field = "Status";
@@ -6614,7 +7450,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
       let launches = ref 0 in
       let statuses = ref [] in
-      let fetch _ = [ issue ] in
+      let fetch _ = Ok [ issue ] in
       let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         incr launches;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
@@ -6664,6 +7500,8 @@ let base_orchestrator_config root git =
         project_number = 7;
         api_key_env = "GITHUB_TOKEN";
         api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
         active_states = [ "Todo"; "In progress" ];
         terminal_states = [ "Done" ];
         project_status_field = "Status";
@@ -6707,7 +7545,7 @@ let test_orchestrator_loop_uses_effective_polling_interval () =
       let issue () = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:(!current_status) in
       let fetch _ =
         incr fetch_count;
-        [ issue () ]
+        Ok [ issue () ]
       in
       let set_status _ _ status =
         current_status := status;
@@ -6738,7 +7576,7 @@ let test_orchestrator_retry_uses_effective_backoff_cap () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -6772,7 +7610,7 @@ let test_orchestrator_agent_worktree_uses_effective_workspace_root () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -7187,7 +8025,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
       in
       let commit_stage _ _ _ _ _ = Ok () in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue () ]) ~set_status ~commit_stage ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue () ]) ~set_status ~commit_stage ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -7232,7 +8070,7 @@ let test_ordered_queue_revives_persisted_completed_active_entries () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -7261,7 +8099,7 @@ let test_startup_reconciliation_merges_completed_worktrees_in_order () =
       commit_file ~cwd:workspace_22.path "b.txt" "b\n" "task 22";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue_22; issue_21 ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue_22; issue_21 ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -7287,7 +8125,7 @@ let test_startup_reconciliation_already_contained_applies_cleanup_without_status
       ignore (run_ok ~cwd:root "manual merge" "git merge --ff-only symphony/task-23");
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -7323,7 +8161,7 @@ let test_startup_reconciliation_moves_unsafe_candidates_to_attention () =
       in
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ protected_issue; uncommitted_issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ protected_issue; uncommitted_issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -7354,7 +8192,7 @@ let test_startup_reconciliation_blocks_unauthorized_protected_path_change () =
       commit_file ~cwd:workspace.path "bin/symphony.js" "changed\n" "task 32";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -7381,7 +8219,7 @@ let test_startup_reconciliation_updates_task_branch_before_fast_forward () =
       commit_file ~cwd:later_workspace.path "later.txt" "later\n" "task 27";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ nonff_issue; later_issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ nonff_issue; later_issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -7416,7 +8254,7 @@ let test_startup_reconciliation_detects_wrong_and_missing_task_branch () =
       Unix.mkdir stale_path 0o755;
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ wrong_issue; missing_issue; stale_issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ wrong_issue; missing_issue; stale_issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -7442,7 +8280,7 @@ let test_startup_reconciliation_blocks_when_loop_start_dirty () =
       Util.write_file (Filename.concat root "dirty-loop.txt") "dirty\n";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -7473,7 +8311,7 @@ let test_startup_reconciliation_ignores_retained_branch_without_worktree () =
       commit_file ~cwd:external_worktree "retained.txt" "retained\n" "task 31";
       ignore (run_ok ~cwd:root "remove external worktree" (Printf.sprintf "git worktree remove %s" (Util.shell_quote external_worktree)));
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Alcotest.fail "unexpected status change")
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Alcotest.fail "unexpected status change")
           ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -7497,7 +8335,7 @@ let test_orchestrator_creates_task_worktree_and_branch () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       let workspace = match !captured_workspace with Some workspace -> workspace | None -> Alcotest.fail "expected launch" in
@@ -7548,7 +8386,7 @@ let test_orchestrator_opens_batch_pull_request_once_when_idle () =
         Ok (Some "https://github.example/acme/widgets/pull/1")
       in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       Orchestrator.poll_once orchestrator;
@@ -7574,8 +8412,8 @@ let test_orchestrator_opens_batch_pull_request_on_review_status () =
       in
       let fetch _ =
         if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
-        then [ { issue with state = !current_status } ]
-        else []
+        then Ok [ { issue with state = !current_status } ]
+        else Ok []
       in
       let set_status _ _ status =
         current_status := status;
@@ -7614,8 +8452,8 @@ let test_orchestrator_opens_task_pull_request_on_review_status_from_protected_lo
       in
       let fetch _ =
         if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
-        then [ { issue with state = !current_status } ]
-        else []
+        then Ok [ { issue with state = !current_status } ]
+        else Ok []
       in
       let set_status _ _ status =
         current_status := status;
@@ -7730,6 +8568,91 @@ let test_task_pull_request_opens_before_auto_merge_cleanup () =
           Alcotest.(check (option string)) "head branch" (Some "symphony/task-35") handoff.head_branch
       | None -> Alcotest.fail "expected task pull request handoff state")
 
+let test_minibeads_task_pull_request_updates_selected_tracker () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-task-pr-" (fun root ->
+          init_repo root "feature/start";
+          ignore_runtime_home root;
+          let config =
+            minibeads_orchestrator_config root
+            |> fun config -> { config with Config.git = { config.git with auto_merge = true } }
+            |> task_pull_request_config
+          in
+          let helper_settings = Filename.concat root "settings.json" in
+          if Sys.file_exists helper_settings then Sys.remove helper_settings;
+          let config = { config with Config.workspace = { root = Filename.concat root ".symphony/workspaces" } } in
+          let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Local task" ~state:"doing" in
+          let workspace = create_task_worktree config issue in
+          commit_file ~cwd:workspace.path "minibeads-task-pr.txt" "ready\n" "task 20";
+          let statuses = ref [] in
+          let attempts = ref [] in
+          let set_status tracker issue status =
+            Alcotest.(check string) "selected tracker" "minibeads" tracker.Issue_tracker.kind;
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ()
+          in
+          let batch_pull_request_handoff config ~head_branch =
+            Alcotest.(check string) "handoff tracker kind" "minibeads" config.Config.tracker.kind;
+            Alcotest.(check string) "tracker owner omitted" "" config.tracker.owner;
+            Alcotest.(check string) "tracker repo omitted" "" config.tracker.repo;
+            attempts := head_branch :: !attempts;
+            Ok (Some "https://github.example/acme/widgets/pull/20")
+          in
+          let orchestrator =
+            Orchestrator.make ~set_status ~batch_pull_request_handoff ~config
+              ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.mark_completed orchestrator (completed_child issue workspace);
+          Alcotest.(check (list (pair string string))) "selected tracker status update"
+            [ ("mb-20", "closed") ] (List.rev !statuses);
+          Alcotest.(check (list string)) "handoff attempted from Task Branch" [ "symphony/task-20" ]
+            (List.rev !attempts);
+          match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+          | Some handoff ->
+              Alcotest.(check string) "mode" "task" handoff.mode;
+              Alcotest.(check (option string)) "issue identifier" (Some "mb-20") handoff.issue_identifier;
+              Alcotest.(check string) "status" "completed" handoff.status;
+              Alcotest.(check (option string)) "head branch" (Some "symphony/task-20") handoff.head_branch
+          | None -> Alcotest.fail "expected minibeads task pull request handoff state"))
+
+let test_minibeads_task_pull_request_failure_records_retryable_handoff () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-task-pr-failure-" (fun root ->
+          init_repo root "feature/start";
+          ignore_runtime_home root;
+          let config =
+            minibeads_orchestrator_config root
+            |> fun config -> { config with Config.git = { config.git with auto_merge = true } }
+            |> task_pull_request_config
+          in
+          let helper_settings = Filename.concat root "settings.json" in
+          if Sys.file_exists helper_settings then Sys.remove helper_settings;
+          let config = { config with Config.workspace = { root = Filename.concat root ".symphony/workspaces" } } in
+          let issue = Issue.empty ~id:"mb-21" ~identifier:"mb-21" ~title:"Local task failure" ~state:"doing" in
+          let workspace = create_task_worktree config issue in
+          commit_file ~cwd:workspace.path "minibeads-task-pr-failure.txt" "ready\n" "task 21";
+          let statuses = ref [] in
+          let set_status tracker issue status =
+            Alcotest.(check string) "selected tracker" "minibeads" tracker.Issue_tracker.kind;
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ()
+          in
+          let orchestrator =
+            Orchestrator.make ~set_status
+              ~batch_pull_request_handoff:(fun _ ~head_branch:_ -> Error "batch branch push failed: exit 1: rejected")
+              ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.mark_completed orchestrator (completed_child issue workspace);
+          Alcotest.(check (list (pair string string))) "selected tracker status update"
+            [ ("mb-21", "closed") ] (List.rev !statuses);
+          match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+          | Some handoff ->
+              Alcotest.(check string) "status" "retryable_failure" handoff.status;
+              Alcotest.(check (option string)) "issue identifier" (Some "mb-21") handoff.issue_identifier;
+              Alcotest.(check (option string)) "failure error"
+                (Some "batch branch push failed: exit 1: rejected") handoff.error
+          | None -> Alcotest.fail "expected failed minibeads task pull request handoff state"))
+
 let test_orchestrator_retries_batch_pull_request_handoff_failure () =
   with_temp_dir "symphony-batch-pr-retry-" (fun root ->
       init_repo root "feature/start";
@@ -7740,7 +8663,7 @@ let test_orchestrator_retries_batch_pull_request_handoff_failure () =
         if !attempts = 1 then Error "batch branch push failed: exit 1: rejected" else Ok None
       in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       (match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
@@ -7754,6 +8677,19 @@ let test_orchestrator_retries_batch_pull_request_handoff_failure () =
       | Some handoff -> Alcotest.(check string) "eventual status" "completed" handoff.status
       | None -> Alcotest.fail "expected completed handoff state")
 
+let test_orchestrator_records_non_fetch_poll_exceptions () =
+  with_temp_dir "symphony-poll-exception-" (fun root ->
+      init_repo root "feature/start";
+      let config = base_orchestrator_config root (git_policy ()) |> pull_request_config in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> Ok [])
+          ~batch_pull_request_handoff:(fun _ ~head_branch:_ -> failwith "pull request handoff exploded")
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (option string)) "last error" (Some "Failure(\"pull request handoff exploded\")")
+        (Orchestrator.get_state orchestrator).Runtime_state.last_error)
+
 let test_orchestrator_blocks_batch_pull_request_on_attention () =
   with_temp_dir "symphony-batch-pr-attention-" (fun root ->
       init_repo root "feature/start";
@@ -7765,7 +8701,7 @@ let test_orchestrator_blocks_batch_pull_request_on_attention () =
       in
       let issue = Issue.empty ~id:"I-attn" ~identifier:"#99" ~title:"Needs merge" ~state:"Human attention" in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~batch_pull_request_handoff ~config
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~batch_pull_request_handoff ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -7815,8 +8751,105 @@ exit 1
               let lines = Util.read_file gh_log |> Util.split_lines in
               Alcotest.(check bool) "looked for existing PR" true
                 (List.exists (Util.starts_with ~prefix:"pr list") lines);
+              Alcotest.(check bool) "uses tracker repo for GitHub PR lookup" true
+                (List.exists
+                   (( = ) "pr list --repo acme/widgets --state open --head feature/start --base main --limit 1 --json url")
+                   lines);
               Alcotest.(check bool) "did not create duplicate" false
                 (List.exists (Util.starts_with ~prefix:"pr create") lines)))
+
+let test_pull_request_handoff_push_is_non_force () =
+  with_temp_dir "symphony-pr-non-force-" (fun root ->
+      let remote = Filename.concat root "remote.git" in
+      let first = Filename.concat root "first" in
+      let repo = Filename.concat root "repo" in
+      let bin = Filename.concat root "bin" in
+      Unix.mkdir first 0o755;
+      Unix.mkdir repo 0o755;
+      Unix.mkdir bin 0o755;
+      ignore (run_ok ~cwd:root "bare remote" ("git init -q --bare " ^ Util.shell_quote remote));
+      init_repo first "feature/start";
+      ignore (run_ok ~cwd:first "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+      Util.write_file (Filename.concat first "remote-only.txt") "remote\n";
+      ignore (run_ok ~cwd:first "remote-only commit" "git add remote-only.txt && git commit -q -m remote-only");
+      ignore (run_ok ~cwd:first "push remote branch" "git push -q -u origin feature/start");
+      init_repo repo "feature/start";
+      ignore (run_ok ~cwd:repo "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+      let gh_log = Filename.concat root "gh.log" in
+      let gh_path = Filename.concat bin "gh" in
+      Util.write_file gh_path
+        (Printf.sprintf
+           {|#!/bin/sh
+printf '%%s\n' "$*" >> %s
+exit 0
+|}
+           (Util.shell_quote gh_log));
+      Unix.chmod gh_path 0o755;
+      let original_path = Sys.getenv_opt "PATH" in
+      Fun.protect
+        ~finally:(fun () -> match original_path with Some path -> Unix.putenv "PATH" path | None -> Unix.putenv "PATH" "")
+        (fun () ->
+          Unix.putenv "PATH" (bin ^ ":" ^ Option.value original_path ~default:"");
+          let config = base_orchestrator_config repo (git_policy ()) |> pull_request_config in
+          match Orchestrator.gh_batch_pull_request_handoff config ~head_branch:"feature/start" with
+          | Ok _ -> Alcotest.fail "expected non-force push rejection"
+          | Error error ->
+              Alcotest.(check bool) "push failed before PR lookup" true
+                (contains_substring error "batch branch push failed");
+              Alcotest.(check bool) "gh not called after rejected push" false (Sys.file_exists gh_log)))
+
+let test_minibeads_pull_request_handoff_uses_current_remote_without_tracker_repo () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-pr-current-remote-" (fun root ->
+          let remote = Filename.concat root "remote.git" in
+          let repo = Filename.concat root "repo" in
+          let bin = Filename.concat root "bin" in
+          Unix.mkdir repo 0o755;
+          Unix.mkdir bin 0o755;
+          ignore (run_ok ~cwd:root "bare remote" ("git init -q --bare " ^ Util.shell_quote remote));
+          init_repo repo "feature/start";
+          ignore (run_ok ~cwd:repo "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+          let gh_log = Filename.concat root "gh.log" in
+          let gh_path = Filename.concat bin "gh" in
+          Util.write_file gh_path
+            (Printf.sprintf
+               {|#!/bin/sh
+printf '%%s\n' "$*" >> %s
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  printf '[]\n'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  printf 'https://github.example/acme/widgets/pull/20\n'
+  exit 0
+fi
+exit 1
+|}
+               (Util.shell_quote gh_log));
+          Unix.chmod gh_path 0o755;
+          let original_path = Sys.getenv_opt "PATH" in
+          Fun.protect
+            ~finally:(fun () -> match original_path with Some path -> Unix.putenv "PATH" path | None -> Unix.putenv "PATH" "")
+            (fun () ->
+              Unix.putenv "PATH" (bin ^ ":" ^ Option.value original_path ~default:"");
+              let config = minibeads_orchestrator_config repo |> pull_request_config in
+              match Orchestrator.gh_batch_pull_request_handoff config ~head_branch:"feature/start" with
+              | Error error -> Alcotest.fail error
+              | Ok url ->
+                  Alcotest.(check (option string)) "created PR URL"
+                    (Some "https://github.example/acme/widgets/pull/20") url;
+                  Alcotest.(check bool) "remote loop-start branch pushed" true
+                    (Sys.command
+                       ("git --git-dir " ^ Util.shell_quote remote
+                      ^ " show-ref --verify --quiet refs/heads/feature/start")
+                    = 0);
+                  let lines = Util.read_file gh_log |> Util.split_lines in
+                  Alcotest.(check bool) "looked for existing PR" true
+                    (List.exists (Util.starts_with ~prefix:"pr list") lines);
+                  Alcotest.(check bool) "created PR" true
+                    (List.exists (Util.starts_with ~prefix:"pr create") lines);
+                  Alcotest.(check bool) "omitted tracker repo flag" false
+                    (List.exists (fun line -> contains_substring line "--repo") lines))))
 
 let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
   with_temp_dir "symphony-dirty-loop-" (fun root ->
@@ -7835,7 +8868,7 @@ let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check int) "not launched" 0 !launches;
@@ -7871,7 +8904,7 @@ let test_orchestrator_blocks_disallowed_loop_start_before_side_effects () =
       let orchestrator =
         Orchestrator.make ~launch ~fetch:(fun _ ->
             incr fetches;
-            [ issue ])
+            Ok [ issue ])
           ~set_status
           ~batch_pull_request_handoff:(fun _ ~head_branch:_ ->
             incr prs;
@@ -7931,7 +8964,7 @@ let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launc
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -7956,7 +8989,7 @@ let test_orchestrator_rejects_existing_non_worktree_workspace () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check int) "not launched" 0 !launches;
@@ -8253,7 +9286,8 @@ let manual_merge_config ?(keep_task_branch = true) root =
 let project_issue issue = Some { Github_tracker.issue; project_status = Some issue.Issue.state; closed = false }
 
 let run_manual_merge_test config issues selectors =
-  let fetch numbers =
+  let statuses = ref [] in
+  let fetch_by_numbers _ numbers =
     List.map
       (fun number ->
         ( number,
@@ -8262,12 +9296,142 @@ let run_manual_merge_test config issues selectors =
           | Some issue -> project_issue issue ))
       numbers
   in
-  let statuses = ref [] in
-  let set_status issue status =
+  let update_status _ issue status =
     statuses := (issue.Issue.identifier, status) :: !statuses;
     Ok ()
   in
-  (Manual_merge.run ~fetch_issues:fetch ~set_status config selectors, statuses)
+  let tracker = Issue_tracker.github ~fetch_by_numbers ~update_status config in
+  (Manual_merge.run ~tracker config selectors, statuses)
+
+let manual_merge_minibeads_config root =
+  let config = manual_merge_config root in
+  let stage_agents =
+    {
+      config.Config.stage_agents with
+      stages =
+        List.map
+          (fun (stage : Config.stage_agent) -> { stage with states = [ "in_progress" ]; success_status = Some "Done" })
+          config.stage_agents.stages;
+    }
+  in
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        kind = "minibeads";
+        owner = "";
+        repo = "";
+        project_number = 0;
+        api_key = None;
+        active_states = [ "open"; "in_progress" ];
+        terminal_states = [ "closed" ];
+        minibeads_root = Filename.concat root ".beads";
+        minibeads_command = "mb";
+      };
+    stage_agents;
+  }
+
+let run_manual_merge_minibeads_test config ~runner selectors =
+  let tracker = Issue_tracker.minibeads ~runner config in
+  Manual_merge.run ~tracker config selectors
+
+let test_manual_merge_accepts_minibeads_selector_and_rejects_canonical_duplicates () =
+  with_temp_dir "symphony-manual-merge-minibeads-selectors-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let result =
+        run_manual_merge_minibeads_test config ~runner:(fake_minibeads_route_runner [] (ref []))
+          [ "mb-020,mb-20"; "mb-abc" ]
+      in
+      match result with
+      | Ok _ -> Alcotest.fail "expected selector errors"
+      | Error errors ->
+          Alcotest.(check int) "two selector errors" 2 (List.length errors);
+          Alcotest.(check bool) "duplicate uses canonical identifier" true
+            (List.exists (fun error -> contains_substring error "duplicate Manual Task Merge selector mb-20") errors);
+          Alcotest.(check bool) "malformed local selector rejected" true
+            (List.exists (fun error -> contains_substring error "expected a minibeads issue identifier like mb-20") errors))
+
+let test_manual_merge_selected_tracker_missing_issue_diagnostic () =
+  with_temp_dir "symphony-manual-merge-missing-minibeads-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let calls = ref [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let result =
+        run_manual_merge_minibeads_test config
+          ~runner:(fake_minibeads_route_runner [ (show_command, `Ok "[]") ] calls)
+          [ "mb-20" ]
+      in
+      match result with
+      | Ok _ -> Alcotest.fail "expected missing issue"
+      | Error errors ->
+          Alcotest.(check (list string)) "missing diagnostic"
+            [ "mb-20 is missing from the Workspace Repository issue tracker" ]
+            errors;
+          Alcotest.(check (list (pair string string))) "lookup command"
+            [ (root, show_command) ] (List.rev !calls))
+
+let test_manual_merge_minibeads_terminal_state_uses_selected_tracker () =
+  with_temp_dir "symphony-manual-merge-minibeads-terminal-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Twenty" ~state:"closed" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "closed.txt") "closed\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add closed.txt && git commit -q -m task");
+      let calls = ref [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let show_output = {|{"id":"mb-20","title":"Twenty","status":"closed","priority":1}|} in
+      let result =
+        run_manual_merge_minibeads_test config
+          ~runner:(fake_minibeads_route_runner [ (show_command, `Ok show_output) ] calls)
+          [ "mb-20" ]
+      in
+      match result with
+      | Ok _ -> Alcotest.fail "expected terminal preflight failure"
+      | Error errors ->
+          Alcotest.(check int) "one error" 1 (List.length errors);
+          Alcotest.(check bool) "selected tracker terminal wording" true
+            (List.exists (fun error -> contains_substring error "terminal in tracker state \"closed\"") errors))
+
+let test_manual_merge_minibeads_fast_forward_updates_selected_tracker () =
+  with_temp_dir "symphony-manual-merge-minibeads-merge-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Twenty" ~state:"in_progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "minibeads.txt") "minibeads\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add minibeads.txt && git commit -q -m task");
+      let calls = ref [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let update_command = minibeads_update_command config "mb-20" "closed" in
+      let show_output = {|{"id":"mb-20","title":"Twenty","status":"in_progress","priority":1}|} in
+      let result =
+        run_manual_merge_minibeads_test config
+          ~runner:
+            (fake_minibeads_route_runner
+               [ (show_command, `Ok show_output); (update_command, `Ok "Updated mb-20") ]
+               calls)
+          [ "mb-20" ]
+      in
+      let report = match result with Ok report -> report | Error errors -> Alcotest.fail (String.concat "; " errors) in
+      Alcotest.(check int) "merged" 1 report.merged;
+      Alcotest.(check int) "already integrated" 0 report.already_integrated;
+      Alcotest.(check bool) "merged file present" true (Sys.file_exists (Filename.concat root "minibeads.txt"));
+      Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path);
+      Alcotest.(check (list (pair string string))) "selected tracker commands"
+        [ (root, show_command); (root, update_command) ]
+        (List.rev !calls))
 
 let test_manual_merge_rejects_invalid_and_duplicate_selectors () =
   with_temp_dir "symphony-manual-merge-selectors-" (fun root ->
@@ -8282,6 +9446,32 @@ let test_manual_merge_rejects_invalid_and_duplicate_selectors () =
             (List.exists (fun error -> String.contains error 'd') errors);
           Alcotest.(check bool) "branch selector rejected" true
             (List.exists (fun error -> String.contains error '/') errors))
+
+let test_manual_merge_github_still_rejects_absent_project_membership () =
+  with_temp_dir "symphony-manual-merge-github-project-membership-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_config root in
+      let issue = Issue.empty ~id:"I20" ~identifier:"#20" ~title:"Twenty" ~state:"In review" in
+      let fetch_by_numbers _ numbers =
+        List.map
+          (fun number ->
+            ( number,
+              if number = 20 then Some { Github_tracker.issue; project_status = None; closed = false }
+              else None ))
+          numbers
+      in
+      let tracker =
+        Issue_tracker.github ~fetch_by_numbers
+          ~update_status:(fun _ _ _ -> Alcotest.fail "unexpected status update")
+          config
+      in
+      let result = Manual_merge.run ~tracker config [ "#20" ] in
+      match result with
+      | Ok _ -> Alcotest.fail "expected missing GitHub Project membership"
+      | Error errors ->
+          Alcotest.(check (list string)) "project membership diagnostic"
+            [ "#20 is absent from GitHub Project #7" ]
+            errors)
 
 let test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status () =
   with_temp_dir "symphony-manual-merge-protected-" (fun root ->
@@ -8443,7 +9633,21 @@ let () =
         ] );
       ( "config",
         [
-          Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind;
+          Alcotest.test_case "defaults omitted tracker kind to github" `Quick
+            test_config_defaults_to_github_tracker_kind;
+          Alcotest.test_case "parses minibeads tracker defaults" `Quick
+            test_config_parses_minibeads_tracker_defaults;
+          Alcotest.test_case "parses minibeads tracker settings" `Quick
+            test_config_parses_minibeads_tracker_settings;
+          Alcotest.test_case "rejects unsupported tracker kind" `Quick test_invalid_tracker_kind;
+          Alcotest.test_case "keeps github readiness gaps" `Quick
+            test_github_tracker_readiness_keeps_github_gaps;
+          Alcotest.test_case "skips github readiness gaps for minibeads" `Quick
+            test_minibeads_tracker_readiness_skips_github_gaps;
+          Alcotest.test_case "skips github tracker gaps for minibeads pull requests" `Quick
+            test_minibeads_pull_request_readiness_skips_github_tracker_gaps;
+          Alcotest.test_case "loads minibeads settings without github token" `Quick
+            test_minibeads_settings_load_without_github_token;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "parses agent harnesses" `Quick
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
@@ -8508,7 +9712,10 @@ let () =
       ( "runtime-state",
         [
           Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
+          Alcotest.test_case "exposes tracker kind" `Quick test_runtime_state_exposes_tracker_kind;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
+          Alcotest.test_case "validates ordered queue through selected tracker" `Quick
+            test_ordered_queue_validation_uses_selected_tracker;
           Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
@@ -8556,6 +9763,38 @@ let () =
         ] );
       ( "github-tracker",
         [
+          Alcotest.test_case "selects GitHub issue tracker adapter" `Quick test_issue_tracker_selects_github_adapter;
+          Alcotest.test_case "selects minibeads issue tracker adapter" `Quick
+            test_issue_tracker_selects_minibeads_adapter;
+          Alcotest.test_case "preserves active and terminal state semantics" `Quick
+            test_issue_tracker_github_state_semantics_match_existing;
+          Alcotest.test_case "maps GitHub rate limits to poll errors" `Quick
+            test_issue_tracker_maps_github_rate_limit;
+          Alcotest.test_case "preserves lookup diagnostics" `Quick
+            test_issue_tracker_github_lookup_preserves_diagnostics;
+          Alcotest.test_case "reports missing minibeads command readiness" `Quick
+            test_minibeads_readiness_missing_command_gap;
+          Alcotest.test_case "reports missing minibeads store readiness" `Quick
+            test_minibeads_readiness_missing_store_gap;
+          Alcotest.test_case "sanitizes minibeads command diagnostics" `Quick
+            test_minibeads_readiness_nonzero_command_is_sanitized;
+          Alcotest.test_case "accepts valid minibeads readiness output" `Quick
+            test_minibeads_readiness_valid_fake_output_has_no_gap;
+          Alcotest.test_case "surfaces minibeads runtime readiness without github gaps" `Quick
+            test_minibeads_runtime_readiness_omits_github_gaps;
+          Alcotest.test_case "maps minibeads issue output" `Quick test_minibeads_fetch_maps_issue_output;
+          Alcotest.test_case "diagnoses duplicate minibeads identifiers" `Quick
+            test_minibeads_duplicate_identifiers_are_diagnostic;
+          Alcotest.test_case "diagnoses malformed minibeads output" `Quick
+            test_minibeads_malformed_output_is_diagnostic;
+          Alcotest.test_case "does not dispatch unsupported minibeads statuses" `Quick
+            test_minibeads_unsupported_status_is_not_dispatchable;
+          Alcotest.test_case "does not dispatch nonterminal minibeads blockers" `Quick
+            test_minibeads_nonterminal_blocker_prevents_dispatch;
+          Alcotest.test_case "fetches and updates minibeads through boundary" `Quick
+            test_minibeads_lookup_and_status_update_through_boundary;
+          Alcotest.test_case "treats repeated minibeads updates as idempotent" `Quick
+            test_minibeads_repeated_status_update_is_idempotent;
           Alcotest.test_case "parses project status field" `Quick test_github_project_field_parsing;
           Alcotest.test_case "filters active states" `Quick test_github_active_state_filtering;
           Alcotest.test_case "ignores empty project field values" `Quick test_github_empty_project_field_values_are_ignored;
@@ -8584,11 +9823,21 @@ let () =
           Alcotest.test_case "skips full stage capacity in ordered queue" `Quick
             test_orchestrator_stage_capacity_skips_full_ordered_stage;
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
+          Alcotest.test_case "dispatches minibeads ordered queue only when dispatchable" `Quick
+            test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
           Alcotest.test_case "keeps ordered queue stage handoffs pending" `Quick
             test_ordered_queue_keeps_stage_handoffs_pending;
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
             test_ordered_queue_revives_persisted_completed_active_entries;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
+          Alcotest.test_case "records generic tracker poll failure" `Quick
+            test_orchestrator_records_generic_tracker_poll_failure;
+          Alcotest.test_case "uses selected tracker active mapping" `Quick
+            test_orchestrator_uses_selected_tracker_active_mapping;
+          Alcotest.test_case "uses selected tracker terminal mapping" `Quick
+            test_orchestrator_uses_selected_tracker_terminal_mapping;
+          Alcotest.test_case "dispatches minibeads stub without GitHub settings" `Quick
+            test_orchestrator_minibeads_stub_dispatch_without_github_settings;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
           Alcotest.test_case "timeout kills agent process group" `Quick
@@ -8704,9 +9953,19 @@ let () =
             test_task_pull_request_renders_issue_template_tokens;
           Alcotest.test_case "opens task pull request before auto-merge cleanup" `Quick
             test_task_pull_request_opens_before_auto_merge_cleanup;
+          Alcotest.test_case "opens minibeads task pull request through selected tracker" `Quick
+            test_minibeads_task_pull_request_updates_selected_tracker;
+          Alcotest.test_case "records minibeads task pull request handoff failure" `Quick
+            test_minibeads_task_pull_request_failure_records_retryable_handoff;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
+          Alcotest.test_case "records non-fetch poll exceptions" `Quick
+            test_orchestrator_records_non_fetch_poll_exceptions;
           Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
           Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;
+          Alcotest.test_case "pushes pull request branches without force" `Quick
+            test_pull_request_handoff_push_is_non_force;
+          Alcotest.test_case "uses current remote for minibeads pull request handoff" `Quick
+            test_minibeads_pull_request_handoff_uses_current_remote_without_tracker_repo;
           Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
           Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
             test_orchestrator_blocks_disallowed_loop_start_before_side_effects;
@@ -8730,8 +9989,18 @@ let () =
         [
           Alcotest.test_case "rejects invalid and duplicate selectors" `Quick
             test_manual_merge_rejects_invalid_and_duplicate_selectors;
+          Alcotest.test_case "accepts minibeads selectors and rejects canonical duplicates" `Quick
+            test_manual_merge_accepts_minibeads_selector_and_rejects_canonical_duplicates;
+          Alcotest.test_case "reports selected tracker missing issues" `Quick
+            test_manual_merge_selected_tracker_missing_issue_diagnostic;
+          Alcotest.test_case "uses selected tracker terminal semantics" `Quick
+            test_manual_merge_minibeads_terminal_state_uses_selected_tracker;
+          Alcotest.test_case "keeps GitHub project membership validation" `Quick
+            test_manual_merge_github_still_rejects_absent_project_membership;
           Alcotest.test_case "fast-forwards protected trunk and updates review status" `Quick
             test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status;
+          Alcotest.test_case "fast-forwards minibeads task and updates selected tracker" `Quick
+            test_manual_merge_minibeads_fast_forward_updates_selected_tracker;
           Alcotest.test_case "blocks unauthorized protected paths" `Quick
             test_manual_merge_blocks_unauthorized_protected_path_change;
           Alcotest.test_case "preflight is all or nothing" `Quick test_manual_merge_preflight_is_all_or_nothing;

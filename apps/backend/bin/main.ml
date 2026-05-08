@@ -14,42 +14,25 @@ let queue_parse_gaps = function
              })
 
 let queue_validation_gaps config queue =
-  let tracker = Github_tracker.make config.Config.tracker in
-  let issues = Github_tracker.fetch_project_issues_by_numbers tracker (Ordered_queue.numbers queue) in
-  queue.Ordered_queue.entries
-  |> List.filter_map (fun (entry : Ordered_queue.entry) ->
-         match List.assoc_opt entry.issue_number issues |> Option.join with
-         | None ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = "Issue is missing from the Workspace Repository issue tracker.";
-               }
-         | Some row when row.Github_tracker.project_status = None ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = Printf.sprintf "Issue is absent from GitHub Project #%d." config.tracker.project_number;
-               }
-         | Some row when row.closed ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = "Issue is closed in the Workspace Repository issue tracker.";
-               }
-         | Some row when Github_tracker.status_is_terminal ~config:config.tracker row.issue.Issue.state ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = Printf.sprintf "Issue is terminal in project state %S." row.issue.state;
-               }
-         | Some row when not (Github_tracker.status_is_active ~active_states:config.tracker.active_states row.issue.Issue.state) ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = Printf.sprintf "Issue is not dispatchable in project state %S." row.issue.state;
-               }
-         | Some _ -> None)
+  let tracker = Issue_tracker.make config in
+  Ordered_queue.validation_gaps tracker queue
+  |> List.map (fun (gap : Ordered_queue.validation_gap) ->
+         { Config.requirement = gap.requirement; remediation = gap.remediation })
+
+let config_gap_of_runtime_gap (gap : Runtime_state.readiness_gap) =
+  { Config.requirement = gap.requirement; remediation = gap.remediation }
+
+let selected_tracker_readiness_gaps config =
+  try
+    let tracker = Issue_tracker.make config in
+    tracker.readiness_gaps () |> List.map config_gap_of_runtime_gap
+  with exn ->
+    [
+      {
+        Config.requirement = "tracker.adapter";
+        remediation = "Issue Tracker readiness failed: " ^ Printexc.to_string exn;
+      };
+    ]
 
 let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
   let local_gaps = Config.readiness_gaps config in
@@ -57,8 +40,8 @@ let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
   let gaps =
     match local_gaps @ queue_gaps with
     | [] -> (
-        let remote_gaps = Github_tracker.remote_readiness_gaps config in
-        match (remote_gaps, ordered_queue) with
+        let tracker_gaps = selected_tracker_readiness_gaps config in
+        match (tracker_gaps, ordered_queue) with
         | [], Some queue -> (
             try queue_validation_gaps config queue
             with exn ->
@@ -82,7 +65,7 @@ let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
         { Runtime_state.requirement = gap.requirement; remediation = gap.remediation })
       gaps
   in
-  Runtime_state.empty ?last_error ~status_order:(Config.project_status_order config)
+  Runtime_state.empty ?last_error ~tracker_kind:config.tracker.kind ~status_order:(Config.project_status_order config)
     ?ordered_queue:(Option.map Orchestrator.ordered_queue_state ordered_queue)
     ~readiness_gaps ()
 
@@ -151,10 +134,22 @@ let render_bootstrap_report report =
       Printf.eprintf "  %s %-7s %s\n%!" (status_badge item.status) (basename item.path) (dim item.path))
     report
 
+let tracker_issue_source config =
+  match config.Config.tracker.kind with
+  | "github" -> Printf.sprintf "%s/%s" config.tracker.owner config.tracker.repo
+  | "minibeads" -> config.tracker.minibeads_root
+  | kind -> kind
+
+let tracker_status_source config =
+  match config.Config.tracker.kind with
+  | "github" -> Printf.sprintf "GitHub Project #%d" config.tracker.project_number
+  | "minibeads" -> Printf.sprintf "Local Issue Files via %s" config.tracker.minibeads_command
+  | kind -> kind
+
 let render_startup_completed ~mode ~config ~runtime_home =
   let event = Runtime_startup.startup_completed_event ~mode ~config ~runtime_home in
-  Printf.eprintf "%s %s %s %s %s\n%!" (blue "startup") (green "ready") (dim mode)
-    (Printf.sprintf "%s/%s" config.Config.tracker.owner config.tracker.repo)
+  Printf.eprintf "%s %s %s %s %s %s %s\n%!" (blue "startup") (green "ready") (dim mode) (dim "tracker")
+    (cyan config.Config.tracker.kind) (tracker_issue_source config)
     (dim event)
 
 let render_web_dashboard_starting ~port =
@@ -179,9 +174,10 @@ let render_banner () =
 
 let render_terminal_console config state =
   render_banner ();
-  print_section "Tracker";
-  Printf.printf "  %s %s/%s\n%!" (dim "Repository") config.Config.tracker.owner config.tracker.repo;
-  Printf.printf "  %s GitHub Project #%d\n%!" (dim "Project") config.tracker.project_number;
+  print_section "Issue Tracker";
+  Printf.printf "  %s %s\n%!" (dim "Kind") config.Config.tracker.kind;
+  Printf.printf "  %s %s\n%!" (dim "Issue source") (tracker_issue_source config);
+  Printf.printf "  %s %s\n%!" (dim "Status source") (tracker_status_source config);
   Printf.printf "  %s %s\n%!" (dim "Workspace") config.workspace.root;
   print_section "Activity";
   Printf.printf "  %s %d running, %d retrying\n%!" (dim "Agents") (List.length state.Runtime_state.running)
@@ -269,10 +265,8 @@ let render_manual_merge_report report =
     (List.length report.outcomes) report.merged report.already_integrated report.cleanup_failures
 
 let run_manual_merge config merge_args =
-  let tracker = Github_tracker.make config.Config.tracker in
-  let fetch_issues numbers = Github_tracker.fetch_project_issues_by_numbers tracker numbers in
-  let set_status issue status = Github_tracker.update_issue_status tracker issue status in
-  match Manual_merge.run ~fetch_issues ~set_status config merge_args with
+  let tracker = Issue_tracker.make config in
+  match Manual_merge.run ~tracker config merge_args with
   | Ok report ->
       render_manual_merge_report report;
       if report.cleanup_failures = 0 then 0 else 1

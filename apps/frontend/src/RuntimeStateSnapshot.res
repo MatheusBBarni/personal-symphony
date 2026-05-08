@@ -114,6 +114,7 @@ type runningIssue = {
 
 type runtimeState = {
   workspace_repository_name: option<string>,
+  tracker_kind: string,
   counts: counts,
   usage_totals: usageTotals,
   generated_at: string,
@@ -219,6 +220,7 @@ let orderedQueueEntries = state =>
 
 let snapshotFromState = state => {
   Dashboard.workspaceRepositoryName: stringOrEmpty(state.workspace_repository_name),
+  trackerKind: RuntimeState.trackerKindOrDefault(state.tracker_kind),
   Dashboard.running: state.counts.running->Int.toString,
   retrying: state.counts.retrying->Int.toString,
   tokens: state.usage_totals.total_tokens->Int.toString,
