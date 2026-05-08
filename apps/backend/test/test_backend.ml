@@ -1878,6 +1878,17 @@ let test_claude_harness_readiness_checks_selected_install_and_auth () =
             (List.exists (( = ) "harnesses.claude.install") auth_requirements);
           Alcotest.(check bool) "still requires auth" true
             (List.exists (( = ) "harnesses.claude.auth") auth_requirements);
+          let unrelated_settings = Filename.concat root "claude-unrelated-settings.json" in
+          Util.write_file unrelated_settings {|{"permissions":{"allow":["Bash(ls)"]}}|};
+          write_settings ("sh --settings " ^ unrelated_settings);
+          let unrelated_settings_requirements = requirements () in
+          Alcotest.(check bool) "unrelated settings still require auth" true
+            (List.exists (( = ) "harnesses.claude.auth") unrelated_settings_requirements);
+          let helper_settings = Filename.concat root "claude-helper-settings.json" in
+          Util.write_file helper_settings {|{"apiKeyHelper":"printenv ANTHROPIC_API_KEY"}|};
+          write_settings ("sh --settings=" ^ helper_settings);
+          Alcotest.(check bool) "settings apiKeyHelper avoids gap" false
+            (List.exists (( = ) "harnesses.claude.auth") (requirements ()));
           Util.write_file (Filename.concat claude_config_dir ".credentials.json") {|{"claudeAiOauth":{"accessToken":"configured"}}|};
           Alcotest.(check bool) "configured auth avoids gap" false
             (List.exists (( = ) "harnesses.claude.auth") (requirements ()))))
@@ -2232,6 +2243,8 @@ let test_bootstrap_default_runtime_contract_shape () =
       Alcotest.(check string) "codex loop command" "/goal" (string [ "harnesses"; "codex"; "loop"; "command" ]);
       Alcotest.(check bool) "codex loop enabled" true (bool [ "harnesses"; "codex"; "loop"; "enabled" ]);
       Alcotest.(check string) "claude kind" "claude" (string [ "harnesses"; "claude"; "kind" ]);
+      Alcotest.(check string) "claude command" "claude -p --model <model> --output-format stream-json"
+        (string [ "harnesses"; "claude"; "command" ]);
       Alcotest.(check bool) "claude loop disabled" false (bool [ "harnesses"; "claude"; "loop"; "enabled" ]);
       Alcotest.(check string) "pi kind" "pi" (string [ "harnesses"; "pi"; "kind" ]);
       Alcotest.(check string) "planner Harness" "codex" (string [ "agents"; "planner"; "harness" ]);
@@ -2272,7 +2285,7 @@ let test_runtime_contract_docs_use_current_harness_examples () =
       "\"harness\": \"claude\"";
       "\"reviewer\": {";
       "\"harness\": \"pi\"";
-      "\"command\": \"claude -p --output-format stream-json\"";
+      "\"command\": \"claude -p --model <model> --output-format stream-json\"";
       "\"command\": \"/goal\"";
     ];
   List.iter
@@ -2589,7 +2602,7 @@ let test_cli_help_argv_normalization () =
 let test_cli_help_documents_runtime_invocation_overrides () =
   let code, stdout, stderr =
     capture_process_output (fun () ->
-        Cli_command.eval ~version:"test-version" (cli_test_callbacks ()) ~argv:[| "symphony"; "--help" |])
+        Cli_command.eval ~version:"test-version" (cli_test_callbacks ()) ~argv:[| "symphony"; "--help=plain" |])
   in
   Alcotest.(check int) "help exit code" 0 code;
   Alcotest.(check string) "help stderr" "" stderr;

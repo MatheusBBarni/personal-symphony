@@ -153,7 +153,7 @@ let default_codex_command = "codex exec"
 let default_codex_loop_command = "/goal"
 let default_pi_model = "openai/gpt-5.5"
 let default_pi_command = "pi --model <model> --thinking <reasoning> --print --no-session"
-let default_claude_command = "claude -p --output-format stream-json"
+let default_claude_command = "claude -p --model <model> --output-format stream-json"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
@@ -1101,6 +1101,13 @@ let rec json_has_nonempty_entry = function
   | `List values -> List.exists json_has_nonempty_entry values
   | _ -> true
 
+let rec json_has_nonempty_field field = function
+  | `Assoc fields ->
+      (match List.assoc_opt field fields with Some value -> json_has_nonempty_entry value | None -> false)
+      || List.exists (fun (_, value) -> json_has_nonempty_field field value) fields
+  | `List values -> List.exists (json_has_nonempty_field field) values
+  | _ -> false
+
 let pi_auth_provider_configured provider =
   let path = pi_auth_path () in
   if not (Sys.file_exists path) then false
@@ -1202,13 +1209,33 @@ let claude_env_auth_configured () =
   ]
   |> List.exists (fun env -> Util.getenv_nonempty env <> None)
 
-let claude_command_references_api_key_helper command =
-  command_words command
-  |> List.exists (fun word -> word = "--settings" || Util.starts_with ~prefix:"--settings=" word)
+let claude_settings_paths command =
+  let rec collect acc = function
+    | [] -> List.rev acc
+    | "--settings" :: path :: rest -> collect (path :: acc) rest
+    | word :: rest when Util.starts_with ~prefix:"--settings=" word ->
+        let prefix_len = String.length "--settings=" in
+        let path = String.sub word prefix_len (String.length word - prefix_len) in
+        collect (path :: acc) rest
+    | _ :: rest -> collect acc rest
+  in
+  command_words command |> collect []
 
-let claude_harness_auth_configured (harness : agent_harness) =
+let command_path ~workspace_root path =
+  if Filename.is_relative path then Filename.concat workspace_root path else path
+
+let claude_settings_api_key_helper_configured ~workspace_root command =
+  claude_settings_paths command
+  |> List.exists (fun path ->
+         let path = command_path ~workspace_root path in
+         Sys.file_exists path
+         &&
+         try Yojson.Safe.from_file path |> json_has_nonempty_field "apiKeyHelper"
+         with Yojson.Json_error _ | Sys_error _ -> false)
+
+let claude_harness_auth_configured config (harness : agent_harness) =
   claude_env_auth_configured () || claude_credentials_configured ()
-  || claude_command_references_api_key_helper harness.command
+  || claude_settings_api_key_helper_configured ~workspace_root:config.repository_root harness.command
 
 let from_settings_file ~workspace_root path =
   let root =
@@ -1633,7 +1660,7 @@ let readiness_gaps config =
                  "Install Claude Code or update the Claude Harness command so its executable is available: %s."
                  executable)
         | None -> ());
-        if not (claude_harness_auth_configured harness) then
+        if not (claude_harness_auth_configured config harness) then
           add (prefix ^ ".auth")
             "Configure Claude Code authentication without storing secrets in Runtime Settings. Run `claude /login`, set \
              ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, set CLAUDE_CODE_OAUTH_TOKEN for non-bare scripted runs, or \

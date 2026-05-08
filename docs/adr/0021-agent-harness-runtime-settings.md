@@ -31,7 +31,7 @@ Readiness validation uses enabled Stage Agent mappings resolved through logical 
 The first Claude Harness uses Claude Code non-interactive CLI execution with `stream-json` output:
 
 ```sh
-claude -p --output-format stream-json
+claude -p --model <model> --output-format stream-json
 ```
 
 The first PI Harness uses PI non-interactive print mode with the default command shape:

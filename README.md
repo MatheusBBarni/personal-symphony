@@ -81,7 +81,7 @@ reasoning, and timeout fields for planner, engineer, or reviewer work:
     },
     "claude": {
       "kind": "claude",
-      "command": "claude -p --output-format stream-json",
+      "command": "claude -p --model <model> --output-format stream-json",
       "loop": {
         "enabled": false,
         "command": ""

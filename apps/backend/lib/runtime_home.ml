@@ -50,7 +50,7 @@ let settings_json =
     },
     "claude": {
       "kind": "claude",
-      "command": "claude -p --output-format stream-json",
+      "command": "claude -p --model <model> --output-format stream-json",
       "loop": {
         "enabled": false,
         "command": ""
