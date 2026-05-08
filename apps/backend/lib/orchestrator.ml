@@ -490,6 +490,14 @@ let stage_goal_handoff_stage ?stage config issue =
   | Some stage when Config.stage_goal_enabled stage -> Some stage
   | _ -> None
 
+let stage_goal_handoff ?stage config issue =
+  match stage_goal_handoff_stage ?stage config issue with
+  | None -> None
+  | Some stage -> (
+      match Config.selected_agent_harness config (Some stage) with
+      | Some harness when Config.harness_loop_handoff_enabled harness -> Some (stage, Util.trim harness.loop_command)
+      | Some _ | None -> None)
+
 let json_option_string = function Some value when Util.trim value <> "" -> `String value | _ -> `Null
 let json_option_int = function Some value -> `Int value | None -> `Null
 let launch_attempt_number attempt = Option.value attempt ~default:0 + 1
@@ -1373,9 +1381,10 @@ let compose_prompt_result ?stage ?previous_attempt_output config issue attempt b
           (String.concat "\n" snapshots)
   in
   let prompt =
-    match stage_goal_handoff_stage ?stage config issue with
+    match stage_goal_handoff ?stage config issue with
     | None -> prompt
-    | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
+    | Some (stage, loop_command) ->
+        Printf.sprintf "%s %s\n\n---\n\n%s" loop_command (stage_goal_context issue attempt stage) prompt
   in
   {
     prompt;

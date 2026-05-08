@@ -465,6 +465,8 @@ let harness_named name (harnesses : agent_harness list) =
 let logical_agent_named name (agents : logical_agent list) =
   List.find_opt (fun (agent : logical_agent) -> agent.name = name) agents
 
+let harness_loop_handoff_enabled (harness : agent_harness) = harness.loop_enabled && Util.trim harness.loop_command <> ""
+
 let merge_agent_harness (harness : agent_harness) (agent : logical_agent) =
   {
     harness with
@@ -1005,11 +1007,13 @@ let static_codex_exec_command command =
 
 let codex_goal_stdin_supported_harness (harness : agent_harness) =
   let command = Util.trim harness.command in
+  let loop_command = Util.trim harness.loop_command in
   if command = "" then false
+  else if loop_command = "" then false
   else if not (codex_goal_stdin_probe_enabled ()) then
     static_codex_exec_command command
   else
-    let probe = "/goal Verify Codex goal stdin support.\n\nReturn ok.\n" in
+    let probe = Printf.sprintf "%s Verify Codex goal stdin support.\n\nReturn ok.\n" loop_command in
     let command = harness_probe_command harness in
     let shell_command =
       Printf.sprintf
@@ -1580,7 +1584,7 @@ let readiness_gaps config =
              if not (stage_goal_enabled stage) then None
              else
                match selected_agent_harness config (Some stage) with
-               | Some harness when harness.kind = "codex" -> Some harness
+               | Some harness when harness.kind = "codex" && harness_loop_handoff_enabled harness -> Some harness
                | _ -> None)
   in
   if codex_stage_goal_harnesses <> [] then (
@@ -1590,7 +1594,8 @@ let readiness_gaps config =
         "Add the following to ~/.codex/config.toml to enable Stage Goal Handoff:\n\n[features]\ngoals = true";
     if List.exists (fun harness -> not (codex_goal_stdin_supported_harness harness)) codex_stage_goal_harnesses then
       add "codex.goalStdin"
-        "Use a Codex command that accepts /goal from standard input before enabling Stage Goal Handoff.");
+        "Use a Codex command that accepts the configured Harness loop command from standard input before enabling \
+         Stage Goal Handoff.");
   if config.stage_agents.enabled then (
     if not (Sys.file_exists config.stage_agents.root && Sys.is_directory config.stage_agents.root) then
       add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";

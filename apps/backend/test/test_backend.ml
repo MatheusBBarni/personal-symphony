@@ -505,6 +505,42 @@ let test_disabled_stage_goal_does_not_require_codex_goals () =
           Alcotest.(check bool) "no stdin gap" false
             (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
 
+let test_stage_goal_blank_loop_does_not_require_codex_goals () =
+  let original_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match original_home with Some value -> Unix.putenv "HOME" value | None -> Unix.putenv "HOME" "")
+    (fun () ->
+      with_temp_dir "symphony-stage-goal-blank-loop-readiness-" (fun root ->
+          Unix.putenv "HOME" root;
+          Unix.putenv "GITHUB_TOKEN" "token";
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "codex exec", "loop": {"enabled": true, "command": ""}}
+  },
+  "agents": {
+    "engineer": {"harness": "codex"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "no codex goals gap" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goals") gaps);
+          Alcotest.(check bool) "no stdin gap" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
+
 let test_config_parses_stage_skill_load_and_readiness () =
   let original_codex_home = Sys.getenv_opt "CODEX_HOME" in
   Fun.protect
@@ -4301,7 +4337,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
       Alcotest.(check bool) "normal prompt still included" true (String.contains !captured_prompt '#'))
 
 let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000) ?(context_snapshot = true)
-    ?context_command root =
+    ?context_command ?(agent_harnesses_explicit = false) ?(agent_harnesses = []) ?(logical_agents = []) root =
   let agents_root = Filename.concat root "agents" in
   Unix.mkdir agents_root 0o755;
   Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
@@ -4337,9 +4373,9 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         read_timeout_ms = 100;
           stall_timeout_ms = 1000;
         };
-      agent_harnesses_explicit = false;
-      agent_harnesses = [];
-          logical_agents = [];
+      agent_harnesses_explicit;
+      agent_harnesses;
+          logical_agents;
           legacy_agent_harness_paths = [];
       server = { port = None };
     pull_request = Config.default_pull_request;
@@ -4369,6 +4405,109 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
           ];
       };
   }
+
+let test_harness ?(name = "codex") ?(kind = "codex") ?(command = "codex exec") ?(loop_enabled = true)
+    ?(loop_command = Config.default_codex_loop_command) () =
+  {
+    Config.name;
+    kind;
+    command;
+    model = Config.default_model;
+    reasoning_effort = Config.default_reasoning_effort;
+    turn_timeout_ms = 1000;
+    read_timeout_ms = 100;
+    stall_timeout_ms = 1000;
+    loop_enabled;
+    loop_command;
+  }
+
+let logical_agent_for_harness harness_name =
+  {
+    Config.name = "engineer";
+    harness = harness_name;
+    model = None;
+    reasoning_effort = None;
+    turn_timeout_ms = None;
+    read_timeout_ms = None;
+    stall_timeout_ms = None;
+  }
+
+let stage_goal_config_for_harness root harness =
+  stage_context_test_config ~goal_enabled:true ~context_snapshot:false ~agent_harnesses_explicit:true
+    ~agent_harnesses:[ harness ] ~logical_agents:[ logical_agent_for_harness harness.Config.name ] root
+
+let compose_stage_goal_prompt_for_harness root harness =
+  let config = stage_goal_config_for_harness root harness in
+  let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+  let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+  Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) config issue None "Normal #1" ~workspace
+    ~loop_start_branch:(Some "symphony/dogfood")
+
+let test_compose_prompt_uses_default_codex_loop_command () =
+  with_temp_dir "symphony-goal-default-loop-" (fun root ->
+      let config = stage_context_test_config ~goal_enabled:true ~context_snapshot:false root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let prompt =
+        Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) config issue None "Normal #1" ~workspace
+          ~loop_start_branch:(Some "symphony/dogfood")
+      in
+      Alcotest.(check bool) "default loop command first" true
+        (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" prompt);
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_compose_prompt_uses_custom_codex_loop_command () =
+  with_temp_dir "symphony-goal-custom-loop-" (fun root ->
+      let prompt =
+        compose_stage_goal_prompt_for_harness root
+          (test_harness ~loop_command:"/continue-goal" ())
+      in
+      Alcotest.(check bool) "custom loop command first" true
+        (String.starts_with ~prefix:"/continue-goal {\"kind\":\"Stage Goal Context\"" prompt);
+      Alcotest.(check bool) "default loop command absent" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_compose_prompt_skips_disabled_claude_loop () =
+  with_temp_dir "symphony-goal-claude-disabled-loop-" (fun root ->
+      let prompt =
+        compose_stage_goal_prompt_for_harness root
+          (test_harness ~name:"claude" ~kind:"claude" ~command:"claude -p --output-format stream-json"
+             ~loop_enabled:false ~loop_command:"" ())
+      in
+      Alcotest.(check bool) "no loop command" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_orchestrator_dispatch_skips_disabled_claude_loop () =
+  with_temp_dir "symphony-goal-claude-disabled-dispatch-" (fun root ->
+      let config =
+        stage_goal_config_for_harness root
+          (test_harness ~name:"claude" ~kind:"claude" ~command:"claude -p --output-format stream-json"
+             ~loop_enabled:false ~loop_command:"" ())
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "no loop handoff" false (contains_substring !captured_prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring !captured_prompt "Normal #1"))
+
+let test_compose_prompt_skips_blank_loop_command () =
+  with_temp_dir "symphony-goal-blank-loop-" (fun root ->
+      let prompt =
+        compose_stage_goal_prompt_for_harness root
+          (test_harness ~loop_enabled:true ~loop_command:"   " ())
+      in
+      Alcotest.(check bool) "no loop command" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
 
 let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
   { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
@@ -7215,6 +7354,8 @@ let () =
             test_config_parses_allowed_loop_start_branch_policy;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
           Alcotest.test_case "disabled stage goal does not require codex goals" `Quick test_disabled_stage_goal_does_not_require_codex_goals;
+          Alcotest.test_case "blank loop command does not require codex goals" `Quick
+            test_stage_goal_blank_loop_does_not_require_codex_goals;
           Alcotest.test_case "parses stage skill load and readiness" `Quick test_config_parses_stage_skill_load_and_readiness;
           Alcotest.test_case "stage goal requires codex exec stdin support" `Quick test_stage_goal_requires_codex_exec_stdin_support;
           Alcotest.test_case "stage goal live stdin probe" `Quick test_stage_goal_live_stdin_probe;
@@ -7293,6 +7434,12 @@ let () =
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
+          Alcotest.test_case "uses default Codex loop command" `Quick test_compose_prompt_uses_default_codex_loop_command;
+          Alcotest.test_case "uses custom Codex loop command" `Quick test_compose_prompt_uses_custom_codex_loop_command;
+          Alcotest.test_case "skips disabled Claude loop" `Quick test_compose_prompt_skips_disabled_claude_loop;
+          Alcotest.test_case "dispatch skips disabled Claude loop" `Quick
+            test_orchestrator_dispatch_skips_disabled_claude_loop;
+          Alcotest.test_case "skips blank loop command" `Quick test_compose_prompt_skips_blank_loop_command;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick
             test_orchestrator_runs_stage_context_command_before_launch;
