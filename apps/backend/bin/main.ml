@@ -186,7 +186,7 @@ let render_terminal_console config state =
   print_section "Activity";
   Printf.printf "  %s %d running, %d retrying\n%!" (dim "Agents") (List.length state.Runtime_state.running)
     (List.length state.retrying);
-  Printf.printf "  %s %d total\n%!" (dim "Tokens") state.codex_totals.total_tokens;
+  Printf.printf "  %s %d total\n%!" (dim "Tokens") state.usage_totals.total_tokens;
   (match state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->

@@ -57,6 +57,14 @@ let contains_substring text substring =
   in
   loop 0
 
+let rec find_repo_root dir =
+  if Sys.file_exists (Filename.concat dir "package.json") && Sys.file_exists (Filename.concat dir "CONTEXT.md") then dir
+  else
+    let parent = Filename.dirname dir in
+    if parent = dir then Alcotest.fail "could not locate repository root" else find_repo_root parent
+
+let repository_file path = Filename.concat (find_repo_root (Sys.getcwd ())) path
+
 let substring_index text substring =
   let text_len = String.length text in
   let substring_len = String.length substring in
@@ -775,6 +783,42 @@ let test_disabled_stage_goal_does_not_require_codex_goals () =
           Alcotest.(check bool) "no stdin gap" false
             (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
 
+let test_stage_goal_blank_loop_does_not_require_codex_goals () =
+  let original_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match original_home with Some value -> Unix.putenv "HOME" value | None -> Unix.putenv "HOME" "")
+    (fun () ->
+      with_temp_dir "symphony-stage-goal-blank-loop-readiness-" (fun root ->
+          Unix.putenv "HOME" root;
+          Unix.putenv "GITHUB_TOKEN" "token";
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "codex exec", "loop": {"enabled": true, "command": ""}}
+  },
+  "agents": {
+    "engineer": {"harness": "codex"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let gaps = Config.readiness_gaps config in
+          Alcotest.(check bool) "no codex goals gap" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goals") gaps);
+          Alcotest.(check bool) "no stdin gap" false
+            (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
+
 let test_config_parses_stage_skill_load_and_readiness () =
   let original_codex_home = Sys.getenv_opt "CODEX_HOME" in
   Fun.protect
@@ -1115,6 +1159,8 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
             };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1158,6 +1204,8 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
           turn_timeout_ms = 1000;
           read_timeout_ms = 100;
           stall_timeout_ms = 1000;
+          loop_enabled = false;
+          loop_command = "";
         }
       in
       let config =
@@ -1187,6 +1235,19 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
           codex;
           agent_harnesses_explicit = true;
           agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
+          logical_agents =
+            [
+              {
+                Config.name = "engineer";
+                harness = "pi";
+                model = None;
+                reasoning_effort = None;
+                turn_timeout_ms = None;
+                read_timeout_ms = None;
+                stall_timeout_ms = None;
+              };
+            ];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1200,7 +1261,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
-                    harness = Some "pi";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     context_command = None;
@@ -1254,6 +1315,8 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
           turn_timeout_ms = 1000;
           read_timeout_ms = 100;
           stall_timeout_ms = 1000;
+          loop_enabled = false;
+          loop_command = "";
         }
       in
       let config =
@@ -1283,6 +1346,19 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
           codex;
           agent_harnesses_explicit = true;
           agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
+          logical_agents =
+            [
+              {
+                Config.name = "engineer";
+                harness = "pi";
+                model = None;
+                reasoning_effort = None;
+                turn_timeout_ms = None;
+                read_timeout_ms = None;
+                stall_timeout_ms = None;
+              };
+            ];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -1296,7 +1372,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
                   {
                     Config.states = [ "Todo" ];
                     agent = "engineer";
-                    harness = Some "pi";
+                    harness = None;
                     max_concurrent_agents = None;
                     context_snapshot = None;
                     context_command = None;
@@ -1407,7 +1483,7 @@ let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
   }
 }|};
       let config = Config.from_settings_file ~workspace_root:root settings in
-      Alcotest.(check bool) "explicit harnesses" true config.agent_harnesses_explicit;
+      Alcotest.(check bool) "legacy Harness settings are migration input" false config.agent_harnesses_explicit;
       Alcotest.(check string) "agents codex wins" "gpt-5.4" config.codex.model;
       Alcotest.(check string) "legacy command ignored" "codex exec --model <model> --reasoning <reasoning>"
         config.codex.command;
@@ -1424,10 +1500,266 @@ let test_config_parses_agent_harnesses_and_legacy_codex_precedence () =
       | [ stage ] -> (
           Alcotest.(check string) "stage agent prompt" "engineer" stage.agent;
           Alcotest.(check (option string)) "stage harness" (Some "pi") stage.harness;
-          match Config.selected_agent_harness config (Some stage) with
-          | Some harness -> Alcotest.(check string) "stage selects pi" "pi" harness.name
-          | None -> Alcotest.fail "expected selected harness")
+          (match Config.selected_agent_harness config (Some stage) with
+          | Some harness -> Alcotest.(check string) "legacy selected harness falls back to codex" "codex" harness.name
+          | None -> Alcotest.fail "expected selected harness");
+          let requirements = Config.readiness_gaps config |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement) in
+          Alcotest.(check bool) "legacy agents codex gap" true (List.exists (( = ) "agents.codex.kind") requirements);
+          Alcotest.(check bool) "legacy agents pi gap" true (List.exists (( = ) "agents.pi.kind") requirements);
+          Alcotest.(check bool) "stage harness migration gap" true
+            (List.exists (( = ) "stageAgents.engineer.harness") requirements))
       | _ -> Alcotest.fail "expected one stage")
+
+let test_config_parses_harnesses_and_logical_agents () =
+  with_temp_dir "symphony-runtime-settings-schema-" (fun root ->
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {
+      "kind": "codex",
+      "command": "codex exec",
+      "loop": {"enabled": true, "command": "/goal"}
+    },
+    "claude": {
+      "kind": "claude",
+      "command": "claude -p --output-format stream-json",
+      "loop": {"enabled": false, "command": ""}
+    },
+    "pi": {
+      "kind": "pi",
+      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "high",
+      "loop": {"enabled": false, "command": ""}
+    }
+  },
+  "agents": {
+    "planner": {
+      "harness": "codex",
+      "model": "gpt-5.5",
+      "reasoningEffort": "medium",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "reviewer": {"harness": "claude"}
+  },
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let harness name =
+        match Config.harness_named name config.agent_harnesses with
+        | Some harness -> harness
+        | None -> Alcotest.fail ("expected Harness " ^ name)
+      in
+      let codex = harness "codex" in
+      Alcotest.(check string) "codex kind" "codex" codex.kind;
+      Alcotest.(check bool) "codex loop enabled" true codex.loop_enabled;
+      Alcotest.(check string) "codex loop command" "/goal" codex.loop_command;
+      let claude = harness "claude" in
+      Alcotest.(check string) "claude kind" "claude" claude.kind;
+      Alcotest.(check string) "claude command" "claude -p --output-format stream-json" claude.command;
+      let pi = harness "pi" in
+      Alcotest.(check string) "pi kind" "pi" pi.kind;
+      Alcotest.(check string) "pi command" Config.default_pi_command pi.command;
+      let logical_agent name =
+        match List.find_opt (fun (agent : Config.logical_agent) -> agent.name = name) config.logical_agents with
+        | Some agent -> agent
+        | None -> Alcotest.fail ("expected logical agent " ^ name)
+      in
+      let planner = logical_agent "planner" in
+      Alcotest.(check string) "planner Harness" "codex" planner.harness;
+      Alcotest.(check (option string)) "planner model" (Some "gpt-5.5") planner.model;
+      Alcotest.(check (option string)) "planner reasoning" (Some "medium") planner.reasoning_effort;
+      Alcotest.(check (option int)) "planner turn timeout" (Some 3600000) planner.turn_timeout_ms;
+      Alcotest.(check (option int)) "planner read timeout" (Some 5000) planner.read_timeout_ms;
+      Alcotest.(check (option int)) "planner stall timeout" (Some 300000) planner.stall_timeout_ms;
+      let reviewer = logical_agent "reviewer" in
+      Alcotest.(check string) "reviewer Harness" "claude" reviewer.harness;
+      Alcotest.(check (option string)) "reviewer model absent" None reviewer.model;
+      Alcotest.(check (option string)) "reviewer reasoning absent" None reviewer.reasoning_effort;
+      Alcotest.(check (option int)) "reviewer turn timeout absent" None reviewer.turn_timeout_ms)
+
+let test_config_loads_mixed_harness_settings_without_dispatch () =
+  with_temp_dir "symphony-mixed-harness-settings-" (fun root ->
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "codex exec", "loop": {"enabled": true, "command": "/goal"}},
+    "claude": {"kind": "claude", "command": "claude -p --output-format stream-json"},
+    "pi": {"kind": "pi", "command": "pi --model <model> --thinking <reasoning> --print --no-session"}
+  },
+  "agents": {
+    "planner": {"harness": "codex", "model": "gpt-5.5"},
+    "engineer": {"harness": "claude", "model": "opus-4.7"},
+    "reviewer": {"harness": "pi", "model": "openai-codex/gpt-5.5"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Backlog"], "agent": "planner"},
+      {"states": ["Todo"], "agent": "engineer"},
+      {"states": ["In review"], "agent": "reviewer"}
+    ]
+  }
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check int) "Harness definitions" 3 (List.length config.agent_harnesses);
+      Alcotest.(check int) "logical agents" 3 (List.length config.logical_agents);
+      Alcotest.(check int) "stage routes" 3 (List.length config.stage_agents.stages))
+
+let test_stage_agent_resolves_through_logical_agent_and_merges_overrides () =
+  with_temp_dir "symphony-logical-agent-resolution-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "claude": {
+      "kind": "claude",
+      "command": "claude -p --output-format stream-json",
+      "model": "sonnet-default",
+      "reasoningEffort": "medium",
+      "turnTimeoutMs": 111,
+      "readTimeoutMs": 222,
+      "stallTimeoutMs": 333
+    }
+  },
+  "agents": {
+    "engineer": {"harness": "claude", "model": "opus-override"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          match config.stage_agents.stages with
+          | [ stage ] -> (
+              match Config.selected_agent_harness config (Some stage) with
+              | Some harness ->
+                  Alcotest.(check string) "stage agent selects Harness through logical agent" "claude" harness.name;
+                  Alcotest.(check string) "Harness kind" "claude" harness.kind;
+                  Alcotest.(check string) "agent model override" "opus-override" harness.model;
+                  Alcotest.(check string) "Harness reasoning inherited" "medium" harness.reasoning_effort;
+                  Alcotest.(check int) "Harness turn timeout inherited" 111 harness.turn_timeout_ms;
+                  Alcotest.(check int) "Harness read timeout inherited" 222 harness.read_timeout_ms;
+                  Alcotest.(check int) "Harness stall timeout inherited" 333 harness.stall_timeout_ms
+              | None -> Alcotest.fail "expected selected Harness")
+          | _ -> Alcotest.fail "expected one stage"))
+
+let test_logical_agent_readiness_and_migration_gaps () =
+  with_temp_dir "symphony-logical-agent-readiness-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          let requirements content =
+            Util.write_file settings content;
+            Config.from_settings_file ~workspace_root:root settings
+            |> Config.readiness_gaps
+            |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+          in
+          let missing_agent =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "unknown logical agent gap" true (List.exists (( = ) "agents.engineer") missing_agent);
+          let missing_harness =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "agents": {"engineer": {"harness": "claude"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "unknown referenced Harness gap" true
+            (List.exists (( = ) "harnesses.claude") missing_harness);
+          let stage_harness =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "agents": {"engineer": {"harness": "codex"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "stage-level Harness migration gap" true
+            (List.exists (( = ) "stageAgents.engineer.harness") stage_harness);
+          let legacy_agents =
+            requirements
+              {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {"codex": {"kind": "codex", "command": "codex exec"}},
+  "agents": {
+    "engineer": {"harness": "codex"},
+    "pi": {"kind": "pi", "command": "pi --print"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+          in
+          Alcotest.(check bool) "legacy harness-shaped agents gap" true
+            (List.exists (( = ) "agents.pi.kind") legacy_agents)))
+
+let test_config_loads_legacy_top_level_codex_settings () =
+  with_temp_dir "symphony-legacy-codex-settings-" (fun root ->
+      Unix.putenv "GITHUB_TOKEN" "token";
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "codex": {
+    "command": "codex app-server",
+    "model": "legacy-model",
+    "reasoningEffort": "low",
+    "turnTimeoutMs": 123,
+    "readTimeoutMs": 45,
+    "stallTimeoutMs": 678
+  },
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "legacy command normalized" Config.default_codex_command config.codex.command;
+      Alcotest.(check string) "legacy model" "legacy-model" config.codex.model;
+      Alcotest.(check string) "legacy reasoning" "low" config.codex.reasoning_effort;
+      Alcotest.(check int) "legacy turn timeout" 123 config.codex.turn_timeout_ms)
 
 let test_harness_command_rendering () =
   let pi =
@@ -1440,11 +1772,30 @@ let test_harness_command_rendering () =
       turn_timeout_ms = 1000;
       read_timeout_ms = 100;
       stall_timeout_ms = 1000;
+      loop_enabled = false;
+      loop_command = "";
     }
   in
   Alcotest.(check string) "pi tokens"
     "pi --model 'openai/gpt-5.5' --thinking 'medium' --print --no-session"
     (Orchestrator.render_harness_command pi);
+  let claude =
+    {
+      Config.name = "claude";
+      kind = "claude";
+      command = "claude --model <model> --reasoning <reasoning> -p --output-format stream-json";
+      model = "claude-opus-4-7";
+      reasoning_effort = "xhigh";
+      turn_timeout_ms = 1000;
+      read_timeout_ms = 100;
+      stall_timeout_ms = 1000;
+      loop_enabled = false;
+      loop_command = "";
+    }
+  in
+  Alcotest.(check string) "claude tokens"
+    "claude --model 'claude-opus-4-7' --reasoning 'xhigh' -p --output-format stream-json"
+    (Orchestrator.render_harness_command claude);
   let codex =
     {
       Config.name = "codex";
@@ -1455,10 +1806,142 @@ let test_harness_command_rendering () =
       turn_timeout_ms = 1000;
       read_timeout_ms = 100;
       stall_timeout_ms = 1000;
+      loop_enabled = true;
+      loop_command = Config.default_codex_loop_command;
     }
   in
   Alcotest.(check string) "codex injection" "codex -m 'gpt-5.5' -c 'model_reasoning_effort=\"high\"' exec"
     (Orchestrator.render_harness_command codex)
+
+let test_claude_harness_readiness_checks_selected_install_and_auth () =
+  with_temp_dir "symphony-claude-readiness-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      let claude_config_dir = Filename.concat root "claude-config" in
+      Util.mkdir_p agents_root;
+      Util.mkdir_p claude_config_dir;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      let write_settings command =
+        Util.write_file settings
+          (Printf.sprintf
+             {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "sh -c 'cat >/dev/null'"},
+    "claude": {
+      "kind": "claude",
+      "command": %s,
+      "model": "claude-opus-4-7",
+      "reasoningEffort": "xhigh"
+    }
+  },
+  "agents": {
+    "engineer": {"harness": "claude"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+             (Yojson.Safe.to_string (`String command)))
+      in
+      let requirements () =
+        Config.from_settings_file ~workspace_root:root settings
+        |> Config.readiness_gaps
+        |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+      in
+      with_env
+        [
+          ("GITHUB_TOKEN", "token");
+          ("HOME", root);
+          ("CLAUDE_CONFIG_DIR", claude_config_dir);
+          ("ANTHROPIC_AUTH_TOKEN", "");
+          ("ANTHROPIC_API_KEY", "");
+          ("CLAUDE_CODE_OAUTH_TOKEN", "");
+          ("CLAUDE_CODE_USE_BEDROCK", "");
+          ("CLAUDE_CODE_USE_VERTEX", "");
+          ("CLAUDE_CODE_USE_FOUNDRY", "");
+        ]
+        (fun () ->
+          write_settings "/definitely/missing/claude -p --output-format stream-json";
+          let missing_requirements = requirements () in
+          Alcotest.(check bool) "claude kind accepted" false
+            (List.exists (( = ) "harnesses.claude.kind") missing_requirements);
+          Alcotest.(check bool) "missing claude executable" true
+            (List.exists (( = ) "harnesses.claude.install") missing_requirements);
+          Alcotest.(check bool) "missing claude auth" true
+            (List.exists (( = ) "harnesses.claude.auth") missing_requirements);
+          write_settings "sh -c 'cat >/dev/null'";
+          let auth_requirements = requirements () in
+          Alcotest.(check bool) "available executable avoids install gap" false
+            (List.exists (( = ) "harnesses.claude.install") auth_requirements);
+          Alcotest.(check bool) "still requires auth" true
+            (List.exists (( = ) "harnesses.claude.auth") auth_requirements);
+          let unrelated_settings = Filename.concat root "claude-unrelated-settings.json" in
+          Util.write_file unrelated_settings {|{"permissions":{"allow":["Bash(ls)"]}}|};
+          write_settings ("sh --settings " ^ unrelated_settings);
+          let unrelated_settings_requirements = requirements () in
+          Alcotest.(check bool) "unrelated settings still require auth" true
+            (List.exists (( = ) "harnesses.claude.auth") unrelated_settings_requirements);
+          let helper_settings = Filename.concat root "claude-helper-settings.json" in
+          Util.write_file helper_settings {|{"apiKeyHelper":"printenv ANTHROPIC_API_KEY"}|};
+          write_settings ("sh --settings=" ^ helper_settings);
+          Alcotest.(check bool) "settings apiKeyHelper avoids gap" false
+            (List.exists (( = ) "harnesses.claude.auth") (requirements ()));
+          Util.write_file (Filename.concat claude_config_dir ".credentials.json") {|{"claudeAiOauth":{"accessToken":"configured"}}|};
+          Alcotest.(check bool) "configured auth avoids gap" false
+            (List.exists (( = ) "harnesses.claude.auth") (requirements ()))))
+
+let test_claude_harness_readiness_ignores_unselected_harnesses () =
+  with_temp_dir "symphony-claude-optional-readiness-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      let claude_config_dir = Filename.concat root "claude-config" in
+      Util.mkdir_p agents_root;
+      Util.mkdir_p claude_config_dir;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "sh -c 'cat >/dev/null'"},
+    "claude": {
+      "kind": "claude",
+      "command": "/definitely/missing/claude -p --output-format stream-json",
+      "model": "claude-opus-4-7",
+      "reasoningEffort": "xhigh"
+    }
+  },
+  "agents": {"engineer": {"harness": "codex"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+      with_env
+        [
+          ("GITHUB_TOKEN", "token");
+          ("HOME", root);
+          ("CLAUDE_CONFIG_DIR", claude_config_dir);
+          ("ANTHROPIC_AUTH_TOKEN", "");
+          ("ANTHROPIC_API_KEY", "");
+          ("CLAUDE_CODE_OAUTH_TOKEN", "");
+          ("CLAUDE_CODE_USE_BEDROCK", "");
+          ("CLAUDE_CODE_USE_VERTEX", "");
+          ("CLAUDE_CODE_USE_FOUNDRY", "");
+        ]
+        (fun () ->
+          let requirements =
+            Config.from_settings_file ~workspace_root:root settings
+            |> Config.readiness_gaps
+            |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+          in
+          Alcotest.(check bool) "unselected claude install ignored" false
+            (List.exists (( = ) "harnesses.claude.install") requirements);
+          Alcotest.(check bool) "unselected claude auth ignored" false
+            (List.exists (( = ) "harnesses.claude.auth") requirements)))
 
 let test_agent_harness_readiness_gaps () =
   let original_home = Sys.getenv_opt "HOME" in
@@ -1476,10 +1959,14 @@ let test_agent_harness_readiness_gaps () =
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {"kind": "pi", "command": "pi --print", "model": "openai/gpt-5.5", "reasoningEffort": "medium"},
     "bad": {"kind": "unknown", "command": "", "model": "", "reasoningEffort": ""}
+  },
+  "agents": {
+    "pi": {"harness": "pi"},
+    "bad": {"harness": "bad"}
   },
   "stageAgents": {
     "enabled": true,
@@ -1493,13 +1980,12 @@ let test_agent_harness_readiness_gaps () =
 }|};
           let config = Config.from_settings_file ~workspace_root:root settings in
           let requirements = Config.readiness_gaps config |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement) in
-          Alcotest.(check bool) "invalid kind" true (List.exists (( = ) "agents.bad.kind") requirements);
-          Alcotest.(check bool) "blank command" true (List.exists (( = ) "agents.bad.command") requirements);
-          Alcotest.(check bool) "blank model" true (List.exists (( = ) "agents.bad.model") requirements);
-          Alcotest.(check bool) "blank reasoning" true (List.exists (( = ) "agents.bad.reasoningEffort") requirements);
-          Alcotest.(check bool) "missing harness" true
-            (List.exists (( = ) "stageAgents.missing.harness") requirements);
-          Alcotest.(check bool) "pi goal blocked" true (List.exists (( = ) "stageAgents.pi.goal") requirements);
+          Alcotest.(check bool) "invalid kind" true (List.exists (( = ) "harnesses.bad.kind") requirements);
+          Alcotest.(check bool) "blank command" true (List.exists (( = ) "harnesses.bad.command") requirements);
+          Alcotest.(check bool) "blank model" true (List.exists (( = ) "harnesses.bad.model") requirements);
+          Alcotest.(check bool) "blank reasoning" true (List.exists (( = ) "harnesses.bad.reasoningEffort") requirements);
+          Alcotest.(check bool) "missing logical agent" true
+            (List.exists (( = ) "agents.missing") requirements);
           Alcotest.(check bool) "pi goal does not require codex goals" false
             (List.exists (( = ) "codex.goals") requirements)))
 
@@ -1515,7 +2001,7 @@ let test_pi_harness_readiness_checks_install_and_auth () =
           (Printf.sprintf
              {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {
       "kind": "pi",
@@ -1524,10 +2010,13 @@ let test_pi_harness_readiness_checks_install_and_auth () =
       "reasoningEffort": "medium"
     }
   },
+  "agents": {
+    "engineer": {"harness": "pi"}
+  },
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
-    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
   }
 }|}
              (Yojson.Safe.to_string (`String command)))
@@ -1540,14 +2029,14 @@ let test_pi_harness_readiness_checks_install_and_auth () =
       with_env [ ("GITHUB_TOKEN", "token"); ("PI_CODING_AGENT_DIR", agent_dir) ] (fun () ->
           write_settings "/definitely/missing/pi --print";
           Alcotest.(check bool) "missing pi executable" true
-            (List.exists (( = ) "agents.pi.install") (requirements ()));
+            (List.exists (( = ) "harnesses.pi.install") (requirements ()));
           write_settings "sh -c 'cat >/dev/null'";
           Alcotest.(check bool) "missing pi auth" true
-            (List.exists (( = ) "agents.pi.auth") (requirements ()));
+            (List.exists (( = ) "harnesses.pi.auth") (requirements ()));
           Util.mkdir_p agent_dir;
           Util.write_file (Filename.concat agent_dir "auth.json") {|{"openai-codex":{"access":true}}|};
           Alcotest.(check bool) "configured pi auth" false
-            (List.exists (( = ) "agents.pi.auth") (requirements ()))))
+            (List.exists (( = ) "harnesses.pi.auth") (requirements ()))))
 
 let test_pi_harness_readiness_ignores_unselected_harnesses () =
   with_temp_dir "symphony-pi-optional-readiness-" (fun root ->
@@ -1563,8 +2052,8 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
       in
       let has requirement requirements = List.exists (( = ) requirement) requirements in
       let check_no_pi_gaps label requirements =
-        Alcotest.(check bool) (label ^ " install") false (has "agents.pi.install" requirements);
-        Alcotest.(check bool) (label ^ " auth") false (has "agents.pi.auth" requirements)
+        Alcotest.(check bool) (label ^ " install") false (has "harnesses.pi.install" requirements);
+        Alcotest.(check bool) (label ^ " auth") false (has "harnesses.pi.auth" requirements)
       in
       with_env [ ("GITHUB_TOKEN", "token"); ("PI_CODING_AGENT_DIR", agent_dir) ] (fun () ->
           Util.write_file settings
@@ -1581,7 +2070,7 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {
       "kind": "pi",
@@ -1590,17 +2079,18 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
       "reasoningEffort": "medium"
     }
   },
+  "agents": {"engineer": {"harness": "codex"}},
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
-    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "codex"}]
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
   }
 }|};
           check_no_pi_gaps "unused PI Harness" (requirements ());
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "agents": {
+  "harnesses": {
     "codex": {"kind": "codex", "command": "codex exec"},
     "pi": {
       "kind": "pi",
@@ -1615,8 +2105,8 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
-  "codex": {"command": ""},
-  "agents": {
+  "harnesses": {
+    "codex": {"kind": "codex", "command": ""},
     "pi": {
       "kind": "pi",
       "command": "/definitely/missing/pi --print",
@@ -1629,13 +2119,13 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
           let disabled_stage_requirements = requirements () in
           check_no_pi_gaps "disabled Stage Agent mappings with invalid fallback" disabled_stage_requirements;
           Alcotest.(check bool) "disabled Stage Agent mappings validate fallback harness" true
-            (has "agents.codex.command" disabled_stage_requirements);
+            (has "harnesses.codex.command" disabled_stage_requirements);
           Util.write_file settings
             {|{
   "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
   "project": {"activeStates": ["Todo"]},
   "codex": {"command": ""},
-  "agents": {
+  "harnesses": {
     "pi": {
       "kind": "pi",
       "command": "sh -c 'cat >/dev/null' --api-key=$PI_TEST_API_KEY",
@@ -1643,16 +2133,17 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
       "reasoningEffort": "medium"
     }
   },
+  "agents": {"engineer": {"harness": "pi"}},
   "stageAgents": {
     "enabled": true,
     "root": ".symphony/agents",
-    "stages": [{"states": ["Todo"], "agent": "engineer", "harness": "pi"}]
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
   }
 }|};
           let pi_only_requirements = requirements () in
           check_no_pi_gaps "PI-only Runtime Settings" pi_only_requirements;
           Alcotest.(check bool) "PI-only does not require legacy Codex command" false
-            (has "agents.codex.command" pi_only_requirements)))
+            (has "harnesses.codex.command" pi_only_requirements)))
 
 let test_project_status_order_uses_transition_flow () =
   let tracker =
@@ -1692,6 +2183,8 @@ let test_project_status_order_uses_transition_flow () =
         };
       agent_harnesses_explicit = false;
       agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
       server = { port = None };
       pull_request = Config.default_pull_request;
       protected_paths = Config.default_protected_paths;
@@ -1712,13 +2205,131 @@ let test_bootstrap_idempotency_preserves_user_files () =
       Alcotest.(check bool) "planner agent created" true (Sys.file_exists (Filename.concat home.agents_dir "planner.md"));
       Alcotest.(check bool) "engineer agent created" true (Sys.file_exists (Filename.concat home.agents_dir "engineer.md"));
       Alcotest.(check bool) "reviewer agent created" true (Sys.file_exists (Filename.concat home.agents_dir "reviewer.md"));
+      Util.write_file home.settings_path {|{"custom": true}|};
       Util.write_file home.prompt_path "custom prompt {{ issue.title }}";
+      Util.write_file (Filename.concat home.agents_dir "planner.md") "custom planner";
+      Util.write_file (Filename.concat home.agents_dir "engineer.md") "custom engineer";
+      Util.write_file (Filename.concat home.agents_dir "reviewer.md") "custom reviewer";
       let _, second = Runtime_home.bootstrap root in
+      Alcotest.(check string) "settings preserved" {|{"custom": true}|} (Util.read_file home.settings_path);
       Alcotest.(check string) "prompt preserved" "custom prompt {{ issue.title }}" (Util.read_file home.prompt_path);
+      Alcotest.(check string) "planner agent preserved" "custom planner"
+        (Util.read_file (Filename.concat home.agents_dir "planner.md"));
+      Alcotest.(check string) "engineer agent preserved" "custom engineer"
+        (Util.read_file (Filename.concat home.agents_dir "engineer.md"));
+      Alcotest.(check string) "reviewer agent preserved" "custom reviewer"
+        (Util.read_file (Filename.concat home.agents_dir "reviewer.md"));
       Alcotest.(check bool) "created files on first run" true
         (List.exists (fun item -> item.Runtime_home.status = Runtime_home.Created) first);
       Alcotest.(check bool) "skipped files on second run" true
-        (List.exists (fun item -> item.Runtime_home.status = Runtime_home.Skipped_existing) second))
+        (List.exists (fun item -> item.Runtime_home.status = Runtime_home.Skipped_existing) second);
+      Alcotest.(check bool) "settings skipped on second run" true
+        (List.exists
+           (fun item ->
+             item.Runtime_home.path = home.settings_path && item.Runtime_home.status = Runtime_home.Skipped_existing)
+           second))
+
+let test_bootstrap_default_runtime_contract_shape () =
+  with_temp_dir "symphony-bootstrap-default-contract-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let settings = Util.read_file home.settings_path in
+      let json = Yojson.Safe.from_string settings in
+      let member path =
+        List.fold_left (fun node key -> Yojson.Safe.Util.member key node) json path
+      in
+      let string path = Yojson.Safe.Util.to_string (member path) in
+      let bool path = Yojson.Safe.Util.to_bool (member path) in
+      Alcotest.(check bool) "legacy top-level codex absent" true (member [ "codex" ] = `Null);
+      Alcotest.(check string) "codex loop command" "/goal" (string [ "harnesses"; "codex"; "loop"; "command" ]);
+      Alcotest.(check bool) "codex loop enabled" true (bool [ "harnesses"; "codex"; "loop"; "enabled" ]);
+      Alcotest.(check string) "claude kind" "claude" (string [ "harnesses"; "claude"; "kind" ]);
+      Alcotest.(check string) "claude command" "claude -p --model <model> --output-format stream-json"
+        (string [ "harnesses"; "claude"; "command" ]);
+      Alcotest.(check bool) "claude loop disabled" false (bool [ "harnesses"; "claude"; "loop"; "enabled" ]);
+      Alcotest.(check string) "pi kind" "pi" (string [ "harnesses"; "pi"; "kind" ]);
+      Alcotest.(check string) "planner Harness" "codex" (string [ "agents"; "planner"; "harness" ]);
+      Alcotest.(check string) "engineer Harness" "claude" (string [ "agents"; "engineer"; "harness" ]);
+      Alcotest.(check string) "reviewer Harness" "pi" (string [ "agents"; "reviewer"; "harness" ]);
+      let stages = Yojson.Safe.Util.to_list (member [ "stageAgents"; "stages" ]) in
+      List.iteri
+        (fun index stage ->
+          match Yojson.Safe.Util.member "harness" stage with
+          | `Null -> ()
+          | _ -> Alcotest.fail (Printf.sprintf "stage %d must route by agent without steady-state Harness" index))
+        stages;
+      List.iter
+        (fun secret_marker ->
+          Alcotest.(check bool) ("no secret value marker " ^ secret_marker) false
+            (contains_substring settings secret_marker))
+        [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ];
+      let config = Config.from_settings_file ~workspace_root:root home.settings_path in
+      Alcotest.(check int) "bootstrapped Harness definitions load" 3 (List.length config.agent_harnesses);
+      Alcotest.(check int) "bootstrapped logical agents load" 3 (List.length config.logical_agents))
+
+let test_runtime_contract_docs_use_current_harness_examples () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  List.iter
+    (fun text ->
+      Alcotest.(check bool) "documents harnesses section" true (contains_substring text "\"harnesses\": {");
+      Alcotest.(check bool) "documents logical agents section" true (contains_substring text "\"agents\": {"))
+    [ readme ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
+    [
+      "\"planner\": {";
+      "\"harness\": \"codex\"";
+      "\"engineer\": {";
+      "\"harness\": \"claude\"";
+      "\"reviewer\": {";
+      "\"harness\": \"pi\"";
+      "\"command\": \"claude -p --model <model> --output-format stream-json\"";
+      "\"command\": \"/goal\"";
+    ];
+  List.iter
+    (fun obsolete ->
+      Alcotest.(check bool) ("README omits legacy example " ^ obsolete) false (contains_substring readme obsolete))
+    [
+      "Define an `agents.pi` harness";
+      "\"agent\": \"engineer\",\n        \"harness\": \"pi\"";
+      "each configured Stage Agent should select an existing Agent\nHarness with `harness`";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (contains_substring context expected))
+    [
+      "**Logical Agent**";
+      "**Claude Harness**";
+      "**Harness Loop**";
+      "legacy `stageAgents.stages[].harness` is a migration **Readiness Gap**";
+      "Legacy harness-shaped Runtime Settings under `agents.*`";
+    ]
+
+let test_runtime_contract_docs_are_secret_free () =
+  let combined = Util.read_file (repository_file "README.md") ^ Util.read_file (repository_file "CONTEXT.md") in
+  List.iter
+    (fun secret_marker ->
+      Alcotest.(check bool) ("no secret value marker " ^ secret_marker) false
+        (contains_substring combined secret_marker))
+    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ]
+
+let test_project_adr_documents_migration_and_loop_semantics () =
+  let adr = Util.read_file (repository_file "docs/adr/0021-agent-harness-runtime-settings.md") in
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
+    [
+      "Accepted, amended 2026-05-08";
+      "Runtime Settings define named Agent Harness definitions under `harnesses`";
+      "Runtime Settings define logical agents under `agents`";
+      "harness-shaped `agents.*` entries";
+      "blocking Readiness Gaps";
+      "stageAgents.stages[].harness";
+      "loop.enabled";
+      "loop.command";
+      "Bootstrap defaults enable Codex loop with `/goal` and disable Claude and PI loops";
+    ]
 
 let test_root_validation () =
   with_temp_dir "symphony-nongit-" (fun nongit ->
@@ -1991,7 +2602,7 @@ let test_cli_help_argv_normalization () =
 let test_cli_help_documents_runtime_invocation_overrides () =
   let code, stdout, stderr =
     capture_process_output (fun () ->
-        Cli_command.eval ~version:"test-version" (cli_test_callbacks ()) ~argv:[| "symphony"; "--help" |])
+        Cli_command.eval ~version:"test-version" (cli_test_callbacks ()) ~argv:[| "symphony"; "--help=plain" |])
   in
   Alcotest.(check int) "help exit code" 0 code;
   Alcotest.(check string) "help stderr" "" stderr;
@@ -2280,12 +2891,15 @@ let test_runtime_state_exposes_running_issue_details () =
   let state =
     {
       (Runtime_state.empty ()) with
+      usage_totals = { input_tokens = 7; output_tokens = 11; total_tokens = 18 };
       issues = [ issue ];
       running =
         [
           {
             Runtime_state.issue;
             stage_agent = None;
+            harness_name = Some "codex";
+            harness_kind = Some "codex";
             stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
@@ -2300,8 +2914,15 @@ let test_runtime_state_exposes_running_issue_details () =
     }
   in
   let open Yojson.Safe.Util in
-  let row = Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd in
+  let json = Runtime_state.to_yojson state in
+  let has_member name = function `Assoc fields -> List.mem_assoc name fields | _ -> false in
+  Alcotest.(check bool) "usage totals present" true (has_member "usage_totals" json);
+  Alcotest.(check bool) "codex totals absent" false (has_member "codex_totals" json);
+  Alcotest.(check int) "usage total tokens" 18 (json |> member "usage_totals" |> member "total_tokens" |> to_int);
+  let row = json |> member "running" |> to_list |> List.hd in
   Alcotest.(check string) "identifier" "#1" (row |> member "issue_identifier" |> to_string);
+  Alcotest.(check string) "harness name" "codex" (row |> member "harness_name" |> to_string);
+  Alcotest.(check string) "harness kind" "codex" (row |> member "harness_kind" |> to_string);
   Alcotest.(check string) "state" "In progress" (row |> member "state" |> to_string);
   Alcotest.(check string) "title" "Add dashboard issue list" (row |> member "title" |> to_string);
   Alcotest.(check string) "description" "Show the status, title, and a concise description for each running issue."
@@ -2381,6 +3002,8 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2430,6 +3053,8 @@ let test_runtime_state_exposes_goal_usage_when_available () =
           {
             Runtime_state.issue;
             stage_agent = None;
+            harness_name = None;
+            harness_kind = None;
             stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
@@ -2487,6 +3112,8 @@ let test_runtime_state_exposes_context_status () =
     {
       Runtime_state.issue;
       stage_agent = Some "engineer";
+      harness_name = None;
+      harness_kind = None;
       stage_states = [ "Todo" ];
       session_id = Some ("pid:" ^ issue.Issue.id);
       turn_count = 0;
@@ -2649,6 +3276,8 @@ let test_websocket_broadcast_after_state_change () =
               {
                 Runtime_state.issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Running" ~state:"In progress";
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:2";
                 turn_count = 0;
@@ -2693,6 +3322,8 @@ let test_websocket_context_status_snapshot_and_http_state () =
           {
             Runtime_state.issue;
             stage_agent = Some "engineer";
+            harness_name = None;
+            harness_kind = None;
             stage_states = [ "Todo" ];
             session_id = Some "pid:1";
             turn_count = 0;
@@ -2769,6 +3400,8 @@ let test_orchestrator_notifies_each_state_mutation () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2815,6 +3448,8 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2846,6 +3481,8 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
               {
                 Runtime_state.issue;
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:test";
                 turn_count = 0;
@@ -2879,7 +3516,7 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
         ];
       Orchestrator.reap_children orchestrator;
       let state = Orchestrator.get_state orchestrator in
-      Alcotest.(check int) "final total tokens parsed" 24 state.codex_totals.total_tokens;
+      Alcotest.(check int) "final total tokens parsed" 24 state.usage_totals.total_tokens;
       Alcotest.(check int) "completed row removed" 0 (List.length state.running);
       let saw_goal_usage =
         List.exists
@@ -2923,6 +3560,8 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1; read_timeout_ms = 1000; stall_timeout_ms = 100000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -2953,6 +3592,8 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
               {
                 Runtime_state.issue;
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:timeout";
                 turn_count = 0;
@@ -2986,7 +3627,7 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
         ];
       Orchestrator.reap_children orchestrator;
       let state = Orchestrator.get_state orchestrator in
-      Alcotest.(check int) "timeout total tokens parsed" 8 state.codex_totals.total_tokens;
+      Alcotest.(check int) "timeout total tokens parsed" 8 state.usage_totals.total_tokens;
       Alcotest.(check int) "running removed" 0 (List.length state.running);
       Alcotest.(check int) "retrying added" 1 (List.length state.retrying);
       (match state.retrying with
@@ -3047,6 +3688,8 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
             };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3078,6 +3721,8 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
                   {
                     Runtime_state.issue;
                     stage_agent = None;
+                    harness_name = None;
+                    harness_kind = None;
                     stage_states = [];
                     session_id = Some "pid:quiet";
                     turn_count = 0;
@@ -3148,6 +3793,8 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3164,6 +3811,8 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
               {
                 Runtime_state.issue;
                 stage_agent = None;
+                harness_name = None;
+                harness_kind = None;
                 stage_states = [];
                 session_id = Some "pid:block";
                 turn_count = 0;
@@ -3454,6 +4103,8 @@ let stage_capacity_config root ~global_cap =
         };
       agent_harnesses_explicit = false;
       agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
       server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -3539,6 +4190,8 @@ let test_orchestrator_dispatch_limits () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3693,6 +4346,8 @@ let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
         {
           Runtime_state.issue;
           stage_agent = Some "engineer";
+          harness_name = None;
+          harness_kind = None;
           stage_states = [ "Todo"; "In progress" ];
           session_id = Some issue.Issue.id;
           turn_count = 0;
@@ -3754,6 +4409,8 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
               };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3870,6 +4527,8 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
         };
       agent_harnesses_explicit = false;
       agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
       server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3934,6 +4593,8 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -3988,6 +4649,8 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           codex = { command = "cat"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 1000; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4042,6 +4705,8 @@ let test_orchestrator_retries_failed_agent () =
           codex = { command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4101,6 +4766,8 @@ let test_orchestrator_timeout_kills_agent_process_group () =
             };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4160,6 +4827,8 @@ let test_orchestrator_moves_status_to_review_on_success () =
             codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4221,6 +4890,8 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4321,6 +4992,8 @@ let test_orchestrator_prepends_stage_goal_handoff () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4451,6 +5124,8 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -4494,7 +5169,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
       Alcotest.(check bool) "normal prompt still included" true (String.contains !captured_prompt '#'))
 
 let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000) ?(context_snapshot = true)
-    ?context_command root =
+    ?context_command ?(agent_harnesses_explicit = false) ?(agent_harnesses = []) ?(logical_agents = []) root =
   let agents_root = Filename.concat root "agents" in
   Unix.mkdir agents_root 0o755;
   Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
@@ -4530,8 +5205,10 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         read_timeout_ms = 100;
           stall_timeout_ms = 1000;
         };
-      agent_harnesses_explicit = false;
-      agent_harnesses = [];
+      agent_harnesses_explicit;
+      agent_harnesses;
+          logical_agents;
+          legacy_agent_harness_paths = [];
       server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -4560,6 +5237,140 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
           ];
       };
   }
+
+let test_harness ?(name = "codex") ?(kind = "codex") ?(command = "codex exec") ?(loop_enabled = true)
+    ?(loop_command = Config.default_codex_loop_command) () =
+  {
+    Config.name;
+    kind;
+    command;
+    model = Config.default_model;
+    reasoning_effort = Config.default_reasoning_effort;
+    turn_timeout_ms = 1000;
+    read_timeout_ms = 100;
+    stall_timeout_ms = 1000;
+    loop_enabled;
+    loop_command;
+  }
+
+let logical_agent_for_harness harness_name =
+  {
+    Config.name = "engineer";
+    harness = harness_name;
+    model = None;
+    reasoning_effort = None;
+    turn_timeout_ms = None;
+    read_timeout_ms = None;
+    stall_timeout_ms = None;
+  }
+
+let stage_goal_config_for_harness root harness =
+  stage_context_test_config ~goal_enabled:true ~context_snapshot:false ~agent_harnesses_explicit:true
+    ~agent_harnesses:[ harness ] ~logical_agents:[ logical_agent_for_harness harness.Config.name ] root
+
+let compose_stage_goal_prompt_for_harness root harness =
+  let config = stage_goal_config_for_harness root harness in
+  let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+  let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+  Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) config issue None "Normal #1" ~workspace
+    ~loop_start_branch:(Some "symphony/dogfood")
+
+let test_compose_prompt_uses_default_codex_loop_command () =
+  with_temp_dir "symphony-goal-default-loop-" (fun root ->
+      let config = stage_context_test_config ~goal_enabled:true ~context_snapshot:false root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let prompt =
+        Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) config issue None "Normal #1" ~workspace
+          ~loop_start_branch:(Some "symphony/dogfood")
+      in
+      Alcotest.(check bool) "default loop command first" true
+        (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" prompt);
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_compose_prompt_uses_custom_codex_loop_command () =
+  with_temp_dir "symphony-goal-custom-loop-" (fun root ->
+      let prompt =
+        compose_stage_goal_prompt_for_harness root
+          (test_harness ~loop_command:"/continue-goal" ())
+      in
+      Alcotest.(check bool) "custom loop command first" true
+        (String.starts_with ~prefix:"/continue-goal {\"kind\":\"Stage Goal Context\"" prompt);
+      Alcotest.(check bool) "default loop command absent" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_compose_prompt_skips_disabled_claude_loop () =
+  with_temp_dir "symphony-goal-claude-disabled-loop-" (fun root ->
+      let prompt =
+        compose_stage_goal_prompt_for_harness root
+          (test_harness ~name:"claude" ~kind:"claude" ~command:"claude -p --output-format stream-json"
+             ~loop_enabled:false ~loop_command:"" ())
+      in
+      Alcotest.(check bool) "no loop command" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_orchestrator_dispatch_skips_disabled_claude_loop () =
+  with_temp_dir "symphony-goal-claude-disabled-dispatch-" (fun root ->
+      let config =
+        stage_goal_config_for_harness root
+          (test_harness ~name:"claude" ~kind:"claude" ~command:"claude -p --output-format stream-json"
+             ~loop_enabled:false ~loop_command:"" ())
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "no loop handoff" false (contains_substring !captured_prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring !captured_prompt "Normal #1"))
+
+let check_dispatch_exposes_harness_identity ~label harness =
+  with_temp_dir ("symphony-harness-identity-" ^ label ^ "-") (fun root ->
+      let config = stage_goal_config_for_harness root harness in
+      let issue = Issue.empty ~id:("I-" ^ label) ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let open Yojson.Safe.Util in
+      let state = Orchestrator.get_state orchestrator in
+      match state.Runtime_state.running with
+      | [ row ] ->
+          Alcotest.(check (option string)) (label ^ " harness name row") (Some harness.Config.name) row.harness_name;
+          Alcotest.(check (option string)) (label ^ " harness kind row") (Some harness.kind) row.harness_kind;
+          let json_row = Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd in
+          Alcotest.(check string) (label ^ " harness name json") harness.name (json_row |> member "harness_name" |> to_string);
+          Alcotest.(check string) (label ^ " harness kind json") harness.kind (json_row |> member "harness_kind" |> to_string)
+      | _ -> Alcotest.fail "expected one running row")
+
+let test_orchestrator_dispatch_exposes_codex_harness_identity () =
+  check_dispatch_exposes_harness_identity ~label:"codex" (test_harness ~name:"codex" ~kind:"codex" ())
+
+let test_orchestrator_dispatch_exposes_claude_harness_identity () =
+  check_dispatch_exposes_harness_identity ~label:"claude"
+    (test_harness ~name:"claude" ~kind:"claude" ~command:"claude -p --output-format stream-json" ~loop_enabled:false
+       ~loop_command:"" ())
+
+let test_compose_prompt_skips_blank_loop_command () =
+  with_temp_dir "symphony-goal-blank-loop-" (fun root ->
+      let prompt =
+        compose_stage_goal_prompt_for_harness root
+          (test_harness ~loop_enabled:true ~loop_command:"   " ())
+      in
+      Alcotest.(check bool) "no loop command" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
 
 let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
   { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
@@ -5111,6 +5922,8 @@ let test_orchestrator_truncates_agent_context_snapshot () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5213,6 +6026,155 @@ let test_parse_goal_usage_nested_usage_fields () =
           Alcotest.(check (option (float 0.01))) "nested time" (Some 7.25) usage.time_used_seconds;
           Alcotest.(check (option int)) "nested tokens" (Some 88) usage.tokens_used)
 
+let test_parse_claude_stream_message_tool_usage_and_ignores_invalid () =
+  with_temp_dir "symphony-claude-stream-parse-" (fun root ->
+      let stdout_path = Filename.concat root "stdout.log" in
+      let stderr_path = Filename.concat root "stderr.log" in
+      Util.write_file stdout_path
+        {|{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello "}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"world"}}}
+|};
+      Util.write_file stderr_path "not json\n{\"type\":\"unknown\"}\n";
+      let message_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check bool) "message event seen" true message_activity.claude_seen;
+      Alcotest.(check (option string)) "last message event" (Some "claude_message")
+        message_activity.claude_last_event;
+      Alcotest.(check (option string)) "message text accumulated" (Some "Hello world")
+        message_activity.claude_last_message;
+      Util.write_file stdout_path
+        {|{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","id":"toolu_1"}}}
+|};
+      Util.write_file stderr_path "";
+      let tool_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check (option string)) "tool event" (Some "claude_tool") tool_activity.claude_last_event;
+      Alcotest.(check (option string)) "tool message" (Some "Using Bash") tool_activity.claude_last_message;
+      Util.write_file stdout_path
+        {|{"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":5}}}
+{"type":"result","usage":{"input_tokens":4,"output_tokens":6,"total_tokens":10},"result":"done"}
+|};
+      let usage_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check int) "usage input" 4 usage_activity.claude_tokens.input_tokens;
+      Alcotest.(check int) "usage output" 6 usage_activity.claude_tokens.output_tokens;
+      Alcotest.(check int) "usage total" 10 usage_activity.claude_tokens.total_tokens;
+      Util.write_file stdout_path "not json\n{\"type\":\"unknown\"}\n";
+      let ignored_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) None in
+      Alcotest.(check bool) "unknown and malformed ignored" false ignored_activity.claude_seen)
+
+let test_claude_stream_dispatch_updates_activity_and_preserves_raw_logs () =
+  with_temp_dir "symphony-claude-stream-dispatch-" (fun root ->
+      let workspace_root = Filename.concat root "workspaces" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      let script = Filename.concat root "fake-claude.sh" in
+      Util.write_file script
+        {|#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Working"}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","id":"toolu_1"}}}'
+printf '%s\n' 'raw stdout diagnostic'
+printf '%s\n' 'raw stderr diagnostic' >&2
+|};
+      Unix.chmod script 0o755;
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        (Printf.sprintf
+           {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "claude": {
+      "kind": "claude",
+      "command": %s,
+      "model": "claude-opus-4-7",
+      "reasoningEffort": "xhigh"
+    }
+  },
+  "agents": {"engineer": {"harness": "claude"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+           (Yojson.Safe.to_string (`String script)));
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let stage =
+        match config.stage_agents.stages with [ stage ] -> stage | _ -> Alcotest.fail "expected one stage"
+      in
+      let harness =
+        match Config.selected_agent_harness config (Some stage) with
+        | Some harness -> harness
+        | None -> Alcotest.fail "expected selected Claude Harness"
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+      let launched =
+        Orchestrator.shell_launch ~stage:(Some stage) ~config ~workspace ~prompt:"Implement #1" ~issue
+      in
+      (match launched.pid with
+      | Some pid -> ignore (Unix.waitpid [] pid)
+      | None -> Alcotest.fail "expected shell launch pid");
+      let orchestrator = Orchestrator.make ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.update_state orchestrator (fun state ->
+          {
+            state with
+            Runtime_state.running =
+              [
+                {
+                  Runtime_state.issue;
+                  stage_agent = Some "engineer";
+                  harness_name = None;
+                  harness_kind = None;
+                  stage_states = [ "Todo" ];
+                  session_id = launched.session_id;
+                  turn_count = 0;
+                  last_event = Some "launched";
+                  last_message = None;
+                  started_at = Util.now_iso8601 ();
+                  last_event_at = None;
+                  tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                  goal_usage = None;
+                };
+              ];
+          });
+      let child =
+        {
+          Orchestrator.pid = 0;
+          issue;
+          stage = Some stage;
+          harness;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = launched.stdout_path;
+          stderr_path = launched.stderr_path;
+          stdout_size = 0;
+          stderr_size = 0;
+        }
+      in
+      Orchestrator.refresh_child_output ~force:true orchestrator child;
+      let state = Orchestrator.get_state orchestrator in
+      let row =
+        match state.Runtime_state.running with [ row ] -> row | _ -> Alcotest.fail "expected one running row"
+      in
+      Alcotest.(check (option string)) "running row shows tool event" (Some "claude_tool") row.last_event;
+      Alcotest.(check (option string)) "running row shows tool message" (Some "Using Bash") row.last_message;
+      Alcotest.(check int) "row input tokens" 3 row.tokens.input_tokens;
+      Alcotest.(check int) "row output tokens" 5 row.tokens.output_tokens;
+      Alcotest.(check int) "row total tokens" 8 row.tokens.total_tokens;
+      Alcotest.(check bool) "raw stdout remains available" true
+        (contains_substring
+           (Util.read_file (Option.get launched.stdout_path))
+           "raw stdout diagnostic");
+      Alcotest.(check bool) "raw stderr remains available" true
+        (contains_substring
+           (Util.read_file (Option.get launched.stderr_path))
+           "raw stderr diagnostic"))
+
 let test_orchestrator_commits_stage_before_success_status () =
   with_temp_dir "symphony-stage-commit-" (fun root ->
       let config =
@@ -5242,6 +6204,8 @@ let test_orchestrator_commits_stage_before_success_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5388,6 +6352,8 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5457,6 +6423,8 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
           agent_harnesses_explicit = false;
           agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
           server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5553,6 +6521,8 @@ let test_stage_commit_requires_code_changes () =
             codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5611,6 +6581,8 @@ let test_orchestrator_does_not_retry_empty_commit () =
             codex = { command = "true"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 };
             agent_harnesses_explicit = false;
             agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
             server = { port = None };
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
@@ -5715,6 +6687,8 @@ let base_orchestrator_config root git =
   };
   agent_harnesses_explicit = false;
   agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
   server = { port = None };
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
@@ -7441,6 +8415,8 @@ let () =
       ( "runtime-home",
         [
           Alcotest.test_case "bootstrap is idempotent" `Quick test_bootstrap_idempotency_preserves_user_files;
+          Alcotest.test_case "bootstrap writes new Runtime Contract defaults" `Quick
+            test_bootstrap_default_runtime_contract_shape;
           Alcotest.test_case "requires git repository root" `Quick test_root_validation;
           Alcotest.test_case "loads settings and prompt" `Quick test_settings_and_prompt_loading;
           Alcotest.test_case "loads runtime env file" `Quick test_runtime_env_loading;
@@ -7457,14 +8433,36 @@ let () =
           Alcotest.test_case "runtime startup validates root before workspace override" `Quick
             test_runtime_startup_validates_root_before_workspace_override;
         ] );
+      ( "docs",
+        [
+          Alcotest.test_case "Runtime Contract examples use Harnesses and logical agents" `Quick
+            test_runtime_contract_docs_use_current_harness_examples;
+          Alcotest.test_case "Runtime Contract docs are secret-free" `Quick test_runtime_contract_docs_are_secret_free;
+          Alcotest.test_case "project ADR documents migration and loop semantics" `Quick
+            test_project_adr_documents_migration_and_loop_semantics;
+        ] );
       ( "config",
         [
           Alcotest.test_case "reject non-github tracker" `Quick test_invalid_tracker_kind;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "parses agent harnesses" `Quick
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
+          Alcotest.test_case "parses Harnesses and logical agents" `Quick
+            test_config_parses_harnesses_and_logical_agents;
+          Alcotest.test_case "loads mixed-Harness Runtime Settings" `Quick
+            test_config_loads_mixed_harness_settings_without_dispatch;
+          Alcotest.test_case "resolves stage agents through logical agents" `Quick
+            test_stage_agent_resolves_through_logical_agent_and_merges_overrides;
+          Alcotest.test_case "validates logical agent migration readiness" `Quick
+            test_logical_agent_readiness_and_migration_gaps;
+          Alcotest.test_case "loads legacy top-level codex settings" `Quick
+            test_config_loads_legacy_top_level_codex_settings;
           Alcotest.test_case "renders harness commands" `Quick test_harness_command_rendering;
           Alcotest.test_case "validates agent harness readiness" `Quick test_agent_harness_readiness_gaps;
+          Alcotest.test_case "validates selected Claude harness install and auth" `Quick
+            test_claude_harness_readiness_checks_selected_install_and_auth;
+          Alcotest.test_case "ignores unselected Claude harness readiness" `Quick
+            test_claude_harness_readiness_ignores_unselected_harnesses;
           Alcotest.test_case "validates PI harness install and auth" `Quick
             test_pi_harness_readiness_checks_install_and_auth;
           Alcotest.test_case "ignores unselected PI harness readiness" `Quick
@@ -7494,6 +8492,8 @@ let () =
             test_config_parses_allowed_loop_start_branch_policy;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
           Alcotest.test_case "disabled stage goal does not require codex goals" `Quick test_disabled_stage_goal_does_not_require_codex_goals;
+          Alcotest.test_case "blank loop command does not require codex goals" `Quick
+            test_stage_goal_blank_loop_does_not_require_codex_goals;
           Alcotest.test_case "parses stage skill load and readiness" `Quick test_config_parses_stage_skill_load_and_readiness;
           Alcotest.test_case "stage goal requires codex exec stdin support" `Quick test_stage_goal_requires_codex_exec_stdin_support;
           Alcotest.test_case "stage goal live stdin probe" `Quick test_stage_goal_live_stdin_probe;
@@ -7596,6 +8596,16 @@ let () =
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
+          Alcotest.test_case "uses default Codex loop command" `Quick test_compose_prompt_uses_default_codex_loop_command;
+          Alcotest.test_case "uses custom Codex loop command" `Quick test_compose_prompt_uses_custom_codex_loop_command;
+          Alcotest.test_case "skips disabled Claude loop" `Quick test_compose_prompt_skips_disabled_claude_loop;
+          Alcotest.test_case "dispatch skips disabled Claude loop" `Quick
+            test_orchestrator_dispatch_skips_disabled_claude_loop;
+          Alcotest.test_case "dispatch exposes Codex harness identity" `Quick
+            test_orchestrator_dispatch_exposes_codex_harness_identity;
+          Alcotest.test_case "dispatch exposes Claude harness identity" `Quick
+            test_orchestrator_dispatch_exposes_claude_harness_identity;
+          Alcotest.test_case "skips blank loop command" `Quick test_compose_prompt_skips_blank_loop_command;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick
             test_orchestrator_runs_stage_context_command_before_launch;
@@ -7637,6 +8647,10 @@ let () =
           Alcotest.test_case "parses goal usage output" `Quick test_parse_goal_usage_from_codex_output;
           Alcotest.test_case "parses goal usage variants" `Quick test_parse_goal_usage_variants_and_ignores_invalid;
           Alcotest.test_case "parses nested goal usage fields" `Quick test_parse_goal_usage_nested_usage_fields;
+          Alcotest.test_case "parses Claude stream-json activity" `Quick
+            test_parse_claude_stream_message_tool_usage_and_ignores_invalid;
+          Alcotest.test_case "updates activity from Claude stream-json logs" `Quick
+            test_claude_stream_dispatch_updates_activity_and_preserves_raw_logs;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "renders stage commit classification messages" `Quick
             test_stage_commit_classification_renders_messages;

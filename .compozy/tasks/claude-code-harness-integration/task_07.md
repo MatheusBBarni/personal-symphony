@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Update Bootstrap Runtime Contract Defaults"
 type: backend
 complexity: medium
@@ -34,11 +34,11 @@ This task updates the default Runtime Contract created by Bootstrap so new Works
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Update default settings JSON in Runtime Home Bootstrap.
-- [ ] 7.2 Include default Harness loop configuration.
-- [ ] 7.3 Include default logical agent execution selections.
-- [ ] 7.4 Keep existing prompt and `.symphony/agents/*.md` file Bootstrap behavior unchanged.
-- [ ] 7.5 Add tests proving new defaults load and existing settings are not overwritten.
+- [x] 7.1 Update default settings JSON in Runtime Home Bootstrap.
+- [x] 7.2 Include default Harness loop configuration.
+- [x] 7.3 Include default logical agent execution selections.
+- [x] 7.4 Keep existing prompt and `.symphony/agents/*.md` file Bootstrap behavior unchanged.
+- [x] 7.5 Add tests proving new defaults load and existing settings are not overwritten.
 
 ## Implementation Details
 Modify `apps/backend/lib/runtime_home.ml` only for Bootstrap defaults unless tests reveal an adjacent parser fixture needs updating. Reference TechSpec "High-Level Technical Constraints" and "Development Sequencing" for the Bootstrap boundary.
@@ -66,14 +66,14 @@ Modify `apps/backend/lib/runtime_home.ml` only for Bootstrap defaults unless tes
 
 ## Tests
 - Unit tests:
-  - [ ] Bootstrap creates settings containing `harnesses.codex.loop.command: "/goal"`.
-  - [ ] Bootstrap creates settings containing `harnesses.claude.kind: "claude"`.
-  - [ ] Bootstrap creates settings containing `agents.engineer.harness`.
-  - [ ] Bootstrap defaults contain no secret values.
-  - [ ] Bootstrap skips an existing `.symphony/settings.json`.
+  - [x] Bootstrap creates settings containing `harnesses.codex.loop.command: "/goal"`.
+  - [x] Bootstrap creates settings containing `harnesses.claude.kind: "claude"`.
+  - [x] Bootstrap creates settings containing `agents.engineer.harness`.
+  - [x] Bootstrap defaults contain no secret values.
+  - [x] Bootstrap skips an existing `.symphony/settings.json`.
 - Integration tests:
-  - [ ] A newly bootstrapped settings file loads through `Config.from_settings_file`.
-  - [ ] Existing `.symphony/agents/planner.md`, `engineer.md`, and `reviewer.md` idempotency remains unchanged.
+  - [x] A newly bootstrapped settings file loads through `Config.from_settings_file`.
+  - [x] Existing `.symphony/agents/planner.md`, `engineer.md`, and `reviewer.md` idempotency remains unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

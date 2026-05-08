@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, amended 2026-05-08
 
 ## Context
 
@@ -10,17 +10,29 @@ Personal Symphony currently treats Codex as the only concrete non-interactive la
 
 This blocks Workspace Repository operators from selecting PI for specific Stage Agents while preserving the existing Workspace Repository, Runtime Home, Agent Worktree, Task Branch, Agent Prompt, Stage Commit, Stage Push, retry, and status transition behavior.
 
+The Claude Code Harness work later exposed a second ambiguity in this ADR's first shape: `agents` was being used for execution Harness definitions even though Stage Agent names such as planner, engineer, and reviewer are logical roles. Runtime Settings now need separate product homes for execution backends and logical agent execution selection.
+
 ## Decision
 
-Runtime Settings will introduce named Agent Harness definitions. Each Agent Harness has a `kind`, `command`, `model`, `reasoningEffort`, `turnTimeoutMs`, `readTimeoutMs`, and `stallTimeoutMs`.
+Runtime Settings define named Agent Harness definitions under `harnesses`. Each Agent Harness has a `kind`, `command`, optional execution defaults such as `model`, `reasoningEffort`, `turnTimeoutMs`, `readTimeoutMs`, and `stallTimeoutMs`, plus explicit loop settings under `loop.enabled` and `loop.command`.
 
-`kind: "codex"` and `kind: "pi"` are distinct harness implementations. Symphony must not infer harness behavior only from the command string.
+Runtime Settings define logical agents under `agents`. A logical agent such as `planner`, `engineer`, or `reviewer` selects a Harness with `harness` and may override Harness execution defaults field by field.
 
-The legacy Runtime Settings `codex` block remains supported as a backwards-compatible Codex Harness. Existing Workspace Repositories that define only the legacy `codex` block continue to run without migration. When both `agents.codex` and the legacy `codex` block are present, `agents.codex` is canonical and the legacy block is ignored for that harness.
+`kind: "codex"`, `kind: "claude"`, and `kind: "pi"` are distinct Harness implementations. Symphony must not infer Harness behavior only from the command string.
 
-Stage Agent mappings may use `harness` to select the named Agent Harness independently from the `agent` instruction file. Existing Runtime Settings that omit `harness` continue using their `agent` identifier as the harness selector. If a Stage Agent selects an unknown harness, Symphony reports a Readiness Gap instead of dispatching work.
+The legacy Runtime Settings `codex` block remains supported as a backwards-compatible Codex Harness. Existing Workspace Repositories that define only the legacy `codex` block continue to load.
 
-Readiness validation uses enabled Stage Agent mappings as the dispatch boundary for Agent Harness launch requirements. Required Agent Harness fields and launch environment checks are validated for selected Agent Harnesses; unused Agent Harness definitions do not block dispatch solely because their launch path is unavailable.
+Legacy harness-shaped `agents.*` entries remain migration input, but they are not the steady-state Runtime Contract. When the new `harnesses` shape is in use, harness-shaped `agents.*` entries such as `agents.pi.kind` are blocking Readiness Gaps. The remediation is to move execution definitions into `harnesses.*` and keep `agents.*` for logical agent definitions.
+
+Stage Agent mappings select logical agents with `stageAgents.stages[].agent`. Stage-level `stageAgents.stages[].harness` is legacy input and is a blocking Readiness Gap. The remediation is to move Harness selection to `agents.<logical-agent>.harness`.
+
+Readiness validation uses enabled Stage Agent mappings resolved through logical agents as the dispatch boundary for Agent Harness launch requirements. Required Agent Harness fields and launch environment checks are validated for selected Agent Harnesses; unused Agent Harness definitions do not block dispatch solely because their launch path is unavailable.
+
+The first Claude Harness uses Claude Code non-interactive CLI execution with `stream-json` output:
+
+```sh
+claude -p --model <model> --output-format stream-json
+```
 
 The first PI Harness uses PI non-interactive print mode with the default command shape:
 
@@ -34,15 +46,17 @@ Agent Harness launches run in their own process group. When a turn or stall time
 
 Stall timeout activity is measured from agent output growth and Agent Worktree file modifications. This preserves the stall guard for inactive agents while allowing quiet non-interactive harnesses, such as PI print mode, to continue when they are actively changing files but have not emitted stdout or stderr yet.
 
-Stage Goal Handoff remains Codex Harness-specific for the first PI integration. A Stage Agent that enables Stage Goal Handoff on a non-Codex harness is a Readiness Gap until an equivalent non-Codex goal contract exists.
+Stage Goal Handoff remains stage-gated by `stageAgents.stages[].goal.enabled`, but actual loop handoff is controlled by the selected Harness. When the selected Harness has `loop.enabled: true` and a non-empty `loop.command`, Symphony prepends that command with Stage Goal Context before the normal Agent Prompt. When loop is disabled or blank, Symphony runs the normal prompt. Bootstrap defaults enable Codex loop with `/goal` and disable Claude and PI loops.
 
 PI Harness readiness validation checks only PI Harnesses selected by enabled Stage Agent mappings. For those selected PI Harnesses, Symphony checks that the configured command executable is available and that PI has authentication for the configured model provider through a subscription login, stored auth file, command-line API key, or supported environment variable. Missing PI installation or auth is reported as a Readiness Gap before dispatch. Unused PI Harness definitions may remain in Runtime Settings without requiring every operator to install or authenticate PI.
 
+Claude Harness readiness validation checks only selected Claude Harnesses. For those selected Claude Harnesses, Symphony checks that the configured command executable is available and that Claude Code authentication is configured through Claude login state, `ANTHROPIC_API_KEY`, or Claude settings such as an API key helper. Runtime Settings and docs must reference only environment variable names, not secret values.
+
 ## Consequences
 
-PI can be selected explicitly without pretending to be `codex exec`.
+PI and Claude can be selected explicitly without pretending to be `codex exec`.
 
-Future Claude Code support can add another Agent Harness kind without changing the Stage Agent mapping model again.
+Stage mappings keep one responsibility: route statuses to logical agents. Logical agents keep one responsibility: select Harnesses and role-level execution overrides. Harnesses keep one responsibility: define provider execution, defaults, and loop capability.
 
 Runtime Settings parsing, readiness validation, launch command rendering, timeout handling, and Runtime State naming need implementation review for Codex-specific assumptions.
 

@@ -490,6 +490,14 @@ let stage_goal_handoff_stage ?stage config issue =
   | Some stage when Config.stage_goal_enabled stage -> Some stage
   | _ -> None
 
+let stage_goal_handoff ?stage config issue =
+  match stage_goal_handoff_stage ?stage config issue with
+  | None -> None
+  | Some stage -> (
+      match Config.selected_agent_harness config (Some stage) with
+      | Some harness when Config.harness_loop_handoff_enabled harness -> Some (stage, Util.trim harness.loop_command)
+      | Some _ | None -> None)
+
 let json_option_string = function Some value when Util.trim value <> "" -> `String value | _ -> `Null
 let json_option_int = function Some value -> `Int value | None -> `Null
 let launch_attempt_number attempt = Option.value attempt ~default:0 + 1
@@ -1373,9 +1381,10 @@ let compose_prompt_result ?stage ?previous_attempt_output config issue attempt b
           (String.concat "\n" snapshots)
   in
   let prompt =
-    match stage_goal_handoff_stage ?stage config issue with
+    match stage_goal_handoff ?stage config issue with
     | None -> prompt
-    | Some stage -> Printf.sprintf "/goal %s\n\n---\n\n%s" (stage_goal_context issue attempt stage) prompt
+    | Some (stage, loop_command) ->
+        Printf.sprintf "%s %s\n\n---\n\n%s" loop_command (stage_goal_context issue attempt stage) prompt
   in
   {
     prompt;
@@ -2012,6 +2021,248 @@ let max_tokens a b =
     total_tokens = max a.total_tokens b.total_tokens;
   }
 
+type claude_stream_activity = {
+  claude_seen : bool;
+  claude_last_event : string option;
+  claude_last_message : string option;
+  claude_tokens : Runtime_state.tokens;
+}
+
+let empty_claude_stream_activity =
+  {
+    claude_seen = false;
+    claude_last_event = None;
+    claude_last_message = None;
+    claude_tokens = runtime_tokens;
+  }
+
+let json_assoc_member name = function
+  | Some (`Assoc _ as json) -> json_member name json
+  | _ -> None
+
+let json_list_member name json =
+  match json_member name json with Some (`List values) -> values | _ -> []
+
+let nonempty_option value =
+  let value = Util.trim value in
+  if value = "" then None else Some value
+
+let content_text content =
+  content
+  |> List.filter_map (fun item ->
+         match json_member "type" item with
+         | Some (`String "text") -> json_string_member "text" item
+         | _ -> None)
+  |> String.concat ""
+  |> nonempty_option
+
+let content_tool_name content =
+  content
+  |> List.find_map (fun item ->
+         match json_member "type" item with
+         | Some (`String "tool_use") -> json_string_member "name" item
+         | Some (`String "tool_result") -> Some "tool result"
+         | _ -> None)
+
+let append_claude_message existing chunk =
+  match existing with
+  | Some text when Util.trim text <> "" -> text ^ chunk
+  | _ -> chunk
+
+let int_member_any names json = first_some (List.map (fun name -> json_int_member name json) names)
+
+let tokens_from_usage_json usage =
+  let input_tokens =
+    first_some
+      [
+        int_member_any [ "input_tokens"; "inputTokens" ] usage;
+        nested_int_member [ "usage"; "token_usage"; "tokenUsage" ] [ "input_tokens"; "inputTokens" ] usage;
+      ]
+    |> Option.value ~default:0
+  in
+  let output_tokens =
+    first_some
+      [
+        int_member_any [ "output_tokens"; "outputTokens" ] usage;
+        nested_int_member [ "usage"; "token_usage"; "tokenUsage" ] [ "output_tokens"; "outputTokens" ] usage;
+      ]
+    |> Option.value ~default:0
+  in
+  let total_tokens =
+    first_some
+      [
+        int_member_any [ "total_tokens"; "totalTokens"; "tokens_used"; "tokensUsed" ] usage;
+        nested_int_member [ "usage"; "token_usage"; "tokenUsage" ]
+          [ "total_tokens"; "totalTokens"; "tokens_used"; "tokensUsed" ]
+          usage;
+      ]
+    |> Option.value ~default:(input_tokens + output_tokens)
+  in
+  { Runtime_state.input_tokens = input_tokens; output_tokens; total_tokens }
+
+let usage_json_candidates json =
+  [
+    json_member "usage" json;
+    json_assoc_member "usage" (json_member "message" json);
+    json_assoc_member "usage" (json_member "event" json);
+    json_assoc_member "usage" (json_assoc_member "message" (json_member "event" json));
+    json_assoc_member "usage" (json_assoc_member "delta" (json_member "event" json));
+  ]
+
+let update_claude_tokens activity json =
+  usage_json_candidates json
+  |> List.fold_left
+       (fun activity usage ->
+         match usage with
+         | Some (`Assoc _ as usage) ->
+             {
+               claude_seen = true;
+               claude_last_event =
+                 (match activity.claude_last_event with Some _ -> activity.claude_last_event | None -> Some "claude_usage");
+               claude_last_message =
+                 (match activity.claude_last_message with
+                 | Some _ -> activity.claude_last_message
+                 | None -> Some "Claude usage updated");
+               claude_tokens = max_tokens activity.claude_tokens (tokens_from_usage_json usage);
+             }
+         | _ -> activity)
+       activity
+
+let claude_activity_from_stream_event activity event =
+  match json_string_member "type" event with
+  | Some "content_block_delta" -> (
+      match json_member "delta" event with
+      | Some (`Assoc _ as delta) -> (
+          match json_string_member "type" delta with
+          | Some "text_delta" -> (
+              match json_string_member "text" delta with
+              | Some text ->
+                  {
+                    activity with
+                    claude_seen = true;
+                    claude_last_event = Some "claude_message";
+                    claude_last_message = Some (append_claude_message activity.claude_last_message text);
+                  }
+              | None -> activity)
+          | Some "input_json_delta" ->
+              {
+                activity with
+                claude_seen = true;
+                claude_last_event = Some "claude_tool_input";
+                claude_last_message =
+                  (match json_string_member "partial_json" delta with
+                  | Some chunk -> Some ("Tool input: " ^ chunk)
+                  | None -> activity.claude_last_message);
+              }
+          | _ -> activity)
+      | _ -> activity)
+  | Some "content_block_start" -> (
+      match json_member "content_block" event with
+      | Some (`Assoc _ as block) -> (
+          match json_string_member "type" block with
+          | Some "tool_use" ->
+              let tool_name = Option.value (json_string_member "name" block) ~default:"tool" in
+              {
+                activity with
+                claude_seen = true;
+                claude_last_event = Some "claude_tool";
+                claude_last_message = Some ("Using " ^ tool_name);
+              }
+          | Some "text" ->
+              {
+                activity with
+                claude_seen = true;
+                claude_last_event = Some "claude_message";
+                claude_last_message =
+                  (match json_string_member "text" block with
+                  | Some text -> Some (append_claude_message activity.claude_last_message text)
+                  | None -> activity.claude_last_message);
+              }
+          | _ -> activity)
+      | _ -> activity)
+  | Some "message_delta" ->
+      update_claude_tokens
+        {
+          activity with
+          claude_seen = true;
+          claude_last_event = Some "claude_usage";
+          claude_last_message =
+            (match activity.claude_last_message with Some _ -> activity.claude_last_message | None -> Some "Claude usage updated");
+        }
+        (`Assoc [ ("event", event) ])
+  | Some "message_stop" -> { activity with claude_seen = true }
+  | _ -> activity
+
+let claude_activity_from_json activity json =
+  let activity = update_claude_tokens activity json in
+  match json_string_member "type" json with
+  | Some "stream_event" -> (
+      match json_member "event" json with
+      | Some (`Assoc _ as event) -> claude_activity_from_stream_event activity event
+      | _ -> activity)
+  | Some "assistant" -> (
+      match json_member "message" json with
+      | Some (`Assoc _ as message) -> (
+          match content_text (json_list_member "content" message) with
+          | Some text ->
+              {
+                activity with
+                claude_seen = true;
+                claude_last_event = Some "claude_message";
+                claude_last_message = Some text;
+              }
+          | None -> (
+              match content_tool_name (json_list_member "content" message) with
+              | Some tool_name ->
+                  {
+                    activity with
+                    claude_seen = true;
+                    claude_last_event = Some "claude_tool";
+                    claude_last_message = Some ("Using " ^ tool_name);
+                  }
+              | None -> activity))
+      | _ -> activity)
+  | Some "result" ->
+      let message =
+        first_some
+          [
+            json_string_member "result" json;
+            json_string_member "message" json;
+            json_string_member "summary" json;
+          ]
+      in
+      {
+        activity with
+        claude_seen = true;
+        claude_last_event = Some "claude_result";
+        claude_last_message = (match message with Some _ -> message | None -> activity.claude_last_message);
+      }
+  | Some "system" -> (
+      match json_string_member "subtype" json with
+      | Some "api_retry" ->
+          let attempt = json_int_member "attempt" json |> Option.value ~default:0 in
+          {
+            activity with
+            claude_seen = true;
+            claude_last_event = Some "claude_api_retry";
+            claude_last_message = Some (Printf.sprintf "Claude API retry attempt %d" attempt);
+          }
+      | Some "init" -> { activity with claude_seen = true }
+      | _ -> activity)
+  | _ -> activity
+
+let parse_claude_stream_activity stdout_path stderr_path =
+  let content = file_contents stdout_path ^ "\n" ^ file_contents stderr_path in
+  content |> String.split_on_char '\n'
+  |> List.fold_left
+       (fun activity line ->
+         let line = Util.trim line in
+         if line = "" then activity
+         else
+           try Yojson.Safe.from_string line |> claude_activity_from_json activity
+           with Yojson.Json_error _ -> activity)
+       empty_claude_stream_activity
+
 let update_running orchestrator issue_id f =
   update_state orchestrator (fun state ->
     {
@@ -2441,6 +2692,8 @@ let dispatch_issue orchestrator issue =
           {
             Runtime_state.issue;
             stage_agent;
+            harness_name = Some harness.name;
+            harness_kind = Some harness.kind;
             stage_states;
             session_id = launched.session_id;
             turn_count = 0;
@@ -2747,13 +3000,24 @@ let refresh_child_output ?(force = false) orchestrator child =
     child.last_output_at <- Unix.time ();
     let now = Util.now_iso8601 () in
     let tokens = parse_tokens child.stdout_path child.stderr_path in
+    let claude_activity =
+      if child.harness.kind = "claude" then parse_claude_stream_activity child.stdout_path child.stderr_path
+      else empty_claude_stream_activity
+    in
+    let tokens = max_tokens tokens claude_activity.claude_tokens in
     let goal_usage = parse_goal_usage child.stdout_path child.stderr_path in
-    update_state orchestrator (fun state -> { state with codex_totals = max_tokens state.codex_totals tokens });
+    update_state orchestrator (fun state -> { state with usage_totals = max_tokens state.usage_totals tokens });
     update_running orchestrator child.issue_id (fun row ->
         {
           row with
-          Runtime_state.last_event = Some "agent_output";
-          last_message = Some "stdout/stderr updated";
+          Runtime_state.last_event =
+            (match claude_activity.claude_last_event with
+            | Some _ -> claude_activity.claude_last_event
+            | None -> Some "agent_output");
+          last_message =
+            (match claude_activity.claude_last_message with
+            | Some _ -> claude_activity.claude_last_message
+            | None -> Some "stdout/stderr updated");
           last_event_at = Some now;
           tokens = max_tokens row.tokens tokens;
           goal_usage = (match goal_usage with Some _ -> goal_usage | None -> row.goal_usage);

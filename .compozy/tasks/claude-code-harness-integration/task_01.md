@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Runtime Settings Schema For Harnesses And Logical Agents"
 type: backend
 complexity: high
@@ -29,12 +29,12 @@ This task adds the backend Runtime Settings data model for first-class `harnesse
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Extend `Config` data models for Harness loop configuration.
-- [ ] 1.2 Add a logical agent record for settings-level agent definitions.
-- [ ] 1.3 Parse `harnesses.codex`, `harnesses.claude`, and `harnesses.pi`.
-- [ ] 1.4 Parse `agents.<name>.harness` and optional per-agent execution overrides.
-- [ ] 1.5 Add targeted config parsing tests for the new schema.
-- [ ] 1.6 Preserve existing compilation for callers that still reference current config fields until later tasks migrate them.
+- [x] 1.1 Extend `Config` data models for Harness loop configuration.
+- [x] 1.2 Add a logical agent record for settings-level agent definitions.
+- [x] 1.3 Parse `harnesses.codex`, `harnesses.claude`, and `harnesses.pi`.
+- [x] 1.4 Parse `agents.<name>.harness` and optional per-agent execution overrides.
+- [x] 1.5 Add targeted config parsing tests for the new schema.
+- [x] 1.6 Preserve existing compilation for callers that still reference current config fields until later tasks migrate them.
 
 ## Implementation Details
 Modify the Runtime Settings parsing model in `apps/backend/lib/config.ml`. Reference the TechSpec "Data Models" and "Core Interfaces" sections for the intended schema and keep the implementation close to existing JSON parsing helpers.
@@ -62,14 +62,14 @@ Modify the Runtime Settings parsing model in `apps/backend/lib/config.ml`. Refer
 
 ## Tests
 - Unit tests:
-  - [ ] Parse `harnesses.codex.loop.enabled: true` and `loop.command: "/goal"`.
-  - [ ] Parse `harnesses.claude.kind: "claude"` with a `stream-json` command.
-  - [ ] Parse `harnesses.pi.kind: "pi"` with the existing PI command shape.
-  - [ ] Parse `agents.planner.harness`, `model`, `reasoningEffort`, and timeout overrides.
-  - [ ] Parse an agent with only `harness` and leave execution overrides absent.
+  - [x] Parse `harnesses.codex.loop.enabled: true` and `loop.command: "/goal"`.
+  - [x] Parse `harnesses.claude.kind: "claude"` with a `stream-json` command.
+  - [x] Parse `harnesses.pi.kind: "pi"` with the existing PI command shape.
+  - [x] Parse `agents.planner.harness`, `model`, `reasoningEffort`, and timeout overrides.
+  - [x] Parse an agent with only `harness` and leave execution overrides absent.
 - Integration tests:
-  - [ ] Loading a representative mixed-Harness `settings.json` succeeds without dispatching work.
-  - [ ] Loading a legacy top-level `codex` settings fixture still succeeds for compatibility input.
+  - [x] Loading a representative mixed-Harness `settings.json` succeeds without dispatching work.
+  - [x] Loading a legacy top-level `codex` settings fixture still succeeds for compatibility input.
 - Test coverage target: >=80%
 - All tests must pass
 
