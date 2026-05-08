@@ -156,6 +156,10 @@ _Avoid_: state files, generated data
 Ignored Runtime Home metadata that helps explain orchestration behavior without changing the Runtime Contract.
 _Avoid_: contract diagnostics, prompt archive, debug config
 
+**Context Diagnostics**:
+Bounded Runtime Diagnostics for Agent Context Snapshot and Context Command generation, stored under ignored Runtime Home state and summarized in Runtime State.
+_Avoid_: prompt archive, context transcript, command log
+
 **Stage Commit**:
 A commit created by Personal Symphony after an agent successfully completes a configured stage.
 _Avoid_: auto commit, every step commit
@@ -444,7 +448,9 @@ _Avoid_: reinitialize, reset
 - **Runtime State** exposes live **Context Status** for running or retrying work.
 - **Context Status** is the per-task **Runtime State** field that reports **Agent Context Snapshot** and **Context Command** generation without replacing task state, **Goal Usage**, or readiness summaries.
 - When current **Runtime State** rows carry **Context Status** and context behavior is disabled or not applicable, the **Context Status** is `skipped`; older Runtime State snapshots may omit the field.
-- **Runtime Diagnostics** may store bounded, secret-free **Agent Context Snapshot** and **Context Command** metadata; Context Diagnostics files are pruned to the same retention cap as Runtime State summaries.
+- **Runtime Diagnostics** may store bounded, secret-free **Agent Context Snapshot** and **Context Command** metadata.
+- **Context Diagnostics** files are pruned to the same retention cap as Runtime State summaries.
+- **Context Diagnostics** must not persist the full rendered **Agent Prompt**, full **Context Command** stdout or stderr, `GITHUB_TOKEN` or `GH_TOKEN` values, or **Local Environment** contents.
 - A **Context Command** belongs to a **Stage Agent** mapping.
 - A **Context Command** stdout may supplement an **Agent Context Snapshot**.
 - A **Context Command** stderr and failures are **Runtime Diagnostics** by default.
