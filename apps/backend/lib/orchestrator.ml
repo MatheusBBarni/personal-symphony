@@ -9,8 +9,8 @@ type launch_result = {
 type launch =
   stage:Config.stage_agent option -> config:Config.t -> workspace:Workspace.t -> prompt:string -> issue:Issue.t -> launch_result
 
-type fetch = Github_tracker.t -> Issue.t list
-type set_status = Github_tracker.t -> Issue.t -> string -> (unit, string) result
+type fetch = Issue_tracker.t -> (Issue.t list, Issue_tracker.poll_error) result
+type set_status = Issue_tracker.t -> Issue.t -> string -> (unit, string) result
 type commit_stage = Config.t -> Workspace.t -> Issue.t -> Config.stage_agent option -> string option -> (unit, string) result
 type batch_pull_request_handoff = Config.t -> head_branch:string -> (string option, string) result
 type notify_state = Runtime_state.t -> unit
@@ -24,7 +24,7 @@ type previous_attempt_output = {
 type t = {
   config : Config.t;
   prompt_template : string;
-  tracker : Github_tracker.t;
+  tracker : Issue_tracker.t;
   mutable state : Runtime_state.t;
   mutable children : child list;
   retry_due : (string, float) Hashtbl.t;
@@ -408,6 +408,9 @@ let retrying_due orchestrator issue =
   match Hashtbl.find_opt orchestrator.retry_due issue.Issue.id with
   | None -> true
   | Some due -> Unix.time () >= due
+
+let issue_state_is_dispatchable orchestrator state =
+  (not (orchestrator.tracker.is_terminal state)) && orchestrator.tracker.is_active state
 
 let take n list =
   let rec loop remaining acc = function
@@ -1730,8 +1733,11 @@ let shell_launch ~stage ~config ~workspace ~prompt ~issue =
     stderr_path = Some stderr_path;
   }
 
-let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = Github_tracker.fetch_candidate_issues)
-    ?(set_status = Github_tracker.update_issue_status)
+let default_fetch tracker = tracker.Issue_tracker.fetch_candidates ()
+let default_set_status tracker issue status = tracker.Issue_tracker.update_status issue status
+
+let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetch)
+    ?(set_status = default_set_status)
     ?(commit_stage = git_commit_stage_changes) ?(batch_pull_request_handoff = gh_batch_pull_request_handoff)
     ?(notify_state = fun _ -> ()) ~(config : Config.t) ~prompt_template () =
   let workspace_repository_name =
@@ -1740,7 +1746,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = Github_track
   {
     config;
     prompt_template;
-    tracker = Github_tracker.make config.tracker;
+    tracker = Issue_tracker.make config;
     state =
       Runtime_state.empty ~workspace_repository_name ~status_order:(Config.project_status_order config)
         ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
@@ -1780,12 +1786,12 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
       let candidate_for identifier = List.find_opt (fun issue -> issue.Issue.identifier = identifier) candidates in
       let candidate_not_dispatchable identifier =
         match candidate_for identifier with
-        | Some issue -> not (Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state)
+        | Some issue -> not (issue_state_is_dispatchable orchestrator issue.Issue.state)
         | None -> false
       in
       let candidate_dispatchable identifier =
         match candidate_for identifier with
-        | Some issue -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state
+        | Some issue -> issue_state_is_dispatchable orchestrator issue.Issue.state
         | None -> false
       in
       let candidate_missing identifier = candidate_for identifier = None in
@@ -1843,7 +1849,7 @@ let seconds_until timestamp =
   max 1 (int_of_float (ceil (timestamp -. Unix.time ())))
 
 let tracker_retry_pause_message seconds =
-  Printf.sprintf "GitHub API rate limit exceeded; retrying tracker poll in %d seconds" seconds
+  Printf.sprintf "Issue Tracker poll rate-limited; retrying tracker poll in %d seconds" seconds
 
 let file_size = function
   | None -> 0
@@ -2047,7 +2053,7 @@ let retry_status ?stage orchestrator issue =
   | None -> orchestrator.config.tracker.project_status_on_retry
 
 let issue_is_active orchestrator issue =
-  Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states issue.Issue.state
+  issue_state_is_dispatchable orchestrator issue.Issue.state
 
 let issue_needs_attention orchestrator issue =
   string_equal_ci issue.Issue.state orchestrator.config.git.merge_attention_status || is_blocked orchestrator issue
@@ -2593,7 +2599,7 @@ let complete_child ?next_status orchestrator child =
   in
   let has_active_next_stage =
     match next_status with
-    | Some state -> Github_tracker.status_is_active ~active_states:orchestrator.config.tracker.active_states state
+    | Some state -> issue_state_is_dispatchable orchestrator state
     | None -> false
   in
   let completed_identifier = if has_active_next_stage then None else Some child.issue_identifier in
@@ -2844,8 +2850,11 @@ let poll_once orchestrator =
       render_poll_paused seconds msg
   | _ -> (
       orchestrator.tracker_retry_due <- None;
-      try
-        let candidates = orchestrator.fetch orchestrator.tracker in
+      let poll_result =
+        try orchestrator.fetch orchestrator.tracker with exn -> Error (Issue_tracker.Failed (Printexc.to_string exn))
+      in
+      match poll_result with
+      | Ok candidates ->
         let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
         update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
         reconcile_startup orchestrator candidates;
@@ -2871,8 +2880,7 @@ let poll_once orchestrator =
         if available > 0 then dispatchable |> take_admissible_by_stage orchestrator available |> List.iter (dispatch_issue orchestrator);
         maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count:(List.length dispatchable);
         render_poll_completed orchestrator (List.length dispatchable)
-      with
-      | Github_tracker.Tracker_rate_limited (msg, retry_after_ms) ->
+      | Error (Issue_tracker.Rate_limited (msg, retry_after_ms)) ->
           let retry_after_ms = max 1 retry_after_ms in
           let due = Unix.time () +. (float_of_int retry_after_ms /. 1000.) in
           orchestrator.tracker_retry_due <- Some due;
@@ -2880,8 +2888,7 @@ let poll_once orchestrator =
           let pause_msg = tracker_retry_pause_message seconds ^ ": " ^ msg in
           set_error orchestrator pause_msg;
           render_poll_paused seconds msg
-      | exn ->
-          let msg = Printexc.to_string exn in
+      | Error (Issue_tracker.Failed msg) ->
           set_error orchestrator msg;
           render_poll_failed msg))
 

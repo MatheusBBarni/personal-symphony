@@ -1054,7 +1054,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       let child =
@@ -2366,7 +2366,7 @@ let test_orchestrator_notifies_each_state_mutation () =
         }
       in
       let notifications = ref 0 in
-      let fetch _ = [] in
+      let fetch _ = Ok [] in
       let orchestrator =
         Orchestrator.make ~fetch ~config ~prompt_template:"Issue {{ issue.identifier }}"
           ~notify_state:(fun _ -> incr notifications)
@@ -2426,7 +2426,7 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
       Unix.sleepf 0.05;
       let snapshots = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
           ~notify_state:(fun state -> snapshots := state :: !snapshots)
           ()
       in
@@ -2535,7 +2535,7 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
       let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "sleep 30" |] Unix.stdin Unix.stdout Unix.stderr in
       let snapshots = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}"
           ~notify_state:(fun state -> snapshots := state :: !snapshots)
           ()
       in
@@ -2663,7 +2663,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
           ignore (try Unix.waitpid [] pid with Unix.Unix_error _ -> (0, Unix.WEXITED 0)))
         (fun () ->
           let orchestrator =
-            Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+            Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
               ~prompt_template:"Issue {{ issue.identifier }}" ()
           in
           Orchestrator.set_state orchestrator
@@ -2753,7 +2753,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
         }
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Blocked usage" ~state:"Todo" in
-      let orchestrator = Orchestrator.make ~fetch:(fun _ -> []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      let orchestrator = Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.set_state orchestrator
         {
           (Runtime_state.empty ()) with
@@ -2811,6 +2811,37 @@ let minibeads_issue_tracker_config root =
   "project": {"activeStates": ["open", "doing"], "terminalStates": ["done", "closed"]}
 }|};
   Config.from_settings_file ~workspace_root:root settings
+
+let minibeads_orchestrator_config ?(active_states = [ "open"; "doing" ])
+    ?(terminal_states = [ "done"; "closed" ]) root =
+  let config = minibeads_issue_tracker_config root in
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        owner = "";
+        repo = "";
+        project_number = 0;
+        api_key = None;
+        active_states;
+        terminal_states;
+        project_status_on_dispatch = Some "in_progress";
+        project_status_on_success = Some "closed";
+        project_status_on_retry = Some "open";
+      };
+    workspace = { root = Filename.concat root "workspaces" };
+    agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+    codex =
+      {
+        command = "true";
+        model = Config.default_model;
+        reasoning_effort = Config.default_reasoning_effort;
+        turn_timeout_ms = 1000;
+        read_timeout_ms = 100;
+        stall_timeout_ms = 1000;
+      };
+  }
 
 let fake_minibeads_runner ?(available = true) ?(status = Minibeads_tracker.Exited 0) ?(stdout = "")
     ?(stderr = "") ?calls () =
@@ -3581,7 +3612,7 @@ let test_orchestrator_dispatch_limits () =
         launched := issue.Issue.id :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let fetch _ = issues in
+      let fetch _ = Ok issues in
       let set_status _ _ _ = Ok () in
       let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -3610,7 +3641,7 @@ let test_orchestrator_stage_capacity_dispatches_all_available_slots () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -3628,7 +3659,7 @@ let test_orchestrator_stage_capacity_does_not_spawn_idle_agents () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -3654,7 +3685,7 @@ let test_orchestrator_stage_capacity_respects_lower_global_cap () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -3678,7 +3709,7 @@ let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       let running_issue = List.nth issues 0 in
@@ -3811,7 +3842,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -3892,7 +3923,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -3945,8 +3976,8 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
       let calls = ref 0 in
       let fetch _ =
         incr calls;
-        raise
-          (Github_tracker.Tracker_rate_limited
+        Error
+          (Issue_tracker.Rate_limited
              ("GitHub API rate limit exceeded. Original message: API rate limit exceeded for user ID 29718530.", 300000))
       in
       let orchestrator =
@@ -3958,8 +3989,88 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
       match (Orchestrator.get_state orchestrator).last_error with
       | Some error ->
           Alcotest.(check bool) "pause message" true
-            (String.starts_with ~prefix:"GitHub API rate limit exceeded; retrying tracker poll" error)
+            (String.starts_with ~prefix:"Issue Tracker poll rate-limited; retrying tracker poll" error)
       | None -> Alcotest.fail "expected tracker pause error")
+
+let test_orchestrator_records_generic_tracker_poll_failure () =
+  with_temp_dir "symphony-orchestrator-poll-failure-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let fetch _ = Error (Issue_tracker.Failed "minibeads list failed") in
+      let orchestrator =
+        Orchestrator.make ~fetch ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (option string)) "last error" (Some "minibeads list failed")
+        (Orchestrator.get_state orchestrator).last_error)
+
+let test_orchestrator_uses_selected_tracker_active_mapping () =
+  with_temp_dir "symphony-orchestrator-minibeads-active-" (fun root ->
+      let config = minibeads_orchestrator_config ~active_states:[ "Todo" ] root in
+      let issue = Issue.empty ~id:"mb-1" ~identifier:"mb-1" ~title:"Local active" ~state:"open" in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "minibeads normalized active status dispatched" [ "mb-1" ]
+        (List.rev !launched))
+
+let test_orchestrator_uses_selected_tracker_terminal_mapping () =
+  with_temp_dir "symphony-orchestrator-minibeads-terminal-" (fun root ->
+      let config = minibeads_orchestrator_config ~active_states:[ "Done" ] ~terminal_states:[ "Done" ] root in
+      let issue = Issue.empty ~id:"mb-1" ~identifier:"mb-1" ~title:"Local terminal" ~state:"closed" in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "unexpected"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "terminal local issue not dispatched" 0 !launched)
+
+let test_orchestrator_minibeads_stub_dispatch_without_github_settings () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-orchestrator-minibeads-dispatch-" (fun root ->
+          let config = minibeads_orchestrator_config root in
+          let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Local task" ~state:"open" in
+          let current_status = ref issue.Issue.state in
+          let statuses = ref [] in
+          let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+            {
+              Orchestrator.pid = None;
+              session_id = Some issue.Issue.id;
+              event = "test-launch";
+              stdout_path = None;
+              stderr_path = None;
+            }
+          in
+          let fetch tracker =
+            Alcotest.(check string) "selected tracker" "minibeads" tracker.Issue_tracker.kind;
+            if tracker.kind = "github" then Alcotest.fail "unexpected GitHub tracker";
+            Ok [ { issue with state = !current_status } ]
+          in
+          let set_status tracker issue status =
+            Alcotest.(check string) "status tracker" "minibeads" tracker.Issue_tracker.kind;
+            current_status := status;
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ()
+          in
+          let orchestrator =
+            Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.poll_once orchestrator;
+          Alcotest.(check (list (pair string string))) "status transitions"
+            [ ("mb-20", "in_progress") ] (List.rev !statuses);
+          let running = (Orchestrator.get_state orchestrator).Runtime_state.running in
+          Alcotest.(check int) "running local issue" 1 (List.length running)))
 
 let test_orchestrator_does_not_dispatch_terminal_issues () =
   with_temp_dir "symphony-orchestrator-terminal-" (fun root ->
@@ -4009,7 +4120,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
         launched := issue.Issue.id :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let fetch _ = issues in
+      let fetch _ = Ok issues in
       let set_status _ _ _ = Ok () in
       let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -4055,7 +4166,7 @@ let test_orchestrator_retries_failed_agent () =
         }
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
-      let fetch _ = [ issue ] in
+      let fetch _ = Ok [ issue ] in
       let set_status _ _ _ = Ok () in
       let orchestrator = Orchestrator.make ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -4117,7 +4228,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4180,8 +4291,8 @@ let test_orchestrator_moves_status_to_review_on_success () =
       let current_status = ref "Todo" in
       let fetch _ =
         if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
-        then [ { issue with state = !current_status } ]
-        else []
+        then Ok [ { issue with state = !current_status } ]
+        else Ok []
       in
       let statuses = ref [] in
       let set_status _ issue status =
@@ -4263,7 +4374,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
       in
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In review" in
       let current_status = ref "In review" in
-      let fetch _ = if !current_status = "In review" then [ { issue with state = !current_status } ] else [] in
+      let fetch _ = if !current_status = "In review" then Ok [ { issue with state = !current_status } ] else Ok [] in
       let statuses = ref [] in
       let captured_prompt = ref "" in
       let set_status _ issue status =
@@ -4388,7 +4499,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
+      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check bool) "goal command first" true (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
       Alcotest.(check bool) "stage agent included" true (String.contains !captured_prompt 'E');
@@ -4501,7 +4612,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
         captured_prompt := prompt;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
+      let orchestrator = Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Normal {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check bool) "no goal command" false (String.starts_with ~prefix:"/goal" !captured_prompt);
       Alcotest.(check bool) "no context snapshot" false
@@ -4597,7 +4708,7 @@ let prompt_from_context_command root command =
     { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
   in
   let orchestrator =
-    Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+    Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
       ~prompt_template:"Normal {{ issue.identifier }}" ()
   in
   Orchestrator.poll_once orchestrator;
@@ -4660,7 +4771,7 @@ printf 'cwd=%s\n' "$PWD"
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4704,7 +4815,7 @@ printf 'cwd=%s\n' "$PWD"
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4883,7 +4994,7 @@ let test_orchestrator_prunes_context_diagnostic_files () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -4995,7 +5106,7 @@ let test_orchestrator_omits_retry_output_on_first_launch () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5023,7 +5134,7 @@ let test_orchestrator_includes_retry_output_on_retry_launch () =
           { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-retry"; stdout_path = None; stderr_path = None })
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Normal {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5422,7 +5533,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
       let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let fetch _ = [ issue ] in
+      let fetch _ = Ok [ issue ] in
       let set_status _ _ status = if status = "Done" then Error "bad option id" else Ok () in
       let orchestrator = Orchestrator.make ~launch ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
       Orchestrator.poll_once orchestrator;
@@ -5522,7 +5633,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~commit_stage ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~commit_stage ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -5672,7 +5783,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
       let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"In progress" in
       let launches = ref 0 in
       let statuses = ref [] in
-      let fetch _ = [ issue ] in
+      let fetch _ = Ok [ issue ] in
       let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
         incr launches;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
@@ -6157,7 +6268,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
       in
       let commit_stage _ _ _ _ _ = Ok () in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue () ]) ~set_status ~commit_stage ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue () ]) ~set_status ~commit_stage ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -6202,7 +6313,7 @@ let test_ordered_queue_revives_persisted_completed_active_entries () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -6231,7 +6342,7 @@ let test_startup_reconciliation_merges_completed_worktrees_in_order () =
       commit_file ~cwd:workspace_22.path "b.txt" "b\n" "task 22";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue_22; issue_21 ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue_22; issue_21 ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -6257,7 +6368,7 @@ let test_startup_reconciliation_already_contained_applies_cleanup_without_status
       ignore (run_ok ~cwd:root "manual merge" "git merge --ff-only symphony/task-23");
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -6293,7 +6404,7 @@ let test_startup_reconciliation_moves_unsafe_candidates_to_attention () =
       in
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ protected_issue; uncommitted_issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ protected_issue; uncommitted_issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -6324,7 +6435,7 @@ let test_startup_reconciliation_blocks_unauthorized_protected_path_change () =
       commit_file ~cwd:workspace.path "bin/symphony.js" "changed\n" "task 32";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -6351,7 +6462,7 @@ let test_startup_reconciliation_updates_task_branch_before_fast_forward () =
       commit_file ~cwd:later_workspace.path "later.txt" "later\n" "task 27";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ nonff_issue; later_issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ nonff_issue; later_issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -6386,7 +6497,7 @@ let test_startup_reconciliation_detects_wrong_and_missing_task_branch () =
       Unix.mkdir stale_path 0o755;
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ wrong_issue; missing_issue; stale_issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ wrong_issue; missing_issue; stale_issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -6412,7 +6523,7 @@ let test_startup_reconciliation_blocks_when_loop_start_dirty () =
       Util.write_file (Filename.concat root "dirty-loop.txt") "dirty\n";
       let statuses = ref [] in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ])
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ])
           ~set_status:(fun _ issue status ->
             statuses := (issue.Issue.identifier, status) :: !statuses;
             Ok ())
@@ -6443,7 +6554,7 @@ let test_startup_reconciliation_ignores_retained_branch_without_worktree () =
       commit_file ~cwd:external_worktree "retained.txt" "retained\n" "task 31";
       ignore (run_ok ~cwd:root "remove external worktree" (Printf.sprintf "git worktree remove %s" (Util.shell_quote external_worktree)));
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Alcotest.fail "unexpected status change")
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Alcotest.fail "unexpected status change")
           ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -6467,7 +6578,7 @@ let test_orchestrator_creates_task_worktree_and_branch () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       let workspace = match !captured_workspace with Some workspace -> workspace | None -> Alcotest.fail "expected launch" in
@@ -6518,7 +6629,7 @@ let test_orchestrator_opens_batch_pull_request_once_when_idle () =
         Ok (Some "https://github.example/acme/widgets/pull/1")
       in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       Orchestrator.poll_once orchestrator;
@@ -6544,8 +6655,8 @@ let test_orchestrator_opens_batch_pull_request_on_review_status () =
       in
       let fetch _ =
         if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
-        then [ { issue with state = !current_status } ]
-        else []
+        then Ok [ { issue with state = !current_status } ]
+        else Ok []
       in
       let set_status _ _ status =
         current_status := status;
@@ -6584,8 +6695,8 @@ let test_orchestrator_opens_task_pull_request_on_review_status_from_protected_lo
       in
       let fetch _ =
         if List.exists (fun status -> String.lowercase_ascii status = String.lowercase_ascii !current_status) config.tracker.active_states
-        then [ { issue with state = !current_status } ]
-        else []
+        then Ok [ { issue with state = !current_status } ]
+        else Ok []
       in
       let set_status _ _ status =
         current_status := status;
@@ -6710,7 +6821,7 @@ let test_orchestrator_retries_batch_pull_request_handoff_failure () =
         if !attempts = 1 then Error "batch branch push failed: exit 1: rejected" else Ok None
       in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~fetch:(fun _ -> Ok []) ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       (match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
@@ -6735,7 +6846,7 @@ let test_orchestrator_blocks_batch_pull_request_on_attention () =
       in
       let issue = Issue.empty ~id:"I-attn" ~identifier:"#99" ~title:"Needs merge" ~state:"Human attention" in
       let orchestrator =
-        Orchestrator.make ~fetch:(fun _ -> [ issue ]) ~batch_pull_request_handoff ~config
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ]) ~batch_pull_request_handoff ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -6805,7 +6916,7 @@ let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check int) "not launched" 0 !launches;
@@ -6841,7 +6952,7 @@ let test_orchestrator_blocks_disallowed_loop_start_before_side_effects () =
       let orchestrator =
         Orchestrator.make ~launch ~fetch:(fun _ ->
             incr fetches;
-            [ issue ])
+            Ok [ issue ])
           ~set_status
           ~batch_pull_request_handoff:(fun _ ~head_branch:_ ->
             incr prs;
@@ -6901,7 +7012,7 @@ let test_orchestrator_reuses_worktree_for_existing_in_progress_task_before_launc
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
           ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
@@ -6926,7 +7037,7 @@ let test_orchestrator_rejects_existing_non_worktree_workspace () =
         Ok ()
       in
       let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check int) "not launched" 0 !launches;
@@ -7529,6 +7640,14 @@ let () =
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
             test_ordered_queue_revives_persisted_completed_active_entries;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
+          Alcotest.test_case "records generic tracker poll failure" `Quick
+            test_orchestrator_records_generic_tracker_poll_failure;
+          Alcotest.test_case "uses selected tracker active mapping" `Quick
+            test_orchestrator_uses_selected_tracker_active_mapping;
+          Alcotest.test_case "uses selected tracker terminal mapping" `Quick
+            test_orchestrator_uses_selected_tracker_terminal_mapping;
+          Alcotest.test_case "dispatches minibeads stub without GitHub settings" `Quick
+            test_orchestrator_minibeads_stub_dispatch_without_github_settings;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
           Alcotest.test_case "timeout kills agent process group" `Quick
