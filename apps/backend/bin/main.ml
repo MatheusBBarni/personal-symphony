@@ -152,9 +152,10 @@ let render_bootstrap_report report =
     report
 
 let render_startup_completed ~mode ~config ~runtime_home =
+  let event = Runtime_startup.startup_completed_event ~mode ~config ~runtime_home in
   Printf.eprintf "%s %s %s %s %s\n%!" (blue "startup") (green "ready") (dim mode)
     (Printf.sprintf "%s/%s" config.Config.tracker.owner config.tracker.repo)
-    (dim (Printf.sprintf "project #%d - %s" config.tracker.project_number runtime_home))
+    (dim event)
 
 let render_web_dashboard_starting ~port =
   let url = Printf.sprintf "http://0.0.0.0:%d/" port in
@@ -242,14 +243,6 @@ let run_legacy workflow_path port once =
       Printf.eprintf "event=startup outcome=failed reason=%s\n%!" (Printexc.to_string exn);
       1
 
-let load_runtime_config home =
-  Runtime_home.load_env home;
-  let config = Config.from_settings_file ~workspace_root:home.Runtime_home.workspace_root home.settings_path in
-  let prompt_template = Runtime_home.load_prompt home in
-  let example_issue = Issue.empty ~id:"local" ~identifier:"#0" ~title:"Local dry run" ~state:"Todo" in
-  let _rendered = Prompt.render ~issue:example_issue ~attempt:None prompt_template in
-  (config, prompt_template)
-
 let parse_ordered_queue_arg = function
   | None -> (None, [])
   | Some text -> (
@@ -287,20 +280,21 @@ let run_manual_merge config merge_args =
       List.iter (fun error -> Printf.eprintf "merge failed: %s\n%!" error) errors;
       1
 
-let run_runtime port once web queue_arg merge_args =
+let run_runtime port once web queue_arg merge_args overrides =
   let run_until_stopped f =
     f ();
     0
   in
   try
-    match Runtime_home.require_workspace_root () with
+    match Runtime_startup.prepare_runtime ~overrides () with
     | Error msg ->
         Printf.eprintf "event=startup outcome=failed reason=%s\n%!" msg;
         1
-    | Ok workspace_root ->
-        let home, report = Runtime_home.bootstrap workspace_root in
-        render_bootstrap_report report;
-        let config, prompt_template = load_runtime_config home in
+    | Ok prepared ->
+        let home = prepared.Runtime_startup.home in
+        render_bootstrap_report prepared.bootstrap_report;
+        let config = prepared.loaded.config in
+        let prompt_template = prepared.loaded.prompt_template in
         let ordered_queue, queue_parse_problems = parse_ordered_queue_arg queue_arg in
         let mode = Cli_mode.select ~web in
         render_startup_completed ~mode:(Cli_mode.to_string mode) ~config ~runtime_home:home.runtime_dir;
@@ -360,10 +354,10 @@ let run_runtime port once web queue_arg merge_args =
       Printf.eprintf "event=startup outcome=failed reason=%s\n%!" (Printexc.to_string exn);
       1
 
-let run workflow_path port once web queue_arg merge_args =
+let run workflow_path port once web queue_arg merge_args overrides =
   match workflow_path with
   | Some path -> run_legacy path port once
-  | None -> run_runtime port once web queue_arg merge_args
+  | None -> run_runtime port once web queue_arg merge_args overrides
 
 let init () =
   try
@@ -386,8 +380,7 @@ let callbacks =
   {
     Cli_command.run =
       (fun args ->
-        ignore args.overrides;
-        run args.workflow_path args.port args.once args.web args.queue_arg args.merge_args);
+        run args.workflow_path args.port args.once args.web args.queue_arg args.merge_args args.overrides);
     init;
     update = (fun ~yes -> update yes);
   }

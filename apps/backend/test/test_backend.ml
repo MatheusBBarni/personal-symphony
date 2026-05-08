@@ -171,6 +171,21 @@ let load_runtime_invocation_override_config root =
   let settings = write_runtime_invocation_override_settings root in
   (settings, Config.from_settings_file ~workspace_root:root settings)
 
+let write_runtime_startup_settings home =
+  Util.write_file home.Runtime_home.settings_path
+    {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "polling": {"intervalMs": 1234},
+  "workspace": {"root": "settings-workspaces"},
+  "agent": {
+    "maxConcurrentAgents": 3,
+    "maxTurns": 12,
+    "maxRetryBackoffMs": 45000
+  },
+  "stageAgents": {"enabled": false}
+}|};
+  home.settings_path
+
 let test_runtime_invocation_overrides_replace_polling_only () =
   with_temp_dir "symphony-runtime-overrides-polling-" (fun root ->
       let _, config = load_runtime_invocation_override_config root in
@@ -248,6 +263,99 @@ let test_runtime_invocation_overrides_preserve_settings_file () =
              ~agent_max_concurrent_agents:4 ~agent_max_turns:15 ~agent_max_retry_backoff_ms:60000 ())
       in
       Alcotest.(check string) "settings unchanged" before (Util.read_file settings))
+
+let test_runtime_startup_without_overrides_uses_loaded_settings () =
+  with_temp_dir "symphony-runtime-startup-none-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      ignore (write_runtime_startup_settings home);
+      let loaded = Runtime_startup.load_runtime_config ~overrides:(runtime_invocation_overrides ()) home in
+      Alcotest.(check int) "settings polling" 1234 loaded.config.polling.interval_ms;
+      Alcotest.(check string) "settings workspace"
+        (Filename.concat (Unix.realpath root) "settings-workspaces")
+        loaded.config.workspace.root;
+      Alcotest.(check int) "settings concurrency" 3 loaded.config.agent.max_concurrent_agents;
+      Alcotest.(check int) "settings turns" 12 loaded.config.agent.max_turns;
+      Alcotest.(check int) "settings backoff" 45000 loaded.config.agent.max_retry_backoff_ms)
+
+let test_runtime_startup_with_overrides_builds_effective_config () =
+  with_temp_dir "symphony-runtime-startup-effective-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let settings = write_runtime_startup_settings home in
+      let before = Util.read_file settings in
+      let loaded =
+        Runtime_startup.load_runtime_config
+          ~overrides:
+            (runtime_invocation_overrides ~polling_interval_ms:2500 ~workspace_root:"override-workspaces"
+               ~agent_max_concurrent_agents:8 ~agent_max_turns:21 ~agent_max_retry_backoff_ms:90000 ())
+          home
+      in
+      Alcotest.(check int) "effective polling" 2500 loaded.config.polling.interval_ms;
+      Alcotest.(check string) "effective workspace"
+        (Filename.concat (Unix.realpath root) "override-workspaces")
+        loaded.config.workspace.root;
+      Alcotest.(check int) "effective concurrency" 8 loaded.config.agent.max_concurrent_agents;
+      Alcotest.(check int) "effective turns" 21 loaded.config.agent.max_turns;
+      Alcotest.(check int) "effective backoff" 90000 loaded.config.agent.max_retry_backoff_ms;
+      Alcotest.(check string) "settings unchanged" before (Util.read_file settings))
+
+let test_runtime_startup_reporting_uses_effective_workspace_root () =
+  with_temp_dir "symphony-runtime-startup-report-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      ignore (write_runtime_startup_settings home);
+      let loaded =
+        Runtime_startup.load_runtime_config
+          ~overrides:(runtime_invocation_overrides ~workspace_root:"override-workspaces" ())
+          home
+      in
+      let expected_workspace = Filename.concat (Unix.realpath root) "override-workspaces" in
+      let event =
+        Runtime_startup.startup_completed_event ~mode:(Cli_mode.to_string Cli_mode.Web_dashboard)
+          ~config:loaded.config ~runtime_home:home.runtime_dir
+      in
+      Alcotest.(check bool) "reports effective workspace" true (contains_substring event expected_workspace);
+      Alcotest.(check bool) "reports web mode" true (contains_substring event "mode=web_dashboard"))
+
+let test_runtime_startup_prepare_preserves_settings_with_overrides () =
+  with_temp_dir "symphony-runtime-startup-preserve-" (fun root ->
+      init_repo root "main";
+      let home, _ = Runtime_home.bootstrap root in
+      let settings = write_runtime_startup_settings home in
+      let before = Util.read_file settings in
+      let original = Unix.getcwd () in
+      Fun.protect
+        ~finally:(fun () -> Unix.chdir original)
+        (fun () ->
+          Unix.chdir root;
+          match
+            Runtime_startup.prepare_runtime
+              ~overrides:
+                (runtime_invocation_overrides ~polling_interval_ms:2500 ~workspace_root:"override-workspaces"
+                   ~agent_max_concurrent_agents:1 ())
+              ()
+          with
+          | Error error -> Alcotest.fail ("prepare failed: " ^ error)
+          | Ok prepared ->
+              Alcotest.(check int) "effective polling" 2500 prepared.loaded.config.polling.interval_ms;
+              Alcotest.(check int) "effective concurrency" 1 prepared.loaded.config.agent.max_concurrent_agents;
+              Alcotest.(check string) "settings unchanged" before (Util.read_file settings)))
+
+let test_runtime_startup_validates_root_before_workspace_override () =
+  with_temp_dir "symphony-runtime-startup-nongit-" (fun root ->
+      let original = Unix.getcwd () in
+      Fun.protect
+        ~finally:(fun () -> Unix.chdir original)
+        (fun () ->
+          Unix.chdir root;
+          match
+            Runtime_startup.prepare_runtime
+              ~overrides:(runtime_invocation_overrides ~workspace_root:"/tmp/workspaces" ())
+              ()
+          with
+          | Ok _ -> Alcotest.fail "workspace.root override must not bypass root validation"
+          | Error msg ->
+              Alcotest.(check bool) "mentions git repository" true (contains_substring msg "Git");
+              Alcotest.(check bool) "bootstrap did not run" false
+                (Sys.file_exists (Filename.concat root Runtime_home.runtime_dir_name))))
 
 let test_config_parses_git_policy_and_stage_push () =
   with_temp_dir "symphony-settings-git-" (fun root ->
@@ -1816,6 +1924,27 @@ let test_cli_command_parses_runtime_invocation_overrides () =
       Alcotest.(check (option int)) "agent concurrency override" (Some 4) overrides.agent_max_concurrent_agents;
       Alcotest.(check (option int)) "agent turns override" (Some 9) overrides.agent_max_turns;
       Alcotest.(check (option int)) "agent backoff override" (Some 90000) overrides.agent_max_retry_backoff_ms
+
+let test_cli_command_accepts_merge_with_runtime_invocation_override () =
+  let observed = ref None in
+  let callbacks =
+    cli_test_callbacks
+      ~run:(fun args ->
+        observed := Some args;
+        17)
+      ()
+  in
+  let code =
+    Cli_command.eval ~version:"test-version" callbacks
+      ~argv:[| "symphony"; "--merge"; "66"; "--agent.maxConcurrentAgents"; "1" |]
+  in
+  Alcotest.(check int) "runtime exit code" 17 code;
+  match !observed with
+  | None -> Alcotest.fail "runtime callback was not invoked"
+  | Some args ->
+      Alcotest.(check (list string)) "merge args" [ "66" ] args.Cli_command.merge_args;
+      Alcotest.(check (option int)) "agent concurrency override" (Some 1)
+        args.overrides.agent_max_concurrent_agents
 
 let test_cli_command_exposes_init_and_update () =
   let init_called = ref false in
@@ -7186,6 +7315,16 @@ let () =
           Alcotest.test_case "loads runtime env file" `Quick test_runtime_env_loading;
           Alcotest.test_case "rejects repo URL in settings" `Quick test_repo_url_readiness_gap;
           Alcotest.test_case "writes ignore rules" `Quick test_runtime_gitignore_contents;
+          Alcotest.test_case "runtime startup uses loaded settings without overrides" `Quick
+            test_runtime_startup_without_overrides_uses_loaded_settings;
+          Alcotest.test_case "runtime startup builds effective config with overrides" `Quick
+            test_runtime_startup_with_overrides_builds_effective_config;
+          Alcotest.test_case "runtime startup reporting uses effective workspace root" `Quick
+            test_runtime_startup_reporting_uses_effective_workspace_root;
+          Alcotest.test_case "runtime startup preserves settings with overrides" `Quick
+            test_runtime_startup_prepare_preserves_settings_with_overrides;
+          Alcotest.test_case "runtime startup validates root before workspace override" `Quick
+            test_runtime_startup_validates_root_before_workspace_override;
         ] );
       ( "config",
         [
@@ -7257,6 +7396,8 @@ let () =
             test_cli_command_evaluates_runtime_from_library;
           Alcotest.test_case "parses runtime invocation override flags" `Quick
             test_cli_command_parses_runtime_invocation_overrides;
+          Alcotest.test_case "accepts Manual Task Merge with runtime invocation override" `Quick
+            test_cli_command_accepts_merge_with_runtime_invocation_override;
           Alcotest.test_case "exposes init and update subcommands" `Quick test_cli_command_exposes_init_and_update;
           Alcotest.test_case "normalizes short help and version flags" `Quick test_cli_help_argv_normalization;
           Alcotest.test_case "documents runtime invocation override help" `Quick
