@@ -1904,16 +1904,62 @@ let test_runtime_state_exposes_running_issue_details () =
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
 
 let test_ordered_queue_parses_cli_identifiers () =
-  match Ordered_queue.parse "19,#22,31" with
+  match Ordered_queue.parse "19,#22,mb-20" with
   | Error _ -> Alcotest.fail "expected ordered queue parse success"
   | Ok queue ->
-      Alcotest.(check (list int)) "numbers" [ 19; 22; 31 ] (Ordered_queue.numbers queue);
-      Alcotest.(check (list string)) "identifiers" [ "#19"; "#22"; "#31" ] (Ordered_queue.identifiers queue);
-      (match Ordered_queue.parse "19,,abc,#19" with
+      Alcotest.(check (list string)) "identifiers" [ "#19"; "#22"; "mb-20" ] (Ordered_queue.identifiers queue);
+      (match Ordered_queue.parse "20,#20" with
+      | Ok _ -> Alcotest.fail "expected duplicate canonical GitHub selector"
+      | Error problems ->
+          Alcotest.(check string) "duplicate GitHub" "duplicate issue identifier"
+            (List.hd problems).Ordered_queue.reason);
+      (match Ordered_queue.parse "mb-020,mb-20" with
+      | Ok _ -> Alcotest.fail "expected duplicate canonical minibeads selector"
+      | Error problems ->
+          Alcotest.(check string) "duplicate minibeads" "duplicate issue identifier"
+            (List.hd problems).Ordered_queue.reason);
+      (match Ordered_queue.parse "owner/repo#20,https://github.com/acme/widgets/issues/20,,mb-,mb-zero,MB-20" with
       | Ok _ -> Alcotest.fail "expected ordered queue parse problems"
       | Error problems ->
-          Alcotest.(check int) "problem count" 3 (List.length problems);
-          Alcotest.(check string) "duplicate" "duplicate issue identifier" (List.hd (List.rev problems)).Ordered_queue.reason)
+          Alcotest.(check int) "problem count" 6 (List.length problems);
+          Alcotest.(check (list string)) "rejected values"
+            [ "owner/repo#20"; "https://github.com/acme/widgets/issues/20"; ""; "mb-"; "mb-zero"; "MB-20" ]
+            (List.map (fun (problem : Ordered_queue.parse_problem) -> problem.value) problems))
+
+let test_ordered_queue_validation_uses_selected_tracker () =
+  let open Issue_tracker in
+  let issue ?(state = "open") identifier = Issue.empty ~id:identifier ~identifier ~title:identifier ~state in
+  let queue =
+    match Ordered_queue.parse "mb-20,mb-21,mb-22" with
+    | Ok queue -> queue
+    | Error _ -> Alcotest.fail "queue parse failed"
+  in
+  let tracker =
+    {
+      kind = "minibeads";
+      fetch_candidates = (fun () -> Ok []);
+      fetch_by_identifiers = (fun _ -> Ok []);
+      fetch_by_identifiers_detailed =
+        (fun identifiers ->
+          Alcotest.(check (list string)) "lookup identifiers" [ "mb-20"; "mb-21"; "mb-22" ] identifiers;
+          Ok
+            [
+              { identifier = "mb-20"; issue = Some (issue "mb-20"); diagnostics = [] };
+              { identifier = "mb-21"; issue = Some (issue ~state:"closed" "mb-21"); diagnostics = [] };
+              { identifier = "mb-22"; issue = None; diagnostics = [ Missing_issue ] };
+            ]);
+      update_status = (fun _ _ -> Ok ());
+      readiness_gaps = (fun () -> []);
+      normalize_identifier = (fun raw -> Ok raw);
+      is_active = (fun status -> status = "open");
+      is_terminal = (fun status -> status = "closed");
+    }
+  in
+  let gaps = Ordered_queue.validation_gaps tracker queue in
+  Alcotest.(check (list string)) "requirements" [ "orderedQueue.mb-21"; "orderedQueue.mb-22" ]
+    (List.map (fun (gap : Ordered_queue.validation_gap) -> gap.requirement) gaps);
+  Alcotest.(check string) "terminal remediation" "Issue is terminal in tracker state \"closed\"."
+    (List.hd gaps).Ordered_queue.remediation
 
 let test_runtime_state_exposes_ordered_queue () =
   let queue =
@@ -2002,11 +2048,47 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
       let different =
         Orchestrator.make ~ordered_queue:different_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
       in
-      match (Orchestrator.get_state different).Runtime_state.ordered_queue with
+      (match (Orchestrator.get_state different).Runtime_state.ordered_queue with
       | Some queue ->
           Alcotest.(check (list string)) "different queue resets" [ "pending"; "pending" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
-      | None -> Alcotest.fail "expected new ordered queue")
+      | None -> Alcotest.fail "expected new ordered queue");
+      let local_config =
+        {
+          config with
+          Config.tracker =
+            {
+              config.tracker with
+              kind = "minibeads";
+              owner = "";
+              repo = "";
+              project_number = 0;
+              api_key = None;
+            };
+        }
+      in
+      let local_persisted =
+        {
+          Runtime_state.entries =
+            [
+              { Runtime_state.issue_identifier = "mb-2"; title = Some "Two"; state = "completed"; skip_reason = None };
+              { Runtime_state.issue_identifier = "mb-1"; title = Some "One"; state = "pending"; skip_reason = None };
+            ];
+        }
+      in
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson local_persisted |> Yojson.Safe.to_string);
+      let same_local_queue =
+        match Ordered_queue.parse "mb-2,mb-1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let same_local =
+        Orchestrator.make ~ordered_queue:same_local_queue ~config:local_config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      (match (Orchestrator.get_state same_local).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "local queue resumes by canonical identifiers" [ "completed"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected resumed local ordered queue"))
 
 let test_runtime_state_exposes_goal_usage_when_available () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add goal usage" ~state:"In progress" in
@@ -3935,6 +4017,55 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
       | Some queue ->
           Alcotest.(check (list string)) "queue states" [ "running"; "running" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries))
+
+let test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable () =
+  with_temp_dir "symphony-orchestrator-local-queue-" (fun root ->
+      let base_config = minibeads_orchestrator_config root in
+      let config =
+        {
+          base_config with
+          Config.agent = { base_config.agent with max_concurrent_agents = 2 };
+        }
+      in
+      let ordered_queue =
+        match Ordered_queue.parse "mb-20,mb-21" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let issue20 = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Local dispatchable" ~state:"open" in
+      let issue21 = Issue.empty ~id:"mb-21" ~identifier:"mb-21" ~title:"Local terminal" ~state:"closed" in
+      let lookup_tracker =
+        {
+          (Issue_tracker.make config) with
+          fetch_by_identifiers_detailed =
+            (fun identifiers ->
+              Alcotest.(check (list string)) "lookup identifiers" [ "mb-20"; "mb-21" ] identifiers;
+              Ok
+                [
+                  { Issue_tracker.identifier = "mb-20"; issue = Some issue20; diagnostics = [] };
+                  { Issue_tracker.identifier = "mb-21"; issue = Some issue21; diagnostics = [] };
+                ]);
+        }
+      in
+      let gaps = Ordered_queue.validation_gaps lookup_tracker ordered_queue in
+      Alcotest.(check (list string)) "validation blocks terminal local issue" [ "orderedQueue.mb-21" ]
+        (List.map (fun (gap : Ordered_queue.validation_gap) -> gap.requirement) gaps);
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue21; issue20 ])
+          ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "only dispatchable local issue launched" [ "mb-20" ] (List.rev !launched);
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "local queue states" [ "running"; "skipped" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state")
 
 let test_orchestrator_pauses_tracker_after_rate_limit () =
   with_temp_dir "symphony-orchestrator-rate-limit-" (fun root ->
@@ -7552,6 +7683,8 @@ let () =
         [
           Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
+          Alcotest.test_case "validates ordered queue through selected tracker" `Quick
+            test_ordered_queue_validation_uses_selected_tracker;
           Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
@@ -7635,6 +7768,8 @@ let () =
           Alcotest.test_case "skips full stage capacity in ordered queue" `Quick
             test_orchestrator_stage_capacity_skips_full_ordered_stage;
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
+          Alcotest.test_case "dispatches minibeads ordered queue only when dispatchable" `Quick
+            test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
           Alcotest.test_case "keeps ordered queue stage handoffs pending" `Quick
             test_ordered_queue_keeps_stage_handoffs_pending;
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick

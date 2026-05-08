@@ -14,42 +14,10 @@ let queue_parse_gaps = function
              })
 
 let queue_validation_gaps config queue =
-  let tracker = Github_tracker.make config.Config.tracker in
-  let issues = Github_tracker.fetch_project_issues_by_numbers tracker (Ordered_queue.numbers queue) in
-  queue.Ordered_queue.entries
-  |> List.filter_map (fun (entry : Ordered_queue.entry) ->
-         match List.assoc_opt entry.issue_number issues |> Option.join with
-         | None ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = "Issue is missing from the Workspace Repository issue tracker.";
-               }
-         | Some row when row.Github_tracker.project_status = None ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = Printf.sprintf "Issue is absent from GitHub Project #%d." config.tracker.project_number;
-               }
-         | Some row when row.closed ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = "Issue is closed in the Workspace Repository issue tracker.";
-               }
-         | Some row when Github_tracker.status_is_terminal ~config:config.tracker row.issue.Issue.state ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = Printf.sprintf "Issue is terminal in project state %S." row.issue.state;
-               }
-         | Some row when not (Github_tracker.status_is_active ~active_states:config.tracker.active_states row.issue.Issue.state) ->
-             Some
-               {
-                 Config.requirement = "orderedQueue." ^ entry.issue_identifier;
-                 remediation = Printf.sprintf "Issue is not dispatchable in project state %S." row.issue.state;
-               }
-         | Some _ -> None)
+  let tracker = Issue_tracker.make config in
+  Ordered_queue.validation_gaps tracker queue
+  |> List.map (fun (gap : Ordered_queue.validation_gap) ->
+         { Config.requirement = gap.requirement; remediation = gap.remediation })
 
 let config_gap_of_runtime_gap (gap : Runtime_state.readiness_gap) =
   { Config.requirement = gap.requirement; remediation = gap.remediation }
@@ -75,16 +43,14 @@ let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
         let tracker_gaps = selected_tracker_readiness_gaps config in
         match (tracker_gaps, ordered_queue) with
         | [], Some queue -> (
-            if config.tracker.kind <> "github" then []
-            else
-              try queue_validation_gaps config queue
-              with exn ->
-                [
-                  {
-                    Config.requirement = "orderedQueue.validation";
-                    remediation = "Ordered Queue validation failed: " ^ Printexc.to_string exn;
-                  };
-                ])
+            try queue_validation_gaps config queue
+            with exn ->
+              [
+                {
+                  Config.requirement = "orderedQueue.validation";
+                  remediation = "Ordered Queue validation failed: " ^ Printexc.to_string exn;
+                };
+              ])
         | gaps, _ -> gaps)
     | gaps -> gaps
   in

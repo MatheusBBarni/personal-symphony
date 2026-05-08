@@ -354,26 +354,32 @@ let persist_ordered_queue_state config = function
       Util.mkdir_p (Filename.dirname path);
       Util.write_file path (Runtime_state.ordered_queue_to_yojson queue |> Yojson.Safe.pretty_to_string)
 
-let queue_issue_number issue =
-  match Util.drop_prefix ~prefix:"#" issue.Issue.identifier with
-  | Some number -> int_of_string_opt number
-  | None -> None
-
-let issue_numeric_key issue = Option.value (queue_issue_number issue) ~default:max_int
-
 let queue_contains_issue queue issue =
-  match queue_issue_number issue with
-  | None -> false
-  | Some number -> List.exists (fun (entry : Ordered_queue.entry) -> entry.issue_number = number) queue.Ordered_queue.entries
+  List.exists
+    (fun (entry : Ordered_queue.entry) -> entry.issue_identifier = issue.Issue.identifier)
+    queue.Ordered_queue.entries
 
 let queue_index queue issue =
-  match queue_issue_number issue with
-  | None -> max_int
-  | Some number ->
-      queue.Ordered_queue.entries
-      |> List.mapi (fun index (entry : Ordered_queue.entry) -> (index, entry.issue_number))
-      |> List.find_map (fun (index, candidate_number) -> if candidate_number = number then Some index else None)
-      |> Option.value ~default:max_int
+  queue.Ordered_queue.entries
+  |> List.mapi (fun index (entry : Ordered_queue.entry) -> (index, entry.issue_identifier))
+  |> List.find_map (fun (index, candidate_identifier) ->
+         if candidate_identifier = issue.Issue.identifier then Some index else None)
+  |> Option.value ~default:max_int
+
+let issue_identifier_key issue =
+  let identifier = issue.Issue.identifier in
+  match Util.drop_prefix ~prefix:"#" identifier with
+  | Some number -> (
+      match int_of_string_opt number with
+      | Some parsed -> (0, parsed, identifier)
+      | None -> (2, max_int, identifier))
+  | None -> (
+      match Util.drop_prefix ~prefix:"mb-" identifier with
+      | Some number -> (
+          match int_of_string_opt number with
+          | Some parsed -> (1, parsed, identifier)
+          | None -> (2, max_int, identifier))
+      | None -> (2, max_int, identifier))
 
 let queue_entry_allows_dispatch state issue =
   match state.Runtime_state.ordered_queue with
@@ -2074,7 +2080,7 @@ let issue_is_completed_stage config issue =
   |> List.exists (fun status -> string_equal_ci status issue.Issue.state)
 
 let startup_candidate_order config left right =
-  match compare (issue_numeric_key left) (issue_numeric_key right) with
+  match compare (issue_identifier_key left) (issue_identifier_key right) with
   | 0 -> compare (task_branch config left) (task_branch config right)
   | result -> result
 
