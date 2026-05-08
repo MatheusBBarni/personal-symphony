@@ -65,7 +65,7 @@ let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
         { Runtime_state.requirement = gap.requirement; remediation = gap.remediation })
       gaps
   in
-  Runtime_state.empty ?last_error ~status_order:(Config.project_status_order config)
+  Runtime_state.empty ?last_error ~tracker_kind:config.tracker.kind ~status_order:(Config.project_status_order config)
     ?ordered_queue:(Option.map Orchestrator.ordered_queue_state ordered_queue)
     ~readiness_gaps ()
 
@@ -134,10 +134,22 @@ let render_bootstrap_report report =
       Printf.eprintf "  %s %-7s %s\n%!" (status_badge item.status) (basename item.path) (dim item.path))
     report
 
+let tracker_issue_source config =
+  match config.Config.tracker.kind with
+  | "github" -> Printf.sprintf "%s/%s" config.tracker.owner config.tracker.repo
+  | "minibeads" -> config.tracker.minibeads_root
+  | kind -> kind
+
+let tracker_status_source config =
+  match config.Config.tracker.kind with
+  | "github" -> Printf.sprintf "GitHub Project #%d" config.tracker.project_number
+  | "minibeads" -> Printf.sprintf "Local Issue Files via %s" config.tracker.minibeads_command
+  | kind -> kind
+
 let render_startup_completed ~mode ~config ~runtime_home =
-  Printf.eprintf "%s %s %s %s %s\n%!" (blue "startup") (green "ready") (dim mode)
-    (Printf.sprintf "%s/%s" config.Config.tracker.owner config.tracker.repo)
-    (dim (Printf.sprintf "project #%d - %s" config.tracker.project_number runtime_home))
+  Printf.eprintf "%s %s %s %s %s %s %s\n%!" (blue "startup") (green "ready") (dim mode) (dim "tracker")
+    (cyan config.Config.tracker.kind) (tracker_issue_source config)
+    (dim (Printf.sprintf "status=%s runtime_home=%s" (tracker_status_source config) runtime_home))
 
 let render_web_dashboard_starting ~port =
   let url = Printf.sprintf "http://0.0.0.0:%d/" port in
@@ -161,9 +173,10 @@ let render_banner () =
 
 let render_terminal_console config state =
   render_banner ();
-  print_section "Tracker";
-  Printf.printf "  %s %s/%s\n%!" (dim "Repository") config.Config.tracker.owner config.tracker.repo;
-  Printf.printf "  %s GitHub Project #%d\n%!" (dim "Project") config.tracker.project_number;
+  print_section "Issue Tracker";
+  Printf.printf "  %s %s\n%!" (dim "Kind") config.Config.tracker.kind;
+  Printf.printf "  %s %s\n%!" (dim "Issue source") (tracker_issue_source config);
+  Printf.printf "  %s %s\n%!" (dim "Status source") (tracker_status_source config);
   Printf.printf "  %s %s\n%!" (dim "Workspace") config.workspace.root;
   print_section "Activity";
   Printf.printf "  %s %d running, %d retrying\n%!" (dim "Agents") (List.length state.Runtime_state.running)

@@ -102,6 +102,7 @@ type runningIssue = {
 
 type runtimeState = {
   workspace_repository_name: option<string>,
+  tracker_kind: string,
   counts: counts,
   codex_totals: codexTotals,
   generated_at: string,
@@ -361,6 +362,7 @@ let snapshotFromState = state => {
   | Some(value) => value
   | None => ""
   },
+  trackerKind: RuntimeState.trackerKindOrDefault(state.tracker_kind),
   Dashboard.running: state.counts.running->Int.toString,
   retrying: state.counts.retrying->Int.toString,
   tokens: state.codex_totals.total_tokens->Int.toString,

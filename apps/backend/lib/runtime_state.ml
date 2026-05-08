@@ -80,6 +80,7 @@ type context_diagnostic = {
 
 type t = {
   workspace_repository_name : string option;
+  tracker_kind : string;
   issues : Issue.t list;
   running : running list;
   retrying : retrying list;
@@ -99,9 +100,11 @@ type t = {
   last_error : string option;
 }
 
-let empty ?workspace_repository_name ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue ?last_error () =
+let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue
+    ?last_error () =
   {
     workspace_repository_name;
+    tracker_kind;
     running = [];
     issues = [];
     retrying = [];
@@ -320,6 +323,7 @@ let to_yojson state =
     [
       ("generated_at", `String (Util.now_iso8601 ()));
       ("workspace_repository_name", (match state.workspace_repository_name with Some s -> `String s | None -> `Null));
+      ("tracker_kind", `String state.tracker_kind);
       ("counts", `Assoc [ ("running", `Int (List.length state.running)); ("retrying", `Int (List.length state.retrying)) ]);
       ("issues", `List (List.map issue_to_yojson state.issues));
       ("running", `List (List.map (running_to_yojson state) state.running));

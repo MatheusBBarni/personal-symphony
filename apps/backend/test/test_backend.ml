@@ -1903,6 +1903,13 @@ let test_runtime_state_exposes_running_issue_details () =
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
 
+let test_runtime_state_exposes_tracker_kind () =
+  let open Yojson.Safe.Util in
+  let default_json = Runtime_state.empty () |> Runtime_state.to_yojson in
+  Alcotest.(check string) "default tracker kind" "github" (default_json |> member "tracker_kind" |> to_string);
+  let local_json = Runtime_state.empty ~tracker_kind:"minibeads" () |> Runtime_state.to_yojson in
+  Alcotest.(check string) "selected tracker kind" "minibeads" (local_json |> member "tracker_kind" |> to_string)
+
 let test_ordered_queue_parses_cli_identifiers () =
   match Ordered_queue.parse "19,#22,mb-20" with
   | Error _ -> Alcotest.fail "expected ordered queue parse success"
@@ -2339,6 +2346,7 @@ let test_websocket_broadcast_after_state_change () =
 let test_websocket_readiness_snapshot_and_http_state () =
   let state =
     Runtime_state.empty
+      ~tracker_kind:"minibeads"
       ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set tracker owner" } ]
       ~last_error:"tracker.owner: set tracker owner" ()
   in
@@ -2346,12 +2354,17 @@ let test_websocket_readiness_snapshot_and_http_state () =
       let open Yojson.Safe.Util in
       let json = Yojson.Safe.from_string initial in
       Alcotest.(check string) "readiness requirement" "tracker.owner"
-        (json |> member "readiness_gaps" |> to_list |> List.hd |> member "requirement" |> to_string));
+        (json |> member "readiness_gaps" |> to_list |> List.hd |> member "requirement" |> to_string);
+      Alcotest.(check string) "websocket tracker kind" "minibeads" (json |> member "tracker_kind" |> to_string));
   let http =
     Server.handle_request (fun () -> state)
       { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
   in
-  Alcotest.(check bool) "diagnostic endpoint preserved" true (String.contains http '{')
+  Alcotest.(check bool) "diagnostic endpoint preserved" true (String.contains http '{');
+  let body = match List.rev (String.split_on_char '\n' http) with body :: _ -> body | [] -> "" in
+  let open Yojson.Safe.Util in
+  let json = Yojson.Safe.from_string body in
+  Alcotest.(check string) "http tracker kind" "minibeads" (json |> member "tracker_kind" |> to_string)
 
 let test_websocket_context_status_snapshot_and_http_state () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Context status" ~state:"Todo" in
@@ -4200,7 +4213,9 @@ let test_orchestrator_minibeads_stub_dispatch_without_github_settings () =
           Orchestrator.poll_once orchestrator;
           Alcotest.(check (list (pair string string))) "status transitions"
             [ ("mb-20", "in_progress") ] (List.rev !statuses);
-          let running = (Orchestrator.get_state orchestrator).Runtime_state.running in
+          let state = Orchestrator.get_state orchestrator in
+          Alcotest.(check string) "runtime state tracker kind" "minibeads" state.Runtime_state.tracker_kind;
+          let running = state.Runtime_state.running in
           Alcotest.(check int) "running local issue" 1 (List.length running)))
 
 let test_orchestrator_does_not_dispatch_terminal_issues () =
@@ -7839,6 +7854,7 @@ let () =
       ( "runtime-state",
         [
           Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
+          Alcotest.test_case "exposes tracker kind" `Quick test_runtime_state_exposes_tracker_kind;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
           Alcotest.test_case "validates ordered queue through selected tracker" `Quick
             test_ordered_queue_validation_uses_selected_tracker;

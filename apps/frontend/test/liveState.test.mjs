@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createLiveStateConnection } from "../src/LiveState.res.js";
+import { trackerKindOrDefault } from "../src/RuntimeState.res.js";
 
 const sockets = [];
 const timers = [];
@@ -44,6 +45,7 @@ assert.equal(sockets[0].url, "ws://127.0.0.1:8080/api/v1/state/live");
 sockets[0].onmessage({
   data: JSON.stringify({
     counts: { running: 1, retrying: 1 },
+    tracker_kind: "minibeads",
     generated_at: "2026-05-04T00:00:00Z",
     running: [
       {
@@ -71,6 +73,7 @@ sockets[0].onmessage({
 });
 assert.equal(snapshots.length, 1);
 assert.equal(snapshots[0].counts.running, 1);
+assert.equal(trackerKindOrDefault(snapshots[0].tracker_kind), "minibeads");
 assert.equal(snapshots[0].running[0].context_status.state, "succeeded");
 assert.equal(snapshots[0].retrying[0].context_status.state, "timed_out");
 
@@ -82,6 +85,7 @@ sockets[0].onmessage({
   }),
 });
 assert.equal(snapshots.length, 2);
+assert.equal(trackerKindOrDefault(snapshots[1].tracker_kind), "github");
 assert.equal(snapshots[1].running[0].context_status, undefined);
 
 sockets[0].onclose();

@@ -85,8 +85,8 @@ let clock_time () =
 let render_poll_started orchestrator =
   Printf.eprintf "%s%s %s %s%!" clear_line (dim (clock_time ())) (blue "poll")
     (dim
-       (Printf.sprintf "checking GitHub, %d running, %d retrying" (List.length orchestrator.state.Runtime_state.running)
-          (List.length orchestrator.state.retrying)))
+       (Printf.sprintf "checking %s tracker, %d running, %d retrying" orchestrator.tracker.Issue_tracker.kind
+          (List.length orchestrator.state.Runtime_state.running) (List.length orchestrator.state.retrying)))
 
 let render_poll_completed orchestrator candidate_count =
   let running_count = List.length orchestrator.state.Runtime_state.running in
@@ -1749,12 +1749,13 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
   let workspace_repository_name =
     match Util.trim config.tracker.repo with "" -> Filename.basename config.repository_root | repo -> repo
   in
+  let tracker = Issue_tracker.make config in
   {
     config;
     prompt_template;
-    tracker = Issue_tracker.make config;
+    tracker;
     state =
-      Runtime_state.empty ~workspace_repository_name ~status_order:(Config.project_status_order config)
+      Runtime_state.empty ~workspace_repository_name ~tracker_kind:tracker.kind ~status_order:(Config.project_status_order config)
         ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
         ();
     children = [];

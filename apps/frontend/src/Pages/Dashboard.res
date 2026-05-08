@@ -18,6 +18,7 @@ type queueEntry = {
 
 type snapshot = {
   workspaceRepositoryName: string,
+  trackerKind: string,
   running: string,
   retrying: string,
   tokens: string,
@@ -383,27 +384,36 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
         {renderBanner("error", "Runtime State Error", data.lastError)}
         {orderedQueuePanel(data.orderedQueue)}
         <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
-          <HeroUI.CardHeader
+        <HeroUI.CardHeader
             className="flex flex-col items-center justify-center border-b border-neutral-800 px-4 py-4 text-center"
           >
             <div className="mb-2 text-sm font-semibold text-neutral-100">
-              {React.string("Project board")}
+              {React.string("Issue tracker")}
             </div>
             <div className="mb-3 text-xs text-neutral-500">
               {React.string("Columns follow Runtime State status order and issue states.")}
             </div>
-            <HeroUI.Chip
-              size="sm"
-              variant="flat"
-              className="rounded border border-teal-800 bg-teal-950/70 px-3 text-teal-100"
-            >
-              {React.string(Array.length(data.issues)->Int.toString ++ " tracked")}
-            </HeroUI.Chip>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <HeroUI.Chip
+                size="sm"
+                variant="flat"
+                className="rounded border border-teal-800 bg-teal-950/70 px-3 text-teal-100"
+              >
+                {React.string(Array.length(data.issues)->Int.toString ++ " tracked")}
+              </HeroUI.Chip>
+              <HeroUI.Chip
+                size="sm"
+                variant="flat"
+                className="rounded border border-neutral-700 bg-neutral-900 px-3 text-neutral-200"
+              >
+                {React.string("Tracker " ++ data.trackerKind)}
+              </HeroUI.Chip>
+            </div>
           </HeroUI.CardHeader>
           {switch Array.length(data.issues) == 0 && Array.length(data.statusOrder) == 0 {
           | true =>
             <HeroUI.CardContent className="p-4 text-sm text-neutral-400">
-              {React.string("No project issues were returned by the latest snapshot.")}
+              {React.string("No tracked issues were returned by the latest snapshot.")}
             </HeroUI.CardContent>
           | false =>
             <HeroUI.CardContent className="overflow-x-auto p-4">
