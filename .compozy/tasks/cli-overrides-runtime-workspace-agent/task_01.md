@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Runtime Invocation Override Model And Apply Helper"
 type: backend
 complexity: medium
@@ -28,11 +28,11 @@ This task adds the transient model that represents Runtime Settings Invocation O
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add a transient Runtime Settings Invocation Override model.
-- [ ] 1.2 Add an apply helper that returns one effective `Config.t`.
-- [ ] 1.3 Preserve all non-overridden config fields exactly.
-- [ ] 1.4 Reuse the existing Workspace Repository-relative path behavior for `workspace.root`.
-- [ ] 1.5 Add focused tests for field replacement, missing overrides, and path resolution.
+- [x] 1.1 Add a transient Runtime Settings Invocation Override model.
+- [x] 1.2 Add an apply helper that returns one effective `Config.t`.
+- [x] 1.3 Preserve all non-overridden config fields exactly.
+- [x] 1.4 Reuse the existing Workspace Repository-relative path behavior for `workspace.root`.
+- [x] 1.5 Add focused tests for field replacement, missing overrides, and path resolution.
 
 ## Implementation Details
 Modify `apps/backend/lib/config.ml` or add a small adjacent backend module if that keeps the helper clearer. Reference the TechSpec "Core Interfaces" and "Data Models" sections for the intended record shape and field mapping. Keep the helper independent from Cmdliner so it can be tested without CLI parsing.

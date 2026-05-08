@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Override CLI Flags, Strict Parsing, Help, And Unsupported-Mode Guard"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This task adds the five issue-66 runtime-only CLI flags to the extracted command
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add explicit runtime-only override args to the command module.
-- [ ] 3.2 Add strict positive-integer parsing for numeric overrides.
-- [ ] 3.3 Add help text for each override flag using current-invocation wording.
-- [ ] 3.4 Add one shared list of runtime-only override flag names for parsing and unsupported-mode pre-scan.
-- [ ] 3.5 Add tests for help output, invalid values, unsupported modes, and duplicate behavior.
+- [x] 3.1 Add explicit runtime-only override args to the command module.
+- [x] 3.2 Add strict positive-integer parsing for numeric overrides.
+- [x] 3.3 Add help text for each override flag using current-invocation wording.
+- [x] 3.4 Add one shared list of runtime-only override flag names for parsing and unsupported-mode pre-scan.
+- [x] 3.5 Add tests for help output, invalid values, unsupported modes, and duplicate behavior.
 
 ## Implementation Details
 Build on task_01's override model and task_02's extracted command module. Reference the TechSpec "Testing Approach" and "Technical Considerations" sections for duplicate behavior and pre-scan requirements. Do not wire the parsed values into runtime startup in this task; task_04 owns runtime pass-through.
@@ -62,15 +62,15 @@ Build on task_01's override model and task_02's extracted command module. Refere
 
 ## Tests
 - Unit tests:
-  - [ ] `symphony --help` includes `--polling.intervalMs` with current-invocation wording.
-  - [ ] `symphony --help` includes `--workspace.root` and says it controls current-invocation Agent Worktree placement.
-  - [ ] `symphony --help` includes all three `--agent.*` override flags.
-  - [ ] Numeric override parsing rejects `0`, `-1`, `1.5`, empty input, and `abc`.
-  - [ ] Duplicate `--polling.intervalMs` usage follows Cmdliner's observed repeated-option behavior.
+  - [x] `symphony --help` includes `--polling.intervalMs` with current-invocation wording.
+  - [x] `symphony --help` includes `--workspace.root` and says it controls current-invocation Agent Worktree placement.
+  - [x] `symphony --help` includes all three `--agent.*` override flags.
+  - [x] Numeric override parsing rejects `0`, `-1`, `1.5`, empty input, and `abc`.
+  - [x] Duplicate `--polling.intervalMs` usage follows Cmdliner's observed repeated-option behavior.
 - Integration tests:
-  - [ ] `symphony init --polling.intervalMs 1000` fails with runtime-only default-command wording.
-  - [ ] `symphony update --agent.maxConcurrentAgents 1` fails with runtime-only default-command wording.
-  - [ ] `symphony WORKFLOW.md --workspace.root /tmp/workspaces` fails with runtime-only default-command wording.
+  - [x] `symphony init --polling.intervalMs 1000` fails with runtime-only default-command wording.
+  - [x] `symphony update --agent.maxConcurrentAgents 1` fails with runtime-only default-command wording.
+  - [x] `symphony WORKFLOW.md --workspace.root /tmp/workspaces` fails with runtime-only default-command wording.
 - Test coverage target: >=80%
 - All tests must pass
 
