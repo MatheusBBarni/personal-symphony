@@ -235,6 +235,8 @@ let add_string_ci value values =
   if List.exists (fun existing -> String.lowercase_ascii existing = String.lowercase_ascii value) values then values
   else values @ [ value ]
 
+let string_equal_ci a b = String.lowercase_ascii a = String.lowercase_ascii b
+
 let resolve_secret = function
   | None -> None
   | Some s -> (
@@ -527,6 +529,23 @@ let selected_stage_agent_harnesses config =
     config.stage_agents.stages
     |> List.filter_map (fun stage -> selected_agent_harness config (Some stage))
     |> unique_harnesses_by_name
+
+let active_state_has_stage config state =
+  config.stage_agents.stages
+  |> List.exists (fun (stage : stage_agent) ->
+         List.exists (fun stage_state -> string_equal_ci stage_state state) stage.states)
+
+let has_non_stage_dispatch_path config =
+  (not config.stage_agents.enabled)
+  || List.exists (fun state -> not (active_state_has_stage config state)) config.tracker.active_states
+
+let readiness_agent_harnesses config =
+  let selected_harnesses = selected_stage_agent_harnesses config in
+  let harnesses =
+    if has_non_stage_dispatch_path config then default_agent_harness config :: selected_harnesses
+    else selected_harnesses
+  in
+  unique_harnesses_by_name harnesses
 
 let json_protected_path_patterns json =
   json_object_list "patterns" json
@@ -1334,7 +1353,7 @@ let readiness_gaps config =
   if config.tracker.api_key = None then
     add ("environment." ^ config.tracker.api_key_env)
       (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env);
-  let selected_harnesses = selected_stage_agent_harnesses config in
+  let selected_harnesses = readiness_agent_harnesses config in
   List.iter
     (fun (harness : agent_harness) ->
       let prefix =

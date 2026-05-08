@@ -1349,6 +1349,25 @@ let test_pi_harness_readiness_ignores_unselected_harnesses () =
   "agents": {
     "pi": {
       "kind": "pi",
+      "command": "/definitely/missing/pi --print",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "medium"
+    }
+  },
+  "stageAgents": {"enabled": false}
+}|};
+          let disabled_stage_requirements = requirements () in
+          check_no_pi_gaps "disabled Stage Agent mappings with invalid fallback" disabled_stage_requirements;
+          Alcotest.(check bool) "disabled Stage Agent mappings validate fallback harness" true
+            (has "agents.codex.command" disabled_stage_requirements);
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "project": {"activeStates": ["Todo"]},
+  "codex": {"command": ""},
+  "agents": {
+    "pi": {
+      "kind": "pi",
       "command": "sh -c 'cat >/dev/null' --api-key=$PI_TEST_API_KEY",
       "model": "openai-codex/gpt-5.5",
       "reasoningEffort": "medium"
