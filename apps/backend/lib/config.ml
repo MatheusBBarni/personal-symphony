@@ -1140,6 +1140,41 @@ let pi_harness_auth_configured (harness : agent_harness) =
     | Some provider -> pi_auth_provider_configured provider || pi_provider_env_configured provider
     | None -> pi_any_auth_configured () || pi_any_env_configured ()
 
+let claude_config_dir () =
+  match Util.getenv_nonempty "CLAUDE_CONFIG_DIR" with
+  | Some dir -> dir
+  | None ->
+      let home = Option.value (Util.getenv_nonempty "HOME") ~default:(Unix.getcwd ()) in
+      Filename.concat home ".claude"
+
+let claude_credentials_path () = Filename.concat (claude_config_dir ()) ".credentials.json"
+
+let claude_credentials_configured () =
+  let path = claude_credentials_path () in
+  if not (Sys.file_exists path) then false
+  else
+    try Yojson.Safe.from_file path |> json_has_nonempty_entry
+    with Yojson.Json_error _ | Sys_error _ -> false
+
+let claude_env_auth_configured () =
+  [
+    "ANTHROPIC_AUTH_TOKEN";
+    "ANTHROPIC_API_KEY";
+    "CLAUDE_CODE_OAUTH_TOKEN";
+    "CLAUDE_CODE_USE_BEDROCK";
+    "CLAUDE_CODE_USE_VERTEX";
+    "CLAUDE_CODE_USE_FOUNDRY";
+  ]
+  |> List.exists (fun env -> Util.getenv_nonempty env <> None)
+
+let claude_command_references_api_key_helper command =
+  command_words command
+  |> List.exists (fun word -> word = "--settings" || Util.starts_with ~prefix:"--settings=" word)
+
+let claude_harness_auth_configured (harness : agent_harness) =
+  claude_env_auth_configured () || claude_credentials_configured ()
+  || claude_command_references_api_key_helper harness.command
+
 let from_settings_file ~workspace_root path =
   let root =
     try Yojson.Safe.from_file path
@@ -1548,6 +1583,26 @@ let readiness_gaps config =
                "Configure PI authentication%s. Run `pi`, use `/login` for a subscription provider, or set an API key \
                 environment variable supported by PI."
                provider)))
+    selected_harnesses;
+  List.iter
+    (fun (harness : agent_harness) ->
+      if harness.kind = "claude" && Util.trim harness.command <> "" then (
+        let prefix =
+          if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "agents.claude"
+        in
+        (match harness_executable harness with
+        | Some executable when executable_available executable -> ()
+        | Some executable ->
+            add (prefix ^ ".install")
+              (Printf.sprintf
+                 "Install Claude Code or update the Claude Harness command so its executable is available: %s."
+                 executable)
+        | None -> ());
+        if not (claude_harness_auth_configured harness) then
+          add (prefix ^ ".auth")
+            "Configure Claude Code authentication without storing secrets in Runtime Settings. Run `claude /login`, set \
+             ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, set CLAUDE_CODE_OAUTH_TOKEN for non-bare scripted runs, or \
+             configure an apiKeyHelper through Claude settings."))
     selected_harnesses;
   if config.tracker.active_states = [] then
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";

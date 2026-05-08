@@ -1501,6 +1501,23 @@ let test_harness_command_rendering () =
   Alcotest.(check string) "pi tokens"
     "pi --model 'openai/gpt-5.5' --thinking 'medium' --print --no-session"
     (Orchestrator.render_harness_command pi);
+  let claude =
+    {
+      Config.name = "claude";
+      kind = "claude";
+      command = "claude --model <model> --reasoning <reasoning> -p --output-format stream-json";
+      model = "claude-opus-4-7";
+      reasoning_effort = "xhigh";
+      turn_timeout_ms = 1000;
+      read_timeout_ms = 100;
+      stall_timeout_ms = 1000;
+      loop_enabled = false;
+      loop_command = "";
+    }
+  in
+  Alcotest.(check string) "claude tokens"
+    "claude --model 'claude-opus-4-7' --reasoning 'xhigh' -p --output-format stream-json"
+    (Orchestrator.render_harness_command claude);
   let codex =
     {
       Config.name = "codex";
@@ -1517,6 +1534,125 @@ let test_harness_command_rendering () =
   in
   Alcotest.(check string) "codex injection" "codex -m 'gpt-5.5' -c 'model_reasoning_effort=\"high\"' exec"
     (Orchestrator.render_harness_command codex)
+
+let test_claude_harness_readiness_checks_selected_install_and_auth () =
+  with_temp_dir "symphony-claude-readiness-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      let claude_config_dir = Filename.concat root "claude-config" in
+      Util.mkdir_p agents_root;
+      Util.mkdir_p claude_config_dir;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      let write_settings command =
+        Util.write_file settings
+          (Printf.sprintf
+             {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "sh -c 'cat >/dev/null'"},
+    "claude": {
+      "kind": "claude",
+      "command": %s,
+      "model": "claude-opus-4-7",
+      "reasoningEffort": "xhigh"
+    }
+  },
+  "agents": {
+    "engineer": {"harness": "claude"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+             (Yojson.Safe.to_string (`String command)))
+      in
+      let requirements () =
+        Config.from_settings_file ~workspace_root:root settings
+        |> Config.readiness_gaps
+        |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+      in
+      with_env
+        [
+          ("GITHUB_TOKEN", "token");
+          ("HOME", root);
+          ("CLAUDE_CONFIG_DIR", claude_config_dir);
+          ("ANTHROPIC_AUTH_TOKEN", "");
+          ("ANTHROPIC_API_KEY", "");
+          ("CLAUDE_CODE_OAUTH_TOKEN", "");
+          ("CLAUDE_CODE_USE_BEDROCK", "");
+          ("CLAUDE_CODE_USE_VERTEX", "");
+          ("CLAUDE_CODE_USE_FOUNDRY", "");
+        ]
+        (fun () ->
+          write_settings "/definitely/missing/claude -p --output-format stream-json";
+          let missing_requirements = requirements () in
+          Alcotest.(check bool) "claude kind accepted" false
+            (List.exists (( = ) "harnesses.claude.kind") missing_requirements);
+          Alcotest.(check bool) "missing claude executable" true
+            (List.exists (( = ) "harnesses.claude.install") missing_requirements);
+          Alcotest.(check bool) "missing claude auth" true
+            (List.exists (( = ) "harnesses.claude.auth") missing_requirements);
+          write_settings "sh -c 'cat >/dev/null'";
+          let auth_requirements = requirements () in
+          Alcotest.(check bool) "available executable avoids install gap" false
+            (List.exists (( = ) "harnesses.claude.install") auth_requirements);
+          Alcotest.(check bool) "still requires auth" true
+            (List.exists (( = ) "harnesses.claude.auth") auth_requirements);
+          Util.write_file (Filename.concat claude_config_dir ".credentials.json") {|{"claudeAiOauth":{"accessToken":"configured"}}|};
+          Alcotest.(check bool) "configured auth avoids gap" false
+            (List.exists (( = ) "harnesses.claude.auth") (requirements ()))))
+
+let test_claude_harness_readiness_ignores_unselected_harnesses () =
+  with_temp_dir "symphony-claude-optional-readiness-" (fun root ->
+      let settings = Filename.concat root "settings.json" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      let claude_config_dir = Filename.concat root "claude-config" in
+      Util.mkdir_p agents_root;
+      Util.mkdir_p claude_config_dir;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "sh -c 'cat >/dev/null'"},
+    "claude": {
+      "kind": "claude",
+      "command": "/definitely/missing/claude -p --output-format stream-json",
+      "model": "claude-opus-4-7",
+      "reasoningEffort": "xhigh"
+    }
+  },
+  "agents": {"engineer": {"harness": "codex"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+      with_env
+        [
+          ("GITHUB_TOKEN", "token");
+          ("HOME", root);
+          ("CLAUDE_CONFIG_DIR", claude_config_dir);
+          ("ANTHROPIC_AUTH_TOKEN", "");
+          ("ANTHROPIC_API_KEY", "");
+          ("CLAUDE_CODE_OAUTH_TOKEN", "");
+          ("CLAUDE_CODE_USE_BEDROCK", "");
+          ("CLAUDE_CODE_USE_VERTEX", "");
+          ("CLAUDE_CODE_USE_FOUNDRY", "");
+        ]
+        (fun () ->
+          let requirements =
+            Config.from_settings_file ~workspace_root:root settings
+            |> Config.readiness_gaps
+            |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+          in
+          Alcotest.(check bool) "unselected claude install ignored" false
+            (List.exists (( = ) "harnesses.claude.install") requirements);
+          Alcotest.(check bool) "unselected claude auth ignored" false
+            (List.exists (( = ) "harnesses.claude.auth") requirements)))
 
 let test_agent_harness_readiness_gaps () =
   let original_home = Sys.getenv_opt "HOME" in
@@ -5163,6 +5299,153 @@ let test_parse_goal_usage_nested_usage_fields () =
           Alcotest.(check (option (float 0.01))) "nested time" (Some 7.25) usage.time_used_seconds;
           Alcotest.(check (option int)) "nested tokens" (Some 88) usage.tokens_used)
 
+let test_parse_claude_stream_message_tool_usage_and_ignores_invalid () =
+  with_temp_dir "symphony-claude-stream-parse-" (fun root ->
+      let stdout_path = Filename.concat root "stdout.log" in
+      let stderr_path = Filename.concat root "stderr.log" in
+      Util.write_file stdout_path
+        {|{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello "}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"world"}}}
+|};
+      Util.write_file stderr_path "not json\n{\"type\":\"unknown\"}\n";
+      let message_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check bool) "message event seen" true message_activity.claude_seen;
+      Alcotest.(check (option string)) "last message event" (Some "claude_message")
+        message_activity.claude_last_event;
+      Alcotest.(check (option string)) "message text accumulated" (Some "Hello world")
+        message_activity.claude_last_message;
+      Util.write_file stdout_path
+        {|{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","id":"toolu_1"}}}
+|};
+      Util.write_file stderr_path "";
+      let tool_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check (option string)) "tool event" (Some "claude_tool") tool_activity.claude_last_event;
+      Alcotest.(check (option string)) "tool message" (Some "Using Bash") tool_activity.claude_last_message;
+      Util.write_file stdout_path
+        {|{"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":5}}}
+{"type":"result","usage":{"input_tokens":4,"output_tokens":6,"total_tokens":10},"result":"done"}
+|};
+      let usage_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check int) "usage input" 4 usage_activity.claude_tokens.input_tokens;
+      Alcotest.(check int) "usage output" 6 usage_activity.claude_tokens.output_tokens;
+      Alcotest.(check int) "usage total" 10 usage_activity.claude_tokens.total_tokens;
+      Util.write_file stdout_path "not json\n{\"type\":\"unknown\"}\n";
+      let ignored_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) None in
+      Alcotest.(check bool) "unknown and malformed ignored" false ignored_activity.claude_seen)
+
+let test_claude_stream_dispatch_updates_activity_and_preserves_raw_logs () =
+  with_temp_dir "symphony-claude-stream-dispatch-" (fun root ->
+      let workspace_root = Filename.concat root "workspaces" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      let script = Filename.concat root "fake-claude.sh" in
+      Util.write_file script
+        {|#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":5,"total_tokens":8}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Working"}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","id":"toolu_1"}}}'
+printf '%s\n' 'raw stdout diagnostic'
+printf '%s\n' 'raw stderr diagnostic' >&2
+|};
+      Unix.chmod script 0o755;
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        (Printf.sprintf
+           {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "claude": {
+      "kind": "claude",
+      "command": %s,
+      "model": "claude-opus-4-7",
+      "reasoningEffort": "xhigh"
+    }
+  },
+  "agents": {"engineer": {"harness": "claude"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+           (Yojson.Safe.to_string (`String script)));
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let stage =
+        match config.stage_agents.stages with [ stage ] -> stage | _ -> Alcotest.fail "expected one stage"
+      in
+      let harness =
+        match Config.selected_agent_harness config (Some stage) with
+        | Some harness -> harness
+        | None -> Alcotest.fail "expected selected Claude Harness"
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+      let launched =
+        Orchestrator.shell_launch ~stage:(Some stage) ~config ~workspace ~prompt:"Implement #1" ~issue
+      in
+      (match launched.pid with
+      | Some pid -> ignore (Unix.waitpid [] pid)
+      | None -> Alcotest.fail "expected shell launch pid");
+      let orchestrator = Orchestrator.make ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.update_state orchestrator (fun state ->
+          {
+            state with
+            Runtime_state.running =
+              [
+                {
+                  Runtime_state.issue;
+                  stage_agent = Some "engineer";
+                  stage_states = [ "Todo" ];
+                  session_id = launched.session_id;
+                  turn_count = 0;
+                  last_event = Some "launched";
+                  last_message = None;
+                  started_at = Util.now_iso8601 ();
+                  last_event_at = None;
+                  tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                  goal_usage = None;
+                };
+              ];
+          });
+      let child =
+        {
+          Orchestrator.pid = 0;
+          issue;
+          stage = Some stage;
+          harness;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = launched.stdout_path;
+          stderr_path = launched.stderr_path;
+          stdout_size = 0;
+          stderr_size = 0;
+        }
+      in
+      Orchestrator.refresh_child_output ~force:true orchestrator child;
+      let state = Orchestrator.get_state orchestrator in
+      let row =
+        match state.Runtime_state.running with [ row ] -> row | _ -> Alcotest.fail "expected one running row"
+      in
+      Alcotest.(check (option string)) "running row shows tool event" (Some "claude_tool") row.last_event;
+      Alcotest.(check (option string)) "running row shows tool message" (Some "Using Bash") row.last_message;
+      Alcotest.(check int) "row input tokens" 3 row.tokens.input_tokens;
+      Alcotest.(check int) "row output tokens" 5 row.tokens.output_tokens;
+      Alcotest.(check int) "row total tokens" 8 row.tokens.total_tokens;
+      Alcotest.(check bool) "raw stdout remains available" true
+        (contains_substring
+           (Util.read_file (Option.get launched.stdout_path))
+           "raw stdout diagnostic");
+      Alcotest.(check bool) "raw stderr remains available" true
+        (contains_substring
+           (Util.read_file (Option.get launched.stderr_path))
+           "raw stderr diagnostic"))
+
 let test_orchestrator_commits_stage_before_success_status () =
   with_temp_dir "symphony-stage-commit-" (fun root ->
       let config =
@@ -7339,6 +7622,10 @@ let () =
             test_config_loads_legacy_top_level_codex_settings;
           Alcotest.test_case "renders harness commands" `Quick test_harness_command_rendering;
           Alcotest.test_case "validates agent harness readiness" `Quick test_agent_harness_readiness_gaps;
+          Alcotest.test_case "validates selected Claude harness install and auth" `Quick
+            test_claude_harness_readiness_checks_selected_install_and_auth;
+          Alcotest.test_case "ignores unselected Claude harness readiness" `Quick
+            test_claude_harness_readiness_ignores_unselected_harnesses;
           Alcotest.test_case "validates PI harness install and auth" `Quick
             test_pi_harness_readiness_checks_install_and_auth;
           Alcotest.test_case "ignores unselected PI harness readiness" `Quick
@@ -7481,6 +7768,10 @@ let () =
           Alcotest.test_case "parses goal usage output" `Quick test_parse_goal_usage_from_codex_output;
           Alcotest.test_case "parses goal usage variants" `Quick test_parse_goal_usage_variants_and_ignores_invalid;
           Alcotest.test_case "parses nested goal usage fields" `Quick test_parse_goal_usage_nested_usage_fields;
+          Alcotest.test_case "parses Claude stream-json activity" `Quick
+            test_parse_claude_stream_message_tool_usage_and_ignores_invalid;
+          Alcotest.test_case "updates activity from Claude stream-json logs" `Quick
+            test_claude_stream_dispatch_updates_activity_and_preserves_raw_logs;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "renders stage commit classification messages" `Quick
             test_stage_commit_classification_renders_messages;
