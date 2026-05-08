@@ -115,6 +115,14 @@ type t = {
   stage_agents : stage_agents;
 }
 
+type runtime_invocation_overrides = {
+  polling_interval_ms : int option;
+  workspace_root : string option;
+  agent_max_concurrent_agents : int option;
+  agent_max_turns : int option;
+  agent_max_retry_backoff_ms : int option;
+}
+
 type readiness_gap = { requirement : string; remediation : string }
 
 exception Invalid_config of string
@@ -266,6 +274,33 @@ let positive name value =
   value
 
 let positive_option name = function None -> None | Some value -> Some (positive name value)
+
+let apply_runtime_invocation_overrides ~workspace_root config overrides =
+  let polling =
+    match overrides.polling_interval_ms with
+    | Some interval_ms -> { interval_ms = positive "polling.intervalMs" interval_ms }
+    | None -> config.polling
+  in
+  let workspace =
+    match overrides.workspace_root with
+    | Some root -> { root = expand_path ~base_dir:workspace_root root }
+    | None -> config.workspace
+  in
+  let agent =
+    {
+      max_concurrent_agents =
+        Option.value
+          (positive_option "agent.maxConcurrentAgents" overrides.agent_max_concurrent_agents)
+          ~default:config.agent.max_concurrent_agents;
+      max_turns =
+        Option.value (positive_option "agent.maxTurns" overrides.agent_max_turns) ~default:config.agent.max_turns;
+      max_retry_backoff_ms =
+        Option.value
+          (positive_option "agent.maxRetryBackoffMs" overrides.agent_max_retry_backoff_ms)
+          ~default:config.agent.max_retry_backoff_ms;
+    }
+  in
+  { config with polling; workspace; agent }
 
 let from_workflow workflow =
   let root = workflow.Workflow.config in

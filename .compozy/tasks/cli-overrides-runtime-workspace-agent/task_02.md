@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Extract Cmdliner Command Construction Into Backend Library"
 type: refactor
 complexity: medium
@@ -28,11 +28,11 @@ This task moves Cmdliner command construction out of the executable entrypoint a
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Create or select a backend library module for command construction.
-- [ ] 2.2 Move existing Cmdliner args, terms, command grouping, and help normalization into the library boundary.
-- [ ] 2.3 Keep `apps/backend/bin/main.ml` as thin evaluation wiring.
-- [ ] 2.4 Update Dune dependencies so library and tests can compile with Cmdliner.
-- [ ] 2.5 Add regression tests for existing CLI mode selection and command availability.
+- [x] 2.1 Create or select a backend library module for command construction.
+- [x] 2.2 Move existing Cmdliner args, terms, command grouping, and help normalization into the library boundary.
+- [x] 2.3 Keep `apps/backend/bin/main.ml` as thin evaluation wiring.
+- [x] 2.4 Update Dune dependencies so library and tests can compile with Cmdliner.
+- [x] 2.5 Add regression tests for existing CLI mode selection and command availability.
 
 ## Implementation Details
 Use the TechSpec "System Architecture" and "CLI Command Extraction for Override Testing" ADR as the boundary. This task should not add the new override flags yet; it should move the existing command surface with behavior preserved so task_03 can add flags on top of a testable module.
@@ -59,12 +59,12 @@ Use the TechSpec "System Architecture" and "CLI Command Extraction for Override 
 
 ## Tests
 - Unit tests:
-  - [ ] Existing terminal mode selection still maps no `--web` flag to Terminal Console.
-  - [ ] Existing web mode selection still maps `--web` to Web Dashboard.
-  - [ ] Existing command construction exposes `init` and `update` subcommands.
-  - [ ] Help argv normalization still maps `-h` to `--help` and `-v` to `--version`.
+  - [x] Existing terminal mode selection still maps no `--web` flag to Terminal Console.
+  - [x] Existing web mode selection still maps `--web` to Web Dashboard.
+  - [x] Existing command construction exposes `init` and `update` subcommands.
+  - [x] Help argv normalization still maps `-h` to `--help` and `-v` to `--version`.
 - Integration tests:
-  - [ ] The factored command can be evaluated from backend tests without shelling out to the built executable.
+  - [x] The factored command can be evaluated from backend tests without shelling out to the built executable.
 - Test coverage target: >=80%
 - All tests must pass
 
