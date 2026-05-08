@@ -211,6 +211,21 @@ let test_runtime_invocation_overrides_replace_agent_only () =
       Alcotest.(check int) "agent turns override" 21 effective.agent.max_turns;
       Alcotest.(check int) "agent backoff override" 90000 effective.agent.max_retry_backoff_ms)
 
+let test_runtime_invocation_overrides_max_turns_config_only () =
+  with_temp_dir "symphony-runtime-overrides-turns-only-" (fun root ->
+      let _, config = load_runtime_invocation_override_config root in
+      let effective =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root config
+          (runtime_invocation_overrides ~agent_max_turns:2 ())
+      in
+      (* ADR-003 keeps maxTurns config-effective only; this test deliberately avoids retry-stop semantics. *)
+      Alcotest.(check int) "effective max turns" 2 effective.agent.max_turns;
+      Alcotest.(check int) "settings max turns" 12 config.agent.max_turns;
+      Alcotest.(check int) "concurrency preserved" config.agent.max_concurrent_agents
+        effective.agent.max_concurrent_agents;
+      Alcotest.(check int) "retry backoff preserved" config.agent.max_retry_backoff_ms
+        effective.agent.max_retry_backoff_ms)
+
 let test_runtime_invocation_overrides_preserve_config_when_absent () =
   with_temp_dir "symphony-runtime-overrides-none-" (fun root ->
       let _, config = load_runtime_invocation_override_config root in
@@ -3553,6 +3568,34 @@ let test_orchestrator_dispatch_limits () =
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "still capped" 2 (List.length state.Runtime_state.running))
 
+let test_orchestrator_dispatch_uses_effective_global_concurrency_override () =
+  with_temp_dir "symphony-orchestrator-effective-global-cap-" (fun root ->
+      let settings_config = stage_capacity_config root ~global_cap:3 in
+      let config =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root settings_config
+          (runtime_invocation_overrides ~agent_max_concurrent_agents:1 ())
+      in
+      let issues =
+        [
+          Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo";
+          Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Two" ~state:"Todo";
+        ]
+      in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.id :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "effective global cap" 1 config.agent.max_concurrent_agents;
+      Alcotest.(check int) "one running" 1 (List.length state.Runtime_state.running);
+      Alcotest.(check int) "one launched" 1 (List.length !launched))
+
 let test_orchestrator_stage_capacity_dispatches_all_available_slots () =
   with_temp_dir "symphony-orchestrator-stage-slots-" (fun root ->
       let config = stage_capacity_config root ~global_cap:5 in
@@ -5678,6 +5721,94 @@ let base_orchestrator_config root git =
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
+let test_orchestrator_loop_uses_effective_polling_interval () =
+  with_temp_dir "symphony-orchestrator-effective-polling-" (fun root ->
+      let settings_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root settings_config
+          (runtime_invocation_overrides ~polling_interval_ms:200 ())
+      in
+      let current_status = ref "Todo" in
+      let fetch_count = ref 0 in
+      let issue () = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:(!current_status) in
+      let fetch _ =
+        incr fetch_count;
+        [ issue () ]
+      in
+      let set_status _ _ status =
+        current_status := status;
+        Ok ()
+      in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      let started_at = Unix.gettimeofday () in
+      Orchestrator.run_forever orchestrator;
+      let elapsed = Unix.gettimeofday () -. started_at in
+      Alcotest.(check int) "effective polling interval" 200 config.polling.interval_ms;
+      Alcotest.(check int) "second poll observed" 2 !fetch_count;
+      Alcotest.(check bool) "loop waited for effective interval" true (elapsed >= 0.15))
+
+let test_orchestrator_retry_uses_effective_backoff_cap () =
+  with_temp_dir "symphony-orchestrator-effective-backoff-" (fun root ->
+      let settings_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root settings_config
+          (runtime_invocation_overrides ~agent_max_retry_backoff_ms:5000 ())
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Hashtbl.replace orchestrator.attempts issue.id 8;
+      let before = Unix.time () in
+      Orchestrator.mark_retrying orchestrator issue.id "retry after cap";
+      let after = Unix.time () in
+      let due =
+        match Hashtbl.find_opt orchestrator.retry_due issue.id with
+        | Some due -> due
+        | None -> Alcotest.fail "expected retry due timestamp"
+      in
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "effective backoff cap" 5000 config.agent.max_retry_backoff_ms;
+      Alcotest.(check int) "retry queued" 1 (List.length state.Runtime_state.retrying);
+      Alcotest.(check bool) "cap not exceeded" true (due -. before <= 5.2);
+      Alcotest.(check bool) "capped delay used" true (due -. after >= 4.5))
+
+let test_orchestrator_agent_worktree_uses_effective_workspace_root () =
+  with_temp_dir "symphony-effective-agent-worktree-" (fun root ->
+      init_repo root "feature/start";
+      let settings_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        Config.apply_runtime_invocation_overrides ~workspace_root:root settings_config
+          (runtime_invocation_overrides ~workspace_root:"override-workspaces" ())
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#3" ~title:"Three" ~state:"Todo" in
+      let captured_workspace = ref None in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        captured_workspace := Some workspace;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let workspace = match !captured_workspace with Some workspace -> workspace | None -> Alcotest.fail "expected launch" in
+      let expected_root = Filename.concat (Unix.realpath root) "override-workspaces" in
+      Alcotest.(check string) "effective workspace root" expected_root config.workspace.root;
+      Alcotest.(check bool) "worktree under effective root" true
+        (Workspace.is_inside ~root:config.workspace.root ~path:workspace.path);
+      Alcotest.(check string) "workspace key" "_3" workspace.workspace_key)
+
 let protected_path_policy patterns =
   {
     Config.patterns = patterns;
@@ -7343,6 +7474,8 @@ let () =
             test_runtime_invocation_overrides_replace_polling_only;
           Alcotest.test_case "applies agent runtime invocation overrides" `Quick
             test_runtime_invocation_overrides_replace_agent_only;
+          Alcotest.test_case "keeps max turns runtime override config-only" `Quick
+            test_runtime_invocation_overrides_max_turns_config_only;
           Alcotest.test_case "preserves config without runtime invocation overrides" `Quick
             test_runtime_invocation_overrides_preserve_config_when_absent;
           Alcotest.test_case "resolves relative workspace runtime invocation override" `Quick
@@ -7432,6 +7565,14 @@ let () =
       ( "orchestrator",
         [
           Alcotest.test_case "enforces dispatch limits" `Quick test_orchestrator_dispatch_limits;
+          Alcotest.test_case "uses effective global concurrency override" `Quick
+            test_orchestrator_dispatch_uses_effective_global_concurrency_override;
+          Alcotest.test_case "uses effective polling interval" `Quick
+            test_orchestrator_loop_uses_effective_polling_interval;
+          Alcotest.test_case "uses effective retry backoff cap" `Quick
+            test_orchestrator_retry_uses_effective_backoff_cap;
+          Alcotest.test_case "uses effective workspace root for Agent Worktree" `Quick
+            test_orchestrator_agent_worktree_uses_effective_workspace_root;
           Alcotest.test_case "dispatches all available stage slots" `Quick
             test_orchestrator_stage_capacity_dispatches_all_available_slots;
           Alcotest.test_case "does not spawn idle stage agents" `Quick
