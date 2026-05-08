@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Preserve pull request handoff for minibeads tracker runs"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Audit and update pull request handoff behavior so it remains available when mini
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Audit PR handoff paths for `config.tracker.owner` and `config.tracker.repo` assumptions.
-- [ ] 9.2 Decouple PR repository context from Issue Tracker fields where minibeads needs it.
-- [ ] 9.3 Ensure PR handoff success/failure updates selected tracker status.
-- [ ] 9.4 Add minibeads PR handoff tests without GitHub tracker settings.
-- [ ] 9.5 Preserve existing PR handoff regression tests.
+- [x] 9.1 Audit PR handoff paths for `config.tracker.owner` and `config.tracker.repo` assumptions.
+- [x] 9.2 Decouple PR repository context from Issue Tracker fields where minibeads needs it.
+- [x] 9.3 Ensure PR handoff success/failure updates selected tracker status.
+- [x] 9.4 Add minibeads PR handoff tests without GitHub tracker settings.
+- [x] 9.5 Preserve existing PR handoff regression tests.
 
 ## Implementation Details
 Follow TechSpec "GitHub Remote PR Handoff". Treat GitHub as a possible remote destination separately from GitHub as an Issue Tracker.
@@ -62,13 +62,13 @@ Follow TechSpec "GitHub Remote PR Handoff". Treat GitHub as a possible remote de
 
 ## Tests
 - Unit tests:
-  - [ ] minibeads config with PR handoff enabled does not emit GitHub tracker readiness gaps.
-  - [ ] PR handoff status update calls selected tracker.
-  - [ ] PR handoff failure records retryable handoff state without requiring GitHub Project membership.
+- [x] minibeads config with PR handoff enabled does not emit GitHub tracker readiness gaps.
+- [x] PR handoff status update calls selected tracker.
+- [x] PR handoff failure records retryable handoff state without requiring GitHub Project membership.
 - Integration tests:
-  - [ ] Existing batch PR handoff tests pass for GitHub tracker runs.
-  - [ ] Existing task PR handoff tests pass for GitHub tracker runs.
-  - [ ] minibeads PR handoff stub updates minibeads status after review handoff.
+- [x] Existing batch PR handoff tests pass for GitHub tracker runs.
+- [x] Existing task PR handoff tests pass for GitHub tracker runs.
+- [x] minibeads PR handoff stub updates minibeads status after review handoff.
 - Test coverage target: >=80%
 - All tests must pass
 

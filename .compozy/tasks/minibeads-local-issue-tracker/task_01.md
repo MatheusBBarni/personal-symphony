@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add tracker kind config and minibeads settings"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ Add Runtime Settings support for selecting `tracker.kind = "minibeads"` while pr
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add the selected tracker kind and minibeads settings to the Runtime Settings model.
-- [ ] 1.2 Preserve existing GitHub tracker fields and defaults.
-- [ ] 1.3 Gate GitHub-only readiness gaps behind GitHub tracker selection.
-- [ ] 1.4 Add config parsing coverage for GitHub defaults and minibeads settings.
-- [ ] 1.5 Replace the existing non-GitHub rejection test with unsupported-kind coverage.
+- [x] 1.1 Add the selected tracker kind and minibeads settings to the Runtime Settings model.
+- [x] 1.2 Preserve existing GitHub tracker fields and defaults.
+- [x] 1.3 Gate GitHub-only readiness gaps behind GitHub tracker selection.
+- [x] 1.4 Add config parsing coverage for GitHub defaults and minibeads settings.
+- [x] 1.5 Replace the existing non-GitHub rejection test with unsupported-kind coverage.
 
 ## Implementation Details
 Update the config model and readiness behavior described in TechSpec "Data Models" and "Development Sequencing" step 3. Keep this task focused on parsed settings and readiness gaps; CLI/store validation belongs to task_03.
@@ -62,13 +62,13 @@ Update the config model and readiness behavior described in TechSpec "Data Model
 
 ## Tests
 - Unit tests:
-  - [ ] Omitted `tracker.kind` parses as `github`.
-  - [ ] `tracker.kind = "minibeads"` parses with default or explicit command/root settings.
-  - [ ] Unsupported tracker kind such as `linear` returns an actionable config error.
-  - [ ] GitHub tracker with placeholder owner/repo/project/token still emits the existing readiness gaps.
-  - [ ] minibeads tracker without GitHub owner/repo/project/token emits no GitHub-only readiness gaps.
+  - [x] Omitted `tracker.kind` parses as `github`.
+  - [x] `tracker.kind = "minibeads"` parses with default or explicit command/root settings.
+  - [x] Unsupported tracker kind such as `linear` returns an actionable config error.
+  - [x] GitHub tracker with placeholder owner/repo/project/token still emits the existing readiness gaps.
+  - [x] minibeads tracker without GitHub owner/repo/project/token emits no GitHub-only readiness gaps.
 - Integration tests:
-  - [ ] Loading a minimal minibeads `.symphony/settings.json` succeeds without requiring a GitHub token.
+  - [x] Loading a minimal minibeads `.symphony/settings.json` succeeds without requiring a GitHub token.
 - Test coverage target: >=80%
 - All tests must pass
 

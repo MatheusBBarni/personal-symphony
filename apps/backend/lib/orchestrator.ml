@@ -1594,11 +1594,16 @@ let batch_branch_push config ~head_branch =
     | Ok _ -> Ok ()
     | Error error -> Error ("batch branch push failed: " ^ error)
 
+let pull_request_repo_arg config =
+  let owner = Util.trim config.Config.tracker.owner in
+  let repo = Util.trim config.tracker.repo in
+  if owner = "" || repo = "" then ""
+  else Printf.sprintf " --repo %s" (Util.shell_quote (owner ^ "/" ^ repo))
+
 let existing_batch_pull_request config ~head_branch =
-  let repo_full_name = config.Config.tracker.owner ^ "/" ^ config.tracker.repo in
   let command =
-    Printf.sprintf "gh pr list --repo %s --state open --head %s --base %s --limit 1 --json url"
-      (Util.shell_quote repo_full_name) (Util.shell_quote head_branch)
+    Printf.sprintf "gh pr list%s --state open --head %s --base %s --limit 1 --json url"
+      (pull_request_repo_arg config) (Util.shell_quote head_branch)
       (Util.shell_quote config.pull_request.base_branch)
   in
   match run_shell_capture ~cwd:config.repository_root command with
@@ -1613,11 +1618,10 @@ let existing_batch_pull_request config ~head_branch =
       with Yojson.Json_error msg -> Error ("batch pull request lookup returned invalid JSON: " ^ msg))
 
 let create_batch_pull_request config ~head_branch =
-  let repo_full_name = config.Config.tracker.owner ^ "/" ^ config.tracker.repo in
   let title = render_pull_request_template config ~head_branch config.pull_request.title in
   let body = render_pull_request_template config ~head_branch config.pull_request.body in
   let command =
-    Printf.sprintf "gh pr create --repo %s --head %s --base %s --title %s --body %s" (Util.shell_quote repo_full_name)
+    Printf.sprintf "gh pr create%s --head %s --base %s --title %s --body %s" (pull_request_repo_arg config)
       (Util.shell_quote head_branch)
       (Util.shell_quote config.pull_request.base_branch)
       (Util.shell_quote title) (Util.shell_quote body)

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Implement minibeads issue fetch, lookup, blockers, and status updates"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ Implement the minibeads adapter operations that map `mb` CLI output into Symphon
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Map valid minibeads issue output into `Issue.t`.
-- [ ] 4.2 Implement issue lookup by canonical local identifier.
-- [ ] 4.3 Implement blocker and non-dispatchable issue handling.
-- [ ] 4.4 Implement status updates through `mb`.
-- [ ] 4.5 Add malformed, duplicate, blocked, and idempotent update tests.
+- [x] 4.1 Map valid minibeads issue output into `Issue.t`.
+- [x] 4.2 Implement issue lookup by canonical local identifier.
+- [x] 4.3 Implement blocker and non-dispatchable issue handling.
+- [x] 4.4 Implement status updates through `mb`.
+- [x] 4.5 Add malformed, duplicate, blocked, and idempotent update tests.
 
 ## Implementation Details
 Follow TechSpec "Data Models" and "Integration Points: minibeads CLI". Prefer machine-readable `mb` output when available. Do not add local comments/notes behavior in V1.
@@ -63,14 +63,14 @@ Follow TechSpec "Data Models" and "Integration Points: minibeads CLI". Prefer ma
 
 ## Tests
 - Unit tests:
-  - [ ] Valid active `mb-20` output maps to `Issue.t` with identifier, title, state, description, labels, priority, and timestamps.
-  - [ ] minibeads comments are empty in V1 even when issue body exists.
-  - [ ] Duplicate minibeads identifiers produce deterministic diagnostics.
-  - [ ] Unsupported minibeads status makes the issue non-dispatchable.
-  - [ ] Non-terminal blocker prevents candidate dispatch.
-  - [ ] Repeating the same status update is treated as idempotent success.
+  - [x] Valid active `mb-20` output maps to `Issue.t` with identifier, title, state, description, labels, priority, and timestamps.
+  - [x] minibeads comments are empty in V1 even when issue body exists.
+  - [x] Duplicate minibeads identifiers produce deterministic diagnostics.
+  - [x] Unsupported minibeads status makes the issue non-dispatchable.
+  - [x] Non-terminal blocker prevents candidate dispatch.
+  - [x] Repeating the same status update is treated as idempotent success.
 - Integration tests:
-  - [ ] Fake `mb` command runner supports fetch, lookup, and status update through the Issue Tracker boundary.
+  - [x] Fake `mb` command runner supports fetch, lookup, and status update through the Issue Tracker boundary.
 - Test coverage target: >=80%
 - All tests must pass
 

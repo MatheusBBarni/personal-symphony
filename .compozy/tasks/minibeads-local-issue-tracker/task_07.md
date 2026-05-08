@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Support selected-tracker identifiers in Manual Task Merge"
 type: backend
 complexity: high
@@ -31,11 +31,11 @@ Update Manual Task Merge to accept selected-tracker identifiers and resolve issu
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Update Manual Task Merge selector model to canonical identifiers.
-- [ ] 7.2 Replace GitHub project issue fetch contract with selected tracker lookup.
-- [ ] 7.3 Preserve fast-forward, clean-worktree, protected path, and terminal-state preflight behavior.
-- [ ] 7.4 Route post-merge status updates through selected tracker.
-- [ ] 7.5 Add minibeads merge tests alongside existing GitHub merge tests.
+- [x] 7.1 Update Manual Task Merge selector model to canonical identifiers.
+- [x] 7.2 Replace GitHub project issue fetch contract with selected tracker lookup.
+- [x] 7.3 Preserve fast-forward, clean-worktree, protected path, and terminal-state preflight behavior.
+- [x] 7.4 Route post-merge status updates through selected tracker.
+- [x] 7.5 Add minibeads merge tests alongside existing GitHub merge tests.
 
 ## Implementation Details
 Follow TechSpec "Component Overview" and "Development Sequencing" step 8. Keep Task Branch Integration behavior unchanged.
@@ -66,14 +66,14 @@ Follow TechSpec "Component Overview" and "Development Sequencing" step 8. Keep T
 
 ## Tests
 - Unit tests:
-  - [ ] `mb-20` selector normalizes successfully.
-  - [ ] malformed local selectors are rejected with clear messages.
-  - [ ] duplicate selectors are rejected by canonical identifier.
-  - [ ] selected tracker missing issue returns the existing missing-tracker diagnostic shape.
-  - [ ] minibeads terminal-state validation uses selected tracker semantics.
+  - [x] `mb-20` selector normalizes successfully.
+  - [x] malformed local selectors are rejected with clear messages.
+  - [x] duplicate selectors are rejected by canonical identifier.
+  - [x] selected tracker missing issue returns the existing missing-tracker diagnostic shape.
+  - [x] minibeads terminal-state validation uses selected tracker semantics.
 - Integration tests:
-  - [ ] Manual Task Merge fast-forwards a minibeads task branch and updates minibeads status through selected tracker.
-  - [ ] Existing GitHub Manual Task Merge tests still reject absent Project membership for GitHub tracker runs.
+  - [x] Manual Task Merge fast-forwards a minibeads task branch and updates minibeads status through selected tracker.
+  - [x] Existing GitHub Manual Task Merge tests still reject absent Project membership for GitHub tracker runs.
 - Test coverage target: >=80%
 - All tests must pass
 

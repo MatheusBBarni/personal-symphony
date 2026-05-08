@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Update tracker documentation and glossary alignment"
 type: docs
 complexity: medium
@@ -32,11 +32,11 @@ Update user-facing documentation so GitHub and minibeads are presented as suppor
 </requirements>
 
 ## Subtasks
-- [ ] 10.1 Update README setup sections to distinguish GitHub Tracker and Local Issue Tracker.
-- [ ] 10.2 Add minibeads settings examples without secret values.
-- [ ] 10.3 Document readiness guidance for local tracker prerequisites.
-- [ ] 10.4 Review `.github/project-tracking.md` for GitHub-specific scope language.
-- [ ] 10.5 Update `CONTEXT.md` only if glossary language needs refinement.
+- [x] 10.1 Update README setup sections to distinguish GitHub Tracker and Local Issue Tracker.
+- [x] 10.2 Add minibeads settings examples without secret values.
+- [x] 10.3 Document readiness guidance for local tracker prerequisites.
+- [x] 10.4 Review `.github/project-tracking.md` for GitHub-specific scope language.
+- [x] 10.5 Update `CONTEXT.md` only if glossary language needs refinement.
 
 ## Implementation Details
 Follow PRD "First-class documentation" and TechSpec "Monitoring and Observability". Keep GitHub token documentation intact for GitHub tracker users.
@@ -66,11 +66,11 @@ Follow PRD "First-class documentation" and TechSpec "Monitoring and Observabilit
 
 ## Tests
 - Unit tests:
-  - [ ] Documentation examples contain no token values, webhook URLs, or local `.env` contents.
-  - [ ] Settings examples use `tracker.kind = "github"` or `tracker.kind = "minibeads"` consistently.
-  - [ ] Glossary terms match `CONTEXT.md` terminology.
+  - [x] Documentation examples contain no token values, webhook URLs, or local `.env` contents.
+  - [x] Settings examples use `tracker.kind = "github"` or `tracker.kind = "minibeads"` consistently.
+  - [x] Glossary terms match `CONTEXT.md` terminology.
 - Integration tests:
-  - [ ] Run repository documentation validation command if one exists; otherwise perform manual docs review against the PRD and TechSpec.
+  - [x] Run repository documentation validation command if one exists; otherwise perform manual docs review against the PRD and TechSpec.
 - Test coverage target: >=80%
 - All tests must pass
 

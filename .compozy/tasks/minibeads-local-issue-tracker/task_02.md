@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Introduce shared Issue Tracker boundary and GitHub adapter"
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Introduce the shared `Issue_tracker` contract that later tasks will use for GitH
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Add the shared tracker boundary type and selected-adapter constructor.
-- [ ] 2.2 Add a GitHub adapter over existing `Github_tracker` functions.
-- [ ] 2.3 Translate GitHub tracker errors into generic tracker errors.
-- [ ] 2.4 Preserve status and identifier normalization behavior for GitHub.
-- [ ] 2.5 Add focused tests for adapter selection and GitHub behavior preservation.
+- [x] 2.1 Add the shared tracker boundary type and selected-adapter constructor.
+- [x] 2.2 Add a GitHub adapter over existing `Github_tracker` functions.
+- [x] 2.3 Translate GitHub tracker errors into generic tracker errors.
+- [x] 2.4 Preserve status and identifier normalization behavior for GitHub.
+- [x] 2.5 Add focused tests for adapter selection and GitHub behavior preservation.
 
 ## Implementation Details
 Follow TechSpec "Core Interfaces" and "Component Overview". This task should not yet refactor every caller; it creates the boundary and proves GitHub behavior remains available through it.
@@ -64,13 +64,13 @@ Follow TechSpec "Core Interfaces" and "Component Overview". This task should not
 
 ## Tests
 - Unit tests:
-  - [ ] Selected tracker constructor returns a GitHub adapter for `tracker.kind = "github"`.
-  - [ ] GitHub adapter active-state checks match existing GitHub behavior.
-  - [ ] GitHub adapter terminal-state checks match existing GitHub behavior.
-  - [ ] GitHub rate-limit exception maps to the generic rate-limit poll error with the same retry delay.
-  - [ ] GitHub lookup preserves missing issue versus project membership diagnostics.
+  - [x] Selected tracker constructor returns a GitHub adapter for `tracker.kind = "github"`.
+  - [x] GitHub adapter active-state checks match existing GitHub behavior.
+  - [x] GitHub adapter terminal-state checks match existing GitHub behavior.
+  - [x] GitHub rate-limit exception maps to the generic rate-limit poll error with the same retry delay.
+  - [x] GitHub lookup preserves missing issue versus project membership diagnostics.
 - Integration tests:
-  - [ ] Existing GitHub tracker parsing and status metadata tests continue to pass.
+  - [x] Existing GitHub tracker parsing and status metadata tests continue to pass.
 - Test coverage target: >=80%
 - All tests must pass
 

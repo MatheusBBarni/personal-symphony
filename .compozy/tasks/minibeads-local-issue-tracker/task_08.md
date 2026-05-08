@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add tracker kind Runtime State and tracker-neutral dashboard wording"
 type: frontend
 complexity: medium
@@ -30,11 +30,11 @@ Expose the selected tracker kind in Runtime State and update Terminal Console an
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Add `tracker_kind` to backend Runtime State.
-- [ ] 8.2 Include selected tracker kind when constructing Runtime State.
-- [ ] 8.3 Update frontend Runtime State type/parsing with a safe default.
-- [ ] 8.4 Replace dashboard copy such as "Project board" and "project issues" with tracker-neutral wording.
-- [ ] 8.5 Add backend and frontend live-state parsing tests.
+- [x] 8.1 Add `tracker_kind` to backend Runtime State.
+- [x] 8.2 Include selected tracker kind when constructing Runtime State.
+- [x] 8.3 Update frontend Runtime State type/parsing with a safe default.
+- [x] 8.4 Replace dashboard copy such as "Project board" and "project issues" with tracker-neutral wording.
+- [x] 8.5 Add backend and frontend live-state parsing tests.
 
 ## Implementation Details
 Follow TechSpec "API Endpoints" and "Runtime State additions". Keep UI changes scoped to copy and tracker context.
@@ -65,13 +65,13 @@ Follow TechSpec "API Endpoints" and "Runtime State additions". Keep UI changes s
 
 ## Tests
 - Unit tests:
-  - [ ] `Runtime_state.to_yojson` includes `tracker_kind` when provided.
-  - [ ] Runtime State defaults remain compatible when tracker kind is omitted.
-  - [ ] Frontend mapping handles snapshots with `tracker_kind = "minibeads"`.
-  - [ ] Frontend mapping handles older snapshots without `tracker_kind`.
+  - [x] `Runtime_state.to_yojson` includes `tracker_kind` when provided.
+  - [x] Runtime State defaults remain compatible when tracker kind is omitted.
+  - [x] Frontend mapping handles snapshots with `tracker_kind = "minibeads"`.
+  - [x] Frontend mapping handles older snapshots without `tracker_kind`.
 - Integration tests:
-  - [ ] `pnpm frontend:test` passes after ReScript changes.
-  - [ ] Backend Runtime State tests verify tracker kind in `/api/v1/state` payload shape.
+  - [x] `pnpm frontend:test` passes after ReScript changes.
+  - [x] Backend Runtime State tests verify tracker kind in `/api/v1/state` payload shape.
 - Test coverage target: >=80%
 - All tests must pass
 

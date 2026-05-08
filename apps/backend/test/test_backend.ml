@@ -1149,6 +1149,24 @@ let test_minibeads_tracker_readiness_skips_github_gaps () =
           Alcotest.(check bool) "project gap skipped" false (has_readiness_requirement "tracker.projectNumber" gaps);
           Alcotest.(check bool) "token gap skipped" false (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
 
+let test_minibeads_pull_request_readiness_skips_github_tracker_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-settings-minibeads-pr-gaps-" (fun root ->
+          Util.mkdir_p (Filename.concat root ".symphony");
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"kind": "minibeads"},
+  "pullRequest": {"enabled": true, "mode": "task", "baseBranch": "main"}
+}|};
+          let gaps = Config.from_settings_file ~workspace_root:root settings |> Config.readiness_gaps in
+          Alcotest.(check bool) "owner gap skipped" false (has_readiness_requirement "tracker.owner" gaps);
+          Alcotest.(check bool) "repo gap skipped" false (has_readiness_requirement "tracker.repo" gaps);
+          Alcotest.(check bool) "project gap skipped" false (has_readiness_requirement "tracker.projectNumber" gaps);
+          Alcotest.(check bool) "token gap skipped" false (has_readiness_requirement "environment.GITHUB_TOKEN" gaps);
+          Alcotest.(check bool) "pull request base accepted" false
+            (has_readiness_requirement "pullRequest.baseBranch" gaps)))
+
 let test_minibeads_settings_load_without_github_token () =
   with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
       with_temp_dir "symphony-runtime-minibeads-" (fun root ->
@@ -6957,6 +6975,91 @@ let test_task_pull_request_opens_before_auto_merge_cleanup () =
           Alcotest.(check (option string)) "head branch" (Some "symphony/task-35") handoff.head_branch
       | None -> Alcotest.fail "expected task pull request handoff state")
 
+let test_minibeads_task_pull_request_updates_selected_tracker () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-task-pr-" (fun root ->
+          init_repo root "feature/start";
+          ignore_runtime_home root;
+          let config =
+            minibeads_orchestrator_config root
+            |> fun config -> { config with Config.git = { config.git with auto_merge = true } }
+            |> task_pull_request_config
+          in
+          let helper_settings = Filename.concat root "settings.json" in
+          if Sys.file_exists helper_settings then Sys.remove helper_settings;
+          let config = { config with Config.workspace = { root = Filename.concat root ".symphony/workspaces" } } in
+          let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Local task" ~state:"doing" in
+          let workspace = create_task_worktree config issue in
+          commit_file ~cwd:workspace.path "minibeads-task-pr.txt" "ready\n" "task 20";
+          let statuses = ref [] in
+          let attempts = ref [] in
+          let set_status tracker issue status =
+            Alcotest.(check string) "selected tracker" "minibeads" tracker.Issue_tracker.kind;
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ()
+          in
+          let batch_pull_request_handoff config ~head_branch =
+            Alcotest.(check string) "handoff tracker kind" "minibeads" config.Config.tracker.kind;
+            Alcotest.(check string) "tracker owner omitted" "" config.tracker.owner;
+            Alcotest.(check string) "tracker repo omitted" "" config.tracker.repo;
+            attempts := head_branch :: !attempts;
+            Ok (Some "https://github.example/acme/widgets/pull/20")
+          in
+          let orchestrator =
+            Orchestrator.make ~set_status ~batch_pull_request_handoff ~config
+              ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.mark_completed orchestrator (completed_child issue workspace);
+          Alcotest.(check (list (pair string string))) "selected tracker status update"
+            [ ("mb-20", "closed") ] (List.rev !statuses);
+          Alcotest.(check (list string)) "handoff attempted from Task Branch" [ "symphony/task-20" ]
+            (List.rev !attempts);
+          match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+          | Some handoff ->
+              Alcotest.(check string) "mode" "task" handoff.mode;
+              Alcotest.(check (option string)) "issue identifier" (Some "mb-20") handoff.issue_identifier;
+              Alcotest.(check string) "status" "completed" handoff.status;
+              Alcotest.(check (option string)) "head branch" (Some "symphony/task-20") handoff.head_branch
+          | None -> Alcotest.fail "expected minibeads task pull request handoff state"))
+
+let test_minibeads_task_pull_request_failure_records_retryable_handoff () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-task-pr-failure-" (fun root ->
+          init_repo root "feature/start";
+          ignore_runtime_home root;
+          let config =
+            minibeads_orchestrator_config root
+            |> fun config -> { config with Config.git = { config.git with auto_merge = true } }
+            |> task_pull_request_config
+          in
+          let helper_settings = Filename.concat root "settings.json" in
+          if Sys.file_exists helper_settings then Sys.remove helper_settings;
+          let config = { config with Config.workspace = { root = Filename.concat root ".symphony/workspaces" } } in
+          let issue = Issue.empty ~id:"mb-21" ~identifier:"mb-21" ~title:"Local task failure" ~state:"doing" in
+          let workspace = create_task_worktree config issue in
+          commit_file ~cwd:workspace.path "minibeads-task-pr-failure.txt" "ready\n" "task 21";
+          let statuses = ref [] in
+          let set_status tracker issue status =
+            Alcotest.(check string) "selected tracker" "minibeads" tracker.Issue_tracker.kind;
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ()
+          in
+          let orchestrator =
+            Orchestrator.make ~set_status
+              ~batch_pull_request_handoff:(fun _ ~head_branch:_ -> Error "batch branch push failed: exit 1: rejected")
+              ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.mark_completed orchestrator (completed_child issue workspace);
+          Alcotest.(check (list (pair string string))) "selected tracker status update"
+            [ ("mb-21", "closed") ] (List.rev !statuses);
+          match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+          | Some handoff ->
+              Alcotest.(check string) "status" "retryable_failure" handoff.status;
+              Alcotest.(check (option string)) "issue identifier" (Some "mb-21") handoff.issue_identifier;
+              Alcotest.(check (option string)) "failure error"
+                (Some "batch branch push failed: exit 1: rejected") handoff.error
+          | None -> Alcotest.fail "expected failed minibeads task pull request handoff state"))
+
 let test_orchestrator_retries_batch_pull_request_handoff_failure () =
   with_temp_dir "symphony-batch-pr-retry-" (fun root ->
       init_repo root "feature/start";
@@ -7042,8 +7145,105 @@ exit 1
               let lines = Util.read_file gh_log |> Util.split_lines in
               Alcotest.(check bool) "looked for existing PR" true
                 (List.exists (Util.starts_with ~prefix:"pr list") lines);
+              Alcotest.(check bool) "uses tracker repo for GitHub PR lookup" true
+                (List.exists
+                   (( = ) "pr list --repo acme/widgets --state open --head feature/start --base main --limit 1 --json url")
+                   lines);
               Alcotest.(check bool) "did not create duplicate" false
                 (List.exists (Util.starts_with ~prefix:"pr create") lines)))
+
+let test_pull_request_handoff_push_is_non_force () =
+  with_temp_dir "symphony-pr-non-force-" (fun root ->
+      let remote = Filename.concat root "remote.git" in
+      let first = Filename.concat root "first" in
+      let repo = Filename.concat root "repo" in
+      let bin = Filename.concat root "bin" in
+      Unix.mkdir first 0o755;
+      Unix.mkdir repo 0o755;
+      Unix.mkdir bin 0o755;
+      ignore (run_ok ~cwd:root "bare remote" ("git init -q --bare " ^ Util.shell_quote remote));
+      init_repo first "feature/start";
+      ignore (run_ok ~cwd:first "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+      Util.write_file (Filename.concat first "remote-only.txt") "remote\n";
+      ignore (run_ok ~cwd:first "remote-only commit" "git add remote-only.txt && git commit -q -m remote-only");
+      ignore (run_ok ~cwd:first "push remote branch" "git push -q -u origin feature/start");
+      init_repo repo "feature/start";
+      ignore (run_ok ~cwd:repo "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+      let gh_log = Filename.concat root "gh.log" in
+      let gh_path = Filename.concat bin "gh" in
+      Util.write_file gh_path
+        (Printf.sprintf
+           {|#!/bin/sh
+printf '%%s\n' "$*" >> %s
+exit 0
+|}
+           (Util.shell_quote gh_log));
+      Unix.chmod gh_path 0o755;
+      let original_path = Sys.getenv_opt "PATH" in
+      Fun.protect
+        ~finally:(fun () -> match original_path with Some path -> Unix.putenv "PATH" path | None -> Unix.putenv "PATH" "")
+        (fun () ->
+          Unix.putenv "PATH" (bin ^ ":" ^ Option.value original_path ~default:"");
+          let config = base_orchestrator_config repo (git_policy ()) |> pull_request_config in
+          match Orchestrator.gh_batch_pull_request_handoff config ~head_branch:"feature/start" with
+          | Ok _ -> Alcotest.fail "expected non-force push rejection"
+          | Error error ->
+              Alcotest.(check bool) "push failed before PR lookup" true
+                (contains_substring error "batch branch push failed");
+              Alcotest.(check bool) "gh not called after rejected push" false (Sys.file_exists gh_log)))
+
+let test_minibeads_pull_request_handoff_uses_current_remote_without_tracker_repo () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-minibeads-pr-current-remote-" (fun root ->
+          let remote = Filename.concat root "remote.git" in
+          let repo = Filename.concat root "repo" in
+          let bin = Filename.concat root "bin" in
+          Unix.mkdir repo 0o755;
+          Unix.mkdir bin 0o755;
+          ignore (run_ok ~cwd:root "bare remote" ("git init -q --bare " ^ Util.shell_quote remote));
+          init_repo repo "feature/start";
+          ignore (run_ok ~cwd:repo "add origin" ("git remote add origin " ^ Util.shell_quote remote));
+          let gh_log = Filename.concat root "gh.log" in
+          let gh_path = Filename.concat bin "gh" in
+          Util.write_file gh_path
+            (Printf.sprintf
+               {|#!/bin/sh
+printf '%%s\n' "$*" >> %s
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  printf '[]\n'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  printf 'https://github.example/acme/widgets/pull/20\n'
+  exit 0
+fi
+exit 1
+|}
+               (Util.shell_quote gh_log));
+          Unix.chmod gh_path 0o755;
+          let original_path = Sys.getenv_opt "PATH" in
+          Fun.protect
+            ~finally:(fun () -> match original_path with Some path -> Unix.putenv "PATH" path | None -> Unix.putenv "PATH" "")
+            (fun () ->
+              Unix.putenv "PATH" (bin ^ ":" ^ Option.value original_path ~default:"");
+              let config = minibeads_orchestrator_config repo |> pull_request_config in
+              match Orchestrator.gh_batch_pull_request_handoff config ~head_branch:"feature/start" with
+              | Error error -> Alcotest.fail error
+              | Ok url ->
+                  Alcotest.(check (option string)) "created PR URL"
+                    (Some "https://github.example/acme/widgets/pull/20") url;
+                  Alcotest.(check bool) "remote loop-start branch pushed" true
+                    (Sys.command
+                       ("git --git-dir " ^ Util.shell_quote remote
+                      ^ " show-ref --verify --quiet refs/heads/feature/start")
+                    = 0);
+                  let lines = Util.read_file gh_log |> Util.split_lines in
+                  Alcotest.(check bool) "looked for existing PR" true
+                    (List.exists (Util.starts_with ~prefix:"pr list") lines);
+                  Alcotest.(check bool) "created PR" true
+                    (List.exists (Util.starts_with ~prefix:"pr create") lines);
+                  Alcotest.(check bool) "omitted tracker repo flag" false
+                    (List.exists (fun line -> contains_substring line "--repo") lines))))
 
 let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
   with_temp_dir "symphony-dirty-loop-" (fun root ->
@@ -7818,6 +8018,8 @@ let () =
             test_github_tracker_readiness_keeps_github_gaps;
           Alcotest.test_case "skips github readiness gaps for minibeads" `Quick
             test_minibeads_tracker_readiness_skips_github_gaps;
+          Alcotest.test_case "skips github tracker gaps for minibeads pull requests" `Quick
+            test_minibeads_pull_request_readiness_skips_github_tracker_gaps;
           Alcotest.test_case "loads minibeads settings without github token" `Quick
             test_minibeads_settings_load_without_github_token;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
@@ -8057,9 +8259,17 @@ let () =
             test_task_pull_request_renders_issue_template_tokens;
           Alcotest.test_case "opens task pull request before auto-merge cleanup" `Quick
             test_task_pull_request_opens_before_auto_merge_cleanup;
+          Alcotest.test_case "opens minibeads task pull request through selected tracker" `Quick
+            test_minibeads_task_pull_request_updates_selected_tracker;
+          Alcotest.test_case "records minibeads task pull request handoff failure" `Quick
+            test_minibeads_task_pull_request_failure_records_retryable_handoff;
           Alcotest.test_case "retries failed batch pull request handoff" `Quick test_orchestrator_retries_batch_pull_request_handoff_failure;
           Alcotest.test_case "blocks batch pull request on attention" `Quick test_orchestrator_blocks_batch_pull_request_on_attention;
           Alcotest.test_case "reuses existing batch pull request" `Quick test_batch_pull_request_handoff_reuses_existing_pr;
+          Alcotest.test_case "pushes pull request branches without force" `Quick
+            test_pull_request_handoff_push_is_non_force;
+          Alcotest.test_case "uses current remote for minibeads pull request handoff" `Quick
+            test_minibeads_pull_request_handoff_uses_current_remote_without_tracker_repo;
           Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
           Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
             test_orchestrator_blocks_disallowed_loop_start_before_side_effects;

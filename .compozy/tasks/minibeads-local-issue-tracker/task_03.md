@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add minibeads CLI readiness and diagnostics"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Add the minibeads adapter skeleton and readiness diagnostics for the `mb` CLI an
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add a minibeads adapter module with command runner injection for tests.
-- [ ] 3.2 Add readiness checks for missing `mb` command.
-- [ ] 3.3 Add readiness checks for missing local issue store.
-- [ ] 3.4 Add deterministic diagnostic messages for command failures.
-- [ ] 3.5 Add tests using fake command runner behavior.
+- [x] 3.1 Add a minibeads adapter module with command runner injection for tests.
+- [x] 3.2 Add readiness checks for missing `mb` command.
+- [x] 3.3 Add readiness checks for missing local issue store.
+- [x] 3.4 Add deterministic diagnostic messages for command failures.
+- [x] 3.5 Add tests using fake command runner behavior.
 
 ## Implementation Details
 Follow TechSpec "Integration Points: minibeads CLI". Keep the command rooted in the Workspace Repository. Full fetch/lookup/status mapping belongs to task_04.
@@ -64,12 +64,12 @@ Follow TechSpec "Integration Points: minibeads CLI". Keep the command rooted in 
 
 ## Tests
 - Unit tests:
-  - [ ] Missing `mb` command produces `tracker.minibeads.command` readiness gap.
-  - [ ] Missing local issue store produces `tracker.minibeads.store` readiness gap.
-  - [ ] Nonzero `mb` readiness command output produces a sanitized diagnostic.
-  - [ ] Valid fake readiness output produces no minibeads readiness gap.
+  - [x] Missing `mb` command produces `tracker.minibeads.command` readiness gap.
+  - [x] Missing local issue store produces `tracker.minibeads.store` readiness gap.
+  - [x] Nonzero `mb` readiness command output produces a sanitized diagnostic.
+  - [x] Valid fake readiness output produces no minibeads readiness gap.
 - Integration tests:
-  - [ ] Runtime readiness includes minibeads gaps without GitHub owner/repo/project/token gaps.
+  - [x] Runtime readiness includes minibeads gaps without GitHub owner/repo/project/token gaps.
 - Test coverage target: >=80%
 - All tests must pass
 
