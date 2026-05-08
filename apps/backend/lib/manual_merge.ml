@@ -1,4 +1,4 @@
-type selector = { raw : string; number : int; identifier : string }
+type selector = { raw : string; identifier : string }
 
 type integration = Merged | Already_integrated
 
@@ -13,9 +13,6 @@ type outcome = {
 
 type report = { outcomes : outcome list; merged : int; already_integrated : int; cleanup_failures : int }
 
-type fetch_issues = int list -> (int * Github_tracker.project_issue option) list
-type set_status = Issue.t -> string -> (unit, string) result
-
 let split_comma text =
   text |> String.split_on_char ',' |> List.map Util.trim |> List.filter (fun part -> part <> "")
 
@@ -27,17 +24,39 @@ let digits_only text =
          | _ -> false)
        text
 
-let normalize_one raw =
-  let trimmed = Util.trim raw in
+let normalize_numeric_selector raw trimmed =
   let body =
     if String.length trimmed > 0 && trimmed.[0] = '#' then String.sub trimmed 1 (String.length trimmed - 1)
     else trimmed
   in
   if digits_only body then
     match int_of_string_opt body with
-    | Some number when number > 0 -> Ok { raw = trimmed; number; identifier = "#" ^ string_of_int number }
+    | Some number when number > 0 -> Ok { raw = trimmed; identifier = "#" ^ string_of_int number }
     | _ -> Error (Printf.sprintf "invalid Manual Task Merge selector %S" raw)
-  else Error (Printf.sprintf "invalid Manual Task Merge selector %S; expected an issue identifier like 20 or #20" raw)
+  else Error (Printf.sprintf "invalid Manual Task Merge selector %S; expected an issue identifier like 20, #20, or mb-20" raw)
+
+let normalize_minibeads_selector raw trimmed =
+  match Util.drop_prefix ~prefix:"mb-" trimmed with
+  | Some number_text when digits_only number_text -> (
+      match int_of_string_opt number_text with
+      | Some number when number > 0 -> Ok { raw = trimmed; identifier = "mb-" ^ string_of_int number }
+      | _ -> Error (Printf.sprintf "invalid Manual Task Merge selector %S" raw))
+  | _ ->
+      Error
+        (Printf.sprintf "invalid Manual Task Merge selector %S; expected a minibeads issue identifier like mb-20" raw)
+
+let normalize_one raw =
+  let trimmed = Util.trim raw in
+  if trimmed = "" then Error (Printf.sprintf "invalid Manual Task Merge selector %S" raw)
+  else if String.contains trimmed '/' || String.contains trimmed ':' then
+    Error
+      (Printf.sprintf
+         "invalid Manual Task Merge selector %S; issue URLs and cross-repository references are not supported"
+         raw)
+  else
+    match Util.drop_prefix ~prefix:"mb-" trimmed with
+    | Some _ -> normalize_minibeads_selector raw trimmed
+    | None -> normalize_numeric_selector raw trimmed
 
 let normalize_selectors args =
   let raw_selectors = List.concat_map split_comma args in
@@ -50,12 +69,12 @@ let normalize_selectors args =
           match normalize_one raw with
           | Error error -> loop acc (error :: errors) rest
           | Ok selector ->
-              if Hashtbl.mem seen selector.number then
+              if Hashtbl.mem seen selector.identifier then
                 loop acc
                   (Printf.sprintf "duplicate Manual Task Merge selector %s" selector.identifier :: errors)
                   rest
               else (
-                Hashtbl.add seen selector.number ();
+                Hashtbl.add seen selector.identifier ();
                 loop (selector :: acc) errors rest))
     in
     loop [] [] raw_selectors
@@ -102,16 +121,26 @@ type preflight = {
   already_integrated : bool;
 }
 
-let preflight_one config ~projected_tip row selector =
-  match row with
-  | None -> Error (Printf.sprintf "%s is missing from the Workspace Repository issue tracker" selector.identifier)
-  | Some { Github_tracker.project_status = None; _ } ->
-      Error
-        (Printf.sprintf "%s is absent from GitHub Project #%d" selector.identifier config.Config.tracker.project_number)
-  | Some { issue; _ } ->
+let lookup_error (result : Issue_tracker.lookup_result) =
+  if List.mem Issue_tracker.Missing_issue result.diagnostics || Option.is_none result.issue then
+    Some (Printf.sprintf "%s is missing from the Workspace Repository issue tracker" result.identifier)
+  else
+    result.diagnostics
+    |> List.find_map (function
+         | Issue_tracker.Missing_project_membership project_number ->
+             Some (Printf.sprintf "%s is absent from GitHub Project #%d" result.identifier project_number)
+         | Issue_tracker.Missing_issue | Issue_tracker.Closed_issue -> None)
+
+let preflight_one config (tracker : Issue_tracker.t) ~projected_tip (result : Issue_tracker.lookup_result) selector =
+  match lookup_error result with
+  | Some error -> Error error
+  | None -> (
+      match result.issue with
+      | None -> Error (Printf.sprintf "%s is missing from the Workspace Repository issue tracker" selector.identifier)
+      | Some issue ->
       let branch = Orchestrator.task_branch config issue in
       let workspace = Workspace.create_for_issue ~root:config.Config.workspace.root issue.Issue.identifier in
-      let terminal = Github_tracker.status_is_terminal ~config:config.Config.tracker issue.Issue.state in
+      let terminal = tracker.is_terminal issue.Issue.state in
       if not (Orchestrator.git_ref_exists config.repository_root branch) then
         Error (Printf.sprintf "%s expected Task Branch %s does not exist" selector.identifier branch)
       else
@@ -137,7 +166,7 @@ let preflight_one config ~projected_tip row selector =
                   | Ok () ->
                       if terminal then
                         Error
-                          (Printf.sprintf "%s is terminal in project state %S but %s is not on the Loop-Start Branch"
+                          (Printf.sprintf "%s is terminal in tracker state %S but %s is not on the Loop-Start Branch"
                              selector.identifier issue.state branch)
                       else if is_ancestor ~cwd:config.repository_root ~ancestor:projected_tip ~descendant:branch then (
                         match rev_parse ~cwd:config.repository_root branch with
@@ -148,30 +177,35 @@ let preflight_one config ~projected_tip row selector =
                       else
                         Error
                           (Printf.sprintf "%s Task Branch %s cannot fast-forward from projected Loop-Start Branch tip"
-                             selector.identifier branch))
+                             selector.identifier branch)))
 
-let preflight config ~fetch_issues selectors =
+let preflight config (tracker : Issue_tracker.t) selectors =
   if not (Orchestrator.is_git_repository config.Config.repository_root) then Error [ "Manual Task Merge requires a Git Workspace Repository" ]
   else
     match Orchestrator.has_worktree_changes config.repository_root with
     | Error error -> Error [ "Loop-Start Worktree status failed at " ^ config.repository_root ^ ": " ^ error ]
     | Ok true -> Error [ "Loop-Start Worktree must be clean: " ^ config.repository_root ]
     | Ok false -> (
-        let fetched = fetch_issues (List.map (fun selector -> selector.number) selectors) in
-        let row_for number = List.assoc_opt number fetched |> Option.join in
-        match rev_parse ~cwd:config.repository_root "HEAD" with
-        | Error error -> Error [ "Loop-Start Branch tip could not be resolved: " ^ error ]
-        | Ok head ->
-            let rec loop projected acc errors = function
-              | [] -> if errors = [] then Ok (List.rev acc) else Error (List.rev errors)
-              | selector :: rest -> (
-                  match preflight_one config ~projected_tip:projected (row_for selector.number) selector with
-                  | Ok (item, next_tip) -> loop next_tip (item :: acc) errors rest
-                  | Error error -> loop projected acc (error :: errors) rest)
-            in
-            loop head [] [] selectors)
+        match tracker.fetch_by_identifiers_detailed (List.map (fun selector -> selector.identifier) selectors) with
+        | Error error -> Error [ "Manual Task Merge tracker lookup failed: " ^ error ]
+        | Ok results -> (
+            if List.length results <> List.length selectors then
+              Error [ "Manual Task Merge tracker lookup returned an unexpected result count" ]
+            else
+              match rev_parse ~cwd:config.repository_root "HEAD" with
+              | Error error -> Error [ "Loop-Start Branch tip could not be resolved: " ^ error ]
+              | Ok head ->
+                  let rec loop projected acc errors pairs =
+                    match pairs with
+                    | [] -> if errors = [] then Ok (List.rev acc) else Error (List.rev errors)
+                    | (selector, result) :: rest -> (
+                        match preflight_one config tracker ~projected_tip:projected result selector with
+                        | Ok (item, next_tip) -> loop next_tip (item :: acc) errors rest
+                        | Error error -> loop projected acc (error :: errors) rest)
+                  in
+                  loop head [] [] (List.combine selectors results)))
 
-let integrate_one config ~set_status item =
+let integrate_one config (tracker : Issue_tracker.t) item =
   let integration =
     if item.already_integrated then Ok Already_integrated
     else
@@ -189,25 +223,25 @@ let integrate_one config ~set_status item =
         match review_success_status config item.issue with
         | None -> None
         | Some status -> (
-            match set_status item.issue status with
+            match tracker.update_status item.issue status with
             | Ok () -> Some status
             | Error error -> raise (Failure (Printf.sprintf "%s tracker status update failed: %s" item.selector.identifier error)))
       in
       let cleanup_error = cleanup config item.issue item.workspace in
       Ok { issue = item.issue; branch = item.branch; workspace = item.workspace; integration; status_update; cleanup_error }
 
-let run ~fetch_issues ~set_status config args =
+let run ~(tracker : Issue_tracker.t) config args =
   match normalize_selectors args with
   | Error errors -> Error errors
   | Ok selectors -> (
-      match preflight config ~fetch_issues selectors with
+      match preflight config tracker selectors with
       | Error errors -> Error errors
       | Ok items -> (
           try
             let outcomes =
               List.map
                 (fun item ->
-                  match integrate_one config ~set_status item with Ok outcome -> outcome | Error error -> raise (Failure error))
+                  match integrate_one config tracker item with Ok outcome -> outcome | Error error -> raise (Failure error))
                 items
             in
             let merged =

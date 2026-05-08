@@ -7465,7 +7465,8 @@ let manual_merge_config ?(keep_task_branch = true) root =
 let project_issue issue = Some { Github_tracker.issue; project_status = Some issue.Issue.state; closed = false }
 
 let run_manual_merge_test config issues selectors =
-  let fetch numbers =
+  let statuses = ref [] in
+  let fetch_by_numbers _ numbers =
     List.map
       (fun number ->
         ( number,
@@ -7474,12 +7475,142 @@ let run_manual_merge_test config issues selectors =
           | Some issue -> project_issue issue ))
       numbers
   in
-  let statuses = ref [] in
-  let set_status issue status =
+  let update_status _ issue status =
     statuses := (issue.Issue.identifier, status) :: !statuses;
     Ok ()
   in
-  (Manual_merge.run ~fetch_issues:fetch ~set_status config selectors, statuses)
+  let tracker = Issue_tracker.github ~fetch_by_numbers ~update_status config in
+  (Manual_merge.run ~tracker config selectors, statuses)
+
+let manual_merge_minibeads_config root =
+  let config = manual_merge_config root in
+  let stage_agents =
+    {
+      config.Config.stage_agents with
+      stages =
+        List.map
+          (fun (stage : Config.stage_agent) -> { stage with states = [ "in_progress" ]; success_status = Some "Done" })
+          config.stage_agents.stages;
+    }
+  in
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        kind = "minibeads";
+        owner = "";
+        repo = "";
+        project_number = 0;
+        api_key = None;
+        active_states = [ "open"; "in_progress" ];
+        terminal_states = [ "closed" ];
+        minibeads_root = Filename.concat root ".beads";
+        minibeads_command = "mb";
+      };
+    stage_agents;
+  }
+
+let run_manual_merge_minibeads_test config ~runner selectors =
+  let tracker = Issue_tracker.minibeads ~runner config in
+  Manual_merge.run ~tracker config selectors
+
+let test_manual_merge_accepts_minibeads_selector_and_rejects_canonical_duplicates () =
+  with_temp_dir "symphony-manual-merge-minibeads-selectors-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let result =
+        run_manual_merge_minibeads_test config ~runner:(fake_minibeads_route_runner [] (ref []))
+          [ "mb-020,mb-20"; "mb-abc" ]
+      in
+      match result with
+      | Ok _ -> Alcotest.fail "expected selector errors"
+      | Error errors ->
+          Alcotest.(check int) "two selector errors" 2 (List.length errors);
+          Alcotest.(check bool) "duplicate uses canonical identifier" true
+            (List.exists (fun error -> contains_substring error "duplicate Manual Task Merge selector mb-20") errors);
+          Alcotest.(check bool) "malformed local selector rejected" true
+            (List.exists (fun error -> contains_substring error "expected a minibeads issue identifier like mb-20") errors))
+
+let test_manual_merge_selected_tracker_missing_issue_diagnostic () =
+  with_temp_dir "symphony-manual-merge-missing-minibeads-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let calls = ref [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let result =
+        run_manual_merge_minibeads_test config
+          ~runner:(fake_minibeads_route_runner [ (show_command, `Ok "[]") ] calls)
+          [ "mb-20" ]
+      in
+      match result with
+      | Ok _ -> Alcotest.fail "expected missing issue"
+      | Error errors ->
+          Alcotest.(check (list string)) "missing diagnostic"
+            [ "mb-20 is missing from the Workspace Repository issue tracker" ]
+            errors;
+          Alcotest.(check (list (pair string string))) "lookup command"
+            [ (root, show_command) ] (List.rev !calls))
+
+let test_manual_merge_minibeads_terminal_state_uses_selected_tracker () =
+  with_temp_dir "symphony-manual-merge-minibeads-terminal-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Twenty" ~state:"closed" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "closed.txt") "closed\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add closed.txt && git commit -q -m task");
+      let calls = ref [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let show_output = {|{"id":"mb-20","title":"Twenty","status":"closed","priority":1}|} in
+      let result =
+        run_manual_merge_minibeads_test config
+          ~runner:(fake_minibeads_route_runner [ (show_command, `Ok show_output) ] calls)
+          [ "mb-20" ]
+      in
+      match result with
+      | Ok _ -> Alcotest.fail "expected terminal preflight failure"
+      | Error errors ->
+          Alcotest.(check int) "one error" 1 (List.length errors);
+          Alcotest.(check bool) "selected tracker terminal wording" true
+            (List.exists (fun error -> contains_substring error "terminal in tracker state \"closed\"") errors))
+
+let test_manual_merge_minibeads_fast_forward_updates_selected_tracker () =
+  with_temp_dir "symphony-manual-merge-minibeads-merge-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_minibeads_config root in
+      let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Twenty" ~state:"in_progress" in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "minibeads.txt") "minibeads\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add minibeads.txt && git commit -q -m task");
+      let calls = ref [] in
+      let show_command = minibeads_json_command config "show" [ "mb-20" ] in
+      let update_command = minibeads_update_command config "mb-20" "closed" in
+      let show_output = {|{"id":"mb-20","title":"Twenty","status":"in_progress","priority":1}|} in
+      let result =
+        run_manual_merge_minibeads_test config
+          ~runner:
+            (fake_minibeads_route_runner
+               [ (show_command, `Ok show_output); (update_command, `Ok "Updated mb-20") ]
+               calls)
+          [ "mb-20" ]
+      in
+      let report = match result with Ok report -> report | Error errors -> Alcotest.fail (String.concat "; " errors) in
+      Alcotest.(check int) "merged" 1 report.merged;
+      Alcotest.(check int) "already integrated" 0 report.already_integrated;
+      Alcotest.(check bool) "merged file present" true (Sys.file_exists (Filename.concat root "minibeads.txt"));
+      Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path);
+      Alcotest.(check (list (pair string string))) "selected tracker commands"
+        [ (root, show_command); (root, update_command) ]
+        (List.rev !calls))
 
 let test_manual_merge_rejects_invalid_and_duplicate_selectors () =
   with_temp_dir "symphony-manual-merge-selectors-" (fun root ->
@@ -7494,6 +7625,32 @@ let test_manual_merge_rejects_invalid_and_duplicate_selectors () =
             (List.exists (fun error -> String.contains error 'd') errors);
           Alcotest.(check bool) "branch selector rejected" true
             (List.exists (fun error -> String.contains error '/') errors))
+
+let test_manual_merge_github_still_rejects_absent_project_membership () =
+  with_temp_dir "symphony-manual-merge-github-project-membership-" (fun root ->
+      init_repo root "feature/start";
+      let config = manual_merge_config root in
+      let issue = Issue.empty ~id:"I20" ~identifier:"#20" ~title:"Twenty" ~state:"In review" in
+      let fetch_by_numbers _ numbers =
+        List.map
+          (fun number ->
+            ( number,
+              if number = 20 then Some { Github_tracker.issue; project_status = None; closed = false }
+              else None ))
+          numbers
+      in
+      let tracker =
+        Issue_tracker.github ~fetch_by_numbers
+          ~update_status:(fun _ _ _ -> Alcotest.fail "unexpected status update")
+          config
+      in
+      let result = Manual_merge.run ~tracker config [ "#20" ] in
+      match result with
+      | Ok _ -> Alcotest.fail "expected missing GitHub Project membership"
+      | Error errors ->
+          Alcotest.(check (list string)) "project membership diagnostic"
+            [ "#20 is absent from GitHub Project #7" ]
+            errors)
 
 let test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status () =
   with_temp_dir "symphony-manual-merge-protected-" (fun root ->
@@ -7910,8 +8067,18 @@ let () =
         [
           Alcotest.test_case "rejects invalid and duplicate selectors" `Quick
             test_manual_merge_rejects_invalid_and_duplicate_selectors;
+          Alcotest.test_case "accepts minibeads selectors and rejects canonical duplicates" `Quick
+            test_manual_merge_accepts_minibeads_selector_and_rejects_canonical_duplicates;
+          Alcotest.test_case "reports selected tracker missing issues" `Quick
+            test_manual_merge_selected_tracker_missing_issue_diagnostic;
+          Alcotest.test_case "uses selected tracker terminal semantics" `Quick
+            test_manual_merge_minibeads_terminal_state_uses_selected_tracker;
+          Alcotest.test_case "keeps GitHub project membership validation" `Quick
+            test_manual_merge_github_still_rejects_absent_project_membership;
           Alcotest.test_case "fast-forwards protected trunk and updates review status" `Quick
             test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status;
+          Alcotest.test_case "fast-forwards minibeads task and updates selected tracker" `Quick
+            test_manual_merge_minibeads_fast_forward_updates_selected_tracker;
           Alcotest.test_case "blocks unauthorized protected paths" `Quick
             test_manual_merge_blocks_unauthorized_protected_path_change;
           Alcotest.test_case "preflight is all or nothing" `Quick test_manual_merge_preflight_is_all_or_nothing;

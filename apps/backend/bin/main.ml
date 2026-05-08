@@ -259,10 +259,8 @@ let render_manual_merge_report report =
     (List.length report.outcomes) report.merged report.already_integrated report.cleanup_failures
 
 let run_manual_merge config merge_args =
-  let tracker = Github_tracker.make config.Config.tracker in
-  let fetch_issues numbers = Github_tracker.fetch_project_issues_by_numbers tracker numbers in
-  let set_status issue status = Github_tracker.update_issue_status tracker issue status in
-  match Manual_merge.run ~fetch_issues ~set_status config merge_args with
+  let tracker = Issue_tracker.make config in
+  match Manual_merge.run ~tracker config merge_args with
   | Ok report ->
       render_manual_merge_report report;
       if report.cleanup_failures = 0 then 0 else 1
