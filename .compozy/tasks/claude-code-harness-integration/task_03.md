@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Implement Harness Loop Handoff Semantics"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ This task replaces Codex-specific `/goal` prompt prepending with Harness loop co
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Update prompt composition to read selected Harness loop settings.
-- [ ] 3.2 Replace hard-coded `/goal` with configured `loop.command`.
-- [ ] 3.3 Skip loop handoff for disabled or empty Harness loop settings.
-- [ ] 3.4 Update Codex goal readiness to apply only to selected loop-enabled Codex Harnesses.
-- [ ] 3.5 Add focused prompt composition tests for Codex, Claude, and empty loop commands.
+- [x] 3.1 Update prompt composition to read selected Harness loop settings.
+- [x] 3.2 Replace hard-coded `/goal` with configured `loop.command`.
+- [x] 3.3 Skip loop handoff for disabled or empty Harness loop settings.
+- [x] 3.4 Update Codex goal readiness to apply only to selected loop-enabled Codex Harnesses.
+- [x] 3.5 Add focused prompt composition tests for Codex, Claude, and empty loop commands.
 
 ## Implementation Details
 Modify `apps/backend/lib/orchestrator.ml` around Stage Goal Context composition and `apps/backend/lib/config.ml` around Codex goal readiness. Reference TechSpec "Technical Considerations" and ADR-003 for the loop rule.

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Rename Runtime State Usage Totals And Expose Harness Identity"
 type: backend
 complexity: medium
@@ -31,12 +31,12 @@ This task makes Runtime State provider-neutral by renaming `codex_totals` to `us
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Rename backend Runtime State totals field to `usage_totals`.
-- [ ] 5.2 Update Runtime State JSON serialization.
-- [ ] 5.3 Add selected Harness name and kind to running rows.
-- [ ] 5.4 Update orchestrator state updates to populate Harness identity.
-- [ ] 5.5 Update backend token total aggregation from parsed output.
-- [ ] 5.6 Update backend tests for the new Runtime State shape.
+- [x] 5.1 Rename backend Runtime State totals field to `usage_totals`.
+- [x] 5.2 Update Runtime State JSON serialization.
+- [x] 5.3 Add selected Harness name and kind to running rows.
+- [x] 5.4 Update orchestrator state updates to populate Harness identity.
+- [x] 5.5 Update backend token total aggregation from parsed output.
+- [x] 5.6 Update backend tests for the new Runtime State shape.
 
 ## Implementation Details
 Modify `apps/backend/lib/runtime_state.ml` and `apps/backend/lib/orchestrator.ml`. Also check backend CLI summaries in `apps/backend/bin/main.ml` for Codex-specific naming. Reference TechSpec "Data Models" and ADR-004.
@@ -80,3 +80,6 @@ Modify `apps/backend/lib/runtime_state.ml` and `apps/backend/lib/orchestrator.ml
 - Test coverage >=80%
 - Backend Runtime State no longer uses Codex-specific totals naming.
 - Running task state identifies the selected Harness.
+
+## Verification
+- 2026-05-08: `pnpm test` passed with 169 backend tests. The repository does not define a coverage command or Bisect instrumentation, so no percentage report was generated.

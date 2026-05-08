@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Update Runtime Contract Docs, Glossary, And Project ADRs"
 type: docs
 complexity: medium
@@ -36,12 +36,12 @@ This task updates repository documentation so the Runtime Contract language matc
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Update glossary terms and invariants in `CONTEXT.md`.
-- [ ] 8.2 Replace legacy README `agents.pi` Harness examples with `harnesses` plus logical `agents`.
-- [ ] 8.3 Document Harness loop behavior and Claude loop defaults.
-- [ ] 8.4 Document blocking readiness migration behavior.
-- [ ] 8.5 Add or update the project-level ADR under `docs/adr/`.
-- [ ] 8.6 Run final full validation commands after docs and examples are aligned.
+- [x] 8.1 Update glossary terms and invariants in `CONTEXT.md`.
+- [x] 8.2 Replace legacy README `agents.pi` Harness examples with `harnesses` plus logical `agents`.
+- [x] 8.3 Document Harness loop behavior and Claude loop defaults.
+- [x] 8.4 Document blocking readiness migration behavior.
+- [x] 8.5 Add or update the project-level ADR under `docs/adr/`.
+- [x] 8.6 Run final full validation commands after docs and examples are aligned.
 
 ## Implementation Details
 Modify documentation after implementation tasks settle the exact names and readiness text. Reference the TechSpec "Architecture Decision Records" section and task-local ADRs, but write project docs in repository glossary language.
@@ -73,16 +73,16 @@ Modify documentation after implementation tasks settle the exact names and readi
 
 ## Tests
 - Unit tests:
-  - [ ] Documentation examples use `harnesses` for execution backends.
-  - [ ] Documentation examples use logical `agents` for planner/engineer/reviewer execution selection.
-  - [ ] Documentation examples do not include secret values.
-  - [ ] Project ADR references the accepted migration and loop semantics.
+  - [x] Documentation examples use `harnesses` for execution backends.
+  - [x] Documentation examples use logical `agents` for planner/engineer/reviewer execution selection.
+  - [x] Documentation examples do not include secret values.
+  - [x] Project ADR references the accepted migration and loop semantics.
 - Integration tests:
-  - [ ] `pnpm test` passes after docs examples and backend fixtures are aligned.
-  - [ ] `pnpm frontend:test` passes after Runtime State docs and frontend changes are aligned.
-  - [ ] `pnpm frontend:build` passes after ReScript changes.
-  - [ ] `pnpm backend:build` passes after backend/docs changes.
-  - [ ] `pnpm prepack` passes for final package payload verification.
+  - [x] `pnpm test` passes after docs examples and backend fixtures are aligned.
+  - [x] `pnpm frontend:test` passes after Runtime State docs and frontend changes are aligned.
+  - [x] `pnpm frontend:build` passes after ReScript changes.
+  - [x] `pnpm backend:build` passes after backend/docs changes.
+  - [x] `pnpm prepack` passes for final package payload verification.
 - Test coverage target: >=80%
 - All tests must pass
 

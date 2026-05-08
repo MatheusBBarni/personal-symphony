@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Update Frontend Live State And Dashboard For Provider-Neutral State"
 type: frontend
 complexity: medium
@@ -30,12 +30,12 @@ This task updates the ReScript frontend to consume provider-neutral Runtime Stat
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Update ReScript Runtime State types to use `usage_totals`.
-- [ ] 6.2 Add Harness identity fields to frontend running row types.
-- [ ] 6.3 Update dashboard snapshot derivation for token totals.
-- [ ] 6.4 Surface Harness identity in the dashboard where running task details are shown.
-- [ ] 6.5 Update frontend live-state tests with `usage_totals` and Harness fields.
-- [ ] 6.6 Run ReScript/frontend verification commands.
+- [x] 6.1 Update ReScript Runtime State types to use `usage_totals`.
+- [x] 6.2 Add Harness identity fields to frontend running row types.
+- [x] 6.3 Update dashboard snapshot derivation for token totals.
+- [x] 6.4 Surface Harness identity in the dashboard where running task details are shown.
+- [x] 6.5 Update frontend live-state tests with `usage_totals` and Harness fields.
+- [x] 6.6 Run ReScript/frontend verification commands.
 
 ## Implementation Details
 Modify `apps/frontend/src/Main.res` and related `.res` files only. Reference the TechSpec "Runtime State changes" and task_05 backend output shape. Build-generated `.res.js` files are ignored and must not be committed.
@@ -62,13 +62,13 @@ Modify `apps/frontend/src/Main.res` and related `.res` files only. Reference the
 
 ## Tests
 - Unit tests:
-  - [ ] Live-state snapshot with `usage_totals.total_tokens` maps to the dashboard token summary.
-  - [ ] Live-state snapshot without `codex_totals` does not fail decoding.
-  - [ ] Running row with `harness_name` and `harness_kind` is accepted.
-  - [ ] Running row without Harness fields remains tolerated only if backend compatibility requires it.
+  - [x] Live-state snapshot with `usage_totals.total_tokens` maps to the dashboard token summary.
+  - [x] Live-state snapshot without `codex_totals` does not fail decoding.
+  - [x] Running row with `harness_name` and `harness_kind` is accepted.
+  - [x] Running row without Harness fields remains tolerated only if backend compatibility requires it.
 - Integration tests:
-  - [ ] `pnpm frontend:test` passes with updated live-state fixtures.
-  - [ ] `pnpm frontend:build` passes after ReScript changes.
+  - [x] `pnpm frontend:test` passes with updated live-state fixtures.
+  - [x] `pnpm frontend:build` passes after ReScript changes.
 - Test coverage target: >=80%
 - All tests must pass
 

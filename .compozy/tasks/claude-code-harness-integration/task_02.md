@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Resolve Stage Agents Through Logical Agents And Add Migration Readiness Diagnostics"
 type: backend
 complexity: high
@@ -30,12 +30,12 @@ This task changes the selected Harness resolution path from direct stage-level H
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Add a resolved Harness helper that follows stage -> logical agent -> Harness.
-- [ ] 2.2 Implement field-by-field agent override merging.
-- [ ] 2.3 Update selected-Harness readiness to use logical agent selection.
-- [ ] 2.4 Add readiness gaps for stage-level `harness` usage.
-- [ ] 2.5 Add readiness gaps for legacy harness-shaped `agents.*` entries.
-- [ ] 2.6 Update existing PI Harness readiness tests to use `harnesses` and logical `agents`.
+- [x] 2.1 Add a resolved Harness helper that follows stage -> logical agent -> Harness.
+- [x] 2.2 Implement field-by-field agent override merging.
+- [x] 2.3 Update selected-Harness readiness to use logical agent selection.
+- [x] 2.4 Add readiness gaps for stage-level `harness` usage.
+- [x] 2.5 Add readiness gaps for legacy harness-shaped `agents.*` entries.
+- [x] 2.6 Update existing PI Harness readiness tests to use `harnesses` and logical `agents`.
 
 ## Implementation Details
 Modify `apps/backend/lib/config.ml` around current `stage_harness_name`, `selected_agent_harness`, `readiness_agent_harnesses`, and readiness gap generation. Reference the TechSpec "System Architecture" and "Technical Considerations" sections for the accepted resolution path.
@@ -65,15 +65,15 @@ Modify `apps/backend/lib/config.ml` around current `stage_harness_name`, `select
 
 ## Tests
 - Unit tests:
-  - [ ] Stage `agent: "engineer"` resolves through `agents.engineer.harness: "claude"`.
-  - [ ] Agent `model` overrides Harness `model` while missing timeouts inherit from the Harness.
-  - [ ] Unknown logical agent produces a readiness gap naming the missing `agents.<name>`.
-  - [ ] Unknown Harness reference produces a readiness gap naming the missing `harnesses.<name>`.
-  - [ ] Stage-level `harness` produces a migration readiness gap.
-  - [ ] Legacy harness-shaped `agents.pi.kind` produces a migration readiness gap.
+  - [x] Stage `agent: "engineer"` resolves through `agents.engineer.harness: "claude"`.
+  - [x] Agent `model` overrides Harness `model` while missing timeouts inherit from the Harness.
+  - [x] Unknown logical agent produces a readiness gap naming the missing `agents.<name>`.
+  - [x] Unknown Harness reference produces a readiness gap naming the missing `harnesses.<name>`.
+  - [x] Stage-level `harness` produces a migration readiness gap.
+  - [x] Legacy harness-shaped `agents.pi.kind` produces a migration readiness gap.
 - Integration tests:
-  - [ ] Selected PI readiness checks run only when a logical agent selects the PI Harness.
-  - [ ] Unselected PI and Claude Harness definitions do not block dispatch.
+  - [x] Selected PI readiness checks run only when a logical agent selects the PI Harness.
+  - [x] Unselected PI and Claude Harness definitions do not block dispatch.
 - Test coverage target: >=80%
 - All tests must pass
 
