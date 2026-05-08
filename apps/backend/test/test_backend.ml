@@ -1697,6 +1697,76 @@ let test_cli_mode_selection () =
   Alcotest.(check string) "terminal default" "terminal_console" (Cli_mode.(select ~web:false |> to_string));
   Alcotest.(check string) "web flag" "web_dashboard" (Cli_mode.(select ~web:true |> to_string))
 
+let test_cli_command_evaluates_runtime_from_library () =
+  let observed = ref None in
+  let callbacks =
+    {
+      Cli_command.run =
+        (fun args ->
+          observed := Some args;
+          17);
+      init = (fun () -> Alcotest.fail "init callback should not run");
+      update = (fun ~yes:_ -> Alcotest.fail "update callback should not run");
+    }
+  in
+  let cmd = Cli_command.cmd ~version:"test-version" callbacks in
+  let code =
+    Cmdliner.Cmd.eval'
+      ~argv:
+        [|
+          "symphony";
+          "--port";
+          "9090";
+          "--once";
+          "--web";
+          "--queue";
+          "#1,#2";
+          "--merge";
+          "#3";
+          "--merge";
+          "4";
+          "WORKFLOW.md";
+        |]
+      cmd
+  in
+  Alcotest.(check int) "runtime exit code" 17 code;
+  match !observed with
+  | None -> Alcotest.fail "runtime callback was not invoked"
+  | Some args ->
+      Alcotest.(check (option string)) "legacy workflow" (Some "WORKFLOW.md") args.Cli_command.workflow_path;
+      Alcotest.(check (option int)) "port" (Some 9090) args.port;
+      Alcotest.(check bool) "once" true args.once;
+      Alcotest.(check bool) "web" true args.web;
+      Alcotest.(check (option string)) "queue" (Some "#1,#2") args.queue_arg;
+      Alcotest.(check (list string)) "merge args" [ "#3"; "4" ] args.merge_args
+
+let test_cli_command_exposes_init_and_update () =
+  let init_called = ref false in
+  let update_yes = ref None in
+  let callbacks =
+    {
+      Cli_command.run = (fun _ -> Alcotest.fail "runtime callback should not run");
+      init =
+        (fun () ->
+          init_called := true;
+          23);
+      update =
+        (fun ~yes ->
+          update_yes := Some yes;
+          24);
+    }
+  in
+  let cmd = Cli_command.cmd ~version:"test-version" callbacks in
+  Alcotest.(check int) "init exit code" 23 (Cmdliner.Cmd.eval' ~argv:[| "symphony"; "init" |] cmd);
+  Alcotest.(check bool) "init called" true !init_called;
+  Alcotest.(check int) "update exit code" 24
+    (Cmdliner.Cmd.eval' ~argv:[| "symphony"; "update"; "--yes" |] cmd);
+  Alcotest.(check (option bool)) "update yes" (Some true) !update_yes
+
+let test_cli_help_argv_normalization () =
+  let normalized = Cli_command.normalize_help_argv [| "symphony"; "-h"; "-v"; "--once" |] in
+  Alcotest.(check (array string)) "normalized argv" [| "symphony"; "--help"; "--version"; "--once" |] normalized
+
 let make_fake_npm_install root =
   let prefix = Filename.concat root "prefix" in
   let package_root = Filename.concat prefix "lib/node_modules/symphony-orchestrator" in
@@ -7003,6 +7073,10 @@ let () =
       ( "cli",
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
+          Alcotest.test_case "evaluates runtime command from backend library" `Quick
+            test_cli_command_evaluates_runtime_from_library;
+          Alcotest.test_case "exposes init and update subcommands" `Quick test_cli_command_exposes_init_and_update;
+          Alcotest.test_case "normalizes short help and version flags" `Quick test_cli_help_argv_normalization;
           Alcotest.test_case "detects update Install Prefix" `Quick test_update_detects_npm_install_prefix;
           Alcotest.test_case "detects prefix from package launcher" `Quick
             test_update_detects_prefix_from_package_launcher;
