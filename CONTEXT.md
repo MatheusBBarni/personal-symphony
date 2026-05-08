@@ -73,7 +73,7 @@ The repository-owned files inside the Runtime Home that define Personal Symphony
 _Avoid_: workflow file, harness config
 
 **Runtime Settings**:
-The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, agent, server, and path configuration.
+The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, Harness, logical agent, server, and path configuration.
 _Avoid_: config, preferences
 
 **Issue Tracker**:
@@ -93,24 +93,36 @@ A human-editable issue record stored by a Local Issue Tracker and used by Person
 _Avoid_: task markdown, PRD file, scratch note
 
 **Runtime Settings Invocation Override**:
-A command-line value that replaces one loaded Runtime Settings field for the current Symphony process only.
+A command-line value on the default runtime command that replaces one loaded Runtime Settings field for the current Symphony process only, after Runtime Settings load and before orchestration uses the effective runtime config.
 _Avoid_: temporary config, settings rewrite, runtime patch
 
 **Stage Agent**:
-A Runtime Settings mapping from project statuses to a named agent instruction file, Agent Harness selection, and optional stage behavior.
+A Runtime Settings mapping from project statuses to a named logical agent, its matching instruction file, and optional stage behavior.
 _Avoid_: status agent, workflow step, lane
 
+**Logical Agent**:
+A Runtime Settings `agents.<name>` definition, such as planner, engineer, or reviewer, that selects one Agent Harness and may override execution defaults for that role.
+_Avoid_: harness, agent command, provider
+
 **Agent Harness**:
-A named Runtime Settings launch configuration that tells Symphony which non-interactive agent tool to run for a Stage Agent.
+A named Runtime Settings `harnesses.<name>` launch configuration that tells Symphony which non-interactive agent tool to run after a logical agent selects it.
 _Avoid_: agent command, codex config, provider
 
 **Codex Harness**:
 An Agent Harness whose launch semantics target Codex non-interactive execution.
 _Avoid_: default agent, symphony agent
 
+**Claude Harness**:
+An Agent Harness whose launch semantics target Claude Code non-interactive execution with CLI `stream-json` output.
+_Avoid_: codex clone, claude agent
+
 **PI Harness**:
 An Agent Harness whose launch semantics target PI non-interactive execution.
 _Avoid_: codex-compatible command, pi agent
+
+**Harness Loop**:
+The per-Harness Runtime Settings capability that controls whether Stage Goal Handoff prepends a loop command such as `/goal`.
+_Avoid_: global goal mode, codex-only setting
 
 **Git Policy**:
 The Runtime Settings section that defines Task Branch and Protected Trunk Branch behavior.
@@ -342,16 +354,24 @@ _Avoid_: reinitialize, reset
 - A **Local Issue Tracker** must preserve Stage Agent dispatch, tracker status transitions, Agent Prompt rendering, Task Branch naming, retry, Stage Commit, Stage Push, and Task Branch Integration behavior.
 - A **Local Issue Tracker** must not require GitHub API access for issue fetches or tracker status updates.
 - Bootstrap must not overwrite existing **Local Issue Files**.
-- A **Runtime Settings Invocation Override** is applied after **Runtime Settings** load and before orchestration, but it is not written into the **Runtime Contract**.
+- A **Runtime Settings Invocation Override** is applied after **Runtime Settings** load and before orchestration uses the effective runtime config, but it is not written into the **Runtime Contract**.
+- A **Runtime Settings Invocation Override** may change effective Agent Worktree placement for one run, but it does not select a different **Workspace Repository**.
 - The **Runtime Contract** contains an **Agent Prompt**.
 - A **Runtime Home** contains one **Environment Template** and may contain one **Local Environment**.
 - A **Runtime Home** may contain **Runtime State**.
 - A **Runtime Home** may contain many **Agent Workspaces**.
 - An **Agent Worktree** is an **Agent Workspace**.
-- The **Runtime Settings** may define many named **Agent Harnesses**.
-- A **Stage Agent** mapping selects an **Agent Harness** with `harness` when present, falling back to its `agent` identifier for older Runtime Settings.
-- Agent Harness readiness follows enabled **Stage Agent** mappings instead of every unused Agent Harness definition.
+- The **Runtime Settings** may define many named **Agent Harnesses** under `harnesses`.
+- The **Runtime Settings** may define many named **Logical Agents** under `agents`.
+- A **Stage Agent** mapping selects a **Logical Agent** with `agent`.
+- A **Logical Agent** selects an **Agent Harness** with `harness`.
+- A **Stage Agent** mapping must not select an **Agent Harness** directly with stage-level `harness`; legacy `stageAgents.stages[].harness` is a migration **Readiness Gap**.
+- Legacy harness-shaped Runtime Settings under `agents.*`, such as `agents.pi.kind`, are migration input and create blocking **Readiness Gaps** when the new Runtime Settings shape is in use.
+- Agent Harness readiness follows enabled **Stage Agent** mappings resolved through **Logical Agents** instead of every unused Agent Harness definition.
 - A legacy Runtime Settings `codex` block is a backwards-compatible **Codex Harness** definition.
+- A **Codex Harness** has **Harness Loop** enabled with `/goal` by default.
+- A **Claude Harness** uses CLI `stream-json` for the first Claude integration.
+- A **Claude Harness** has **Harness Loop** disabled by default.
 - A **PI Harness** uses PI non-interactive print mode for the first PI integration.
 - A selected **PI Harness** must have an installed command executable and PI authentication before dispatch.
 - An unused **PI Harness** definition must not create PI install or authentication **Readiness Gaps**.
@@ -431,7 +451,7 @@ _Avoid_: reinitialize, reset
 - A failed **Stage Push** is retryable.
 - A **Stage Goal Handoff** is configured per **Stage Agent**.
 - A **Stage Goal Handoff** is not a global Codex launch mode.
-- A **Stage Goal Handoff** is supported only by a **Codex Harness** until a non-Codex harness defines equivalent goal semantics.
+- A **Stage Goal Handoff** is gated by stage `goal.enabled`, then controlled by the selected **Agent Harness** `loop.enabled` and `loop.command`.
 - Runtime Settings configure **Stage Goal Handoff** with `goal.enabled` on a stage.
 - A missing `goal` setting means **Stage Goal Handoff** is disabled for that stage.
 - A rendered **Agent Prompt** includes GitHub issue comments when they are present.
@@ -457,17 +477,17 @@ _Avoid_: reinitialize, reset
 - A **Context Command** failure must not retry task work by itself.
 - Missing **Agent Context Snapshot** or **Context Command** settings preserve existing Runtime Contract behavior.
 - Bootstrapped Runtime Settings include `goal.enabled` as `false` in each example stage.
-- A **Stage Goal Handoff** uses **Stage Goal Context** as its Codex goal payload.
+- A **Stage Goal Handoff** uses **Stage Goal Context** as its Harness loop payload.
 - A **Stage Goal Handoff** supplements the normal **Agent Prompt**.
 - A **Stage Goal Handoff** must not replace the normal **Agent Prompt**.
-- A **Stage Goal Handoff** requires Codex goal support to be enabled before Symphony dispatches work.
-- Missing Codex goal support is a **Readiness Gap**, not a task retry condition.
-- The **Readiness Gap** for missing Codex goal support tells the user how to enable Codex goals.
-- Symphony checks `~/.codex/config.toml` for `[features] goals = true` when any **Stage Goal Handoff** is enabled.
-- Symphony tells the user to add `[features] goals = true` to `~/.codex/config.toml` when Codex goal support is missing.
-- Symphony sends the Codex `/goal` command before the normal rendered **Agent Prompt** when performing a **Stage Goal Handoff**.
-- Implementation of **Stage Goal Handoff** must verify that `codex exec` accepts `/goal` from standard input before treating the feature as supported.
-- If `codex exec` does not accept `/goal` from standard input, Symphony must surface the blocker instead of pretending **Stage Goal Handoff** works.
+- A **Stage Goal Handoff** runs only when the selected **Agent Harness** has **Harness Loop** enabled with a non-empty loop command.
+- Missing Codex goal support for a selected loop-enabled **Codex Harness** is a **Readiness Gap**, not a task retry condition.
+- The **Readiness Gap** for missing Codex goal support tells the user how to use a Codex command that accepts the configured Harness loop command from standard input.
+- Symphony checks `~/.codex/config.toml` for `[features] goals = true` when a selected loop-enabled **Codex Harness** uses the default `/goal` command.
+- Symphony tells the user to use a Codex command that accepts the configured Harness loop command from standard input when Codex goal support is missing.
+- Symphony sends the selected **Agent Harness** loop command before the normal rendered **Agent Prompt** when performing a **Stage Goal Handoff**.
+- Implementation of **Stage Goal Handoff** must verify that the selected loop-enabled **Codex Harness** accepts its loop command from standard input before treating the feature as supported.
+- If the selected loop-enabled **Codex Harness** does not accept its loop command from standard input, Symphony must surface the blocker instead of pretending **Stage Goal Handoff** works.
 - **Stage Goal Context** includes issue identifier, title, description, comments, URL, current project status, labels, priority when present, blocker references when present, attempt, and stage agent name.
 - **Stage Goal Context** does not include issue creation or update timestamps by default.
 - Symphony extracts **Goal Usage** from Codex output when Codex reports it in a parseable form.
@@ -676,5 +696,6 @@ _Avoid_: reinitialize, reset
 - "tags.json guidance" was used to mean the repository-owned four-character commit tag vocabulary; resolved: use **Stage Commit Tag Guidance**.
 - "maxConcurrentAgents for each stage" was used to mean concurrency caps per Stage Agent; resolved: use **Stage Concurrency Policy**.
 - "full context" and "context compression" were used broadly for launch-time context; resolved: use **Agent Context Snapshot** for bounded deterministic launch context and **Context Command** for optional operator-generated stdout.
-- "agent command" was used to mean both a local executable string and the selectable launch behavior for a Stage Agent; resolved: use **Agent Harness** for the named Runtime Settings launch configuration, with **Codex Harness** and **PI Harness** as concrete harness kinds.
+- "agent command" was used to mean both a local executable string and the selectable launch behavior for a Stage Agent; resolved: use **Agent Harness** for the named Runtime Settings launch configuration under `harnesses`, with **Codex Harness**, **Claude Harness**, and **PI Harness** as concrete harness kinds.
+- "agent" was used to mean both a logical role and an execution backend; resolved: use **Logical Agent** for `agents.<name>` role execution selection and **Agent Harness** for `harnesses.<name>` execution backend definitions.
 - "CLI override" was used to mean replacing Runtime Settings for one run without editing `.symphony/settings.json`; resolved: use **Runtime Settings Invocation Override**.

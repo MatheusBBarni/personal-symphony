@@ -5,6 +5,8 @@ type context_status = { state : string; summary : string; diagnostics_path : str
 type running = {
   issue : Issue.t;
   stage_agent : string option;
+  harness_name : string option;
+  harness_kind : string option;
   stage_states : string list;
   session_id : string option;
   turn_count : int;
@@ -88,7 +90,7 @@ type t = {
   status_order : string list;
   readiness_gaps : readiness_gap list;
   context_statuses : (string * context_status) list;
-  codex_totals : tokens;
+  usage_totals : tokens;
   seconds_running : float;
   rate_limits : Yojson.Safe.t option;
   pull_request : pull_request_handoff option;
@@ -112,7 +114,7 @@ let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps
     status_order;
     readiness_gaps;
     context_statuses = [];
-    codex_totals = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+    usage_totals = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
     seconds_running = 0.;
     rate_limits = None;
     pull_request = None;
@@ -191,6 +193,8 @@ let running_to_yojson state row =
       ("url", (match row.issue.url with Some s -> `String s | None -> `Null));
       ("state", `String row.issue.state);
       ("stage_agent", (match row.stage_agent with Some s -> `String s | None -> `Null));
+      ("harness_name", (match row.harness_name with Some s -> `String s | None -> `Null));
+      ("harness_kind", (match row.harness_kind with Some s -> `String s | None -> `Null));
       ("stage_states", `List (List.map (fun state -> `String state) row.stage_states));
       ("session_id", (match row.session_id with Some s -> `String s | None -> `Null));
       ("turn_count", `Int row.turn_count);
@@ -331,12 +335,12 @@ let to_yojson state =
       ("issue_errors", `List (List.map issue_error_to_yojson state.issue_errors));
       ("status_order", `List (List.map (fun status -> `String status) state.status_order));
       ("readiness_gaps", `List (List.map readiness_gap_to_yojson state.readiness_gaps));
-      ( "codex_totals",
+      ( "usage_totals",
         `Assoc
           [
-            ("input_tokens", `Int state.codex_totals.input_tokens);
-            ("output_tokens", `Int state.codex_totals.output_tokens);
-            ("total_tokens", `Int state.codex_totals.total_tokens);
+            ("input_tokens", `Int state.usage_totals.input_tokens);
+            ("output_tokens", `Int state.usage_totals.output_tokens);
+            ("total_tokens", `Int state.usage_totals.total_tokens);
             ("seconds_running", `Float state.seconds_running);
           ] );
       ("rate_limits", Option.value state.rate_limits ~default:`Null);

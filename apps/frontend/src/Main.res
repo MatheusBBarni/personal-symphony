@@ -3,218 +3,18 @@
 %%raw(`import productPackage from "../../../package.json";`)
 %%raw(`
 const symphonyPackageVersion = productPackage.version;
-function shortDescription(value) {
-  const text = String(value || "").replace(/\s+/g, " ").trim();
-  if (!text) return "No description provided.";
-  return text.length > 180 ? text.slice(0, 177) + "..." : text;
-}
-function arrayOrEmpty(value) {
-  return Array.isArray(value) ? value : [];
-}
-function goalUsageText(value) {
-  if (!value) return "";
-  const parts = [];
-  if (value.status) parts.push("status " + value.status);
-  if (value.time_used_seconds !== null && value.time_used_seconds !== undefined) {
-    parts.push("time " + value.time_used_seconds + "s");
-  }
-  if (value.tokens_used !== null && value.tokens_used !== undefined) {
-    parts.push("tokens " + value.tokens_used);
-  }
-  return parts.join(" | ");
-}
-function contextStatusText(value) {
-  if (!value || !value.state) return "";
-  const label = String(value.state).replace(/_/g, " ");
-  const summary = value.summary ? String(value.summary) : "";
-  return summary ? label + ": " + summary : label;
-}
 `)
 
 type domElement
 type root
 
-type counts = {
-  running: int,
-  retrying: int,
-}
-
-type codexTotals = {total_tokens: int}
-
-type readinessGap = {
-  requirement: string,
-  remediation: string,
-}
-
-type goalUsage = {
-  status: option<string>,
-  time_used_seconds: option<float>,
-  tokens_used: option<int>,
-}
-
-type contextStatus = {
-  state: string,
-  summary: option<string>,
-  diagnostics_path: option<string>,
-}
-
-type taskError = {
-  issue_id: string,
-  issue_identifier: string,
-  error: option<string>,
-  goal_usage: option<goalUsage>,
-  context_status: option<contextStatus>,
-}
-
-type blockedTaskError = {
-  issue_id: string,
-  issue_identifier: string,
-  error: string,
-  goal_usage: option<goalUsage>,
-}
-
-type orderedQueueEntry = {
-  issue_identifier: string,
-  title: option<string>,
-  state: string,
-  skip_reason: option<string>,
-}
-
-type orderedQueue = {entries: array<orderedQueueEntry>}
-
-type startupReconciliation = {
-  issue_identifier: option<string>,
-  task_branch: option<string>,
-  category: string,
-  message: string,
-}
-
-type runningIssue = {
-  issue_id: string,
-  issue_identifier: string,
-  title: string,
-  state: string,
-  url: option<string>,
-  description: option<string>,
-  goal_usage: option<goalUsage>,
-  context_status: option<contextStatus>,
-}
-
-type runtimeState = {
-  workspace_repository_name: option<string>,
-  tracker_kind: string,
-  counts: counts,
-  codex_totals: codexTotals,
-  generated_at: string,
-  last_error: option<string>,
-  readiness_gaps: array<readinessGap>,
-  startup_reconciliation: array<startupReconciliation>,
-  issues: array<runningIssue>,
-  running: array<runningIssue>,
-  retrying: array<taskError>,
-  issue_errors: array<blockedTaskError>,
-  status_order: array<string>,
-  ordered_queue: option<orderedQueue>,
-}
-
 @val @scope("document") external getElementById: string => Nullable.t<domElement> = "getElementById"
 @module("react-dom/client") external createRoot: domElement => root = "createRoot"
 @send external render: (root, React.element) => unit = "render"
 
-@val external shortDescription: string => string = "shortDescription"
-@val external arrayOrEmpty: array<'value> => array<'value> = "arrayOrEmpty"
-@val external goalUsageText: option<goalUsage> => string = "goalUsageText"
-@val external contextStatusText: option<contextStatus> => string = "contextStatusText"
 @val external symphonyPackageVersion: string = "symphonyPackageVersion"
-external audioNotificationState: runtimeState => AudioNotifications.runtimeState = "%identity"
-
-let readinessText = state =>
-  if Array.length(arrayOrEmpty(state.readiness_gaps)) > 0 {
-    "Readiness Gaps: " ++
-    (arrayOrEmpty(state.readiness_gaps)
-    ->Array.map(gap => gap.requirement ++ ": " ++ gap.remediation)
-    ->Array.join("; "))
-  } else {
-    ""
-  }
-
-let startupReconciliationText = state =>
-  if Array.length(arrayOrEmpty(state.startup_reconciliation)) > 0 {
-    arrayOrEmpty(state.startup_reconciliation)
-    ->Array.map(row => {
-      let identifier = switch row.issue_identifier {
-      | Some(value) => value
-      | None => "startup"
-      }
-      let branch = switch row.task_branch {
-      | Some(value) => " " ++ value
-      | None => ""
-      }
-      identifier ++ branch ++ " " ++ row.category ++ ": " ++ row.message
-    })
-    ->Array.join("; ")
-  } else {
-    ""
-  }
-
-let taskErrorForIssue = (state, issueId) => {
-  switch arrayOrEmpty(state.issue_errors)->Array.find(error => error.issue_id == issueId) {
-  | Some(error) => error.error
-  | None =>
-    switch arrayOrEmpty(state.retrying)->Array.find(error => error.issue_id == issueId) {
-    | Some(error) =>
-      switch error.error {
-      | Some(message) => message
-      | None => ""
-      }
-    | None => ""
-    }
-  }
-}
-
-let goalUsageForIssue = (state, issueId) => {
-  switch arrayOrEmpty(state.running)->Array.find(issue => issue.issue_id == issueId) {
-  | Some(issue) => goalUsageText(issue.goal_usage)
-  | None =>
-    switch arrayOrEmpty(state.issue_errors)->Array.find(error => error.issue_id == issueId) {
-    | Some(error) => goalUsageText(error.goal_usage)
-    | None =>
-      switch arrayOrEmpty(state.retrying)->Array.find(error => error.issue_id == issueId) {
-      | Some(error) => goalUsageText(error.goal_usage)
-      | None => ""
-      }
-    }
-  }
-}
-
-let contextStatusForIssue = (state, issueId) => {
-  switch arrayOrEmpty(state.running)->Array.find(issue => issue.issue_id == issueId) {
-  | Some(issue) => contextStatusText(issue.context_status)
-  | None =>
-    switch arrayOrEmpty(state.retrying)->Array.find(error => error.issue_id == issueId) {
-    | Some(error) => contextStatusText(error.context_status)
-    | None => ""
-    }
-  }
-}
-
-let orderedQueueEntries = state =>
-  switch state.ordered_queue {
-  | Some(queue) =>
-    arrayOrEmpty(queue.entries)->Array.map(entry => {
-      Dashboard.identifier: entry.issue_identifier,
-      title: switch entry.title {
-      | Some(value) => value
-      | None => ""
-      },
-      state: entry.state,
-      skipReason: switch entry.skip_reason {
-      | Some(value) => value
-      | None => ""
-      },
-    })
-  | None => []
-  }
+external audioNotificationState: RuntimeStateSnapshot.runtimeState => AudioNotifications.runtimeState =
+  "%identity"
 
 let navItem = (href, label, isActive, icon) =>
   <a
@@ -357,45 +157,6 @@ let renderDashboard = (root, ~snapshot, ~error, ~audioEnabled, ~onAudioToggle) =
     </ReactRouter.HashRouter>,
   )
 
-let snapshotFromState = state => {
-  Dashboard.workspaceRepositoryName: switch state.workspace_repository_name {
-  | Some(value) => value
-  | None => ""
-  },
-  trackerKind: RuntimeState.trackerKindOrDefault(state.tracker_kind),
-  Dashboard.running: state.counts.running->Int.toString,
-  retrying: state.counts.retrying->Int.toString,
-  tokens: state.codex_totals.total_tokens->Int.toString,
-  generatedAt: state.generated_at,
-  readinessGaps: readinessText(state),
-  startupReconciliation: startupReconciliationText(state),
-  lastError: switch state.last_error {
-  | Some(value) => value
-  | None => ""
-  },
-  statusOrder: arrayOrEmpty(state.status_order),
-  orderedQueue: orderedQueueEntries(state),
-  issues: arrayOrEmpty(state.issues)->Array.map(issue => {
-    let description = switch issue.description {
-    | Some(value) => value
-    | None => ""
-    }
-    {
-      Dashboard.identifier: issue.issue_identifier,
-      title: issue.title,
-      state: issue.state,
-      url: switch issue.url {
-      | Some(value) => value
-      | None => ""
-      },
-      description: description->shortDescription,
-      error: taskErrorForIssue(state, issue.issue_id),
-      goalUsage: goalUsageForIssue(state, issue.issue_id),
-      contextStatus: contextStatusForIssue(state, issue.issue_id),
-    }
-  }),
-}
-
 switch getElementById("root")->Nullable.toOption {
 | Some(element) =>
   let root = createRoot(element)
@@ -427,7 +188,7 @@ switch getElementById("root")->Nullable.toOption {
         previousAudioState,
         audioNotificationState(state),
       )
-      let snapshot = snapshotFromState(state)
+      let snapshot = RuntimeStateSnapshot.snapshotFromState(state)
       latestState := Some(state)
       latestSnapshot := Some(snapshot)
       latestError := None

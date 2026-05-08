@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Claude Harness V1 Readiness And Stream-JSON Parsing"
 type: backend
 complexity: high
@@ -31,12 +31,12 @@ This task makes Claude a supported Agent Harness kind and adds V1 parsing for Cl
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add `claude` to Harness kind validation.
-- [ ] 4.2 Add selected-only Claude readiness checks for executable/auth expectations.
-- [ ] 4.3 Add Claude command rendering coverage for model and reasoning placeholders.
-- [ ] 4.4 Add defensive Claude `stream-json` parsing for messages, tool events, and usage.
-- [ ] 4.5 Feed parsed Claude activity into existing running-row activity fields.
-- [ ] 4.6 Add representative stream fixture tests.
+- [x] 4.1 Add `claude` to Harness kind validation.
+- [x] 4.2 Add selected-only Claude readiness checks for executable/auth expectations.
+- [x] 4.3 Add Claude command rendering coverage for model and reasoning placeholders.
+- [x] 4.4 Add defensive Claude `stream-json` parsing for messages, tool events, and usage.
+- [x] 4.5 Feed parsed Claude activity into existing running-row activity fields.
+- [x] 4.6 Add representative stream fixture tests.
 
 ## Implementation Details
 Modify `apps/backend/lib/config.ml` for Harness kind and readiness behavior. Modify `apps/backend/lib/orchestrator.ml` near current token and goal usage parsing so Claude stream handling remains close to existing output processing. Reference TechSpec "Integration Points" and "Testing Approach".
@@ -63,17 +63,17 @@ Modify `apps/backend/lib/config.ml` for Harness kind and readiness behavior. Mod
 
 ## Tests
 - Unit tests:
-  - [ ] `kind: "claude"` is accepted for a selected Harness.
-  - [ ] Missing Claude executable produces a selected-Harness readiness gap.
-  - [ ] Unselected Claude Harness does not produce executable readiness gaps.
-  - [ ] Claude command rendering substitutes `<model>` and `<reasoning>` when present.
-  - [ ] Representative Claude message event updates normalized last message.
-  - [ ] Representative Claude tool event updates normalized last event.
-  - [ ] Representative Claude usage event updates parsed usage totals.
-  - [ ] Malformed JSON and unknown event types are ignored safely.
+  - [x] `kind: "claude"` is accepted for a selected Harness.
+  - [x] Missing Claude executable produces a selected-Harness readiness gap.
+  - [x] Unselected Claude Harness does not produce executable readiness gaps.
+  - [x] Claude command rendering substitutes `<model>` and `<reasoning>` when present.
+  - [x] Representative Claude message event updates normalized last message.
+  - [x] Representative Claude tool event updates normalized last event.
+  - [x] Representative Claude usage event updates parsed usage totals.
+  - [x] Malformed JSON and unknown event types are ignored safely.
 - Integration tests:
-  - [ ] A fake Claude command emitting stream-json updates running task activity.
-  - [ ] Raw stdout/stderr files remain available after Claude stream parsing.
+  - [x] A fake Claude command emitting stream-json updates running task activity.
+  - [x] Raw stdout/stderr files remain available after Claude stream parsing.
 - Test coverage target: >=80%
 - All tests must pass
 

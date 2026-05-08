@@ -37,6 +37,17 @@ type agent_harness = {
   turn_timeout_ms : int;
   read_timeout_ms : int;
   stall_timeout_ms : int;
+  loop_enabled : bool;
+  loop_command : string;
+}
+type logical_agent = {
+  name : string;
+  harness : string;
+  model : string option;
+  reasoning_effort : string option;
+  turn_timeout_ms : int option;
+  read_timeout_ms : int option;
+  stall_timeout_ms : int option;
 }
 type codex = {
   command : string;
@@ -111,10 +122,20 @@ type t = {
   codex : codex;
   agent_harnesses_explicit : bool;
   agent_harnesses : agent_harness list;
+  logical_agents : logical_agent list;
+  legacy_agent_harness_paths : string list;
   server : server;
   pull_request : pull_request;
   protected_paths : protected_paths;
   stage_agents : stage_agents;
+}
+
+type runtime_invocation_overrides = {
+  polling_interval_ms : int option;
+  workspace_root : string option;
+  agent_max_concurrent_agents : int option;
+  agent_max_turns : int option;
+  agent_max_retry_backoff_ms : int option;
 }
 
 type readiness_gap = { requirement : string; remediation : string }
@@ -131,8 +152,10 @@ let default_commit_message = "<type>: <generated_message_max_90char>"
 let default_model = "gpt-5.5"
 let default_reasoning_effort = "medium"
 let default_codex_command = "codex exec"
+let default_codex_loop_command = "/goal"
 let default_pi_model = "openai/gpt-5.5"
 let default_pi_command = "pi --model <model> --thinking <reasoning> --print --no-session"
+let default_claude_command = "claude -p --model <model> --output-format stream-json"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_minibeads_root = ".beads"
@@ -187,6 +210,8 @@ let harness_of_codex ?(name = "codex") (codex : codex) =
     turn_timeout_ms = codex.turn_timeout_ms;
     read_timeout_ms = codex.read_timeout_ms;
     stall_timeout_ms = codex.stall_timeout_ms;
+    loop_enabled = true;
+    loop_command = default_codex_loop_command;
   }
 
 let default_stage_agents =
@@ -280,6 +305,33 @@ let parse_tracker_kind raw =
       raise
         (Invalid_config
            (Printf.sprintf "Unsupported tracker.kind %s. Set tracker.kind to github or minibeads." shown))
+
+let apply_runtime_invocation_overrides ~workspace_root config overrides =
+  let polling =
+    match overrides.polling_interval_ms with
+    | Some interval_ms -> { interval_ms = positive "polling.intervalMs" interval_ms }
+    | None -> config.polling
+  in
+  let workspace =
+    match overrides.workspace_root with
+    | Some root -> { root = expand_path ~base_dir:workspace_root root }
+    | None -> config.workspace
+  in
+  let agent =
+    {
+      max_concurrent_agents =
+        Option.value
+          (positive_option "agent.maxConcurrentAgents" overrides.agent_max_concurrent_agents)
+          ~default:config.agent.max_concurrent_agents;
+      max_turns =
+        Option.value (positive_option "agent.maxTurns" overrides.agent_max_turns) ~default:config.agent.max_turns;
+      max_retry_backoff_ms =
+        Option.value
+          (positive_option "agent.maxRetryBackoffMs" overrides.agent_max_retry_backoff_ms)
+          ~default:config.agent.max_retry_backoff_ms;
+    }
+  in
+  { config with polling; workspace; agent }
 
 let from_workflow workflow =
   let root = workflow.Workflow.config in
@@ -376,6 +428,8 @@ let from_workflow workflow =
     codex;
     agent_harnesses_explicit = false;
     agent_harnesses = [ harness_of_codex codex ];
+    logical_agents = [];
+    legacy_agent_harness_paths = [];
     server = { port = Simple_yaml.get_int "port" server_raw };
     pull_request = default_pull_request;
     protected_paths = default_protected_paths;
@@ -462,73 +516,194 @@ let json_object_list name json =
 let harness_named name (harnesses : agent_harness list) =
   List.find_opt (fun (harness : agent_harness) -> harness.name = name) harnesses
 
-let stage_harness_name (stage : stage_agent) = Option.value stage.harness ~default:stage.agent
+let logical_agent_named name (agents : logical_agent list) =
+  List.find_opt (fun (agent : logical_agent) -> agent.name = name) agents
+
+let harness_loop_handoff_enabled (harness : agent_harness) = harness.loop_enabled && Util.trim harness.loop_command <> ""
+
+let merge_agent_harness (harness : agent_harness) (agent : logical_agent) =
+  {
+    harness with
+    model = Option.value agent.model ~default:harness.model;
+    reasoning_effort = Option.value agent.reasoning_effort ~default:harness.reasoning_effort;
+    turn_timeout_ms = Option.value agent.turn_timeout_ms ~default:harness.turn_timeout_ms;
+    read_timeout_ms = Option.value agent.read_timeout_ms ~default:harness.read_timeout_ms;
+    stall_timeout_ms = Option.value agent.stall_timeout_ms ~default:harness.stall_timeout_ms;
+  }
+
+type selected_harness_resolution =
+  | Resolved_harness of agent_harness
+  | Missing_logical_agent of string
+  | Missing_referenced_harness of string
+
+let default_harness_kind name =
+  match name with "codex" -> "codex" | "pi" -> "pi" | "claude" -> "claude" | _ -> ""
+
+let default_harness_command = function
+  | "codex" -> default_codex_command
+  | "pi" -> default_pi_command
+  | "claude" -> default_claude_command
+  | _ -> ""
+
+let default_harness_model = function "pi" -> default_pi_model | _ -> default_model
+
+let default_harness_loop kind =
+  if kind = "codex" then (true, default_codex_loop_command) else (false, "")
+
+let json_harness_loop path raw ~kind =
+  let default_enabled, default_command = default_harness_loop kind in
+  match member "loop" raw with
+  | `Null -> (default_enabled, default_command)
+  | `Assoc _ as loop_raw ->
+      ( json_bool "enabled" loop_raw ~default:default_enabled,
+        json_string "command" loop_raw ~default:default_command )
+  | _ -> raise (Invalid_config (path ^ ".loop must be an object"))
+
+let json_agent_harness path name raw =
+  let default_kind = default_harness_kind name in
+  let default_command = default_harness_command default_kind in
+  let default_model = default_harness_model default_kind in
+  match raw with
+  | `Assoc _ ->
+      let kind = json_string "kind" raw ~default:default_kind |> Util.trim |> String.lowercase_ascii in
+      let command =
+        json_string "command" raw ~default:default_command
+        |> fun command -> if kind = "codex" then normalize_codex_command command else command
+      in
+      let loop_enabled, loop_command = json_harness_loop path raw ~kind in
+      {
+        name = Util.trim name;
+        kind;
+        command;
+        model = json_string "model" raw ~default:default_model;
+        reasoning_effort = json_string "reasoningEffort" raw ~default:default_reasoning_effort;
+        turn_timeout_ms = json_int "turnTimeoutMs" raw ~default:3600000;
+        read_timeout_ms = json_int "readTimeoutMs" raw ~default:5000;
+        stall_timeout_ms = json_int "stallTimeoutMs" raw ~default:300000;
+        loop_enabled;
+        loop_command;
+      }
+  | _ ->
+      let loop_enabled, loop_command = default_harness_loop default_kind in
+      {
+        name = Util.trim name;
+        kind = default_kind;
+        command = "";
+        model = default_model;
+        reasoning_effort = default_reasoning_effort;
+        turn_timeout_ms = 3600000;
+        read_timeout_ms = 5000;
+        stall_timeout_ms = 300000;
+        loop_enabled;
+        loop_command;
+      }
+
+let json_harness_map path raw ~legacy_codex =
+  match raw with
+  | `Assoc fields ->
+      let harnesses =
+        fields
+        |> List.map (fun (name, raw) -> json_agent_harness (path ^ "." ^ Util.trim name) name raw)
+      in
+      (match harness_named "codex" harnesses with
+      | Some _ -> harnesses
+      | None -> harness_of_codex legacy_codex :: harnesses)
+  | _ -> raise (Invalid_config (path ^ " must be an object"))
+
+let is_legacy_agent_harness raw =
+  match raw with
+  | `Assoc _ -> member "kind" raw <> `Null || member "command" raw <> `Null
+  | _ -> true
+
+let legacy_agent_harness_path name raw =
+  let path = "agents." ^ Util.trim name in
+  match raw with
+  | `Assoc _ when member "kind" raw <> `Null -> Some (path ^ ".kind")
+  | `Assoc _ when member "command" raw <> `Null -> Some (path ^ ".command")
+  | _ when is_legacy_agent_harness raw -> Some path
+  | _ -> None
+
+let legacy_agent_harness_paths agents_raw =
+  match agents_raw with
+  | `Assoc fields -> List.filter_map (fun (name, raw) -> legacy_agent_harness_path name raw) fields
+  | _ -> []
 
 let json_agent_harnesses agents_raw ~legacy_codex =
   match agents_raw with
   | `Null -> (false, [ harness_of_codex legacy_codex ])
   | `Assoc fields ->
-      let harnesses =
-        fields
-        |> List.map (fun (name, raw) ->
-               let default_kind =
-                 match name with
-                 | "codex" -> "codex"
-                 | "pi" -> "pi"
-                 | _ -> ""
-               in
-               let default_command =
-                 match default_kind with
-                 | "codex" -> default_codex_command
-                 | "pi" -> default_pi_command
-                 | _ -> ""
-               in
-               let default_model = match default_kind with "pi" -> default_pi_model | _ -> default_model in
-               match raw with
-               | `Assoc _ ->
-                   let kind = json_string "kind" raw ~default:default_kind |> Util.trim |> String.lowercase_ascii in
-                   let command =
-                     json_string "command" raw ~default:default_command
-                     |> fun command -> if kind = "codex" then normalize_codex_command command else command
-                   in
-                   {
-                     name = Util.trim name;
-                     kind;
-                     command;
-                     model = json_string "model" raw ~default:default_model;
-                     reasoning_effort = json_string "reasoningEffort" raw ~default:default_reasoning_effort;
-                     turn_timeout_ms = json_int "turnTimeoutMs" raw ~default:3600000;
-                     read_timeout_ms = json_int "readTimeoutMs" raw ~default:5000;
-                     stall_timeout_ms = json_int "stallTimeoutMs" raw ~default:300000;
-                   }
-               | _ ->
-                   {
-                     name = Util.trim name;
-                     kind = default_kind;
-                     command = "";
-                     model = default_model;
-                     reasoning_effort = default_reasoning_effort;
-                     turn_timeout_ms = 3600000;
-                     read_timeout_ms = 5000;
-                     stall_timeout_ms = 300000;
-                   })
-      in
-      let harnesses =
-        match harness_named "codex" harnesses with
-        | Some _ -> harnesses
-        | None -> harness_of_codex legacy_codex :: harnesses
-      in
-      (true, harnesses)
+      let harness_fields = List.filter (fun (_, raw) -> is_legacy_agent_harness raw) fields in
+      if harness_fields = [] then (false, [ harness_of_codex legacy_codex ])
+      else
+        let harnesses =
+          harness_fields
+          |> List.map (fun (name, raw) -> json_agent_harness ("agents." ^ Util.trim name) name raw)
+        in
+        let harnesses =
+          match harness_named "codex" harnesses with
+          | Some _ -> harnesses
+          | None -> harness_of_codex legacy_codex :: harnesses
+        in
+        (false, harnesses)
   | _ -> raise (Invalid_config "agents must be an object")
 
-let selected_agent_harness config (stage : stage_agent option) =
+let json_harnesses harnesses_raw agents_raw ~legacy_codex =
+  match harnesses_raw with
+  | `Null -> json_agent_harnesses agents_raw ~legacy_codex
+  | `Assoc _ -> (true, json_harness_map "harnesses" harnesses_raw ~legacy_codex)
+  | _ -> raise (Invalid_config "harnesses must be an object")
+
+let json_optional_positive_int path name json =
+  match member name json with
+  | `Null -> None
+  | _ -> Some (positive path (json_int name json ~default:0))
+
+let json_logical_agents agents_raw =
+  match agents_raw with
+  | `Null -> []
+  | `Assoc fields ->
+      fields
+      |> List.filter_map (fun (name, raw) ->
+             match raw with
+             | `Assoc _ when member "harness" raw <> `Null ->
+                 let name = nonempty_trimmed_string ("agents." ^ name) name in
+                 Some
+                   {
+                     name;
+                     harness = json_string "harness" raw ~default:"" |> nonempty_trimmed_string ("agents." ^ name ^ ".harness");
+                     model = json_optional_string "model" raw;
+                     reasoning_effort = json_optional_string "reasoningEffort" raw;
+                     turn_timeout_ms = json_optional_positive_int ("agents." ^ name ^ ".turnTimeoutMs") "turnTimeoutMs" raw;
+                     read_timeout_ms = json_optional_positive_int ("agents." ^ name ^ ".readTimeoutMs") "readTimeoutMs" raw;
+                     stall_timeout_ms = json_optional_positive_int ("agents." ^ name ^ ".stallTimeoutMs") "stallTimeoutMs" raw;
+                   }
+             | `Assoc _ -> None
+             | _ -> raise (Invalid_config ("agents." ^ name ^ " must be an object")))
+  | _ -> raise (Invalid_config "agents must be an object")
+
+let selected_agent_harness_resolution config (stage : stage_agent option) =
   if not config.agent_harnesses_explicit then
-    match harness_named "codex" config.agent_harnesses with Some harness -> Some harness | None -> Some (harness_of_codex config.codex)
+    match harness_named "codex" config.agent_harnesses with
+    | Some harness -> Resolved_harness harness
+    | None -> Resolved_harness (harness_of_codex config.codex)
   else
     match stage with
     | Some (stage : stage_agent) ->
-        harness_named (stage_harness_name stage) config.agent_harnesses
-    | None -> harness_named "codex" config.agent_harnesses
+        (match logical_agent_named stage.agent config.logical_agents with
+        | None -> Missing_logical_agent stage.agent
+        | Some agent -> (
+            match harness_named agent.harness config.agent_harnesses with
+            | Some harness -> Resolved_harness (merge_agent_harness harness agent)
+            | None -> Missing_referenced_harness agent.harness))
+    | None -> (
+        match harness_named "codex" config.agent_harnesses with
+        | Some harness -> Resolved_harness harness
+        | None -> Missing_referenced_harness "codex")
+
+let selected_agent_harness config stage =
+  match selected_agent_harness_resolution config stage with
+  | Resolved_harness harness -> Some harness
+  | Missing_logical_agent _ | Missing_referenced_harness _ -> None
 
 let default_agent_harness config =
   match harness_named "codex" config.agent_harnesses with Some harness -> harness | None -> harness_of_codex config.codex
@@ -886,11 +1061,13 @@ let static_codex_exec_command command =
 
 let codex_goal_stdin_supported_harness (harness : agent_harness) =
   let command = Util.trim harness.command in
+  let loop_command = Util.trim harness.loop_command in
   if command = "" then false
+  else if loop_command = "" then false
   else if not (codex_goal_stdin_probe_enabled ()) then
     static_codex_exec_command command
   else
-    let probe = "/goal Verify Codex goal stdin support.\n\nReturn ok.\n" in
+    let probe = Printf.sprintf "%s Verify Codex goal stdin support.\n\nReturn ok.\n" loop_command in
     let command = harness_probe_command harness in
     let shell_command =
       Printf.sprintf
@@ -942,6 +1119,13 @@ let rec json_has_nonempty_entry = function
   | `Assoc fields -> List.exists (fun (_, value) -> json_has_nonempty_entry value) fields
   | `List values -> List.exists json_has_nonempty_entry values
   | _ -> true
+
+let rec json_has_nonempty_field field = function
+  | `Assoc fields ->
+      (match List.assoc_opt field fields with Some value -> json_has_nonempty_entry value | None -> false)
+      || List.exists (fun (_, value) -> json_has_nonempty_field field value) fields
+  | `List values -> List.exists (json_has_nonempty_field field) values
+  | _ -> false
 
 let pi_auth_provider_configured provider =
   let path = pi_auth_path () in
@@ -1017,6 +1201,61 @@ let pi_harness_auth_configured (harness : agent_harness) =
     | Some provider -> pi_auth_provider_configured provider || pi_provider_env_configured provider
     | None -> pi_any_auth_configured () || pi_any_env_configured ()
 
+let claude_config_dir () =
+  match Util.getenv_nonempty "CLAUDE_CONFIG_DIR" with
+  | Some dir -> dir
+  | None ->
+      let home = Option.value (Util.getenv_nonempty "HOME") ~default:(Unix.getcwd ()) in
+      Filename.concat home ".claude"
+
+let claude_credentials_path () = Filename.concat (claude_config_dir ()) ".credentials.json"
+
+let claude_credentials_configured () =
+  let path = claude_credentials_path () in
+  if not (Sys.file_exists path) then false
+  else
+    try Yojson.Safe.from_file path |> json_has_nonempty_entry
+    with Yojson.Json_error _ | Sys_error _ -> false
+
+let claude_env_auth_configured () =
+  [
+    "ANTHROPIC_AUTH_TOKEN";
+    "ANTHROPIC_API_KEY";
+    "CLAUDE_CODE_OAUTH_TOKEN";
+    "CLAUDE_CODE_USE_BEDROCK";
+    "CLAUDE_CODE_USE_VERTEX";
+    "CLAUDE_CODE_USE_FOUNDRY";
+  ]
+  |> List.exists (fun env -> Util.getenv_nonempty env <> None)
+
+let claude_settings_paths command =
+  let rec collect acc = function
+    | [] -> List.rev acc
+    | "--settings" :: path :: rest -> collect (path :: acc) rest
+    | word :: rest when Util.starts_with ~prefix:"--settings=" word ->
+        let prefix_len = String.length "--settings=" in
+        let path = String.sub word prefix_len (String.length word - prefix_len) in
+        collect (path :: acc) rest
+    | _ :: rest -> collect acc rest
+  in
+  command_words command |> collect []
+
+let command_path ~workspace_root path =
+  if Filename.is_relative path then Filename.concat workspace_root path else path
+
+let claude_settings_api_key_helper_configured ~workspace_root command =
+  claude_settings_paths command
+  |> List.exists (fun path ->
+         let path = command_path ~workspace_root path in
+         Sys.file_exists path
+         &&
+         try Yojson.Safe.from_file path |> json_has_nonempty_field "apiKeyHelper"
+         with Yojson.Json_error _ | Sys_error _ -> false)
+
+let claude_harness_auth_configured config (harness : agent_harness) =
+  claude_env_auth_configured () || claude_credentials_configured ()
+  || claude_settings_api_key_helper_configured ~workspace_root:config.repository_root harness.command
+
 let from_settings_file ~workspace_root path =
   let root =
     try Yojson.Safe.from_file path
@@ -1029,6 +1268,7 @@ let from_settings_file ~workspace_root path =
   let git_raw = member "git" root in
   let agent_raw = member "agent" root in
   let codex_raw = member "codex" root in
+  let harnesses_raw = member "harnesses" root in
   let agents_raw = member "agents" root in
   let server_raw = member "server" root in
   let pull_request_raw = member "pullRequest" root in
@@ -1056,7 +1296,10 @@ let from_settings_file ~workspace_root path =
       stall_timeout_ms = json_int "stallTimeoutMs" codex_raw ~default:300000;
     }
   in
-  let agent_harnesses_explicit, agent_harnesses = json_agent_harnesses agents_raw ~legacy_codex in
+  let legacy_agent_harness_paths = legacy_agent_harness_paths agents_raw in
+  let agent_harnesses_explicit, agent_harnesses = json_harnesses harnesses_raw agents_raw ~legacy_codex in
+  let logical_agents = json_logical_agents agents_raw in
+  let agent_harnesses_explicit = agent_harnesses_explicit || logical_agents <> [] in
   let codex =
     match harness_named "codex" agent_harnesses with Some harness -> codex_of_harness harness | None -> legacy_codex
   in
@@ -1116,6 +1359,8 @@ let from_settings_file ~workspace_root path =
     codex;
     agent_harnesses_explicit;
     agent_harnesses;
+    logical_agents;
+    legacy_agent_harness_paths;
     server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
     pull_request =
       {
@@ -1378,25 +1623,31 @@ let readiness_gaps config =
         (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env));
   let selected_harnesses = readiness_agent_harnesses config in
   List.iter
+    (fun path ->
+      add path
+        "Move legacy Harness settings out of agents.* and into harnesses.*. Keep agents.* for logical agent definitions \
+         with a harness reference and optional execution overrides.")
+    config.legacy_agent_harness_paths;
+  List.iter
     (fun (harness : agent_harness) ->
       let prefix =
-        if config.agent_harnesses_explicit then "agents." ^ harness.name else "codex"
+        if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "codex"
       in
       if Util.trim harness.name = "" then
-        add "agents" "Agent Harness identifiers in .symphony/settings.json must not be empty.";
-      if not (List.exists (( = ) harness.kind) [ "codex"; "pi" ]) then
-        add (prefix ^ ".kind") "Set Agent Harness kind to codex or pi.";
+        add "harnesses" "Harness identifiers in .symphony/settings.json must not be empty.";
+      if not (List.exists (( = ) harness.kind) [ "codex"; "claude"; "pi" ]) then
+        add (prefix ^ ".kind") "Set Harness kind to codex, claude, or pi.";
       if Util.trim harness.command = "" then
-        add (prefix ^ ".command") "Set the Agent Harness command to a non-interactive launch command.";
-      if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Agent Harness model.";
+        add (prefix ^ ".command") "Set the Harness command to a non-interactive launch command.";
+      if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Harness model.";
       if Util.trim harness.reasoning_effort = "" then
-        add (prefix ^ ".reasoningEffort") "Set the Agent Harness reasoningEffort.")
+        add (prefix ^ ".reasoningEffort") "Set the Harness reasoningEffort.")
     selected_harnesses;
   List.iter
     (fun (harness : agent_harness) ->
       if harness.kind = "pi" && Util.trim harness.command <> "" then (
         let prefix =
-          if config.agent_harnesses_explicit then "agents." ^ harness.name else "agents.pi"
+          if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "agents.pi"
         in
         (match harness_executable harness with
         | Some executable when executable_available executable -> ()
@@ -1417,6 +1668,26 @@ let readiness_gaps config =
                "Configure PI authentication%s. Run `pi`, use `/login` for a subscription provider, or set an API key \
                 environment variable supported by PI."
                provider)))
+    selected_harnesses;
+  List.iter
+    (fun (harness : agent_harness) ->
+      if harness.kind = "claude" && Util.trim harness.command <> "" then (
+        let prefix =
+          if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "agents.claude"
+        in
+        (match harness_executable harness with
+        | Some executable when executable_available executable -> ()
+        | Some executable ->
+            add (prefix ^ ".install")
+              (Printf.sprintf
+                 "Install Claude Code or update the Claude Harness command so its executable is available: %s."
+                 executable)
+        | None -> ());
+        if not (claude_harness_auth_configured config harness) then
+          add (prefix ^ ".auth")
+            "Configure Claude Code authentication without storing secrets in Runtime Settings. Run `claude /login`, set \
+             ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, set CLAUDE_CODE_OAUTH_TOKEN for non-bare scripted runs, or \
+             configure an apiKeyHelper through Claude settings."))
     selected_harnesses;
   if config.tracker.active_states = [] then
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
@@ -1453,8 +1724,7 @@ let readiness_gaps config =
              if not (stage_goal_enabled stage) then None
              else
                match selected_agent_harness config (Some stage) with
-               | Some harness when harness.kind = "codex" -> Some harness
-               | None when not config.agent_harnesses_explicit -> Some (default_agent_harness config)
+               | Some harness when harness.kind = "codex" && harness_loop_handoff_enabled harness -> Some harness
                | _ -> None)
   in
   if codex_stage_goal_harnesses <> [] then (
@@ -1464,22 +1734,33 @@ let readiness_gaps config =
         "Add the following to ~/.codex/config.toml to enable Stage Goal Handoff:\n\n[features]\ngoals = true";
     if List.exists (fun harness -> not (codex_goal_stdin_supported_harness harness)) codex_stage_goal_harnesses then
       add "codex.goalStdin"
-        "Use a Codex command that accepts /goal from standard input before enabling Stage Goal Handoff.");
+        "Use a Codex command that accepts the configured Harness loop command from standard input before enabling \
+         Stage Goal Handoff.");
   if config.stage_agents.enabled then (
     if not (Sys.file_exists config.stage_agents.root && Sys.is_directory config.stage_agents.root) then
       add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";
     List.iter
       (fun (stage : stage_agent) ->
+        (match stage.harness with
+        | Some _ ->
+            add ("stageAgents." ^ stage.agent ^ ".harness")
+              "stageAgents.stages[].harness is legacy Runtime Settings input. Move Harness selection to \
+               agents.<name>.harness and keep stages routing by agent name."
+        | None -> ());
         if config.agent_harnesses_explicit then (
-          match selected_agent_harness config (Some stage) with
-          | None ->
-              let harness_name = stage_harness_name stage in
-              add ("stageAgents." ^ stage.agent ^ ".harness")
-                (Printf.sprintf "Define agents.%s in .symphony/settings.json or select an existing Agent Harness." harness_name)
-          | Some harness when stage_goal_enabled stage && harness.kind <> "codex" ->
-              add ("stageAgents." ^ stage.agent ^ ".goal")
-                "Stage Goal Handoff is only supported by a Codex Harness in this release. Disable goal.enabled or select a Codex Harness."
-          | Some _ -> ());
+          match selected_agent_harness_resolution config (Some stage) with
+          | Missing_logical_agent name ->
+              add ("agents." ^ name)
+                (Printf.sprintf
+                   "Define agents.%s in .symphony/settings.json with a harness reference, or route the stage to an \
+                    existing logical agent."
+                   name)
+          | Missing_referenced_harness name ->
+              add ("harnesses." ^ name)
+                (Printf.sprintf
+                   "Define harnesses.%s in .symphony/settings.json or update agents.%s.harness to an existing Harness."
+                   name stage.agent)
+          | Resolved_harness _ -> ());
         let path = Filename.concat config.stage_agents.root (stage.agent ^ ".md") in
         if not (Sys.file_exists path) then
           add ("stageAgents." ^ stage.agent) (Printf.sprintf "Create the stage agent prompt file: %s" path))
