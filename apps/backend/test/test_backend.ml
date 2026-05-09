@@ -1721,6 +1721,69 @@ let test_compozy_prd_run_discovery_integration_yields_issue_candidates () =
         [ "compozy:alpha-run"; "compozy:beta-run" ]
         (List.map (fun (issue : Issue.t) -> issue.identifier) issues))
 
+let test_compozy_task_step_prompt_includes_current_task_file () =
+  with_temp_dir "symphony-compozy-prompt-task-" (fun root ->
+      let prd_dir = Filename.concat root "prompt-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Build prompt context"
+        ~body:"\n# Task Body\n\nImplement prompt assembly sentinel.\n"
+        (Filename.concat prd_dir "task_04.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build PRD run"
+      in
+      let prompt = Compozy_tasks_tracker.current_prompt run |> require_ok "current prompt" in
+      Alcotest.(check bool) "current file heading" true
+        (contains_substring prompt "## Current Task (`task_04.md`)");
+      Alcotest.(check bool) "current title included" true
+        (contains_substring prompt "Current task title: Build prompt context");
+      Alcotest.(check bool) "task body included" true
+        (contains_substring prompt "Implement prompt assembly sentinel."))
+
+let test_compozy_task_step_prompt_includes_prd_and_techspec () =
+  with_temp_dir "symphony-compozy-prompt-context-" (fun root ->
+      let prd_dir = Filename.concat root "context-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task (Filename.concat prd_dir "task_01.md");
+      Util.write_file (Filename.concat prd_dir "_prd.md") "# Product Requirements\n\nPRD context sentinel.\n";
+      Util.write_file (Filename.concat prd_dir "_techspec.md") "# Technical Spec\n\nTechSpec context sentinel.\n";
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build PRD run"
+      in
+      let prompt = Compozy_tasks_tracker.current_prompt run |> require_ok "current prompt" in
+      Alcotest.(check bool) "PRD section" true (contains_substring prompt "## PRD (`_prd.md`)");
+      Alcotest.(check bool) "PRD content" true (contains_substring prompt "PRD context sentinel.");
+      Alcotest.(check bool) "TechSpec section" true (contains_substring prompt "## TechSpec (`_techspec.md`)");
+      Alcotest.(check bool) "TechSpec content" true (contains_substring prompt "TechSpec context sentinel."))
+
+let test_compozy_task_step_prompt_allows_missing_optional_context () =
+  with_temp_dir "symphony-compozy-prompt-no-context-" (fun root ->
+      let prd_dir = Filename.concat root "minimal-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~body:"\n# Minimal Task\n\nNo optional context required.\n"
+        (Filename.concat prd_dir "task_01.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build PRD run"
+      in
+      let prompt = Compozy_tasks_tracker.current_prompt run |> require_ok "current prompt" in
+      Alcotest.(check bool) "task content included" true
+        (contains_substring prompt "No optional context required.");
+      Alcotest.(check bool) "PRD section omitted" false (contains_substring prompt "## PRD (`_prd.md`)");
+      Alcotest.(check bool) "TechSpec section omitted" false
+        (contains_substring prompt "## TechSpec (`_techspec.md`)"))
+
+let test_compozy_task_step_prompt_errors_without_runnable_step () =
+  with_temp_dir "symphony-compozy-prompt-no-step-" (fun root ->
+      let prd_dir = Filename.concat root "finished-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" (Filename.concat prd_dir "task_01.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build PRD run"
+      in
+      let error = Compozy_tasks_tracker.current_prompt run |> require_error "current prompt" in
+      Alcotest.(check string) "deterministic error"
+        "no runnable Compozy task step for compozy:finished-feature: PRD run is completed"
+        error)
+
 let test_invalid_tracker_kind () =
   with_temp_dir "symphony-settings-invalid-tracker-" (fun root ->
       let settings = Filename.concat root "settings.json" in
@@ -6539,6 +6602,48 @@ let test_compose_prompt_skips_blank_loop_command () =
       Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
       Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
 
+let test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change () =
+  with_temp_dir "symphony-compozy-orchestrator-prompt-" (fun root ->
+      let prd_dir = Filename.concat root "wrapped-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Wrapped task"
+        ~body:"\n# Wrapped Task\n\nCompozy task prompt sentinel.\n"
+        (Filename.concat prd_dir "task_01.md");
+      Util.write_file (Filename.concat prd_dir "_prd.md") "# PRD\n\nWrapped PRD sentinel.\n";
+      Util.write_file (Filename.concat prd_dir "_techspec.md") "# TechSpec\n\nWrapped TechSpec sentinel.\n";
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build PRD run"
+      in
+      let base_config = stage_context_test_config ~context_snapshot:false root in
+      let config =
+        { base_config with tracker = { base_config.tracker with kind = "compozy_tasks"; compozy_root = root } }
+      in
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root run.id in
+      let composition =
+        Orchestrator.compose_compozy_task_step_prompt_result ~stage:(List.hd config.stage_agents.stages) config run
+          None ~workspace ~loop_start_branch:(Some "symphony/dogfood")
+        |> require_ok "compose Compozy prompt"
+      in
+      Alcotest.(check bool) "stage agent wrapper included" true
+        (contains_substring composition.prompt "Stage agent: engineer");
+      Alcotest.(check bool) "Compozy task content included" true
+        (contains_substring composition.prompt "Compozy task prompt sentinel.");
+      Alcotest.(check bool) "Compozy PRD included" true
+        (contains_substring composition.prompt "Wrapped PRD sentinel.");
+      Alcotest.(check bool) "Compozy TechSpec included" true
+        (contains_substring composition.prompt "Wrapped TechSpec sentinel.");
+      let github_issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let github_workspace = Workspace.create_for_issue ~root:config.workspace.root github_issue.identifier in
+      let github_prompt =
+        Orchestrator.compose_prompt ~stage:(List.hd config.stage_agents.stages) config github_issue None "Normal #1"
+          ~workspace:github_workspace ~loop_start_branch:(Some "symphony/dogfood")
+      in
+      Alcotest.(check string) "GitHub base prompt unchanged"
+        "Engineer stage instructions\n\n---\n\nStage agent: engineer\n\nNormal #1\n"
+        github_prompt;
+      Alcotest.(check bool) "GitHub prompt has no Compozy wrapper" false
+        (contains_substring github_prompt "Compozy Task Step"))
+
 let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
   { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
 
@@ -10032,6 +10137,14 @@ let () =
             test_compozy_missing_root_discovers_no_prd_runs;
           Alcotest.test_case "discovers Compozy PRD issue candidates from fixtures" `Quick
             test_compozy_prd_run_discovery_integration_yields_issue_candidates;
+          Alcotest.test_case "builds Compozy prompt from current task file" `Quick
+            test_compozy_task_step_prompt_includes_current_task_file;
+          Alcotest.test_case "adds Compozy PRD and TechSpec prompt context" `Quick
+            test_compozy_task_step_prompt_includes_prd_and_techspec;
+          Alcotest.test_case "allows missing Compozy prompt context files" `Quick
+            test_compozy_task_step_prompt_allows_missing_optional_context;
+          Alcotest.test_case "reports missing runnable Compozy prompt step" `Quick
+            test_compozy_task_step_prompt_errors_without_runnable_step;
           Alcotest.test_case "rejects unsupported tracker kind" `Quick test_invalid_tracker_kind;
           Alcotest.test_case "keeps github readiness gaps" `Quick
             test_github_tracker_readiness_keeps_github_gaps;
@@ -10252,6 +10365,8 @@ let () =
           Alcotest.test_case "dispatch exposes Claude harness identity" `Quick
             test_orchestrator_dispatch_exposes_claude_harness_identity;
           Alcotest.test_case "skips blank loop command" `Quick test_compose_prompt_skips_blank_loop_command;
+          Alcotest.test_case "wraps Compozy task-step prompt without GitHub prompt changes" `Quick
+            test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick
             test_orchestrator_runs_stage_context_command_before_launch;

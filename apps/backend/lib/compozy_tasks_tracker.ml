@@ -373,6 +373,56 @@ let fetch_prd_runs (config : Config.t) =
 let issue_of_prd_run (run : prd_run) =
   Issue.empty ~id:run.id ~identifier:run.id ~title:run.title ~state:run.state
 
+let ensure_trailing_newline content =
+  if content = "" || content.[String.length content - 1] <> '\n' then content ^ "\n" else content
+
+let prompt_section title content =
+  Printf.sprintf "## %s\n\n%s" title (ensure_trailing_newline content)
+
+let prompt_optional_file run file title =
+  let path = Filename.concat run.path file in
+  if not (Sys.file_exists path) then Ok None
+  else
+    ok_or_error (fun () -> Util.read_file path)
+    |> Result.map (fun content -> Some (prompt_section title content))
+    |> Result.map_error (fun msg -> Printf.sprintf "could not read Compozy prompt context %s for %s: %s" file run.id msg)
+
+let current_prompt (run : prd_run) =
+  match run.current_step with
+  | None ->
+      let reason =
+        match run.not_runnable_reason with
+        | Some reason when Util.trim reason <> "" -> ": " ^ reason
+        | _ when run.state = "completed" -> ": PRD run is completed"
+        | _ when Util.trim run.state <> "" -> ": PRD run state is " ^ run.state
+        | _ -> ""
+      in
+      Error (Printf.sprintf "no runnable Compozy task step for %s%s" run.id reason)
+  | Some step -> (
+      let task_path = Filename.concat run.path step.file in
+      match ok_or_error (fun () -> Util.read_file task_path) with
+      | Error msg -> Error (Printf.sprintf "could not read Compozy task step %s for %s: %s" step.file run.id msg)
+      | Ok task_content -> (
+          match prompt_optional_file run "_prd.md" "PRD (`_prd.md`)" with
+          | Error _ as error -> error
+          | Ok prd_section -> (
+              match prompt_optional_file run "_techspec.md" "TechSpec (`_techspec.md`)" with
+              | Error _ as error -> error
+              | Ok techspec_section ->
+                  let header =
+                    Printf.sprintf
+                      "# Compozy Task Step\n\nRun: %s\nPRD directory: %s\nCurrent task file: %s\nCurrent task title: %s\n"
+                      run.id run.slug step.file step.title
+                  in
+                  let sections =
+                    [
+                      header;
+                      prompt_section (Printf.sprintf "Current Task (`%s`)" step.file) task_content;
+                    ]
+                    @ List.filter_map Fun.id [ prd_section; techspec_section ]
+                  in
+                  Ok (String.concat "\n" sections))))
+
 let yaml_line_value = function
   | `Status status -> status
   | `Retry_count count -> string_of_int count

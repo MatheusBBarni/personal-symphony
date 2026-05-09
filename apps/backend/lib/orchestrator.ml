@@ -1406,6 +1406,18 @@ let compose_prompt_result ?stage ?previous_attempt_output config issue attempt b
 let compose_prompt ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
   (compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch).prompt
 
+let compose_compozy_task_step_prompt_result ?stage ?previous_attempt_output config run attempt ~workspace
+    ~loop_start_branch =
+  match Compozy_tasks_tracker.current_prompt run with
+  | Error _ as error -> error
+  | Ok base_prompt ->
+      let issue = Compozy_tasks_tracker.issue_of_prd_run run in
+      Ok (compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch)
+
+let compose_compozy_task_step_prompt ?stage ?previous_attempt_output config run attempt ~workspace ~loop_start_branch =
+  compose_compozy_task_step_prompt_result ?stage ?previous_attempt_output config run attempt ~workspace ~loop_start_branch
+  |> Result.map (fun composition -> composition.prompt)
+
 let context_command_diagnostic_to_yojson diagnostic =
   `Assoc
     [
