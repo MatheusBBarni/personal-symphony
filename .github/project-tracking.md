@@ -65,6 +65,12 @@ For minibeads Local Issue Tracker setup, configure `tracker.kind = "minibeads"` 
 and follow the main README. minibeads does not use GitHub Issues, GitHub Projects, or GitHub tracker
 token settings for issue dispatch.
 
+For Compozy-backed Local Issue Tracker setup, configure `tracker.kind = "compozy_tasks"` in Runtime
+Settings and follow the main README. Symphony treats `.compozy/tasks/<task_name>/` as one Compozy PRD
+Run and uses `compozy:<task_name>` selectors where Compozy selector support is available. Compozy
+tracking does not use GitHub Issues, GitHub Projects, or GitHub tracker token settings for issue
+dispatch.
+
 ## Authentication
 
 Set `GITHUB_TOKEN` or `GH_TOKEN` for the backend process. The token needs permission to read issues

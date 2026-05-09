@@ -92,6 +92,14 @@ _Avoid_: synced GitHub issues, local notes
 A human-editable issue record stored by a Local Issue Tracker and used by Personal Symphony to render an Agent Prompt, select a Stage Agent, and update tracker status.
 _Avoid_: task markdown, PRD file, scratch note
 
+**Compozy PRD Run**:
+A Local Issue Tracker work item represented by one `.compozy/tasks/<task_name>/` directory in a Workspace Repository.
+_Avoid_: Compozy issue, task folder, PRD issue
+
+**Compozy Task Step**:
+One `task_NN.md` file inside a Compozy PRD Run that Symphony executes as an ordered step in the same Agent Worktree and Task Branch.
+_Avoid_: separate Symphony issue, GitHub issue, standalone task
+
 **Runtime Settings Invocation Override**:
 A command-line value on the default runtime command that replaces one loaded Runtime Settings field for the current Symphony process only, after Runtime Settings load and before orchestration uses the effective runtime config.
 _Avoid_: temporary config, settings rewrite, runtime patch
@@ -351,6 +359,7 @@ _Avoid_: reinitialize, reset
 - Runtime Settings select one **Issue Tracker** for orchestration.
 - The **GitHub Tracker** remains the default Issue Tracker.
 - A **Local Issue Tracker** stores issue records in **Local Issue Files** owned by the Workspace Repository.
+- A Compozy-backed **Local Issue Tracker** treats one **Compozy PRD Run** as the issue-level work item and the contained **Compozy Task Steps** as ordered progress within that work item.
 - A **Local Issue Tracker** must preserve Stage Agent dispatch, tracker status transitions, Agent Prompt rendering, Task Branch naming, retry, Stage Commit, Stage Push, and Task Branch Integration behavior.
 - A **Local Issue Tracker** must not require GitHub API access for issue fetches or tracker status updates.
 - Bootstrap must not overwrite existing **Local Issue Files**.
