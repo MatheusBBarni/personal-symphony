@@ -1819,13 +1819,12 @@ let is_compozy_prd_run_child orchestrator issue =
 let compozy_workspace_root config (workspace : Workspace.t) =
   let repository_root = Unix.realpath config.Config.repository_root in
   let compozy_root = Unix.realpath config.Config.tracker.compozy_root in
-  let prefix = repository_root ^ Filename.dir_sep in
-  let relative =
+  if compozy_root = repository_root then workspace.path
+  else
+    let prefix = repository_root ^ Filename.dir_sep in
     match Util.drop_prefix ~prefix compozy_root with
-    | Some relative -> relative
-    | None -> Filename.basename compozy_root
-  in
-  Filename.concat workspace.path relative
+    | Some relative -> Filename.concat workspace.path relative
+    | None -> compozy_root
 
 let compozy_prd_run_for_workspace_issue config workspace issue =
   let compozy_root = compozy_workspace_root config workspace in
@@ -3070,7 +3069,7 @@ let mark_merge_attention orchestrator child error =
 
 type compozy_completion =
   | Not_compozy_child
-  | Compozy_final_step
+  | Compozy_final_step of Compozy_tasks_tracker.prd_run * Compozy_tasks_tracker.task_step
   | Compozy_next_step of Compozy_tasks_tracker.prd_run
 
 let complete_compozy_task_step orchestrator child =
@@ -3088,10 +3087,21 @@ let complete_compozy_task_step orchestrator child =
                 match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
                 | Error _ as error -> error
                 | Ok updated_run ->
-                    update_compozy_progress orchestrator updated_run;
                     match updated_run.current_step with
-                    | Some _ -> Ok (Compozy_next_step updated_run)
-                    | None -> Ok Compozy_final_step)))
+                    | Some _ ->
+                        update_compozy_progress orchestrator updated_run;
+                        Ok (Compozy_next_step updated_run)
+                    | None -> Ok (Compozy_final_step (updated_run, step)))))
+
+let restore_compozy_final_step_for_retry orchestrator child run step =
+  match update_compozy_workspace_step_status orchestrator.config child.workspace run step "in_progress" with
+  | Error error -> Error error
+  | Ok () -> (
+      match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
+      | Error _ as error -> error
+      | Ok restored_run ->
+          update_compozy_progress orchestrator restored_run;
+          Ok ())
 
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
@@ -3105,9 +3115,18 @@ let mark_completed orchestrator child =
       let next_issue = Compozy_tasks_tracker.issue_of_prd_run run in
       complete_child ~next_status:run.state orchestrator child;
       dispatch_issue orchestrator next_issue
-  | Ok (Not_compozy_child | Compozy_final_step) -> (
+  | Ok (Not_compozy_child | Compozy_final_step _) as completion -> (
       match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
       | Error error ->
+          let error =
+            match completion with
+            | Ok (Compozy_final_step (run, step)) -> (
+                match restore_compozy_final_step_for_retry orchestrator child run step with
+                | Ok () -> error
+                | Error restore_error ->
+                    Printf.sprintf "%s; could not restore final Compozy task step for retry: %s" error restore_error)
+            | _ -> error
+          in
           render_commit_failed child.issue_identifier error;
           if human_attention_completion_error error then mark_merge_attention orchestrator child error
           else if non_retryable_completion_error error then (
@@ -3115,6 +3134,9 @@ let mark_completed orchestrator child =
             mark_blocked orchestrator issue_id error)
           else mark_retrying orchestrator issue_id error
       | Ok () ->
+          (match completion with
+          | Ok (Compozy_final_step (run, _step)) -> update_compozy_progress orchestrator run
+          | _ -> ());
           let status_moved_before_merge =
             match next_status with
             | Some status when task_pull_request_before_auto_merge orchestrator status ->

@@ -7214,6 +7214,93 @@ let test_compozy_failed_step_retries_then_advances_to_next_step () =
       Alcotest.(check bool) "next prompt includes second task" true
         (contains_substring third_prompt "Second advance sentinel."))
 
+let test_compozy_dispatch_preserves_external_root_path () =
+  with_temp_dir "symphony-compozy-external-repo-" (fun root ->
+      with_temp_dir "symphony-compozy-external-root-" (fun external_root ->
+          init_repo root "feature/start";
+          let compozy_root = Filename.concat external_root "tasks" in
+          let prd_dir = Filename.concat compozy_root "external-feature" in
+          Util.mkdir_p prd_dir;
+          let task_01 = Filename.concat prd_dir "task_01.md" in
+          write_compozy_task ~title:"External step" ~body:"\n# External\n\nExternal root sentinel.\n" task_01;
+          let config = compozy_test_config root compozy_root in
+          let launches = ref [] in
+          let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+            launches := (issue, workspace, prompt) :: !launches;
+            {
+              Orchestrator.pid = None;
+              session_id = Some (string_of_int (List.length !launches));
+              event = "test-launch";
+              stdout_path = None;
+              stderr_path = None;
+            }
+          in
+          let orchestrator =
+            Orchestrator.make ~launch ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+          in
+          Orchestrator.poll_once orchestrator;
+          let _issue, workspace, prompt =
+            match List.rev !launches with
+            | [ launch ] -> launch
+            | _ -> Alcotest.fail "expected Compozy launch from external root"
+          in
+          Alcotest.(check bool) "prompt includes external task" true
+            (contains_substring prompt "External root sentinel.");
+          Alcotest.(check string) "external task started" "in_progress" (compozy_task_status compozy_root task_01);
+          let rewritten_root = Filename.concat workspace.Workspace.path (Filename.basename compozy_root) in
+          Alcotest.(check bool) "does not rewrite external root into worktree" false (Sys.file_exists rewritten_root)))
+
+let test_compozy_final_step_commit_failure_keeps_step_runnable () =
+  with_temp_dir "symphony-compozy-final-retry-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "final-retry-feature" in
+      Util.mkdir_p prd_dir;
+      let task_01 = Filename.concat prd_dir "task_01.md" in
+      write_compozy_task ~title:"Final step" ~body:"\n# Final\n\nFinal retry sentinel.\n" task_01;
+      ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
+      let base_config = compozy_test_config root compozy_root in
+      let config = { base_config with Config.agent = { base_config.agent with max_retry_backoff_ms = 0 } } in
+      let launches = ref [] in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+        launches := (issue, workspace, prompt) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some (string_of_int (List.length !launches));
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let commit_calls = ref 0 in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        incr commit_calls;
+        Error "stage push failed: transient remote error"
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let first_issue, first_workspace, first_prompt =
+        match List.rev !launches with
+        | [ launch ] -> launch
+        | _ -> Alcotest.fail "expected initial Compozy launch"
+      in
+      let workspace_compozy_root = Filename.concat (Filename.concat first_workspace.path ".compozy") "tasks" in
+      let workspace_task_01 = Filename.concat (Filename.concat workspace_compozy_root "final-retry-feature") "task_01.md" in
+      Alcotest.(check bool) "prompt includes final task" true (contains_substring first_prompt "Final retry sentinel.");
+      Orchestrator.mark_completed orchestrator (compozy_child first_issue first_workspace);
+      Alcotest.(check int) "commit attempted" 1 !commit_calls;
+      Alcotest.(check string) "final task restored for retry" "in_progress"
+        (compozy_task_status workspace_compozy_root workspace_task_01);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "retry queued" 1 (List.length state.Runtime_state.retrying);
+      (match state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "runtime current step restored" (Some "task_01.md") progress.current_step;
+          Alcotest.(check int) "runtime completed count restored" 0 progress.completed
+      | None -> Alcotest.fail "expected Compozy progress after final commit failure"))
+
 let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
   { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
 
@@ -11022,6 +11109,10 @@ let () =
             test_compozy_completion_relaunches_next_step_in_same_worktree;
           Alcotest.test_case "retries failed Compozy task step then advances" `Quick
             test_compozy_failed_step_retries_then_advances_to_next_step;
+          Alcotest.test_case "dispatch preserves external Compozy root path" `Quick
+            test_compozy_dispatch_preserves_external_root_path;
+          Alcotest.test_case "keeps final Compozy step runnable after commit failure" `Quick
+            test_compozy_final_step_commit_failure_keeps_step_runnable;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick
             test_orchestrator_runs_stage_context_command_before_launch;
