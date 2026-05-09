@@ -11,9 +11,35 @@ let digits_only text =
          | _ -> false)
        text
 
+let normalize_compozy_entry value =
+  match Util.drop_prefix ~prefix:"compozy:" value with
+  | Some task_name ->
+      let task_name = Util.trim task_name in
+      if task_name = "" then
+        Error
+          {
+            value;
+            reason = "expected a Compozy PRD-run identifier like compozy:example-feature";
+          }
+      else if String.contains task_name '/' || String.contains task_name ':' then
+        Error
+          {
+            value;
+            reason =
+              "expected a Compozy PRD-run identifier like compozy:example-feature without path separators";
+          }
+      else Ok { issue_identifier = "compozy:" ^ task_name }
+  | None ->
+      Error
+        {
+          value;
+          reason = "expected a Compozy PRD-run identifier like compozy:example-feature";
+        }
+
 let normalize_entry raw =
   let value = Util.trim raw in
   if value = "" then Error { value; reason = "empty queue entry" }
+  else if Util.starts_with ~prefix:"compozy:" value then normalize_compozy_entry value
   else if String.contains value '/' || String.contains value ':' then
     Error { value; reason = "issue URLs and cross-repository references are not supported" }
   else
@@ -38,7 +64,8 @@ let normalize_entry raw =
             Error
               {
                 value;
-                reason = "expected a numeric issue identifier with optional # or a minibeads identifier like mb-20";
+                reason =
+                  "expected a numeric issue identifier with optional #, a minibeads identifier like mb-20, or a Compozy identifier like compozy:example-feature";
               }
 
 let parse text =

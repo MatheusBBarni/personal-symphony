@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Compozy tracker Runtime Settings"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Add Runtime Settings support for selecting the Compozy-backed tracker while keep
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Extend the Runtime Settings tracker model with Compozy tracker settings.
-- [ ] 1.2 Accept `github` and `compozy_tasks` as supported tracker kinds.
-- [ ] 1.3 Preserve existing GitHub parsing and defaults when `tracker.kind` is omitted.
-- [ ] 1.4 Gate GitHub-only readiness gaps behind GitHub tracker selection.
-- [ ] 1.5 Add configuration tests for Compozy defaults, explicit values, and unsupported kinds.
+- [x] 1.1 Extend the Runtime Settings tracker model with Compozy tracker settings.
+- [x] 1.2 Accept `github` and `compozy_tasks` as supported tracker kinds.
+- [x] 1.3 Preserve existing GitHub parsing and defaults when `tracker.kind` is omitted.
+- [x] 1.4 Gate GitHub-only readiness gaps behind GitHub tracker selection.
+- [x] 1.5 Add configuration tests for Compozy defaults, explicit values, and unsupported kinds.
 
 ## Implementation Details
 Update the configuration model described in TechSpec "Runtime Settings". Keep this task focused on parsed settings and readiness gating; Compozy file validation belongs to later tasks.
@@ -62,13 +62,13 @@ Update the configuration model described in TechSpec "Runtime Settings". Keep th
 
 ## Tests
 - Unit tests:
-  - [ ] Omitted `tracker.kind` parses as `github`.
-  - [ ] `tracker.kind = "compozy_tasks"` parses with default `root` and `maxTaskStepRetries`.
-  - [ ] Explicit Compozy `root` and `maxTaskStepRetries` values parse correctly.
-  - [ ] Unsupported tracker kind such as `linear` returns an actionable config error.
-  - [ ] GitHub tracker with placeholder GitHub fields still emits existing readiness gaps.
+  - [x] Omitted `tracker.kind` parses as `github`.
+  - [x] `tracker.kind = "compozy_tasks"` parses with default `root` and `maxTaskStepRetries`.
+  - [x] Explicit Compozy `root` and `maxTaskStepRetries` values parse correctly.
+  - [x] Unsupported tracker kind such as `linear` returns an actionable config error.
+  - [x] GitHub tracker with placeholder GitHub fields still emits existing readiness gaps.
 - Integration tests:
-  - [ ] Minimal Compozy tracker settings load without requiring GitHub owner, repo, project number, or token.
+  - [x] Minimal Compozy tracker settings load without requiring GitHub owner, repo, project number, or token.
 - Test coverage target: >=80%
 - All tests must pass
 

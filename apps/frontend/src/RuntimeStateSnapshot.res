@@ -92,6 +92,16 @@ type orderedQueueEntry = {
 
 type orderedQueue = {entries: array<orderedQueueEntry>}
 
+type compozyProgress = {
+  run_id: string,
+  slug: string,
+  current_step: option<string>,
+  completed: int,
+  failed: int,
+  skipped: int,
+  total: int,
+}
+
 type startupReconciliation = {
   issue_identifier: option<string>,
   task_branch: option<string>,
@@ -127,6 +137,7 @@ type runtimeState = {
   issue_errors: array<blockedTaskError>,
   status_order: array<string>,
   ordered_queue: option<orderedQueue>,
+  compozy_progress: option<compozyProgress>,
 }
 
 @val external shortDescription: string => string = "shortDescription"
@@ -218,6 +229,21 @@ let orderedQueueEntries = state =>
   | None => []
   }
 
+let compozyProgressForDashboard = state =>
+  switch state.compozy_progress {
+  | Some(progress) =>
+    Some({
+      Dashboard.runId: progress.run_id,
+      slug: progress.slug,
+      currentStep: stringOrFallback(progress.current_step, "No active step"),
+      completed: progress.completed->Int.toString,
+      failed: progress.failed->Int.toString,
+      skipped: progress.skipped->Int.toString,
+      total: progress.total->Int.toString,
+    })
+  | None => None
+  }
+
 let snapshotFromState = state => {
   Dashboard.workspaceRepositoryName: stringOrEmpty(state.workspace_repository_name),
   trackerKind: RuntimeState.trackerKindOrDefault(state.tracker_kind),
@@ -230,6 +256,7 @@ let snapshotFromState = state => {
   lastError: stringOrEmpty(state.last_error),
   statusOrder: arrayOrEmpty(state.status_order),
   orderedQueue: orderedQueueEntries(state),
+  compozyProgress: compozyProgressForDashboard(state),
   issues: arrayOrEmpty(state.issues)->Array.map(issue => {
     {
       Dashboard.identifier: issue.issue_identifier,

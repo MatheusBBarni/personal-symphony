@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Wire Compozy readiness and run selection in CLI startup"
 type: backend
 complexity: high
@@ -32,11 +32,11 @@ Connect the selected Compozy tracker kind to runtime startup and readiness behav
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Add Compozy tracker readiness checks for root and runnable PRD-run candidates.
-- [ ] 6.2 Route CLI startup by selected tracker kind.
-- [ ] 6.3 Skip GitHub remote readiness for Compozy tracker runs.
-- [ ] 6.4 Populate tracker kind and initial Compozy progress in Runtime State.
-- [ ] 6.5 Add startup/readiness tests for GitHub and Compozy paths.
+- [x] 6.1 Add Compozy tracker readiness checks for root and runnable PRD-run candidates.
+- [x] 6.2 Route CLI startup by selected tracker kind.
+- [x] 6.3 Skip GitHub remote readiness for Compozy tracker runs.
+- [x] 6.4 Populate tracker kind and initial Compozy progress in Runtime State.
+- [x] 6.5 Add startup/readiness tests for GitHub and Compozy paths.
 
 ## Implementation Details
 Follow TechSpec "Data Flow" and "Impact Analysis" for `main.ml`. Keep the narrow Compozy path isolated and preserve existing GitHub code paths.
@@ -65,13 +65,13 @@ Follow TechSpec "Data Flow" and "Impact Analysis" for `main.ml`. Keep the narrow
 
 ## Tests
 - Unit tests:
-  - [ ] Compozy tracker with missing root emits a Compozy readiness gap.
-  - [ ] Compozy tracker with no runnable task files emits a Compozy readiness gap.
-  - [ ] Compozy tracker readiness does not include GitHub owner, repo, project number, or token gaps.
-  - [ ] GitHub tracker readiness still includes GitHub gaps when configured incorrectly.
+  - [x] Compozy tracker with missing root emits a Compozy readiness gap.
+  - [x] Compozy tracker with no runnable task files emits a Compozy readiness gap.
+  - [x] Compozy tracker readiness does not include GitHub owner, repo, project number, or token gaps.
+  - [x] GitHub tracker readiness still includes GitHub gaps when configured incorrectly.
 - Integration tests:
-  - [ ] CLI readiness state for a valid Compozy fixture has no GitHub remote readiness dependency.
-  - [ ] CLI readiness state for GitHub tracker is unchanged.
+  - [x] CLI readiness state for a valid Compozy fixture has no GitHub remote readiness dependency.
+  - [x] CLI readiness state for GitHub tracker is unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

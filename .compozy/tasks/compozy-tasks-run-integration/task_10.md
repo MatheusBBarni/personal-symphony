@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Support Compozy identifiers in queue and manual merge flows"
 type: backend
 complexity: high
@@ -31,11 +31,11 @@ Add `compozy:<task_name>` selector support to the operator flows needed for trac
 </requirements>
 
 ## Subtasks
-- [ ] 10.1 Extend Ordered Queue selector parsing to represent canonical identifiers.
-- [ ] 10.2 Validate Compozy queue identifiers against discovered PRD runs.
-- [ ] 10.3 Extend Manual Task Merge selector handling for Compozy PRD-run identifiers.
-- [ ] 10.4 Keep GitHub numeric selector behavior unchanged.
-- [ ] 10.5 Add queue and merge tests for Compozy and GitHub selectors.
+- [x] 10.1 Extend Ordered Queue selector parsing to represent canonical identifiers.
+- [x] 10.2 Validate Compozy queue identifiers against discovered PRD runs.
+- [x] 10.3 Extend Manual Task Merge selector handling for Compozy PRD-run identifiers.
+- [x] 10.4 Keep GitHub numeric selector behavior unchanged.
+- [x] 10.5 Add queue and merge tests for Compozy and GitHub selectors.
 
 ## Implementation Details
 Follow TechSpec "Impact Analysis" for queue and merge. Because ADR-003 chose a narrow path, avoid a broad selected-tracker refactor unless strictly needed for these flows.
@@ -65,15 +65,15 @@ Follow TechSpec "Impact Analysis" for queue and merge. Because ADR-003 chose a n
 
 ## Tests
 - Unit tests:
-  - [ ] Existing queue parse `"19,#22,31"` still returns GitHub identifiers.
-  - [ ] Queue parse accepts `compozy:example-feature`.
-  - [ ] Duplicate Compozy selectors are rejected.
-  - [ ] Malformed selectors such as `compozy:` and URLs return actionable errors.
-  - [ ] Manual Task Merge still accepts `20` and `#20`.
-  - [ ] Manual Task Merge accepts valid completed Compozy PRD-run identifiers when supported.
+  - [x] Existing queue parse `"19,#22,31"` still returns GitHub identifiers.
+  - [x] Queue parse accepts `compozy:example-feature`.
+  - [x] Duplicate Compozy selectors are rejected.
+  - [x] Malformed selectors such as `compozy:` and URLs return actionable errors.
+  - [x] Manual Task Merge still accepts `20` and `#20`.
+  - [x] Manual Task Merge accepts valid completed Compozy PRD-run identifiers when supported.
 - Integration tests:
-  - [ ] Compozy queue validation resolves an existing PRD-run fixture without GitHub Project membership.
-  - [ ] GitHub queue and Manual Task Merge tests continue to pass.
+  - [x] Compozy queue validation resolves an existing PRD-run fixture without GitHub Project membership.
+  - [x] GitHub queue and Manual Task Merge tests continue to pass.
 - Test coverage target: >=80%
 - All tests must pass
 

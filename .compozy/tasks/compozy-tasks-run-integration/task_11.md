@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Update tracker documentation and examples"
 type: docs
 complexity: medium
@@ -34,12 +34,12 @@ Document the Compozy-backed Local Issue Tracker workflow after the runtime behav
 </requirements>
 
 ## Subtasks
-- [ ] 11.1 Update README or tracker documentation with Compozy tracker setup.
-- [ ] 11.2 Add secret-free Runtime Settings examples.
-- [ ] 11.3 Document PRD-run versus task-step semantics.
-- [ ] 11.4 Document retry, failed/skipped, and progress visibility behavior.
-- [ ] 11.5 Review glossary usage and update `CONTEXT.md` only if new domain language is introduced.
-- [ ] 11.6 Add documentation verification checks.
+- [x] 11.1 Update README or tracker documentation with Compozy tracker setup.
+- [x] 11.2 Add secret-free Runtime Settings examples.
+- [x] 11.3 Document PRD-run versus task-step semantics.
+- [x] 11.4 Document retry, failed/skipped, and progress visibility behavior.
+- [x] 11.5 Review glossary usage and update `CONTEXT.md` only if new domain language is introduced.
+- [x] 11.6 Add documentation verification checks.
 
 ## Implementation Details
 Use TechSpec "Development Sequencing" and "Monitoring and Observability" as source material. If documentation introduces a new term beyond existing glossary terms, update `CONTEXT.md` per repository rules.
@@ -69,12 +69,12 @@ Use TechSpec "Development Sequencing" and "Monitoring and Observability" as sour
 
 ## Tests
 - Unit tests:
-  - [ ] Documentation examples include `tracker.kind = "compozy_tasks"` and no secret values.
-  - [ ] Documentation uses **Issue Tracker**, **GitHub Tracker**, **Local Issue Tracker**, and **Runtime Settings** consistently.
-  - [ ] No generated `.res.js` files are included by documentation-only changes.
+  - [x] Documentation examples include `tracker.kind = "compozy_tasks"` and no secret values.
+  - [x] Documentation uses **Issue Tracker**, **GitHub Tracker**, **Local Issue Tracker**, and **Runtime Settings** consistently.
+  - [x] No generated `.res.js` files are included by documentation-only changes.
 - Integration tests:
-  - [ ] `rg "WORKFLOW.md|WORKFLOW.example.md" README.md .github/project-tracking.md docs` does not introduce legacy tracker references.
-  - [ ] Focused documentation checks or link checks pass where available.
+  - [x] `rg "WORKFLOW.md|WORKFLOW.example.md" README.md .github/project-tracking.md docs` does not introduce legacy tracker references.
+  - [x] Focused documentation checks or link checks pass where available.
 - Test coverage target: >=80%
 - All tests must pass
 

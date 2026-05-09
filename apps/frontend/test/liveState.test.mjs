@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { make as Dashboard } from "../src/Pages/Dashboard.res.js";
 import { createLiveStateConnection } from "../src/LiveState.res.js";
 import { trackerKindOrDefault } from "../src/RuntimeState.res.js";
 import { snapshotFromState } from "../src/RuntimeStateSnapshot.res.js";
@@ -46,7 +49,7 @@ assert.equal(sockets[0].url, "ws://127.0.0.1:8080/api/v1/state/live");
 sockets[0].onmessage({
   data: JSON.stringify({
     counts: { running: 1, retrying: 1 },
-    tracker_kind: "minibeads",
+    tracker_kind: "compozy_tasks",
     usage_totals: { total_tokens: 42 },
     generated_at: "2026-05-04T00:00:00Z",
     issues: [
@@ -85,22 +88,88 @@ sockets[0].onmessage({
         },
       },
     ],
+    compozy_progress: {
+      run_id: "compozy:compozy-tasks-run-integration",
+      slug: "compozy-tasks-run-integration",
+      current_step: "task_02.md",
+      completed: 1,
+      failed: 0,
+      skipped: 0,
+      total: 8,
+    },
   }),
 });
 assert.equal(snapshots.length, 1);
 assert.equal(snapshots[0].counts.running, 1);
-assert.equal(trackerKindOrDefault(snapshots[0].tracker_kind), "minibeads");
+assert.equal(trackerKindOrDefault(snapshots[0].tracker_kind), "compozy_tasks");
 assert.equal(snapshots[0][`codex_${"totals"}`], undefined);
 assert.equal(snapshots[0].usage_totals.total_tokens, 42);
 assert.equal(snapshots[0].running[0].context_status.state, "succeeded");
 assert.equal(snapshots[0].running[0].harness_name, "engineer");
 assert.equal(snapshots[0].running[0].harness_kind, "claude");
 assert.equal(snapshots[0].retrying[0].context_status.state, "timed_out");
+assert.equal(snapshots[0].compozy_progress.current_step, "task_02.md");
+assert.equal(snapshots[0].compozy_progress.completed, 1);
+assert.equal(snapshots[0].compozy_progress.failed, 0);
+assert.equal(snapshots[0].compozy_progress.skipped, 0);
+assert.equal(snapshots[0].compozy_progress.total, 8);
 
 const dashboardSnapshot = snapshotFromState(snapshots[0]);
-assert.equal(dashboardSnapshot.trackerKind, "minibeads");
+assert.equal(dashboardSnapshot.trackerKind, "compozy_tasks");
 assert.equal(dashboardSnapshot.tokens, "42");
 assert.equal(dashboardSnapshot.issues[0].harnessIdentity, "engineer (claude)");
+assert.equal(dashboardSnapshot.compozyProgress.runId, "compozy:compozy-tasks-run-integration");
+assert.equal(dashboardSnapshot.compozyProgress.currentStep, "task_02.md");
+assert.equal(dashboardSnapshot.compozyProgress.completed, "1");
+assert.equal(dashboardSnapshot.compozyProgress.failed, "0");
+assert.equal(dashboardSnapshot.compozyProgress.skipped, "0");
+assert.equal(dashboardSnapshot.compozyProgress.total, "8");
+
+const compozyDashboardSnapshot = snapshotFromState({
+  tracker_kind: "compozy_tasks",
+  counts: { running: 1, retrying: 0 },
+  usage_totals: { total_tokens: 11 },
+  generated_at: "2026-05-04T00:03:00Z",
+  status_order: ["In Progress"],
+  issues: [
+    {
+      issue_id: "compozy:compozy-tasks-run-integration",
+      issue_identifier: "compozy:compozy-tasks-run-integration",
+      title: "Compozy Tasks Run Integration",
+      state: "In Progress",
+      description: "Run task files as one PRD run.",
+    },
+  ],
+  running: [],
+  retrying: [],
+  issue_errors: [],
+  compozy_progress: {
+    run_id: "compozy:compozy-tasks-run-integration",
+    slug: "compozy-tasks-run-integration",
+    current_step: "task_02.md",
+    completed: 1,
+    failed: 0,
+    skipped: 1,
+    total: 8,
+  },
+});
+
+assert.equal(compozyDashboardSnapshot.trackerKind, "compozy_tasks");
+assert.equal(compozyDashboardSnapshot.compozyProgress.currentStep, "task_02.md");
+assert.equal(compozyDashboardSnapshot.compozyProgress.completed, "1");
+assert.equal(compozyDashboardSnapshot.compozyProgress.failed, "0");
+assert.equal(compozyDashboardSnapshot.compozyProgress.skipped, "1");
+assert.equal(compozyDashboardSnapshot.compozyProgress.total, "8");
+
+const compozyMarkup = renderToStaticMarkup(
+  React.createElement(Dashboard, { snapshot: compozyDashboardSnapshot, error: undefined }),
+);
+assert.match(compozyMarkup, /PRD run progress/);
+assert.match(compozyMarkup, /task_02\.md/);
+assert.match(compozyMarkup, /Completed/);
+assert.match(compozyMarkup, /Skipped/);
+assert.match(compozyMarkup, /1 tracked PRD runs/);
+assert.match(compozyMarkup, /work item states/);
 
 const richDashboardSnapshot = snapshotFromState({
   workspace_repository_name: "workspace-repo",
@@ -256,6 +325,8 @@ sockets[0].onmessage({
 });
 assert.equal(snapshots.length, 2);
 assert.equal(trackerKindOrDefault(snapshots[1].tracker_kind), "github");
+assert.equal(snapshots[1].compozy_progress, undefined);
+assert.equal(snapshotFromState(snapshots[1]).compozyProgress, undefined);
 assert.equal(snapshots[1].running[0].context_status, undefined);
 assert.equal(snapshots[1].running[0].harness_name, undefined);
 

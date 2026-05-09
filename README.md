@@ -12,6 +12,8 @@ its own repository-owned Runtime Contract under `.symphony/`.
   `GITHUB_TOKEN` or `GH_TOKEN`
 - For the minibeads Local Issue Tracker: the `mb` CLI and a local issue store in the Workspace
   Repository
+- For the Compozy-backed Local Issue Tracker: a Compozy PRD Run directory under
+  `.compozy/tasks/<task_name>/` in the Workspace Repository
 
 ## Install
 
@@ -91,6 +93,42 @@ Tracker users:
 `tracker.command` defaults to `mb`; set it only when the executable name or path differs in your
 environment. Symphony runs minibeads commands from the Workspace Repository root and treats Local
 Issue Files as repository-owned user data.
+
+Choose the Compozy-backed Local Issue Tracker when you want Symphony to run a Compozy PRD Run from
+`.compozy/tasks/<task_name>/` as one user-facing work item. This tracker is opt-in with
+`tracker.kind = "compozy_tasks"`; GitHub remains the default Issue Tracker when the field is omitted
+or set to `"github"`:
+
+```json
+{
+  "tracker": {
+    "kind": "compozy_tasks",
+    "compozy": {
+      "root": ".compozy/tasks",
+      "maxTaskStepRetries": 2
+    }
+  }
+}
+```
+
+`tracker.compozy.root` is resolved from the Workspace Repository root and defaults to
+`.compozy/tasks`. Each direct child directory, such as `.compozy/tasks/compozy-tasks-run-integration/`,
+is treated as one Compozy PRD Run. The `task_NN.md` files inside that directory are Compozy Task Steps
+in the same Agent Worktree and Task Branch; they are not separate Symphony issues. When
+present, `_prd.md` and `_techspec.md` are included in each task-step Agent Prompt.
+
+Symphony persists Compozy Task Step progress in task file frontmatter. During a run, task steps move
+through statuses such as `pending`, `in_progress`, `completed`, `failed`, and `skipped`, with retry
+metadata recorded alongside the status. `tracker.compozy.maxTaskStepRetries` controls how many times
+Symphony retries a failed task step before recording the failed or skipped state and advancing to the
+next runnable task step. Runtime State, the Terminal Console, and the Web Dashboard show the selected
+tracker kind, Compozy PRD Run identifier, current task step, completed count, failed count, skipped
+count, and total count when Compozy tracking is selected.
+
+Where selector-based flows support Compozy tracking, use the stable identifier form
+`compozy:<task_name>`. For example, `.compozy/tasks/compozy-tasks-run-integration/` is selected as
+`compozy:compozy-tasks-run-integration` in Ordered Queue and Manual Task Merge flows. GitHub numeric
+selectors such as `20` or `#20` remain GitHub Tracker identifiers.
 
 Define execution backends under `harnesses` and logical agent roles under `agents`. Harnesses own
 provider commands and loop capability. Logical agents select a Harness and may override model,
@@ -179,20 +217,26 @@ If setup is incomplete, the Terminal Console still starts and prints Readiness G
 steps. Dispatch remains disabled until those gaps are resolved.
 
 For the GitHub Tracker, readiness includes the configured owner, Workspace Repository name, GitHub
-Project number, status field, and token environment variable. For the minibeads Local Issue Tracker,
+Project number, status field, and token environment variable. For Local Issue Tracker runs,
 GitHub owner, repo, Project, and token settings are not required. The local tracker readiness checks
-include:
+include tracker-specific local files and commands:
 
 - `tracker.minibeads.command`: install minibeads or update `tracker.command` so Symphony can run the
   configured command.
 - `tracker.minibeads.store`: create the local issue store at `tracker.root` or update `tracker.root`
   to the existing minibeads store.
+- `tracker.compozy.root`: create the Compozy tasks root at `tracker.compozy.root` or update the
+  setting to the existing `.compozy/tasks` directory.
+- `tracker.compozy.tasks`: add at least one valid `.compozy/tasks/<task_name>/task_NN.md` file with
+  task-step frontmatter.
 
 ## Project Status Workflow
 
 Symphony moves the selected Issue Tracker status as work progresses. With the GitHub Tracker, this is
 the configured GitHub Projects `Status` field. With the minibeads Local Issue Tracker, Symphony maps
-the same Runtime Settings state names to minibeads statuses and writes them through `mb`:
+the same Runtime Settings state names to minibeads statuses and writes them through `mb`. With the
+Compozy-backed Local Issue Tracker, the Compozy PRD Run is the work item and Symphony records
+task-step status in each `task_NN.md` file's frontmatter:
 
 - `startStatus`: applied before launching an agent, default `In progress`.
 - `reviewStatus`: applied after the agent exits successfully, default `In review`.
@@ -314,7 +358,9 @@ duplicate skill identifiers are Readiness Gaps; Symphony checks all configured s
 dispatch, resolving Workspace Repository skills before Codex Home skills.
 
 Rendered Agent Prompts include issue comments as issue context when the selected Issue Tracker
-provides comments. minibeads Local Issue Tracker comments are not included in V1.
+provides comments. minibeads Local Issue Tracker comments are not included in V1. Compozy-backed
+Local Issue Tracker prompts include the current Compozy Task Step plus `_prd.md` and `_techspec.md`
+from the same Compozy PRD Run when those files exist.
 
 Set `goal.enabled` to `true` on a specific stage to allow Stage Goal Handoff for that stage only.
 The selected Harness decides whether a loop command is actually sent. The Bootstrap default Codex
@@ -562,9 +608,9 @@ opam exec -- dune exec symphony -- --web --port 8080
 ```
 
 If no GitHub token is configured for the GitHub Tracker, the runtime still starts, but readiness
-gaps report the missing token and live issue dispatch is disabled. For minibeads runs, dispatch does
-not require a GitHub token; unresolved `mb` command or local issue store gaps disable dispatch
-instead.
+gaps report the missing token and live issue dispatch is disabled. For Local Issue Tracker runs,
+dispatch does not require a GitHub token; unresolved minibeads command or local issue store gaps, or
+missing Compozy PRD Run task files, disable dispatch instead.
 
 ## Package Distribution
 

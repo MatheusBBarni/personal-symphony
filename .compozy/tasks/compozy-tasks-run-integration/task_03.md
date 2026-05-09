@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Map Compozy PRD runs to Symphony issues"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Map one Compozy workflow directory under `.compozy/tasks/<task_name>/` into one 
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add PRD-run discovery from the configured Compozy root.
-- [ ] 3.2 Build the `prd_run` model from parsed task files.
-- [ ] 3.3 Map PRD runs into `Issue.t` values with stable identifiers and titles.
-- [ ] 3.4 Add safe branch/workspace key derivation for Compozy identifiers.
-- [ ] 3.5 Add tests for duplicate, missing, and multi-directory PRD-run cases.
+- [x] 3.1 Add PRD-run discovery from the configured Compozy root.
+- [x] 3.2 Build the `prd_run` model from parsed task files.
+- [x] 3.3 Map PRD runs into `Issue.t` values with stable identifiers and titles.
+- [x] 3.4 Add safe branch/workspace key derivation for Compozy identifiers.
+- [x] 3.5 Add tests for duplicate, missing, and multi-directory PRD-run cases.
 
 ## Implementation Details
 Use TechSpec "PRD-Run Identifier" and "Core Interfaces" as the source of truth. Keep individual task-step details in the Compozy tracker module; expose only PRD-run identity and progress needed by shared runtime code.
@@ -62,13 +62,13 @@ Use TechSpec "PRD-Run Identifier" and "Core Interfaces" as the source of truth. 
 
 ## Tests
 - Unit tests:
-  - [ ] `.compozy/tasks/example-feature/` maps to `compozy:example-feature`.
-  - [ ] `task_01.md` and `task_02.md` inside one directory do not create separate issues.
-  - [ ] Branch/workspace key for `compozy:feature-123` is stable and non-empty.
-  - [ ] Empty PRD-run directory is reported as not runnable.
-  - [ ] Two workflow directories with `task_01.md` produce distinct PRD-run identifiers.
+  - [x] `.compozy/tasks/example-feature/` maps to `compozy:example-feature`.
+  - [x] `task_01.md` and `task_02.md` inside one directory do not create separate issues.
+  - [x] Branch/workspace key for `compozy:feature-123` is stable and non-empty.
+  - [x] Empty PRD-run directory is reported as not runnable.
+  - [x] Two workflow directories with `task_01.md` produce distinct PRD-run identifiers.
 - Integration tests:
-  - [ ] Temporary Compozy root with two PRD directories yields two `Issue.t` candidates.
+  - [x] Temporary Compozy root with two PRD directories yields two `Issue.t` candidates.
 - Test coverage target: >=80%
 - All tests must pass
 

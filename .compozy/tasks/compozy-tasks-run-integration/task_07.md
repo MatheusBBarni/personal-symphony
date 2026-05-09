@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add sequential task-step orchestration in one worktree"
 type: backend
 complexity: critical
@@ -31,12 +31,12 @@ Extend orchestration so a Compozy PRD run can execute multiple task-step launche
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Identify Compozy PRD-run children separately from normal GitHub issue children.
-- [ ] 7.2 Add intermediate task-step completion handling before final completion.
-- [ ] 7.3 Reuse the existing Agent Worktree and Task Branch for the next task step.
-- [ ] 7.4 Update Runtime State progress between task-step launches.
-- [ ] 7.5 Ensure final completion uses existing Stage Commit, Stage Push, and integration behavior.
-- [ ] 7.6 Add orchestration tests for same-worktree sequential execution.
+- [x] 7.1 Identify Compozy PRD-run children separately from normal GitHub issue children.
+- [x] 7.2 Add intermediate task-step completion handling before final completion.
+- [x] 7.3 Reuse the existing Agent Worktree and Task Branch for the next task step.
+- [x] 7.4 Update Runtime State progress between task-step launches.
+- [x] 7.5 Ensure final completion uses existing Stage Commit, Stage Push, and integration behavior.
+- [x] 7.6 Add orchestration tests for same-worktree sequential execution.
 
 ## Implementation Details
 Reference TechSpec "Git" and "Build Order" steps 7-8. This is the highest-risk task because it touches the completion path in `orchestrator.ml`; keep edits tightly scoped and regression-test existing completion behavior.
@@ -66,13 +66,13 @@ Reference TechSpec "Git" and "Build Order" steps 7-8. This is the highest-risk t
 
 ## Tests
 - Unit tests:
-  - [ ] Intermediate task-step completion does not call final branch integration.
-  - [ ] Next task step uses the same workspace path and Task Branch.
-  - [ ] Final task-step completion calls existing final completion behavior.
-  - [ ] GitHub issue completion behavior remains unchanged.
+  - [x] Intermediate task-step completion does not call final branch integration.
+  - [x] Next task step uses the same workspace path and Task Branch.
+  - [x] Final task-step completion calls existing final completion behavior.
+  - [x] GitHub issue completion behavior remains unchanged.
 - Integration tests:
-  - [ ] Two-task Compozy PRD run completes both task files in one Agent Worktree.
-  - [ ] Runtime State shows current step changing from `task_01.md` to `task_02.md`.
+  - [x] Two-task Compozy PRD run completes both task files in one Agent Worktree.
+  - [x] Runtime State shows current step changing from `task_01.md` to `task_02.md`.
 - Test coverage target: >=80%
 - All tests must pass
 

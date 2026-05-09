@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
 const docs = [
@@ -57,7 +58,7 @@ function parseJsonBlock(block) {
 }
 
 function assertTrackerExamples(blocks) {
-  const allowedKinds = new Set(["github", "minibeads"]);
+  const allowedKinds = new Set(["github", "minibeads", "compozy_tasks"]);
   const seenKinds = new Set();
 
   for (const block of blocks) {
@@ -68,7 +69,7 @@ function assertTrackerExamples(blocks) {
 
     const kind = parsed.tracker.kind;
     if (!allowedKinds.has(kind)) {
-      fail(`${block.relativePath} json block ${block.index} must use tracker.kind "github" or "minibeads"`);
+      fail(`${block.relativePath} json block ${block.index} must use a documented tracker.kind`);
       continue;
     }
 
@@ -80,6 +81,15 @@ function assertTrackerExamples(blocks) {
       }
       if (parsed.tracker.root !== ".beads") {
         fail(`${block.relativePath} json block ${block.index} must document tracker.root for minibeads`);
+      }
+    }
+
+    if (kind === "compozy_tasks") {
+      if (!parsed.tracker.compozy || parsed.tracker.compozy.root !== ".compozy/tasks") {
+        fail(`${block.relativePath} json block ${block.index} must document tracker.compozy.root`);
+      }
+      if (parsed.tracker.compozy.maxTaskStepRetries !== 2) {
+        fail(`${block.relativePath} json block ${block.index} must document tracker.compozy.maxTaskStepRetries`);
       }
     }
   }
@@ -97,6 +107,8 @@ function assertGlossaryTerms() {
     "GitHub Tracker",
     "Local Issue Tracker",
     "Local Issue File",
+    "Compozy PRD Run",
+    "Compozy Task Step",
     "Runtime Settings",
     "Readiness Gap",
   ];
@@ -132,16 +144,101 @@ function assertReadinessGuidance(readme) {
   }
 }
 
+function assertCompozyGuidance(readme) {
+  const required = [
+    'tracker.kind = "compozy_tasks"',
+    "GitHub remains the default Issue Tracker",
+    ".compozy/tasks/<task_name>/",
+    "Compozy PRD Run",
+    "Compozy Task Steps",
+    "tracker.compozy.root",
+    "tracker.compozy.maxTaskStepRetries",
+    "pending",
+    "in_progress",
+    "completed",
+    "failed",
+    "skipped",
+    "Runtime State",
+    "Terminal Console",
+    "Web Dashboard",
+    "compozy:<task_name>",
+    "Ordered Queue",
+    "Manual Task Merge",
+  ];
+
+  for (const phrase of required) {
+    if (!readme.includes(phrase)) {
+      fail(`README.md is missing Compozy tracker guidance for ${phrase}`);
+    }
+  }
+}
+
 function assertGitHubScope(projectTracking) {
   const required = [
     'tracker.kind` is `"github"`',
     "GitHub Tracker",
     "For minibeads Local Issue Tracker setup",
+    "For Compozy-backed Local Issue Tracker setup",
   ];
 
   for (const phrase of required) {
     if (!projectTracking.includes(phrase)) {
       fail(`.github/project-tracking.md is missing scoped GitHub Tracker wording: ${phrase}`);
+    }
+  }
+}
+
+function collectMarkdownFiles(relativeDir) {
+  const absoluteDir = path.join(root, relativeDir);
+  const entries = fs.readdirSync(absoluteDir, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    const childRelative = path.join(relativeDir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectMarkdownFiles(childRelative));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(childRelative);
+    }
+  }
+
+  return files;
+}
+
+function assertLegacyWorkflowReferencesAreScoped() {
+  const filesToScan = [...docs];
+  filesToScan.push(...collectMarkdownFiles("docs"));
+
+  const allowedContext = /\blegacy\b|\bfixture\b|\bcompatibility\b|\bearlier root workflow\b|\bnot the active Runtime Contract\b/i;
+  for (const relativePath of filesToScan) {
+    const text = readDoc(relativePath);
+    const lines = text.split(/\r?\n/);
+    lines.forEach((line, index) => {
+      const contextWindow = [
+        lines[index - 2] || "",
+        lines[index - 1] || "",
+        line,
+        lines[index + 1] || "",
+        lines[index + 2] || "",
+      ].join(" ");
+      if (/WORKFLOW\.md|WORKFLOW\.example\.md/.test(line) && !allowedContext.test(contextWindow)) {
+        fail(`${relativePath}:${index + 1} contains an unscoped legacy WORKFLOW reference`);
+      }
+    });
+  }
+}
+
+function assertNoGeneratedResJsDiff() {
+  const changedFrontendFiles = execFileSync("git", ["diff", "--name-only", "--", "apps/frontend/src"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .split(/\r?\n/)
+    .filter(Boolean);
+
+  for (const changedFile of changedFrontendFiles) {
+    if (changedFile.endsWith(".res.js")) {
+      fail(`generated ReScript output changed in documentation-only task: ${changedFile}`);
     }
   }
 }
@@ -157,7 +254,10 @@ for (const [relativePath, markdown] of markdownByPath.entries()) {
 assertTrackerExamples(jsonBlocks);
 assertGlossaryTerms();
 assertReadinessGuidance(markdownByPath.get("README.md"));
+assertCompozyGuidance(markdownByPath.get("README.md"));
 assertGitHubScope(markdownByPath.get(".github/project-tracking.md"));
+assertLegacyWorkflowReferencesAreScoped();
+assertNoGeneratedResJsDiff();
 
 if (failures.length > 0) {
   console.error("Documentation validation failed:");

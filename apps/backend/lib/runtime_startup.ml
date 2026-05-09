@@ -41,5 +41,6 @@ let startup_completed_event ~mode ~config ~runtime_home =
     (match config.tracker.kind with
     | "github" -> Printf.sprintf "%s/%s" config.tracker.owner config.tracker.repo
     | "minibeads" -> config.tracker.minibeads_root
+    | "compozy_tasks" -> config.tracker.compozy_root
     | kind -> kind)
     config.tracker.project_number runtime_home config.workspace.root

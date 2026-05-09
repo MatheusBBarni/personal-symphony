@@ -3,72 +3,6 @@ let load_config workflow_path =
   let config = Config.from_workflow workflow in
   (workflow, config)
 
-let queue_parse_gaps = function
-  | [] -> []
-  | problems ->
-      problems
-      |> List.map (fun (problem : Ordered_queue.parse_problem) ->
-             {
-               Config.requirement = "orderedQueue." ^ (if problem.value = "" then "<empty>" else problem.value);
-               remediation = problem.reason;
-             })
-
-let queue_validation_gaps config queue =
-  let tracker = Issue_tracker.make config in
-  Ordered_queue.validation_gaps tracker queue
-  |> List.map (fun (gap : Ordered_queue.validation_gap) ->
-         { Config.requirement = gap.requirement; remediation = gap.remediation })
-
-let config_gap_of_runtime_gap (gap : Runtime_state.readiness_gap) =
-  { Config.requirement = gap.requirement; remediation = gap.remediation }
-
-let selected_tracker_readiness_gaps config =
-  try
-    let tracker = Issue_tracker.make config in
-    tracker.readiness_gaps () |> List.map config_gap_of_runtime_gap
-  with exn ->
-    [
-      {
-        Config.requirement = "tracker.adapter";
-        remediation = "Issue Tracker readiness failed: " ^ Printexc.to_string exn;
-      };
-    ]
-
-let readiness_state ?ordered_queue ?(queue_parse_problems = []) config =
-  let local_gaps = Config.readiness_gaps config in
-  let queue_gaps = queue_parse_gaps queue_parse_problems in
-  let gaps =
-    match local_gaps @ queue_gaps with
-    | [] -> (
-        let tracker_gaps = selected_tracker_readiness_gaps config in
-        match (tracker_gaps, ordered_queue) with
-        | [], Some queue -> (
-            try queue_validation_gaps config queue
-            with exn ->
-              [
-                {
-                  Config.requirement = "orderedQueue.validation";
-                  remediation = "Ordered Queue validation failed: " ^ Printexc.to_string exn;
-                };
-              ])
-        | gaps, _ -> gaps)
-    | gaps -> gaps
-  in
-  let last_error =
-    match gaps with
-    | [] -> None
-    | gap :: _ -> Some (gap.requirement ^ ": " ^ gap.remediation)
-  in
-  let readiness_gaps =
-    List.map
-      (fun (gap : Config.readiness_gap) ->
-        { Runtime_state.requirement = gap.requirement; remediation = gap.remediation })
-      gaps
-  in
-  Runtime_state.empty ?last_error ~tracker_kind:config.tracker.kind ~status_order:(Config.project_status_order config)
-    ?ordered_queue:(Option.map Orchestrator.ordered_queue_state ordered_queue)
-    ~readiness_gaps ()
-
 let colors_enabled () =
   Sys.getenv_opt "NO_COLOR" = None
 
@@ -138,12 +72,14 @@ let tracker_issue_source config =
   match config.Config.tracker.kind with
   | "github" -> Printf.sprintf "%s/%s" config.tracker.owner config.tracker.repo
   | "minibeads" -> config.tracker.minibeads_root
+  | "compozy_tasks" -> config.tracker.compozy_root
   | kind -> kind
 
 let tracker_status_source config =
   match config.Config.tracker.kind with
   | "github" -> Printf.sprintf "GitHub Project #%d" config.tracker.project_number
   | "minibeads" -> Printf.sprintf "Local Issue Files via %s" config.tracker.minibeads_command
+  | "compozy_tasks" -> "Compozy PRD-run task files"
   | kind -> kind
 
 let render_startup_completed ~mode ~config ~runtime_home =
@@ -168,6 +104,16 @@ let symphony_banner =
 
 let print_section title = Printf.printf "\n%s\n%!" (cyan title)
 
+let render_compozy_progress = function
+  | None -> ()
+  | Some (progress : Runtime_state.compozy_progress) ->
+      print_section "PRD Run Progress";
+      Printf.printf "  %s %s\n%!" (dim "Run") progress.run_id;
+      Printf.printf "  %s %s\n%!" (dim "Slug") progress.slug;
+      Printf.printf "  %s %s\n%!" (dim "Current step") (Option.value progress.current_step ~default:"none");
+      Printf.printf "  %s %d completed, %d failed, %d skipped, %d total\n%!" (dim "Steps") progress.completed
+        progress.failed progress.skipped progress.total
+
 let render_banner () =
   List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphony_banner;
   Printf.printf "\n%!"
@@ -183,6 +129,7 @@ let render_terminal_console config state =
   Printf.printf "  %s %d running, %d retrying\n%!" (dim "Agents") (List.length state.Runtime_state.running)
     (List.length state.retrying);
   Printf.printf "  %s %d total\n%!" (dim "Tokens") state.usage_totals.total_tokens;
+  render_compozy_progress state.Runtime_state.compozy_progress;
   (match state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->
@@ -214,7 +161,7 @@ let run_legacy workflow_path port once =
   in
   try
     let workflow, config = load_config workflow_path in
-    let state = readiness_state config in
+    let state = Runtime_readiness.state config in
     let example_issue = Issue.empty ~id:"local" ~identifier:"#0" ~title:"Local dry run" ~state:"Todo" in
     let _rendered =
       if workflow.prompt_template = "" then "You are working on an issue from GitHub."
@@ -294,7 +241,7 @@ let run_runtime port once web queue_arg merge_args overrides =
         render_startup_completed ~mode:(Cli_mode.to_string mode) ~config ~runtime_home:home.runtime_dir;
         if merge_args <> [] then run_manual_merge config merge_args
         else (
-          let state = readiness_state ?ordered_queue ~queue_parse_problems config in
+          let state = Runtime_readiness.state ?ordered_queue ~queue_parse_problems config in
           if mode = Cli_mode.Web_dashboard then render_banner ();
           if once then (
             if mode = Cli_mode.Terminal_console then render_terminal_console config state;

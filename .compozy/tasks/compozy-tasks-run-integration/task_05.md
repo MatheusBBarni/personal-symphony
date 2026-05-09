@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Compozy progress to Runtime State"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ Extend Runtime State with optional tracker kind and Compozy PRD-run progress fie
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add backend Runtime State types for tracker kind and Compozy progress.
-- [ ] 5.2 Serialize optional fields in Runtime State snapshots.
-- [ ] 5.3 Parse optional fields where backend state is read from JSON.
-- [ ] 5.4 Add tests for absent fields and populated Compozy progress.
-- [ ] 5.5 Keep older Runtime State snapshots compatible.
+- [x] 5.1 Add backend Runtime State types for tracker kind and Compozy progress.
+- [x] 5.2 Serialize optional fields in Runtime State snapshots.
+- [x] 5.3 Parse optional fields where backend state is read from JSON.
+- [x] 5.4 Add tests for absent fields and populated Compozy progress.
+- [x] 5.5 Keep older Runtime State snapshots compatible.
 
 ## Implementation Details
 Use TechSpec "Runtime State Projection". This task only adds backend state shape and tests; frontend rendering belongs to task_09.
@@ -60,12 +60,12 @@ Use TechSpec "Runtime State Projection". This task only adds backend state shape
 
 ## Tests
 - Unit tests:
-  - [ ] Empty Runtime State omits or nulls Compozy progress without parse failure.
-  - [ ] Runtime State serializes `tracker_kind = "compozy_tasks"`.
-  - [ ] Runtime State serializes current step and aggregate counts.
-  - [ ] Runtime State parses older snapshots without the new fields.
+  - [x] Empty Runtime State omits or nulls Compozy progress without parse failure.
+  - [x] Runtime State serializes `tracker_kind = "compozy_tasks"`.
+  - [x] Runtime State serializes current step and aggregate counts.
+  - [x] Runtime State parses older snapshots without the new fields.
 - Integration tests:
-  - [ ] `/api/v1/state` payload shape can include Compozy progress without breaking existing required fields.
+  - [x] `/api/v1/state` payload shape can include Compozy progress without breaking existing required fields.
 - Test coverage target: >=80%
 - All tests must pass
 
