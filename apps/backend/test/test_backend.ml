@@ -57,6 +57,11 @@ let contains_substring text substring =
   in
   loop 0
 
+let ends_with ~suffix text =
+  let text_len = String.length text in
+  let suffix_len = String.length suffix in
+  text_len >= suffix_len && String.sub text (text_len - suffix_len) suffix_len = suffix
+
 let rec find_repo_root dir =
   if Sys.file_exists (Filename.concat dir "package.json") && Sys.file_exists (Filename.concat dir "CONTEXT.md") then dir
   else
@@ -1496,6 +1501,119 @@ let test_config_parses_compozy_tracker_settings () =
         (Filename.concat (Filename.concat (Unix.realpath root) ".local") "compozy-tasks")
         config.tracker.compozy_root;
       Alcotest.(check int) "custom max task step retries" 5 config.tracker.compozy_max_task_step_retries)
+
+let require_ok label = function Ok value -> value | Error error -> Alcotest.fail (label ^ ": " ^ error)
+
+let require_error label = function
+  | Ok _ -> Alcotest.fail (label ^ ": expected error")
+  | Error error -> error
+
+let write_compozy_task ?(status = "pending") ?(title = "Example task") ?(task_type = "backend")
+    ?(complexity = "medium") ?(dependencies = []) ?(body = "\n# Task Body\n\nUser-authored content.\n") path =
+  let dependency_lines =
+    match dependencies with
+    | [] -> "dependencies: []\n"
+    | dependencies ->
+        "dependencies:\n"
+        ^ (dependencies |> List.map (fun dependency -> "  - " ^ dependency ^ "\n") |> String.concat "")
+  in
+  Util.write_file path
+    (Printf.sprintf "---\nstatus: %s\ntitle: \"%s\"\ntype: %s\ncomplexity: %s\n%s---\n%s" status title task_type
+       complexity dependency_lines body)
+
+let test_compozy_task_files_sort_numeric_order () =
+  with_temp_dir "symphony-compozy-sort-" (fun root ->
+      let prd_dir = Filename.concat root "run" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task (Filename.concat prd_dir "task_10.md");
+      write_compozy_task (Filename.concat prd_dir "task_02.md");
+      write_compozy_task (Filename.concat prd_dir "task_01.md");
+      let tasks = Compozy_tasks_tracker.list_task_files ~compozy_root:root prd_dir |> require_ok "list tasks" in
+      Alcotest.(check (list string)) "numeric order" [ "task_01.md"; "task_02.md"; "task_10.md" ]
+        (List.map (fun (task : Compozy_tasks_tracker.task_file) -> task.file) tasks))
+
+let test_compozy_task_files_ignore_non_task_files () =
+  with_temp_dir "symphony-compozy-ignore-" (fun root ->
+      let prd_dir = Filename.concat root "run" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task (Filename.concat prd_dir "task_01.md");
+      Util.write_file (Filename.concat prd_dir "_prd.md") "# PRD\n";
+      Util.write_file (Filename.concat prd_dir "notes.md") "# Notes\n";
+      Util.write_file (Filename.concat prd_dir "task_alpha.md") "# Invalid task\n";
+      let tasks = Compozy_tasks_tracker.list_task_files ~compozy_root:root prd_dir |> require_ok "list tasks" in
+      Alcotest.(check (list string)) "task files only" [ "task_01.md" ]
+        (List.map (fun (task : Compozy_tasks_tracker.task_file) -> task.file) tasks))
+
+let test_compozy_task_frontmatter_parses_metadata () =
+  with_temp_dir "symphony-compozy-parse-" (fun root ->
+      let path = Filename.concat root "task_02.md" in
+      write_compozy_task ~status:"in_progress" ~title:"Add parser" ~task_type:"backend" ~complexity:"high"
+        ~dependencies:[ "task_01"; "task_00" ] path;
+      let task = Compozy_tasks_tracker.parse_task_file ~compozy_root:root path |> require_ok "parse task" in
+      Alcotest.(check int) "index" 2 task.index;
+      Alcotest.(check string) "status" "in_progress" task.status;
+      Alcotest.(check string) "title" "Add parser" task.title;
+      Alcotest.(check string) "type" "backend" task.task_type;
+      Alcotest.(check string) "complexity" "high" task.complexity;
+      Alcotest.(check (list string)) "dependencies" [ "task_01"; "task_00" ] task.dependencies;
+      Alcotest.(check int) "retry default" 0 task.retry_count;
+      Alcotest.(check bool) "last error absent" true (Option.is_none task.last_error))
+
+let test_compozy_task_missing_frontmatter_error () =
+  with_temp_dir "symphony-compozy-missing-frontmatter-" (fun root ->
+      let path = Filename.concat root "task_01.md" in
+      Util.write_file path "# Missing frontmatter\n";
+      let error = Compozy_tasks_tracker.parse_task_file ~compozy_root:root path |> require_error "parse task" in
+      Alcotest.(check string) "deterministic error" "missing frontmatter in task_01.md" error)
+
+let test_compozy_task_frontmatter_updates_preserve_body () =
+  with_temp_dir "symphony-compozy-update-" (fun root ->
+      let path = Filename.concat root "task_01.md" in
+      let body = "\n# Task Body\n\nUser-authored **Markdown** stays here.\n" in
+      write_compozy_task ~body path;
+      Compozy_tasks_tracker.update_task_frontmatter ~compozy_root:root path
+        { status = Some "completed"; retry_count = Some 2; last_error = Some "agent exited with code 1" }
+      |> require_ok "update task";
+      let content = Util.read_file path in
+      Alcotest.(check bool) "status updated" true (contains_substring content "status: completed\n");
+      Alcotest.(check bool) "retry updated" true (contains_substring content "symphony_retry_count: 2\n");
+      Alcotest.(check bool) "last error updated" true
+        (contains_substring content "symphony_last_error: \"agent exited with code 1\"\n");
+      Alcotest.(check bool) "body preserved" true (ends_with ~suffix:body content))
+
+let test_compozy_task_rejects_paths_outside_root () =
+  with_temp_dir "symphony-compozy-paths-" (fun root ->
+      let compozy_root = Filename.concat root "tasks" in
+      let outside_root = Filename.concat root "outside" in
+      Util.mkdir_p compozy_root;
+      Util.mkdir_p outside_root;
+      let path = Filename.concat outside_root "task_01.md" in
+      write_compozy_task path;
+      let error = Compozy_tasks_tracker.parse_task_file ~compozy_root path |> require_error "parse outside task" in
+      Alcotest.(check bool) "outside root error" true
+        (contains_substring error "path outside configured Compozy root"))
+
+let test_compozy_task_directory_parse_and_update_integration () =
+  with_temp_dir "symphony-compozy-integration-" (fun root ->
+      let prd_dir = Filename.concat root "compozy-tasks-run-integration" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Second" ~dependencies:[ "task_01" ] (Filename.concat prd_dir "task_02.md");
+      write_compozy_task ~title:"First" (Filename.concat prd_dir "task_01.md");
+      let before = Compozy_tasks_tracker.list_task_files ~compozy_root:root prd_dir |> require_ok "list before" in
+      Alcotest.(check (list string)) "initial order" [ "First"; "Second" ]
+        (List.map (fun (task : Compozy_tasks_tracker.task_file) -> task.title) before);
+      let first_path = Filename.concat prd_dir "task_01.md" in
+      Compozy_tasks_tracker.update_status ~compozy_root:root first_path "completed" |> require_ok "update status";
+      Compozy_tasks_tracker.update_retry_count ~compozy_root:root first_path 1 |> require_ok "update retry";
+      Compozy_tasks_tracker.update_last_error ~compozy_root:root first_path "retry succeeded"
+      |> require_ok "update last error";
+      let after = Compozy_tasks_tracker.list_task_files ~compozy_root:root prd_dir |> require_ok "list after" in
+      match after with
+      | first :: _ ->
+          Alcotest.(check string) "updated status" "completed" first.status;
+          Alcotest.(check int) "updated retry" 1 first.retry_count;
+          Alcotest.(check (option string)) "updated last error" (Some "retry succeeded") first.last_error
+      | [] -> Alcotest.fail "expected parsed tasks")
 
 let test_invalid_tracker_kind () =
   with_temp_dir "symphony-settings-invalid-tracker-" (fun root ->
@@ -9778,6 +9896,20 @@ let () =
             test_config_parses_compozy_tracker_defaults;
           Alcotest.test_case "parses Compozy tracker settings" `Quick
             test_config_parses_compozy_tracker_settings;
+          Alcotest.test_case "sorts Compozy task files numerically" `Quick
+            test_compozy_task_files_sort_numeric_order;
+          Alcotest.test_case "ignores non-task Compozy files" `Quick
+            test_compozy_task_files_ignore_non_task_files;
+          Alcotest.test_case "parses Compozy task metadata" `Quick
+            test_compozy_task_frontmatter_parses_metadata;
+          Alcotest.test_case "rejects missing Compozy task frontmatter" `Quick
+            test_compozy_task_missing_frontmatter_error;
+          Alcotest.test_case "updates Compozy task frontmatter body-safe" `Quick
+            test_compozy_task_frontmatter_updates_preserve_body;
+          Alcotest.test_case "rejects Compozy task paths outside root" `Quick
+            test_compozy_task_rejects_paths_outside_root;
+          Alcotest.test_case "parses and updates Compozy task directories" `Quick
+            test_compozy_task_directory_parse_and_update_integration;
           Alcotest.test_case "rejects unsupported tracker kind" `Quick test_invalid_tracker_kind;
           Alcotest.test_case "keeps github readiness gaps" `Quick
             test_github_tracker_readiness_keeps_github_gaps;
