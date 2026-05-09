@@ -35,6 +35,15 @@ type ordered_queue_entry = {
   skip_reason : string option;
 }
 type ordered_queue = { entries : ordered_queue_entry list }
+type compozy_progress = {
+  run_id : string;
+  slug : string;
+  current_step : string option;
+  completed : int;
+  failed : int;
+  skipped : int;
+  total : int;
+}
 type startup_reconciliation = {
   issue_id : string option;
   issue_identifier : string option;
@@ -96,6 +105,7 @@ type t = {
   pull_request : pull_request_handoff option;
   pull_requests : pull_request_handoff list;
   ordered_queue : ordered_queue option;
+  compozy_progress : compozy_progress option;
   startup_reconciliation : startup_reconciliation list;
   task_branch_integrations : task_branch_integration list;
   context_diagnostics : context_diagnostic list;
@@ -103,7 +113,7 @@ type t = {
 }
 
 let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue
-    ?last_error () =
+    ?compozy_progress ?last_error () =
   {
     workspace_repository_name;
     tracker_kind;
@@ -120,6 +130,7 @@ let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps
     pull_request = None;
     pull_requests = [];
     ordered_queue;
+    compozy_progress;
     startup_reconciliation = [];
     task_branch_integrations = [];
     context_diagnostics = [];
@@ -243,6 +254,30 @@ let ordered_queue_entry_to_yojson (row : ordered_queue_entry) =
 let ordered_queue_to_yojson (row : ordered_queue) =
   `Assoc [ ("entries", `List (List.map ordered_queue_entry_to_yojson row.entries)) ]
 
+let compozy_progress_of_prd_run (run : Compozy_tasks_tracker.prd_run) =
+  let counts = run.counts in
+  {
+    run_id = run.id;
+    slug = run.slug;
+    current_step = Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) run.current_step;
+    completed = counts.completed;
+    failed = counts.failed;
+    skipped = counts.skipped;
+    total = counts.total;
+  }
+
+let compozy_progress_to_yojson (row : compozy_progress) =
+  `Assoc
+    [
+      ("run_id", `String row.run_id);
+      ("slug", `String row.slug);
+      ("current_step", (match row.current_step with Some step -> `String step | None -> `Null));
+      ("completed", `Int row.completed);
+      ("failed", `Int row.failed);
+      ("skipped", `Int row.skipped);
+      ("total", `Int row.total);
+    ]
+
 let startup_reconciliation_to_yojson (row : startup_reconciliation) =
   `Assoc
     [
@@ -275,6 +310,9 @@ let json_member name = function
 let json_string_member name json =
   match json_member name json with Some (`String value) when Util.trim value <> "" -> Some value | _ -> None
 
+let json_int_member name json =
+  match json_member name json with Some (`Int value) -> Some value | _ -> None
+
 let ordered_queue_entry_of_yojson json =
   match json_string_member "issue_identifier" json with
   | None -> None
@@ -291,6 +329,27 @@ let ordered_queue_of_yojson json =
   match json_member "entries" json with
   | Some (`List entries) -> Some { entries = List.filter_map ordered_queue_entry_of_yojson entries }
   | _ -> None
+
+let compozy_progress_of_yojson json =
+  match (json_string_member "run_id" json, json_string_member "slug" json) with
+  | Some run_id, Some slug ->
+      Some
+        {
+          run_id;
+          slug;
+          current_step = json_string_member "current_step" json;
+          completed = Option.value (json_int_member "completed" json) ~default:0;
+          failed = Option.value (json_int_member "failed" json) ~default:0;
+          skipped = Option.value (json_int_member "skipped" json) ~default:0;
+          total = Option.value (json_int_member "total" json) ~default:0;
+        }
+  | _ -> None
+
+let compozy_progress_from_snapshot_yojson json =
+  match json_member "compozy_progress" json with Some (`Assoc _ as progress) -> compozy_progress_of_yojson progress | _ -> None
+
+let tracker_kind_from_snapshot_yojson json =
+  Option.value (json_string_member "tracker_kind" json) ~default:"github"
 
 let pull_request_handoff_to_yojson row =
   `Assoc
@@ -347,6 +406,7 @@ let to_yojson state =
       ("pull_request", (match state.pull_request with Some row -> pull_request_handoff_to_yojson row | None -> `Null));
       ("pull_requests", `List (List.map pull_request_handoff_to_yojson state.pull_requests));
       ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
+      ("compozy_progress", (match state.compozy_progress with Some row -> compozy_progress_to_yojson row | None -> `Null));
       ("startup_reconciliation", `List (List.map startup_reconciliation_to_yojson state.startup_reconciliation));
       ("task_branch_integrations", `List (List.map task_branch_integration_to_yojson state.task_branch_integrations));
       ("context_diagnostics", `List (List.map context_diagnostic_to_yojson state.context_diagnostics));

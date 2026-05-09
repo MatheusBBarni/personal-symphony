@@ -3410,7 +3410,54 @@ let test_runtime_state_exposes_tracker_kind () =
   let default_json = Runtime_state.empty () |> Runtime_state.to_yojson in
   Alcotest.(check string) "default tracker kind" "github" (default_json |> member "tracker_kind" |> to_string);
   let local_json = Runtime_state.empty ~tracker_kind:"minibeads" () |> Runtime_state.to_yojson in
-  Alcotest.(check string) "selected tracker kind" "minibeads" (local_json |> member "tracker_kind" |> to_string)
+  Alcotest.(check string) "selected tracker kind" "minibeads" (local_json |> member "tracker_kind" |> to_string);
+  let compozy_json = Runtime_state.empty ~tracker_kind:"compozy_tasks" () |> Runtime_state.to_yojson in
+  Alcotest.(check string) "Compozy tracker kind" "compozy_tasks" (compozy_json |> member "tracker_kind" |> to_string)
+
+let test_runtime_state_absent_compozy_progress_is_compatible () =
+  let open Yojson.Safe.Util in
+  let json = Runtime_state.empty () |> Runtime_state.to_yojson in
+  let progress_is_null = match json |> member "compozy_progress" with `Null -> true | _ -> false in
+  Alcotest.(check bool) "empty state has no progress payload" true progress_is_null;
+  let older_snapshot = `Assoc [ ("counts", `Assoc [ ("running", `Int 0); ("retrying", `Int 0) ]) ] in
+  Alcotest.(check string) "older snapshot tracker default" "github"
+    (Runtime_state.tracker_kind_from_snapshot_yojson older_snapshot);
+  Alcotest.(check bool) "older snapshot progress absent" true
+    (Option.is_none (Runtime_state.compozy_progress_from_snapshot_yojson older_snapshot))
+
+let test_runtime_state_exposes_compozy_progress () =
+  with_temp_dir "symphony-compozy-progress-" (fun root ->
+      let compozy_root = Filename.concat root ".compozy/tasks" in
+      let prd_dir = Filename.concat compozy_root "compozy-tasks-run-integration" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" ~title:"Done" (Filename.concat prd_dir "task_01.md");
+      write_compozy_task ~status:"in_progress" ~title:"Running" (Filename.concat prd_dir "task_02.md");
+      write_compozy_task ~status:"failed" ~title:"Failed" (Filename.concat prd_dir "task_03.md");
+      write_compozy_task ~status:"skipped" ~title:"Skipped" (Filename.concat prd_dir "task_04.md");
+      write_compozy_task ~status:"pending" ~title:"Pending" (Filename.concat prd_dir "task_05.md");
+      let run =
+        match Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir with
+        | Ok run -> run
+        | Error error -> Alcotest.fail error
+      in
+      let progress = Runtime_state.compozy_progress_of_prd_run run in
+      let json = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress () |> Runtime_state.to_yojson in
+      let open Yojson.Safe.Util in
+      Alcotest.(check string) "tracker kind" "compozy_tasks" (json |> member "tracker_kind" |> to_string);
+      let payload = json |> member "compozy_progress" in
+      Alcotest.(check string) "run id" "compozy:compozy-tasks-run-integration" (payload |> member "run_id" |> to_string);
+      Alcotest.(check string) "slug" "compozy-tasks-run-integration" (payload |> member "slug" |> to_string);
+      Alcotest.(check string) "current step" "task_02.md" (payload |> member "current_step" |> to_string);
+      Alcotest.(check int) "completed" 1 (payload |> member "completed" |> to_int);
+      Alcotest.(check int) "failed" 1 (payload |> member "failed" |> to_int);
+      Alcotest.(check int) "skipped" 1 (payload |> member "skipped" |> to_int);
+      Alcotest.(check int) "total" 5 (payload |> member "total" |> to_int);
+      match Runtime_state.compozy_progress_from_snapshot_yojson json with
+      | Some parsed ->
+          Alcotest.(check string) "parsed run id" progress.run_id parsed.Runtime_state.run_id;
+          Alcotest.(check (option string)) "parsed current step" (Some "task_02.md") parsed.current_step;
+          Alcotest.(check int) "parsed total" 5 parsed.total
+      | None -> Alcotest.fail "expected parsed Compozy progress")
 
 let test_ordered_queue_parses_cli_identifiers () =
   match Ordered_queue.parse "19,#22,mb-20" with
@@ -3877,6 +3924,33 @@ let test_websocket_readiness_snapshot_and_http_state () =
   let open Yojson.Safe.Util in
   let json = Yojson.Safe.from_string body in
   Alcotest.(check string) "http tracker kind" "minibeads" (json |> member "tracker_kind" |> to_string)
+
+let test_http_state_can_include_compozy_progress () =
+  let progress =
+    {
+      Runtime_state.run_id = "compozy:compozy-tasks-run-integration";
+      slug = "compozy-tasks-run-integration";
+      current_step = Some "task_02.md";
+      completed = 1;
+      failed = 0;
+      skipped = 0;
+      total = 8;
+    }
+  in
+  let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress () in
+  let http =
+    Server.handle_request (fun () -> state)
+      { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+  in
+  let body = match List.rev (String.split_on_char '\n' http) with body :: _ -> body | [] -> "" in
+  let open Yojson.Safe.Util in
+  let json = Yojson.Safe.from_string body in
+  Alcotest.(check int) "running count required field" 0 (json |> member "counts" |> member "running" |> to_int);
+  Alcotest.(check string) "tracker kind" "compozy_tasks" (json |> member "tracker_kind" |> to_string);
+  let payload = json |> member "compozy_progress" in
+  Alcotest.(check string) "run id" progress.run_id (payload |> member "run_id" |> to_string);
+  Alcotest.(check string) "current step" "task_02.md" (payload |> member "current_step" |> to_string);
+  Alcotest.(check int) "total" 8 (payload |> member "total" |> to_int)
 
 let test_websocket_context_status_snapshot_and_http_state () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Context status" ~state:"Todo" in
@@ -10223,6 +10297,9 @@ let () =
         [
           Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
           Alcotest.test_case "exposes tracker kind" `Quick test_runtime_state_exposes_tracker_kind;
+          Alcotest.test_case "accepts absent Compozy progress" `Quick
+            test_runtime_state_absent_compozy_progress_is_compatible;
+          Alcotest.test_case "exposes Compozy progress" `Quick test_runtime_state_exposes_compozy_progress;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
           Alcotest.test_case "validates ordered queue through selected tracker" `Quick
             test_ordered_queue_validation_uses_selected_tracker;
@@ -10236,6 +10313,7 @@ let () =
           Alcotest.test_case "handles websocket upgrade and initial snapshot" `Quick test_websocket_accept_and_initial_snapshot;
           Alcotest.test_case "broadcasts after state change" `Quick test_websocket_broadcast_after_state_change;
           Alcotest.test_case "serves readiness live snapshot and diagnostic state" `Quick test_websocket_readiness_snapshot_and_http_state;
+          Alcotest.test_case "serves Compozy progress in HTTP state" `Quick test_http_state_can_include_compozy_progress;
           Alcotest.test_case "serves context status live snapshot and HTTP state" `Quick
             test_websocket_context_status_snapshot_and_http_state;
         ] );
