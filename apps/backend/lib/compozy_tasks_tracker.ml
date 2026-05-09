@@ -11,6 +11,29 @@ type task_file = {
   last_error : string option;
 }
 
+type task_step = { file : string; title : string; status : string; retry_count : int; index : int }
+
+type task_counts = {
+  total : int;
+  pending : int;
+  in_progress : int;
+  completed : int;
+  failed : int;
+  skipped : int;
+}
+
+type prd_run = {
+  id : string;
+  slug : string;
+  path : string;
+  title : string;
+  state : string;
+  current_step : task_step option;
+  steps : task_step list;
+  counts : task_counts;
+  not_runnable_reason : string option;
+}
+
 type frontmatter_update = {
   status : string option;
   retry_count : int option;
@@ -45,6 +68,10 @@ let task_index_of_filename file =
     let digits = String.sub file start len in
     if all_digits digits then int_of_string_opt digits else None
   else None
+
+let id_of_slug slug = "compozy:" ^ slug
+
+let title_of_slug slug = "Compozy PRD run: " ^ slug
 
 let canonical_existing kind path =
   ok_or_error (fun () -> Unix.realpath path)
@@ -203,15 +230,26 @@ let list_task_paths ~compozy_root prd_dir =
   | Ok prd_dir ->
       if not (Sys.is_directory prd_dir) then Error (Printf.sprintf "Compozy PRD path is not a directory: %s" prd_dir)
       else
-        Sys.readdir prd_dir |> Array.to_list
+        let entries =
+          Sys.readdir prd_dir |> Array.to_list
         |> List.filter_map (fun file ->
                match task_index_of_filename file with
                | Some index -> Some (index, file, Filename.concat prd_dir file)
                | None -> None)
         |> List.sort (fun (left_index, left_file, _) (right_index, right_file, _) ->
                match Int.compare left_index right_index with 0 -> String.compare left_file right_file | diff -> diff)
-        |> List.map (fun (_, _, path) -> path)
-        |> fun paths -> Ok paths
+        in
+        let rec duplicate_index = function
+          | (left_index, left_file, _) :: (right_index, right_file, _) :: _ when left_index = right_index ->
+              Some (left_index, left_file, right_file)
+          | _ :: rest -> duplicate_index rest
+          | [] -> None
+        in
+        match duplicate_index entries with
+        | Some (index, left_file, right_file) ->
+            Error
+              (Printf.sprintf "duplicate Compozy task index %d in %s: %s and %s" index prd_dir left_file right_file)
+        | None -> Ok (List.map (fun (_, _, path) -> path) entries)
 
 let list_task_files ~compozy_root prd_dir =
   match list_task_paths ~compozy_root prd_dir with
@@ -225,6 +263,115 @@ let list_task_files ~compozy_root prd_dir =
             | Error _ as error -> error)
       in
       parse [] paths
+
+let task_step_of_task_file (task : task_file) =
+  { file = task.file; title = task.title; status = task.status; retry_count = task.retry_count; index = task.index }
+
+let empty_counts = { total = 0; pending = 0; in_progress = 0; completed = 0; failed = 0; skipped = 0 }
+
+let counts_of_steps steps =
+  List.fold_left
+    (fun counts (step : task_step) ->
+      match String.lowercase_ascii step.status with
+      | "pending" -> { counts with total = counts.total + 1; pending = counts.pending + 1 }
+      | "in_progress" -> { counts with total = counts.total + 1; in_progress = counts.in_progress + 1 }
+      | "completed" -> { counts with total = counts.total + 1; completed = counts.completed + 1 }
+      | "failed" -> { counts with total = counts.total + 1; failed = counts.failed + 1 }
+      | "skipped" -> { counts with total = counts.total + 1; skipped = counts.skipped + 1 }
+      | _ -> { counts with total = counts.total + 1 })
+    empty_counts steps
+
+let current_step_of_steps steps =
+  match List.find_opt (fun (step : task_step) -> String.lowercase_ascii step.status = "in_progress") steps with
+  | Some _ as step -> step
+  | None -> List.find_opt (fun (step : task_step) -> String.lowercase_ascii step.status = "pending") steps
+
+let state_of_steps (counts : task_counts) (current_step : task_step option) =
+  match current_step with
+  | Some step -> step.status
+  | None when counts.total = 0 -> "not_runnable"
+  | None when counts.total = counts.completed -> "completed"
+  | None -> "not_runnable"
+
+let prd_run_of_directory ~compozy_root prd_dir =
+  match ensure_inside_root ~compozy_root prd_dir with
+  | Error _ as error -> error
+  | Ok prd_dir ->
+      let slug = Filename.basename prd_dir in
+      let not_runnable reason =
+        Ok
+          {
+            id = id_of_slug slug;
+            slug;
+            path = prd_dir;
+            title = title_of_slug slug;
+            state = "not_runnable";
+            current_step = None;
+            steps = [];
+            counts = empty_counts;
+            not_runnable_reason = Some reason;
+          }
+      in
+      if not (Sys.is_directory prd_dir) then Error (Printf.sprintf "Compozy PRD path is not a directory: %s" prd_dir)
+      else
+        match list_task_files ~compozy_root prd_dir with
+        | Error error -> not_runnable error
+        | Ok tasks ->
+            let steps = List.map task_step_of_task_file tasks in
+            let counts = counts_of_steps steps in
+            let current_step = current_step_of_steps steps in
+            let state = state_of_steps counts current_step in
+            let not_runnable_reason =
+              if counts.total = 0 then Some (Printf.sprintf "no Compozy task files found in %s" prd_dir)
+              else if state = "not_runnable" then Some "no pending or in-progress Compozy task step"
+              else None
+            in
+            Ok
+              {
+                id = id_of_slug slug;
+                slug;
+                path = prd_dir;
+                title = title_of_slug slug;
+                state;
+                current_step;
+                steps;
+                counts;
+                not_runnable_reason;
+              }
+
+let list_prd_run_paths ~compozy_root =
+  if not (Sys.file_exists compozy_root) then Ok []
+  else if not (Sys.is_directory compozy_root) then Error (Printf.sprintf "Compozy root is not a directory: %s" compozy_root)
+  else
+    Sys.readdir compozy_root |> Array.to_list
+    |> List.filter_map (fun name ->
+           let path = Filename.concat compozy_root name in
+           if Sys.file_exists path && Sys.is_directory path then Some (name, path) else None)
+    |> List.sort (fun (left_name, _) (right_name, _) -> String.compare left_name right_name)
+    |> List.map snd |> fun paths -> Ok paths
+
+let discover_prd_runs ~compozy_root =
+  match canonical_existing "root" compozy_root with
+  | Error _ when not (Sys.file_exists compozy_root) -> Ok []
+  | Error _ as error -> error
+  | Ok compozy_root -> (
+      match list_prd_run_paths ~compozy_root with
+      | Error _ as error -> error
+      | Ok paths ->
+          let rec build acc = function
+            | [] -> Ok (List.rev acc)
+            | path :: rest -> (
+                match prd_run_of_directory ~compozy_root path with
+                | Ok run -> build (run :: acc) rest
+                | Error _ as error -> error)
+          in
+          build [] paths)
+
+let fetch_prd_runs (config : Config.t) =
+  match discover_prd_runs ~compozy_root:config.tracker.compozy_root with Ok runs -> runs | Error _ -> []
+
+let issue_of_prd_run (run : prd_run) =
+  Issue.empty ~id:run.id ~identifier:run.id ~title:run.title ~state:run.state
 
 let yaml_line_value = function
   | `Status status -> status

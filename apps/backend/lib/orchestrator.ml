@@ -693,12 +693,14 @@ let worktree_branch path =
   else None
 
 let issue_branch_key issue =
-  let digits =
-    issue.Issue.identifier |> String.to_seq
-    |> Seq.filter (function '0' .. '9' -> true | _ -> false)
-    |> String.of_seq
-  in
-  if digits <> "" then digits else Workspace.sanitize issue.id
+  if Util.starts_with ~prefix:"compozy:" issue.Issue.identifier then Workspace.sanitize issue.Issue.identifier
+  else
+    let digits =
+      issue.Issue.identifier |> String.to_seq
+      |> Seq.filter (function '0' .. '9' -> true | _ -> false)
+      |> String.of_seq
+    in
+    if digits <> "" then digits else Workspace.sanitize issue.id
 
 let task_branch config issue = config.Config.git.task_branch_prefix ^ issue_branch_key issue
 

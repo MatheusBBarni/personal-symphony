@@ -1508,6 +1508,8 @@ let require_error label = function
   | Ok _ -> Alcotest.fail (label ^ ": expected error")
   | Error error -> error
 
+let option_exists predicate = function Some value -> predicate value | None -> false
+
 let write_compozy_task ?(status = "pending") ?(title = "Example task") ?(task_type = "backend")
     ?(complexity = "medium") ?(dependencies = []) ?(body = "\n# Task Body\n\nUser-authored content.\n") path =
   let dependency_lines =
@@ -1614,6 +1616,110 @@ let test_compozy_task_directory_parse_and_update_integration () =
           Alcotest.(check int) "updated retry" 1 first.retry_count;
           Alcotest.(check (option string)) "updated last error" (Some "retry succeeded") first.last_error
       | [] -> Alcotest.fail "expected parsed tasks")
+
+let test_compozy_prd_run_maps_directory_to_canonical_issue () =
+  with_temp_dir "symphony-compozy-prd-run-" (fun root ->
+      let prd_dir = Filename.concat root "example-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"First step" (Filename.concat prd_dir "task_01.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build PRD run"
+      in
+      Alcotest.(check string) "canonical id" "compozy:example-feature" run.id;
+      Alcotest.(check string) "slug" "example-feature" run.slug;
+      Alcotest.(check string) "current step" "task_01.md"
+        (match run.current_step with Some step -> step.file | None -> "");
+      Alcotest.(check int) "total steps" 1 run.counts.total;
+      let issue = Compozy_tasks_tracker.issue_of_prd_run run in
+      Alcotest.(check string) "issue id" "compozy:example-feature" issue.id;
+      Alcotest.(check string) "issue identifier" "compozy:example-feature" issue.identifier;
+      Alcotest.(check string) "issue title" "Compozy PRD run: example-feature" issue.title)
+
+let test_compozy_prd_run_task_files_are_not_separate_issues () =
+  with_temp_dir "symphony-compozy-prd-single-issue-" (fun root ->
+      let prd_dir = Filename.concat root "single-issue" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"First" (Filename.concat prd_dir "task_01.md");
+      write_compozy_task ~title:"Second" ~dependencies:[ "task_01" ] (Filename.concat prd_dir "task_02.md");
+      let runs = Compozy_tasks_tracker.discover_prd_runs ~compozy_root:root |> require_ok "discover PRD runs" in
+      let issues = List.map Compozy_tasks_tracker.issue_of_prd_run runs in
+      Alcotest.(check int) "one PRD run" 1 (List.length runs);
+      Alcotest.(check int) "one issue" 1 (List.length issues);
+      let run = match runs with [ run ] -> run | _ -> Alcotest.fail "expected one run" in
+      Alcotest.(check (list string)) "step files" [ "task_01.md"; "task_02.md" ]
+        (List.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) run.steps);
+      Alcotest.(check int) "aggregate total" 2 run.counts.total)
+
+let test_compozy_issue_branch_key_uses_identifier_not_digits_only () =
+  let issue = Issue.empty ~id:"compozy:feature-123" ~identifier:"compozy:feature-123" ~title:"Feature" ~state:"pending" in
+  let first = Orchestrator.issue_branch_key issue in
+  let second = Orchestrator.issue_branch_key issue in
+  Alcotest.(check string) "stable key" first second;
+  Alcotest.(check bool) "non-empty" true (first <> "");
+  Alcotest.(check bool) "not numeric extraction" true (first <> "123");
+  Alcotest.(check string) "sanitized full identifier" "compozy_feature-123" first
+
+let test_compozy_empty_prd_run_is_not_runnable () =
+  with_temp_dir "symphony-compozy-empty-prd-" (fun root ->
+      let prd_dir = Filename.concat root "empty-feature" in
+      Util.mkdir_p prd_dir;
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build empty PRD run"
+      in
+      Alcotest.(check string) "state" "not_runnable" run.state;
+      Alcotest.(check int) "total" 0 run.counts.total;
+      Alcotest.(check bool) "no current step" true (Option.is_none run.current_step);
+      Alcotest.(check bool) "reason" true
+        (option_exists (fun reason -> contains_substring reason "no Compozy task files") run.not_runnable_reason))
+
+let test_compozy_two_workflow_directories_have_distinct_ids () =
+  with_temp_dir "symphony-compozy-distinct-prds-" (fun root ->
+      let first = Filename.concat root "first-feature" in
+      let second = Filename.concat root "second-feature" in
+      Util.mkdir_p first;
+      Util.mkdir_p second;
+      write_compozy_task (Filename.concat first "task_01.md");
+      write_compozy_task (Filename.concat second "task_01.md");
+      let runs = Compozy_tasks_tracker.discover_prd_runs ~compozy_root:root |> require_ok "discover PRD runs" in
+      Alcotest.(check (list string)) "distinct ids"
+        [ "compozy:first-feature"; "compozy:second-feature" ]
+        (List.map (fun (run : Compozy_tasks_tracker.prd_run) -> run.id) runs))
+
+let test_compozy_duplicate_task_indexes_are_not_runnable () =
+  with_temp_dir "symphony-compozy-duplicate-index-" (fun root ->
+      let prd_dir = Filename.concat root "duplicate-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task (Filename.concat prd_dir "task_01.md");
+      write_compozy_task (Filename.concat prd_dir "task_1.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build duplicate PRD run"
+      in
+      Alcotest.(check string) "state" "not_runnable" run.state;
+      Alcotest.(check bool) "duplicate reason" true
+        (option_exists (fun reason -> contains_substring reason "duplicate Compozy task index") run.not_runnable_reason))
+
+let test_compozy_missing_root_discovers_no_prd_runs () =
+  with_temp_dir "symphony-compozy-missing-root-" (fun root ->
+      let missing_root = Filename.concat root ".compozy/tasks" in
+      let runs =
+        Compozy_tasks_tracker.discover_prd_runs ~compozy_root:missing_root |> require_ok "discover missing root"
+      in
+      Alcotest.(check int) "no candidates" 0 (List.length runs))
+
+let test_compozy_prd_run_discovery_integration_yields_issue_candidates () =
+  with_temp_dir "symphony-compozy-prd-discovery-" (fun root ->
+      let first = Filename.concat root "alpha-run" in
+      let second = Filename.concat root "beta-run" in
+      Util.mkdir_p first;
+      Util.mkdir_p second;
+      write_compozy_task (Filename.concat first "task_01.md");
+      write_compozy_task (Filename.concat second "task_01.md");
+      Util.write_file (Filename.concat root "notes.md") "# Not a PRD run\n";
+      let runs = Compozy_tasks_tracker.discover_prd_runs ~compozy_root:root |> require_ok "discover runs" in
+      let issues = List.map Compozy_tasks_tracker.issue_of_prd_run runs in
+      Alcotest.(check (list string)) "issue candidates"
+        [ "compozy:alpha-run"; "compozy:beta-run" ]
+        (List.map (fun (issue : Issue.t) -> issue.identifier) issues))
 
 let test_invalid_tracker_kind () =
   with_temp_dir "symphony-settings-invalid-tracker-" (fun root ->
@@ -9910,6 +10016,22 @@ let () =
             test_compozy_task_rejects_paths_outside_root;
           Alcotest.test_case "parses and updates Compozy task directories" `Quick
             test_compozy_task_directory_parse_and_update_integration;
+          Alcotest.test_case "maps Compozy PRD run to canonical issue" `Quick
+            test_compozy_prd_run_maps_directory_to_canonical_issue;
+          Alcotest.test_case "keeps Compozy task files under one issue" `Quick
+            test_compozy_prd_run_task_files_are_not_separate_issues;
+          Alcotest.test_case "uses Compozy-safe branch keys" `Quick
+            test_compozy_issue_branch_key_uses_identifier_not_digits_only;
+          Alcotest.test_case "reports empty Compozy PRD run as not runnable" `Quick
+            test_compozy_empty_prd_run_is_not_runnable;
+          Alcotest.test_case "discovers distinct Compozy PRD directories" `Quick
+            test_compozy_two_workflow_directories_have_distinct_ids;
+          Alcotest.test_case "reports duplicate Compozy task indexes as not runnable" `Quick
+            test_compozy_duplicate_task_indexes_are_not_runnable;
+          Alcotest.test_case "handles missing Compozy root as no candidates" `Quick
+            test_compozy_missing_root_discovers_no_prd_runs;
+          Alcotest.test_case "discovers Compozy PRD issue candidates from fixtures" `Quick
+            test_compozy_prd_run_discovery_integration_yields_issue_candidates;
           Alcotest.test_case "rejects unsupported tracker kind" `Quick test_invalid_tracker_kind;
           Alcotest.test_case "keeps github readiness gaps" `Quick
             test_github_tracker_readiness_keeps_github_gaps;
