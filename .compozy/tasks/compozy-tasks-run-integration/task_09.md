@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Compozy progress to terminal and dashboard surfaces"
 type: frontend
 complexity: medium
@@ -31,11 +31,11 @@ Expose Compozy PRD-run progress in operator-facing Runtime State surfaces. This 
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Add optional Compozy progress fields to ReScript Runtime State parsing.
-- [ ] 9.2 Update dashboard labels to be tracker-neutral where appropriate.
-- [ ] 9.3 Render compact PRD-run progress when Compozy progress is present.
-- [ ] 9.4 Update terminal output for Compozy progress if backend console rendering requires it.
-- [ ] 9.5 Add frontend tests and run ReScript build.
+- [x] 9.1 Add optional Compozy progress fields to ReScript Runtime State parsing.
+- [x] 9.2 Update dashboard labels to be tracker-neutral where appropriate.
+- [x] 9.3 Render compact PRD-run progress when Compozy progress is present.
+- [x] 9.4 Update terminal output for Compozy progress if backend console rendering requires it.
+- [x] 9.5 Add frontend tests and run ReScript build.
 
 ## Implementation Details
 Reference TechSpec "Runtime State Projection" and "Monitoring and Observability". Keep UI changes compact and consistent with the existing operational dashboard.
@@ -64,14 +64,16 @@ Reference TechSpec "Runtime State Projection" and "Monitoring and Observability"
 
 ## Tests
 - Unit tests:
-  - [ ] Snapshot parsing succeeds when `tracker_kind` and `compozy_progress` are absent.
-  - [ ] Snapshot parsing captures Compozy current step and counts when present.
-  - [ ] Dashboard model exposes Compozy progress values.
+  - [x] Snapshot parsing succeeds when `tracker_kind` and `compozy_progress` are absent.
+  - [x] Snapshot parsing captures Compozy current step and counts when present.
+  - [x] Dashboard model exposes Compozy progress values.
 - Integration tests:
-  - [ ] `pnpm frontend:test` covers Compozy Runtime State rendering.
-  - [ ] `pnpm frontend:build` succeeds after ReScript changes.
+  - [x] `pnpm frontend:test` covers Compozy Runtime State rendering.
+  - [x] `pnpm frontend:build` succeeds after ReScript changes.
 - Test coverage target: >=80%
 - All tests must pass
+
+Coverage note: this repository has no configured frontend coverage command or coverage dependency. Task 09 verification uses focused live-state/model/render assertions plus the required frontend test and build gates.
 
 ## Success Criteria
 - All tests passing

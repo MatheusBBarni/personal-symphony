@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Build Compozy task-step prompt context"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Add prompt assembly for the current task step in a Compozy PRD run. Each prompt 
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add current task-step prompt assembly to the Compozy tracker module.
-- [ ] 4.2 Include PRD and TechSpec sections when files are present.
-- [ ] 4.3 Produce deterministic diagnostics for missing runnable task files.
-- [ ] 4.4 Integrate the assembled prompt with existing orchestrator prompt composition hooks.
-- [ ] 4.5 Add prompt content tests.
+- [x] 4.1 Add current task-step prompt assembly to the Compozy tracker module.
+- [x] 4.2 Include PRD and TechSpec sections when files are present.
+- [x] 4.3 Produce deterministic diagnostics for missing runnable task files.
+- [x] 4.4 Integrate the assembled prompt with existing orchestrator prompt composition hooks.
+- [x] 4.5 Add prompt content tests.
 
 ## Implementation Details
 Reference TechSpec "Task-step prompt assembly" and "Compozy Artifacts". Do not duplicate prompt wrappers from `Orchestrator.compose_prompt`; this task should provide Compozy-specific base content for existing composition.
@@ -62,13 +62,13 @@ Reference TechSpec "Task-step prompt assembly" and "Compozy Artifacts". Do not d
 
 ## Tests
 - Unit tests:
-  - [ ] Prompt includes current task file title and body.
-  - [ ] Prompt includes `_prd.md` content when the file exists.
-  - [ ] Prompt includes `_techspec.md` content when the file exists.
-  - [ ] Prompt still succeeds when `_prd.md` or `_techspec.md` is absent.
-  - [ ] No runnable task files returns a deterministic error.
+  - [x] Prompt includes current task file title and body.
+  - [x] Prompt includes `_prd.md` content when the file exists.
+  - [x] Prompt includes `_techspec.md` content when the file exists.
+  - [x] Prompt still succeeds when `_prd.md` or `_techspec.md` is absent.
+  - [x] No runnable task files returns a deterministic error.
 - Integration tests:
-  - [ ] Orchestrator composition can wrap a Compozy task-step base prompt without changing GitHub prompt behavior.
+  - [x] Orchestrator composition can wrap a Compozy task-step base prompt without changing GitHub prompt behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

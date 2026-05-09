@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Compozy task-step retry and skip behavior"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ Implement the Compozy-specific retry limit for task steps. A failed task step re
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Track task-step retry counts in Compozy task frontmatter.
-- [ ] 8.2 Apply the configured retry limit for failed Compozy task steps.
-- [ ] 8.3 Mark failed-over-limit steps and advance to the next runnable task.
-- [ ] 8.4 Surface failed and skipped step counts in Runtime State.
-- [ ] 8.5 Add tests for retry, skip, and GitHub regression behavior.
+- [x] 8.1 Track task-step retry counts in Compozy task frontmatter.
+- [x] 8.2 Apply the configured retry limit for failed Compozy task steps.
+- [x] 8.3 Mark failed-over-limit steps and advance to the next runnable task.
+- [x] 8.4 Surface failed and skipped step counts in Runtime State.
+- [x] 8.5 Add tests for retry, skip, and GitHub regression behavior.
 
 ## Implementation Details
 Use TechSpec "Known Risks" and ADR-006 for final state visibility. Make failed/skipped states obvious because continuing after failures can otherwise hide broken work.
@@ -62,13 +62,13 @@ Use TechSpec "Known Risks" and ADR-006 for final state visibility. Make failed/s
 
 ## Tests
 - Unit tests:
-  - [ ] Failed Compozy task step increments `symphony_retry_count`.
-  - [ ] Retry count below limit relaunches the same task step.
-  - [ ] Retry count at limit marks the task failed or skipped.
-  - [ ] Failed-over-limit task advances to the next runnable task step.
-  - [ ] GitHub retry behavior remains unchanged.
+  - [x] Failed Compozy task step increments `symphony_retry_count`.
+  - [x] Retry count below limit relaunches the same task step.
+  - [x] Retry count at limit marks the task failed or skipped.
+  - [x] Failed-over-limit task advances to the next runnable task step.
+  - [x] GitHub retry behavior remains unchanged.
 - Integration tests:
-  - [ ] Two-step PRD run with first task failing over limit proceeds to second task and records failed/skipped count.
+  - [x] Two-step PRD run with first task failing over limit proceeds to second task and records failed/skipped count.
 - Test coverage target: >=80%
 - All tests must pass
 

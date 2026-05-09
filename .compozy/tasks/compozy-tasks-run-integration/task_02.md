@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Compozy task file parser and frontmatter updater"
 type: backend
 complexity: medium
@@ -31,12 +31,12 @@ Create the backend module that reads Compozy task files and updates task-step pr
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Add `apps/backend/lib/compozy_tasks_tracker.ml` with task file parsing types.
-- [ ] 2.2 Parse valid `task_NN.md` files and ignore non-task metadata files.
-- [ ] 2.3 Add numeric ordering for task files.
-- [ ] 2.4 Add frontmatter update helpers for status, retry count, and last error.
-- [ ] 2.5 Add validation errors for malformed frontmatter and invalid paths.
-- [ ] 2.6 Add focused parser and updater tests.
+- [x] 2.1 Add `apps/backend/lib/compozy_tasks_tracker.ml` with task file parsing types.
+- [x] 2.2 Parse valid `task_NN.md` files and ignore non-task metadata files.
+- [x] 2.3 Add numeric ordering for task files.
+- [x] 2.4 Add frontmatter update helpers for status, retry count, and last error.
+- [x] 2.5 Add validation errors for malformed frontmatter and invalid paths.
+- [x] 2.6 Add focused parser and updater tests.
 
 ## Implementation Details
 Follow TechSpec "Task-Step Frontmatter" and "Compozy Artifacts". Avoid duplicating Compozy's whole parser; implement only the frontmatter behavior required by this feature.
@@ -61,14 +61,14 @@ Follow TechSpec "Task-Step Frontmatter" and "Compozy Artifacts". Avoid duplicati
 
 ## Tests
 - Unit tests:
-  - [ ] `task_01.md`, `task_02.md`, and `task_10.md` sort in numeric order.
-  - [ ] Non-task files such as `_prd.md` and `notes.md` are ignored.
-  - [ ] Valid frontmatter parses required metadata fields.
-  - [ ] Missing frontmatter returns a deterministic parse error.
-  - [ ] Status and retry updates preserve the Markdown body.
-  - [ ] Paths outside the configured Compozy root are rejected.
+  - [x] `task_01.md`, `task_02.md`, and `task_10.md` sort in numeric order.
+  - [x] Non-task files such as `_prd.md` and `notes.md` are ignored.
+  - [x] Valid frontmatter parses required metadata fields.
+  - [x] Missing frontmatter returns a deterministic parse error.
+  - [x] Status and retry updates preserve the Markdown body.
+  - [x] Paths outside the configured Compozy root are rejected.
 - Integration tests:
-  - [ ] Temporary Compozy task directory can be parsed and updated across multiple task files.
+  - [x] Temporary Compozy task directory can be parsed and updated across multiple task files.
 - Test coverage target: >=80%
 - All tests must pass
 
