@@ -2887,6 +2887,40 @@ let mark_retrying orchestrator issue_id error =
       render_dispatch_retrying row.issue.identifier next_attempt error;
       update_ordered_queue_entries orchestrator ~candidates:[ row.issue ] ()
 
+type compozy_failure =
+  | Not_compozy_failure
+  | Compozy_retry_step
+  | Compozy_next_after_failure of Compozy_tasks_tracker.prd_run
+  | Compozy_finished_after_failure of Compozy_tasks_tracker.prd_run
+
+let record_compozy_task_step_failure orchestrator child error =
+  if not (is_compozy_prd_run_child orchestrator child.issue) then Ok Not_compozy_failure
+  else
+    match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
+    | Error _ as error -> error
+    | Ok run -> (
+        match run.current_step with
+        | None -> Error (Printf.sprintf "no runnable Compozy task step for %s" run.id)
+        | Some step ->
+            let retry_count = step.retry_count + 1 in
+            let over_limit = retry_count >= orchestrator.config.tracker.compozy_max_task_step_retries in
+            let compozy_root = compozy_workspace_root orchestrator.config child.workspace in
+            match
+              Compozy_tasks_tracker.record_step_failure ~compozy_root run step ~retry_count ~last_error:error
+                ~over_limit
+            with
+            | Error _ as error -> error
+            | Ok () -> (
+                match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
+                | Error _ as error -> error
+                | Ok updated_run ->
+                    update_compozy_progress orchestrator updated_run;
+                    if not over_limit then Ok Compozy_retry_step
+                    else
+                      match updated_run.current_step with
+                      | Some _ -> Ok (Compozy_next_after_failure updated_run)
+                      | None -> Ok (Compozy_finished_after_failure updated_run)))
+
 let non_retryable_completion_error = function
   | "commit required but agent produced no code changes" | "commit required but no staged changes were found" -> true
   | _ -> false
@@ -2958,6 +2992,18 @@ let complete_child ?next_status orchestrator child =
     |> Runtime_state.clear_context_status issue_id);
   update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ~candidates:[ next_issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
+
+let mark_child_failed orchestrator child error =
+  match record_compozy_task_step_failure orchestrator child error with
+  | Error failure_error ->
+      render_commit_failed child.issue_identifier failure_error;
+      mark_retrying orchestrator child.issue_id failure_error
+  | Ok Not_compozy_failure | Ok Compozy_retry_step -> mark_retrying orchestrator child.issue_id error
+  | Ok (Compozy_next_after_failure run) ->
+      let next_issue = Compozy_tasks_tracker.issue_of_prd_run run in
+      complete_child ~next_status:run.state orchestrator child;
+      dispatch_issue orchestrator next_issue
+  | Ok (Compozy_finished_after_failure run) -> complete_child ~next_status:run.state orchestrator child
 
 let cleanup_task_worktree orchestrator child =
   cleanup_task_worktree_for_issue orchestrator.config child.issue child.workspace.path
@@ -3172,7 +3218,7 @@ let reap_children orchestrator =
         then (
           refresh_child_output ~force:true orchestrator child;
           kill_child child;
-          mark_retrying orchestrator child.issue_id "agent timed out";
+          mark_child_failed orchestrator child "agent timed out";
           (child.issue_id :: finished, running))
         else
           match Unix.waitpid [ Unix.WNOHANG ] child.pid with
@@ -3183,11 +3229,11 @@ let reap_children orchestrator =
               (child.issue_id :: finished, running)
           | _, Unix.WEXITED code ->
               refresh_child_output ~force:true orchestrator child;
-              mark_retrying orchestrator child.issue_id (Printf.sprintf "agent exited with code %d" code);
+              mark_child_failed orchestrator child (Printf.sprintf "agent exited with code %d" code);
               (child.issue_id :: finished, running)
           | _, Unix.WSIGNALED signal ->
               refresh_child_output ~force:true orchestrator child;
-              mark_retrying orchestrator child.issue_id (Printf.sprintf "agent signaled %d" signal);
+              mark_child_failed orchestrator child (Printf.sprintf "agent signaled %d" signal);
               (child.issue_id :: finished, running)
           | _, Unix.WSTOPPED signal ->
               set_error orchestrator (Printf.sprintf "agent for %s stopped by signal %d" child.issue_id signal);

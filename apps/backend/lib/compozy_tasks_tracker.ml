@@ -293,6 +293,8 @@ let state_of_steps (counts : task_counts) (current_step : task_step option) =
   | Some step -> step.status
   | None when counts.total = 0 -> "not_runnable"
   | None when counts.total = counts.completed -> "completed"
+  | None when counts.total = counts.completed + counts.failed + counts.skipped && counts.failed > 0 -> "failed"
+  | None when counts.total = counts.completed + counts.failed + counts.skipped && counts.skipped > 0 -> "skipped"
   | None -> "not_runnable"
 
 let prd_run_of_directory ~compozy_root prd_dir =
@@ -548,6 +550,11 @@ let mark_step_started ~compozy_root run step =
 
 let mark_step_finished ~compozy_root run step =
   update_status ~compozy_root (task_step_path run step) "completed"
+
+let record_step_failure ~compozy_root run step ~retry_count ~last_error ~over_limit =
+  let status = if over_limit then "failed" else "in_progress" in
+  update_task_frontmatter ~compozy_root (task_step_path run step)
+    { status = Some status; retry_count = Some retry_count; last_error = Some last_error }
 
 let update_retry_count ~compozy_root path retry_count =
   if retry_count < 0 then Error (Printf.sprintf "invalid symphony_retry_count for %s: %d" (Filename.basename path) retry_count)

@@ -6110,6 +6110,105 @@ let test_orchestrator_retries_failed_agent () =
           Alcotest.(check int) "retry attempt" 1 retry.attempt
       | [] -> Alcotest.fail "expected retry row")
 
+let test_github_child_failure_retry_behavior_unchanged () =
+  with_temp_dir "symphony-github-child-retry-regression-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              minibeads_root = ".beads";
+              minibeads_command = "mb";
+              compozy_root = ".compozy/tasks";
+              compozy_max_task_step_retries = 1;
+              active_states = [ "Todo"; "In progress" ];
+              terminal_states = [ "Done" ];
+              project_status_field = "Status";
+              project_status_on_dispatch = Some "In progress";
+              project_status_on_success = Some "In review";
+              project_status_on_retry = Some "Todo";
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "cat";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 1000;
+              read_timeout_ms = 100;
+              stall_timeout_ms = 1000;
+            };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
+          server = { port = None };
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launched = ref None in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        launched := Some (issue, workspace);
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let statuses = ref [] in
+      let set_status _ issue status =
+        statuses := (issue.Issue.identifier, status) :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let launched_issue, workspace =
+        match !launched with Some launched -> launched | None -> Alcotest.fail "expected GitHub issue launch"
+      in
+      let child =
+        {
+          Orchestrator.pid = 0;
+          issue = launched_issue;
+          stage = None;
+          harness = test_child_harness;
+          issue_id = launched_issue.Issue.id;
+          issue_identifier = launched_issue.identifier;
+          issue_title = launched_issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        }
+      in
+      Orchestrator.mark_child_failed orchestrator child "agent exited with code 1";
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "no longer running" 0 (List.length state.Runtime_state.running);
+      Alcotest.(check int) "generic retry queued" 1 (List.length state.Runtime_state.retrying);
+      Alcotest.(check (list (pair string string))) "dispatch and retry statuses"
+        [ ("#1", "In progress"); ("#1", "Todo") ]
+        (List.rev !statuses);
+      match state.Runtime_state.retrying with
+      | retry :: _ ->
+          Alcotest.(check string) "retry issue" "I1" retry.issue_id;
+          Alcotest.(check int) "retry attempt" 1 retry.attempt
+      | [] -> Alcotest.fail "expected retry row")
+
 let test_orchestrator_timeout_kills_agent_process_group () =
   with_temp_dir "symphony-orchestrator-timeout-group-" (fun root ->
       let config =
@@ -6819,8 +6918,11 @@ let test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_chang
       Alcotest.(check bool) "GitHub prompt has no Compozy wrapper" false
         (contains_substring github_prompt "Compozy Task Step"))
 
+let compozy_task_file compozy_root path =
+  Compozy_tasks_tracker.parse_task_file ~compozy_root path |> require_ok "parse Compozy task"
+
 let compozy_task_status compozy_root path =
-  let task = Compozy_tasks_tracker.parse_task_file ~compozy_root path |> require_ok "parse Compozy task" in
+  let task = compozy_task_file compozy_root path in
   task.status
 
 let compozy_test_config root compozy_root =
@@ -6869,6 +6971,35 @@ let compozy_test_config root compozy_root =
     protected_paths = Config.default_protected_paths;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
+
+let compozy_child issue workspace =
+  {
+    Orchestrator.pid = 0;
+    issue;
+    stage = None;
+    harness = test_child_harness;
+    issue_id = issue.Issue.id;
+    issue_identifier = issue.identifier;
+    issue_title = issue.title;
+    workspace;
+    started_at = Unix.time ();
+    last_output_at = Unix.time ();
+    stdout_path = None;
+    stderr_path = None;
+    stdout_size = 0;
+    stderr_size = 0;
+  }
+
+let test_compozy_prd_run_failed_terminal_state_is_visible () =
+  with_temp_dir "symphony-compozy-failed-state-" (fun root ->
+      let prd_dir = Filename.concat root "failed-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" ~title:"Done" (Filename.concat prd_dir "task_01.md");
+      write_compozy_task ~status:"failed" ~title:"Failed" (Filename.concat prd_dir "task_02.md");
+      let run = Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir |> require_ok "build PRD run" in
+      Alcotest.(check string) "run state" "failed" run.state;
+      Alcotest.(check int) "failed count" 1 run.counts.failed;
+      Alcotest.(check bool) "no runnable current step" true (Option.is_none run.current_step))
 
 let test_compozy_completion_relaunches_next_step_in_same_worktree () =
   with_temp_dir "symphony-compozy-sequential-" (fun root ->
@@ -6968,6 +7099,90 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
         (compozy_task_status workspace_compozy_root workspace_task_02);
       Alcotest.(check (option string)) "no current step after final completion" None final_progress.current_step;
       Alcotest.(check int) "all steps completed" 2 final_progress.completed)
+
+let test_compozy_failed_step_retries_then_advances_to_next_step () =
+  with_temp_dir "symphony-compozy-retry-advance-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "retry-feature" in
+      Util.mkdir_p prd_dir;
+      let task_01 = Filename.concat prd_dir "task_01.md" in
+      let task_02 = Filename.concat prd_dir "task_02.md" in
+      write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst retry sentinel.\n" task_01;
+      write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond advance sentinel.\n" task_02;
+      ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
+      let base_config = compozy_test_config root compozy_root in
+      let config = { base_config with Config.agent = { base_config.agent with max_retry_backoff_ms = 0 } } in
+      let launches = ref [] in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+        launches := (issue, workspace, prompt) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some (string_of_int (List.length !launches));
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let commit_calls = ref 0 in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        incr commit_calls;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let first_issue, first_workspace, first_prompt =
+        match List.rev !launches with
+        | [ launch ] -> launch
+        | _ -> Alcotest.fail "expected initial Compozy launch"
+      in
+      let workspace_compozy_root = Filename.concat (Filename.concat first_workspace.path ".compozy") "tasks" in
+      let workspace_task_01 = Filename.concat (Filename.concat workspace_compozy_root "retry-feature") "task_01.md" in
+      let workspace_task_02 = Filename.concat (Filename.concat workspace_compozy_root "retry-feature") "task_02.md" in
+      Alcotest.(check bool) "first prompt includes first task" true (contains_substring first_prompt "First retry sentinel.");
+      Orchestrator.mark_child_failed orchestrator (compozy_child first_issue first_workspace) "agent exited with code 1";
+      let first_task_after_failure = compozy_task_file workspace_compozy_root workspace_task_01 in
+      Alcotest.(check string) "first task still current" "in_progress" first_task_after_failure.status;
+      Alcotest.(check int) "retry count incremented" 1 first_task_after_failure.retry_count;
+      Alcotest.(check (option string)) "last error recorded" (Some "agent exited with code 1")
+        first_task_after_failure.last_error;
+      let retry_state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "retry queued below limit" 1 (List.length retry_state.Runtime_state.retrying);
+      Orchestrator.poll_once orchestrator;
+      let second_issue, second_workspace, second_prompt =
+        match List.rev !launches with
+        | [ _first; second ] -> second
+        | _ -> Alcotest.fail "expected retry launch for same Compozy task"
+      in
+      Alcotest.(check string) "same workspace on retry" first_workspace.path second_workspace.path;
+      Alcotest.(check bool) "retry prompt still includes first task" true
+        (contains_substring second_prompt "First retry sentinel.");
+      Orchestrator.mark_child_failed orchestrator (compozy_child second_issue second_workspace) "agent exited with code 1";
+      let failed_task = compozy_task_file workspace_compozy_root workspace_task_01 in
+      let advanced_task = compozy_task_file workspace_compozy_root workspace_task_02 in
+      Alcotest.(check string) "failed over limit" "failed" failed_task.status;
+      Alcotest.(check int) "retry count at limit" 2 failed_task.retry_count;
+      Alcotest.(check (option string)) "over-limit error recorded" (Some "agent exited with code 1") failed_task.last_error;
+      Alcotest.(check string) "next task started" "in_progress" advanced_task.status;
+      let final_state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "no generic retry after limit" 0 (List.length final_state.Runtime_state.retrying);
+      Alcotest.(check int) "no intermediate stage commit" 0 !commit_calls;
+      (match final_state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "runtime current step" (Some "task_02.md") progress.current_step;
+          Alcotest.(check int) "runtime failed count" 1 progress.failed;
+          Alcotest.(check int) "runtime skipped count" 0 progress.skipped
+      | None -> Alcotest.fail "expected Compozy progress after failed-over-limit advancement");
+      let _third_issue, third_workspace, third_prompt =
+        match List.rev !launches with
+        | [ _first; _retry; third ] -> third
+        | _ -> Alcotest.fail "expected launch for next Compozy task"
+      in
+      Alcotest.(check string) "same workspace for next task" first_workspace.path third_workspace.path;
+      Alcotest.(check bool) "next prompt includes second task" true
+        (contains_substring third_prompt "Second advance sentinel."))
 
 let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
   { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
@@ -10454,6 +10669,8 @@ let () =
             test_compozy_issue_branch_key_uses_identifier_not_digits_only;
           Alcotest.test_case "reports empty Compozy PRD run as not runnable" `Quick
             test_compozy_empty_prd_run_is_not_runnable;
+          Alcotest.test_case "reports failed Compozy PRD run state visibly" `Quick
+            test_compozy_prd_run_failed_terminal_state_is_visible;
           Alcotest.test_case "discovers distinct Compozy PRD directories" `Quick
             test_compozy_two_workflow_directories_have_distinct_ids;
           Alcotest.test_case "reports duplicate Compozy task indexes as not runnable" `Quick
@@ -10689,6 +10906,8 @@ let () =
             test_orchestrator_minibeads_stub_dispatch_without_github_settings;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
+          Alcotest.test_case "keeps GitHub child retry behavior unchanged" `Quick
+            test_github_child_failure_retry_behavior_unchanged;
           Alcotest.test_case "timeout kills agent process group" `Quick
             test_orchestrator_timeout_kills_agent_process_group;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
@@ -10708,6 +10927,8 @@ let () =
             test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change;
           Alcotest.test_case "relaunches Compozy task steps in one worktree" `Quick
             test_compozy_completion_relaunches_next_step_in_same_worktree;
+          Alcotest.test_case "retries failed Compozy task step then advances" `Quick
+            test_compozy_failed_step_retries_then_advances_to_next_step;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick
             test_orchestrator_runs_stage_context_command_before_launch;
