@@ -104,6 +104,16 @@ let symphony_banner =
 
 let print_section title = Printf.printf "\n%s\n%!" (cyan title)
 
+let render_compozy_progress = function
+  | None -> ()
+  | Some (progress : Runtime_state.compozy_progress) ->
+      print_section "PRD Run Progress";
+      Printf.printf "  %s %s\n%!" (dim "Run") progress.run_id;
+      Printf.printf "  %s %s\n%!" (dim "Slug") progress.slug;
+      Printf.printf "  %s %s\n%!" (dim "Current step") (Option.value progress.current_step ~default:"none");
+      Printf.printf "  %s %d completed, %d failed, %d skipped, %d total\n%!" (dim "Steps") progress.completed
+        progress.failed progress.skipped progress.total
+
 let render_banner () =
   List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphony_banner;
   Printf.printf "\n%!"
@@ -119,6 +129,7 @@ let render_terminal_console config state =
   Printf.printf "  %s %d running, %d retrying\n%!" (dim "Agents") (List.length state.Runtime_state.running)
     (List.length state.retrying);
   Printf.printf "  %s %d total\n%!" (dim "Tokens") state.usage_totals.total_tokens;
+  render_compozy_progress state.Runtime_state.compozy_progress;
   (match state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->

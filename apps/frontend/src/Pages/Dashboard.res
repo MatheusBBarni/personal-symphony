@@ -17,6 +17,16 @@ type queueEntry = {
   skipReason: string,
 }
 
+type compozyProgress = {
+  runId: string,
+  slug: string,
+  currentStep: string,
+  completed: string,
+  failed: string,
+  skipped: string,
+  total: string,
+}
+
 type snapshot = {
   workspaceRepositoryName: string,
   trackerKind: string,
@@ -30,6 +40,7 @@ type snapshot = {
   statusOrder: array<string>,
   issues: array<issueItem>,
   orderedQueue: array<queueEntry>,
+  compozyProgress: option<compozyProgress>,
 }
 
 @send external arrayPush: (array<'a>, 'a) => int = "push"
@@ -258,7 +269,7 @@ let queueEntryRow = (entry: queueEntry) =>
       <div className="mt-1 truncate text-sm text-neutral-100">
         {React.string(
           if entry.title == "" {
-            "Pending issue details"
+            "Pending work item details"
           } else {
             entry.title
           },
@@ -311,6 +322,82 @@ let orderedQueuePanel = entries =>
         </HeroUI.AccordionPanel>
       </HeroUI.AccordionItem>
     </HeroUI.AccordionRoot>
+  }
+
+let isCompozyTracker = trackerKind => sameState(trackerKind, "compozy_tasks")
+
+let trackedWorkLabel = trackerKind =>
+  if isCompozyTracker(trackerKind) {
+    "PRD runs"
+  } else {
+    "issues"
+  }
+
+let emptyTrackedWorkMessage = trackerKind =>
+  if isCompozyTracker(trackerKind) {
+    "No PRD runs were returned by the latest snapshot."
+  } else {
+    "No tracked issues were returned by the latest snapshot."
+  }
+
+let columnDescription = trackerKind =>
+  if isCompozyTracker(trackerKind) {
+    "Columns follow Runtime State status order and work item states."
+  } else {
+    "Columns follow Runtime State status order and issue states."
+  }
+
+let metricTile = (label, value, tone) =>
+  <div className="rounded border border-neutral-800 bg-[#1d1d1d] px-3 py-3">
+    <div className="text-[11px] font-semibold uppercase tracking-normal text-neutral-500">
+      {React.string(label)}
+    </div>
+    <div className={"mt-2 text-2xl font-semibold leading-none " ++ tone}>
+      {React.string(value)}
+    </div>
+  </div>
+
+let compozyProgressPanel = (progress: option<compozyProgress>) =>
+  switch progress {
+  | None => React.null
+  | Some(progress) =>
+    <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
+      <HeroUI.CardHeader
+        className="flex flex-col gap-3 border-b border-neutral-800 px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-neutral-100">
+            {React.string("PRD run progress")}
+          </div>
+          <div className="mt-1 truncate font-mono text-xs text-neutral-500">
+            {React.string(progress.runId)}
+          </div>
+        </div>
+        <HeroUI.Chip
+          size="sm"
+          variant="flat"
+          className="self-start rounded border border-teal-800 bg-teal-950/70 px-3 text-teal-100 sm:self-auto"
+        >
+          {React.string(progress.slug)}
+        </HeroUI.Chip>
+      </HeroUI.CardHeader>
+      <HeroUI.CardContent className="p-4">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(5rem,1fr))]">
+          <div className="rounded border border-neutral-800 bg-[#1d1d1d] px-3 py-3">
+            <div className="text-[11px] font-semibold uppercase tracking-normal text-neutral-500">
+              {React.string("Current step")}
+            </div>
+            <div className="mt-2 truncate font-mono text-sm text-neutral-100">
+              {React.string(progress.currentStep)}
+            </div>
+          </div>
+          {metricTile("Completed", progress.completed, "text-emerald-200")}
+          {metricTile("Failed", progress.failed, "text-red-200")}
+          {metricTile("Skipped", progress.skipped, "text-amber-200")}
+          {metricTile("Total", progress.total, "text-neutral-100")}
+        </div>
+      </HeroUI.CardContent>
+    </HeroUI.Card>
   }
 
 let emptyOrchestrator = error => <>
@@ -394,15 +481,16 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
         {renderBanner("warning", "Startup Reconciliation", data.startupReconciliation)}
         {renderBanner("error", "Runtime State Error", data.lastError)}
         {orderedQueuePanel(data.orderedQueue)}
+        {compozyProgressPanel(data.compozyProgress)}
         <HeroUI.Card className="rounded border border-neutral-800 bg-neutral-950">
         <HeroUI.CardHeader
             className="flex flex-col items-center justify-center border-b border-neutral-800 px-4 py-4 text-center"
           >
             <div className="mb-2 text-sm font-semibold text-neutral-100">
-              {React.string("Issue tracker")}
+              {React.string("Work tracker")}
             </div>
             <div className="mb-3 text-xs text-neutral-500">
-              {React.string("Columns follow Runtime State status order and issue states.")}
+              {React.string(columnDescription(data.trackerKind))}
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2">
               <HeroUI.Chip
@@ -410,7 +498,9 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
                 variant="flat"
                 className="rounded border border-teal-800 bg-teal-950/70 px-3 text-teal-100"
               >
-                {React.string(Array.length(data.issues)->Int.toString ++ " tracked")}
+                {React.string(
+                  Array.length(data.issues)->Int.toString ++ " tracked " ++ trackedWorkLabel(data.trackerKind),
+                )}
               </HeroUI.Chip>
               <HeroUI.Chip
                 size="sm"
@@ -424,7 +514,7 @@ let make = (~snapshot: option<snapshot>, ~error: option<string>) =>
           {switch Array.length(data.issues) == 0 && Array.length(data.statusOrder) == 0 {
           | true =>
             <HeroUI.CardContent className="p-4 text-sm text-neutral-400">
-              {React.string("No tracked issues were returned by the latest snapshot.")}
+              {React.string(emptyTrackedWorkMessage(data.trackerKind))}
             </HeroUI.CardContent>
           | false =>
             <HeroUI.CardContent className="overflow-x-auto p-4">
