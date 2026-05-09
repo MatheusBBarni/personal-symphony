@@ -45,9 +45,31 @@ let normalize_minibeads_selector raw trimmed =
       Error
         (Printf.sprintf "invalid Manual Task Merge selector %S; expected a minibeads issue identifier like mb-20" raw)
 
+let normalize_compozy_selector raw trimmed =
+  match Util.drop_prefix ~prefix:"compozy:" trimmed with
+  | Some task_name ->
+      let task_name = Util.trim task_name in
+      if task_name = "" then
+        Error
+          (Printf.sprintf
+             "invalid Manual Task Merge selector %S; expected a Compozy PRD-run identifier like compozy:example-feature"
+             raw)
+      else if String.contains task_name '/' || String.contains task_name ':' then
+        Error
+          (Printf.sprintf
+             "invalid Manual Task Merge selector %S; expected a Compozy PRD-run identifier like compozy:example-feature without path separators"
+             raw)
+      else Ok { raw = trimmed; identifier = "compozy:" ^ task_name }
+  | None ->
+      Error
+        (Printf.sprintf
+           "invalid Manual Task Merge selector %S; expected a Compozy PRD-run identifier like compozy:example-feature"
+           raw)
+
 let normalize_one raw =
   let trimmed = Util.trim raw in
   if trimmed = "" then Error (Printf.sprintf "invalid Manual Task Merge selector %S" raw)
+  else if Util.starts_with ~prefix:"compozy:" trimmed then normalize_compozy_selector raw trimmed
   else if String.contains trimmed '/' || String.contains trimmed ':' then
     Error
       (Printf.sprintf
@@ -164,7 +186,10 @@ let preflight_one config (tracker : Issue_tracker.t) ~projected_tip (result : Is
                   with
                   | Error error -> Error (Printf.sprintf "%s %s" selector.identifier error)
                   | Ok () ->
-                      if terminal then
+                      let allow_terminal_merge =
+                        tracker.kind = "compozy_tasks" && String.lowercase_ascii issue.Issue.state = "completed"
+                      in
+                      if terminal && not allow_terminal_merge then
                         Error
                           (Printf.sprintf "%s is terminal in tracker state %S but %s is not on the Loop-Start Branch"
                              selector.identifier issue.state branch)

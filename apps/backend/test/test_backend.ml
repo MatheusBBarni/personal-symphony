@@ -3541,10 +3541,12 @@ let test_runtime_state_exposes_compozy_progress () =
       | None -> Alcotest.fail "expected parsed Compozy progress")
 
 let test_ordered_queue_parses_cli_identifiers () =
-  match Ordered_queue.parse "19,#22,mb-20" with
+  match Ordered_queue.parse "19,#22,31,mb-20,compozy:example-feature" with
   | Error _ -> Alcotest.fail "expected ordered queue parse success"
   | Ok queue ->
-      Alcotest.(check (list string)) "identifiers" [ "#19"; "#22"; "mb-20" ] (Ordered_queue.identifiers queue);
+      Alcotest.(check (list string)) "identifiers"
+        [ "#19"; "#22"; "#31"; "mb-20"; "compozy:example-feature" ]
+        (Ordered_queue.identifiers queue);
       (match Ordered_queue.parse "20,#20" with
       | Ok _ -> Alcotest.fail "expected duplicate canonical GitHub selector"
       | Error problems ->
@@ -3555,6 +3557,19 @@ let test_ordered_queue_parses_cli_identifiers () =
       | Error problems ->
           Alcotest.(check string) "duplicate minibeads" "duplicate issue identifier"
             (List.hd problems).Ordered_queue.reason);
+      (match Ordered_queue.parse "compozy:example-feature, compozy:example-feature" with
+      | Ok _ -> Alcotest.fail "expected duplicate canonical Compozy selector"
+      | Error problems ->
+          Alcotest.(check string) "duplicate Compozy" "duplicate issue identifier"
+            (List.hd problems).Ordered_queue.reason);
+      (match Ordered_queue.parse "compozy:,compozy:feature/child" with
+      | Ok _ -> Alcotest.fail "expected malformed Compozy selectors"
+      | Error problems ->
+          Alcotest.(check int) "Compozy problem count" 2 (List.length problems);
+          Alcotest.(check bool) "empty Compozy selector diagnostic" true
+            (contains_substring (List.hd problems).Ordered_queue.reason "Compozy PRD-run identifier");
+          Alcotest.(check bool) "path Compozy selector diagnostic" true
+            (contains_substring (List.nth problems 1).Ordered_queue.reason "without path separators"));
       (match Ordered_queue.parse "owner/repo#20,https://github.com/acme/widgets/issues/20,,mb-,mb-zero,MB-20" with
       | Ok _ -> Alcotest.fail "expected ordered queue parse problems"
       | Error problems ->
@@ -3597,6 +3612,21 @@ let test_ordered_queue_validation_uses_selected_tracker () =
     (List.map (fun (gap : Ordered_queue.validation_gap) -> gap.requirement) gaps);
   Alcotest.(check string) "terminal remediation" "Issue is terminal in tracker state \"closed\"."
     (List.hd gaps).Ordered_queue.remediation
+
+let test_ordered_queue_validation_resolves_compozy_prd_run_without_github_project () =
+  with_temp_dir "symphony-compozy-queue-validation-" (fun root ->
+      let config = write_compozy_settings root in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "example-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Queued Compozy run" (Filename.concat prd_dir "task_01.md");
+      let queue =
+        match Ordered_queue.parse "compozy:example-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let tracker = Issue_tracker.compozy config in
+      let gaps = Ordered_queue.validation_gaps tracker queue in
+      Alcotest.(check (list string)) "no validation gaps" [] (List.map (fun gap -> gap.Ordered_queue.requirement) gaps))
 
 let test_runtime_state_exposes_ordered_queue () =
   let queue =
@@ -10340,6 +10370,39 @@ let run_manual_merge_minibeads_test config ~runner selectors =
   let tracker = Issue_tracker.minibeads ~runner config in
   Manual_merge.run ~tracker config selectors
 
+let manual_merge_compozy_config root compozy_root =
+  let config = manual_merge_config root in
+  let stage_agents =
+    {
+      config.Config.stage_agents with
+      stages =
+        List.map
+          (fun (stage : Config.stage_agent) -> { stage with states = [ "completed" ]; success_status = None })
+          config.stage_agents.stages;
+    }
+  in
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        kind = "compozy_tasks";
+        owner = "";
+        repo = "";
+        project_number = 0;
+        api_key = None;
+        active_states = [ "pending"; "in_progress" ];
+        terminal_states = [ "completed"; "failed"; "skipped" ];
+        compozy_root;
+        compozy_max_task_step_retries = 2;
+      };
+    stage_agents;
+  }
+
+let run_manual_merge_compozy_test config selectors =
+  let tracker = Issue_tracker.compozy config in
+  Manual_merge.run ~tracker config selectors
+
 let test_manual_merge_accepts_minibeads_selector_and_rejects_canonical_duplicates () =
   with_temp_dir "symphony-manual-merge-minibeads-selectors-" (fun root ->
       init_repo root "feature/start";
@@ -10436,6 +10499,34 @@ let test_manual_merge_minibeads_fast_forward_updates_selected_tracker () =
       Alcotest.(check (list (pair string string))) "selected tracker commands"
         [ (root, show_command); (root, update_command) ]
         (List.rev !calls))
+
+let test_manual_merge_accepts_completed_compozy_prd_run () =
+  with_temp_dir "symphony-manual-merge-compozy-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "example-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" ~title:"Completed Compozy run"
+        (Filename.concat prd_dir "task_01.md");
+      ignore (run_ok ~cwd:root "commit Compozy tracker files" "git add .compozy && git commit -q -m compozy-tasks");
+      let config = manual_merge_compozy_config root compozy_root in
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir |> require_ok "build Compozy PRD run"
+      in
+      let issue = Compozy_tasks_tracker.issue_of_prd_run run in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      Util.write_file (Filename.concat workspace.path "compozy-merge.txt") "compozy\n";
+      ignore (run_ok ~cwd:workspace.path "task commit" "git add compozy-merge.txt && git commit -q -m task");
+      let result = run_manual_merge_compozy_test config [ "compozy:example-feature" ] in
+      let report = match result with Ok report -> report | Error errors -> Alcotest.fail (String.concat "; " errors) in
+      Alcotest.(check int) "merged" 1 report.merged;
+      Alcotest.(check int) "already integrated" 0 report.already_integrated;
+      Alcotest.(check bool) "merged file present" true (Sys.file_exists (Filename.concat root "compozy-merge.txt"));
+      Alcotest.(check bool) "worktree removed" false (Sys.file_exists workspace.path))
 
 let test_manual_merge_rejects_invalid_and_duplicate_selectors () =
   with_temp_dir "symphony-manual-merge-selectors-" (fun root ->
@@ -10779,6 +10870,8 @@ let () =
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
           Alcotest.test_case "validates ordered queue through selected tracker" `Quick
             test_ordered_queue_validation_uses_selected_tracker;
+          Alcotest.test_case "validates Compozy ordered queue without GitHub Project membership" `Quick
+            test_ordered_queue_validation_resolves_compozy_prd_run_without_github_project;
           Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
@@ -11075,6 +11168,8 @@ let () =
             test_manual_merge_fast_forwards_protected_trunk_and_updates_review_status;
           Alcotest.test_case "fast-forwards minibeads task and updates selected tracker" `Quick
             test_manual_merge_minibeads_fast_forward_updates_selected_tracker;
+          Alcotest.test_case "fast-forwards completed Compozy PRD-run task" `Quick
+            test_manual_merge_accepts_completed_compozy_prd_run;
           Alcotest.test_case "blocks unauthorized protected paths" `Quick
             test_manual_merge_blocks_unauthorized_protected_path_change;
           Alcotest.test_case "preflight is all or nothing" `Quick test_manual_merge_preflight_is_all_or_nothing;
