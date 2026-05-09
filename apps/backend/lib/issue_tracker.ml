@@ -195,8 +195,87 @@ let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
     is_terminal = Minibeads_tracker.is_terminal_status config.tracker;
   }
 
+let compozy_identifier raw =
+  let identifier = Util.trim raw in
+  match Util.drop_prefix ~prefix:"compozy:" identifier with
+  | Some slug when Util.trim slug <> "" && not (String.contains slug '/') -> Ok ("compozy:" ^ Util.trim slug)
+  | _ ->
+      Error
+        (Printf.sprintf
+           "invalid Compozy PRD-run identifier %S; expected an identifier like compozy:task-name"
+           raw)
+
+let string_equal_ci left right = String.lowercase_ascii left = String.lowercase_ascii right
+
+let status_in values status = List.exists (string_equal_ci status) values
+
+let compozy_status_is_active config status =
+  status_in [ "pending"; "in_progress" ] status || status_in config.Config.tracker.active_states status
+
+let compozy_status_is_terminal config status =
+  status_in [ "completed"; "failed"; "skipped" ] status || status_in config.Config.tracker.terminal_states status
+
+let compozy_lookup_result runs raw =
+  let identifier = match compozy_identifier raw with Ok identifier -> identifier | Error _ -> raw in
+  match List.find_opt (fun (run : Compozy_tasks_tracker.prd_run) -> run.id = identifier) runs with
+  | Some run -> { identifier; issue = Some (Compozy_tasks_tracker.issue_of_prd_run run); diagnostics = [] }
+  | None -> { identifier; issue = None; diagnostics = [ Missing_issue ] }
+
+let compozy config =
+  let fetch_runs () =
+    match Compozy_tasks_tracker.discover_prd_runs ~compozy_root:config.Config.tracker.compozy_root with
+    | Ok runs -> Ok runs
+    | Error message -> Error message
+  in
+  let fetch_candidates () =
+    match fetch_runs () with
+    | Error message -> Error (Failed message)
+    | Ok runs ->
+        Ok
+          (runs
+          |> List.filter Compozy_tasks_tracker.runnable_prd_run
+          |> List.map Compozy_tasks_tracker.issue_of_prd_run)
+  in
+  let fetch_by_identifiers_detailed identifiers =
+    let rec normalize acc = function
+      | [] -> Ok (List.rev acc)
+      | identifier :: rest -> (
+          match compozy_identifier identifier with
+          | Error _ as error -> error
+          | Ok identifier -> normalize (identifier :: acc) rest)
+    in
+    match normalize [] identifiers with
+    | Error _ as error -> error
+    | Ok identifiers -> (
+        match fetch_runs () with
+        | Error _ as error -> error
+        | Ok runs -> Ok (List.map (compozy_lookup_result runs) identifiers))
+  in
+  let fetch_by_identifiers identifiers =
+    fetch_by_identifiers_detailed identifiers
+    |> Result.map
+         (List.map (fun result ->
+              match result.diagnostics with [] -> result.issue | _ -> None))
+  in
+  {
+    kind = "compozy_tasks";
+    fetch_candidates;
+    fetch_by_identifiers;
+    fetch_by_identifiers_detailed;
+    update_status = (fun _ _ -> Ok ());
+    readiness_gaps =
+      (fun () ->
+        Compozy_tasks_tracker.readiness_gaps config
+        |> List.map (fun (gap : Compozy_tasks_tracker.readiness_gap) ->
+               { Runtime_state.requirement = gap.requirement; remediation = gap.remediation }));
+    normalize_identifier = compozy_identifier;
+    is_active = compozy_status_is_active config;
+    is_terminal = compozy_status_is_terminal config;
+  }
+
 let make (config : Config.t) =
   match config.tracker.kind with
   | "github" -> github config
   | "minibeads" -> minibeads config
+  | "compozy_tasks" -> compozy config
   | kind -> invalid_arg (Printf.sprintf "Issue tracker adapter is not implemented for tracker.kind=%S" kind)

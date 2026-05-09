@@ -266,6 +266,20 @@ let compozy_progress_of_prd_run (run : Compozy_tasks_tracker.prd_run) =
     total = counts.total;
   }
 
+let initial_compozy_progress (config : Config.t) =
+  if config.tracker.kind <> "compozy_tasks" then None
+  else
+    match Compozy_tasks_tracker.discover_prd_runs ~compozy_root:config.tracker.compozy_root with
+    | Error _ -> None
+    | Ok [] -> None
+    | Ok runs ->
+        let selected =
+          match List.find_opt Compozy_tasks_tracker.runnable_prd_run runs with
+          | Some run -> Some run
+          | None -> List.find_opt (fun (_ : Compozy_tasks_tracker.prd_run) -> true) runs
+        in
+        Option.map compozy_progress_of_prd_run selected
+
 let compozy_progress_to_yojson (row : compozy_progress) =
   `Assoc
     [

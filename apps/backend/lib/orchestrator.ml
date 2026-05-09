@@ -1784,6 +1784,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
     state =
       Runtime_state.empty ~workspace_repository_name ~tracker_kind:tracker.kind ~status_order:(Config.project_status_order config)
         ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
+        ?compozy_progress:(Runtime_state.initial_compozy_progress config)
         ();
     children = [];
     retry_due = Hashtbl.create 16;

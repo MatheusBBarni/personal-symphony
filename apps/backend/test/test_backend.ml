@@ -1429,6 +1429,12 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
 let has_readiness_requirement requirement gaps =
   List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = requirement) gaps
 
+let runtime_requirements gaps =
+  List.map (fun (gap : Runtime_state.readiness_gap) -> gap.requirement) gaps
+
+let has_runtime_readiness_requirement requirement gaps =
+  List.exists (fun (gap : Runtime_state.readiness_gap) -> gap.requirement = requirement) gaps
+
 let test_config_defaults_to_github_tracker_kind () =
   with_temp_dir "symphony-settings-default-tracker-" (fun root ->
       Util.mkdir_p (Filename.concat root ".symphony");
@@ -1887,6 +1893,81 @@ let test_compozy_settings_load_without_github_token () =
           Alcotest.(check int) "default max task step retries" 2 config.tracker.compozy_max_task_step_retries;
           Alcotest.(check bool) "github token not required" false
             (has_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
+
+let write_compozy_settings ?(extra = "") root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  let settings = Filename.concat root ".symphony/settings.json" in
+  Util.write_file settings
+    (Printf.sprintf
+       {|{
+  "tracker": {"kind": "compozy_tasks"},
+  "stageAgents": {"enabled": false}%s
+}|}
+       extra);
+  Config.from_settings_file ~workspace_root:root settings
+
+let test_compozy_readiness_missing_root_gap () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-compozy-readiness-missing-root-" (fun root ->
+          let config = write_compozy_settings root in
+          let tracker = Issue_tracker.make config in
+          let gaps = tracker.readiness_gaps () in
+          Alcotest.(check bool) "root gap" true (has_runtime_readiness_requirement "tracker.compozy.root" gaps);
+          Alcotest.(check bool) "owner gap omitted" false (has_runtime_readiness_requirement "tracker.owner" gaps);
+          Alcotest.(check bool) "repo gap omitted" false (has_runtime_readiness_requirement "tracker.repo" gaps);
+          Alcotest.(check bool) "project gap omitted" false
+            (has_runtime_readiness_requirement "tracker.projectNumber" gaps);
+          Alcotest.(check bool) "token gap omitted" false
+            (has_runtime_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
+
+let test_compozy_readiness_no_runnable_prd_run_gap () =
+  with_temp_dir "symphony-compozy-readiness-no-runnable-" (fun root ->
+      let config = write_compozy_settings root in
+      Util.mkdir_p (Filename.concat config.Config.tracker.compozy_root "empty-run");
+      let gaps = (Issue_tracker.make config).readiness_gaps () in
+      Alcotest.(check bool) "runnable gap" true
+        (has_runtime_readiness_requirement "tracker.compozy.runnablePrdRun" gaps);
+      Alcotest.(check bool) "github token omitted" false
+        (has_runtime_readiness_requirement "environment.GITHUB_TOKEN" gaps))
+
+let test_compozy_runtime_readiness_valid_fixture_omits_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-compozy-runtime-readiness-valid-" (fun root ->
+          let config = write_compozy_settings root in
+          let prd_dir = Filename.concat config.Config.tracker.compozy_root "valid-run" in
+          Util.mkdir_p prd_dir;
+          write_compozy_task ~title:"Runnable" (Filename.concat prd_dir "task_01.md");
+          let state = Runtime_readiness.state config in
+          let requirements = runtime_requirements state.Runtime_state.readiness_gaps in
+          Alcotest.(check string) "tracker kind" "compozy_tasks" state.tracker_kind;
+          Alcotest.(check (list string)) "no readiness gaps" [] requirements;
+          Alcotest.(check bool) "no github token gap" false
+            (List.exists (( = ) "environment.GITHUB_TOKEN") requirements);
+          match state.compozy_progress with
+          | Some progress ->
+              Alcotest.(check string) "run id" "compozy:valid-run" progress.run_id;
+              Alcotest.(check (option string)) "current step" (Some "task_01.md") progress.current_step;
+              Alcotest.(check int) "total" 1 progress.total
+          | None -> Alcotest.fail "expected initial Compozy progress"))
+
+let test_github_runtime_readiness_still_reports_github_gaps () =
+  with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
+      with_temp_dir "symphony-github-runtime-readiness-gaps-" (fun root ->
+          Util.mkdir_p (Filename.concat root ".symphony");
+          let settings = Filename.concat root ".symphony/settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"kind": "github", "owner": "your-org", "repo": "your-repo", "projectNumber": 0},
+  "stageAgents": {"enabled": false}
+}|};
+          let state = Config.from_settings_file ~workspace_root:root settings |> Runtime_readiness.state in
+          let requirements = runtime_requirements state.Runtime_state.readiness_gaps in
+          Alcotest.(check bool) "owner gap" true (List.exists (( = ) "tracker.owner") requirements);
+          Alcotest.(check bool) "repo gap" true (List.exists (( = ) "tracker.repo") requirements);
+          Alcotest.(check bool) "project gap" true
+            (List.exists (( = ) "tracker.projectNumber") requirements);
+          Alcotest.(check bool) "token gap" true
+            (List.exists (( = ) "environment.GITHUB_TOKEN") requirements)))
 
 let test_legacy_codex_app_server_command_normalizes_to_exec () =
   let content =
@@ -4691,9 +4772,6 @@ let test_issue_tracker_github_lookup_preserves_diagnostics () =
                 [ None; None; Some "#3" ]
                 (List.map (Option.map (fun issue -> issue.Issue.identifier)) issues)))
 
-let runtime_requirements gaps =
-  List.map (fun (gap : Runtime_state.readiness_gap) -> gap.requirement) gaps
-
 let test_minibeads_readiness_missing_command_gap () =
   with_temp_dir "symphony-minibeads-command-gap-" (fun root ->
       Util.mkdir_p (Filename.concat root ".beads");
@@ -4947,6 +5025,29 @@ let test_minibeads_runtime_readiness_omits_github_gaps () =
             (List.exists (( = ) "tracker.minibeads.command") requirements);
           Alcotest.(check bool) "minibeads store gap included" true
             (List.exists (( = ) "tracker.minibeads.store") requirements)))
+
+let test_issue_tracker_selects_compozy_adapter () =
+  with_temp_dir "symphony-compozy-adapter-" (fun root ->
+      let config = write_compozy_settings root in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "adapter-run" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Adapter run" (Filename.concat prd_dir "task_01.md");
+      let tracker = Issue_tracker.make config in
+      Alcotest.(check string) "kind" "compozy_tasks" tracker.kind;
+      Alcotest.(check bool) "pending active" true (tracker.is_active "pending");
+      Alcotest.(check bool) "completed terminal" true (tracker.is_terminal "completed");
+      Alcotest.(check (list string)) "requirements" [] (runtime_requirements (tracker.readiness_gaps ()));
+      (match tracker.fetch_candidates () with
+      | Ok [ issue ] ->
+          Alcotest.(check string) "identifier" "compozy:adapter-run" issue.Issue.identifier;
+          Alcotest.(check string) "state" "pending" issue.state
+      | Ok issues -> Alcotest.fail (Printf.sprintf "expected one candidate, got %d" (List.length issues))
+      | Error (Issue_tracker.Failed message) -> Alcotest.fail message
+      | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "Compozy tracker should not rate-limit");
+      match tracker.fetch_by_identifiers [ "compozy:adapter-run" ] with
+      | Ok [ Some issue ] -> Alcotest.(check string) "lookup hit" "compozy:adapter-run" issue.Issue.identifier
+      | Ok _ -> Alcotest.fail "expected lookup hit"
+      | Error message -> Alcotest.fail message)
 
 let test_github_project_field_parsing () =
   let config =
@@ -10232,6 +10333,14 @@ let () =
             test_minibeads_settings_load_without_github_token;
           Alcotest.test_case "loads Compozy settings without github token" `Quick
             test_compozy_settings_load_without_github_token;
+          Alcotest.test_case "reports missing Compozy root readiness" `Quick
+            test_compozy_readiness_missing_root_gap;
+          Alcotest.test_case "reports no runnable Compozy PRD run readiness" `Quick
+            test_compozy_readiness_no_runnable_prd_run_gap;
+          Alcotest.test_case "serves Compozy runtime readiness without GitHub gaps" `Quick
+            test_compozy_runtime_readiness_valid_fixture_omits_github_gaps;
+          Alcotest.test_case "keeps GitHub runtime readiness gaps" `Quick
+            test_github_runtime_readiness_still_reports_github_gaps;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "parses agent harnesses" `Quick
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
@@ -10354,6 +10463,8 @@ let () =
           Alcotest.test_case "selects GitHub issue tracker adapter" `Quick test_issue_tracker_selects_github_adapter;
           Alcotest.test_case "selects minibeads issue tracker adapter" `Quick
             test_issue_tracker_selects_minibeads_adapter;
+          Alcotest.test_case "selects Compozy issue tracker adapter" `Quick
+            test_issue_tracker_selects_compozy_adapter;
           Alcotest.test_case "preserves active and terminal state semantics" `Quick
             test_issue_tracker_github_state_semantics_match_existing;
           Alcotest.test_case "maps GitHub rate limits to poll errors" `Quick

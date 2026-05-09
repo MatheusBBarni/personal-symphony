@@ -34,6 +34,8 @@ type prd_run = {
   not_runnable_reason : string option;
 }
 
+type readiness_gap = { requirement : string; remediation : string }
+
 type frontmatter_update = {
   status : string option;
   retry_count : int option;
@@ -369,6 +371,49 @@ let discover_prd_runs ~compozy_root =
 
 let fetch_prd_runs (config : Config.t) =
   match discover_prd_runs ~compozy_root:config.tracker.compozy_root with Ok runs -> runs | Error _ -> []
+
+let runnable_prd_run (run : prd_run) = Option.is_some run.current_step
+
+let readiness_gaps (config : Config.t) =
+  let root = config.tracker.compozy_root in
+  let gap requirement remediation = { requirement; remediation } in
+  if not (Sys.file_exists root) then
+    [
+      gap "tracker.compozy.root"
+        (Printf.sprintf
+           "Create the Compozy tracker root at %s or set tracker.compozy.root to an existing PRD tasks directory."
+           root);
+    ]
+  else if not (Sys.is_directory root) then
+    [
+      gap "tracker.compozy.root"
+        (Printf.sprintf "Set tracker.compozy.root to a directory; %s exists but is not a directory." root);
+    ]
+  else
+    match discover_prd_runs ~compozy_root:root with
+    | Error error -> [ gap "tracker.compozy.root" error ]
+    | Ok [] ->
+        [
+          gap "tracker.compozy.prdRuns"
+            (Printf.sprintf "Add at least one Compozy PRD-run directory under %s." root);
+        ]
+    | Ok runs ->
+        if List.exists runnable_prd_run runs then []
+        else
+          let reason =
+            runs
+            |> List.filter_map (fun (run : prd_run) ->
+                   Option.map (fun reason -> Printf.sprintf "%s: %s" run.id reason) run.not_runnable_reason)
+            |> function
+            | [] -> ""
+            | reasons -> " First issue: " ^ List.hd reasons
+          in
+          [
+            gap "tracker.compozy.runnablePrdRun"
+              (Printf.sprintf
+                 "Add at least one Compozy PRD-run directory with a pending or in_progress task_NN.md under %s.%s"
+                 root reason);
+          ]
 
 let issue_of_prd_run (run : prd_run) =
   Issue.empty ~id:run.id ~identifier:run.id ~title:run.title ~state:run.state
