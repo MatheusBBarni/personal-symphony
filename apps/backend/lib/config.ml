@@ -7,6 +7,8 @@ type tracker = {
   api_key : string option;
   minibeads_root : string;
   minibeads_command : string;
+  compozy_root : string;
+  compozy_max_task_step_retries : int;
   active_states : string list;
   terminal_states : string list;
   project_status_field : string;
@@ -160,6 +162,8 @@ let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_minibeads_root = ".beads"
 let default_minibeads_command = "mb"
+let default_compozy_root = ".compozy/tasks"
+let default_compozy_max_task_step_retries = 2
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
 let default_protected_paths = { patterns = []; authorization = default_protected_path_authorization }
 let default_pull_request =
@@ -290,6 +294,27 @@ let expand_path ~base_dir path =
   Unix.realpath (if Sys.file_exists path then path else Filename.dirname path) |> fun real_parent ->
   if Sys.file_exists path then Unix.realpath path else Filename.concat real_parent (Filename.basename path)
 
+let expand_path_preserving_missing ~base_dir path =
+  let path =
+    match Util.drop_prefix ~prefix:"~/" path with
+    | Some suffix -> Filename.concat (Sys.getenv "HOME") suffix
+    | None -> (
+        match Util.drop_prefix ~prefix:"$" path with Some var -> Option.value (Util.getenv_nonempty var) ~default:path | None -> path)
+  in
+  let path = if Filename.is_relative path then Filename.concat base_dir path else path in
+  let rec existing_parent candidate missing =
+    if Sys.file_exists candidate then (Unix.realpath candidate, missing)
+    else
+      let parent = Filename.dirname candidate in
+      let name = Filename.basename candidate in
+      let missing = match missing with "" -> name | suffix -> Filename.concat name suffix in
+      if parent = candidate then (parent, missing) else existing_parent parent missing
+  in
+  if Sys.file_exists path then Unix.realpath path
+  else
+    let real_parent, missing = existing_parent (Filename.dirname path) (Filename.basename path) in
+    Filename.concat real_parent missing
+
 let positive name value =
   if value <= 0 then raise (Invalid_config (name ^ " must be positive"));
   value
@@ -300,11 +325,12 @@ let parse_tracker_kind raw =
   match Util.trim raw |> String.lowercase_ascii with
   | "github" -> "github"
   | "minibeads" -> "minibeads"
+  | "compozy_tasks" -> "compozy_tasks"
   | unsupported ->
       let shown = if unsupported = "" then "<empty>" else unsupported in
       raise
         (Invalid_config
-           (Printf.sprintf "Unsupported tracker.kind %s. Set tracker.kind to github or minibeads." shown))
+           (Printf.sprintf "Unsupported tracker.kind %s. Set tracker.kind to github, minibeads, or compozy_tasks." shown))
 
 let apply_runtime_invocation_overrides ~workspace_root config overrides =
   let polling =
@@ -403,6 +429,8 @@ let from_workflow workflow =
         api_key;
         minibeads_root = Filename.concat workflow.dir default_minibeads_root;
         minibeads_command = default_minibeads_command;
+        compozy_root = Filename.concat workflow.dir default_compozy_root;
+        compozy_max_task_step_retries = default_compozy_max_task_step_retries;
         active_states;
         terminal_states;
         project_status_field = Option.value (Simple_yaml.get_string "project_status_field" tracker_raw) ~default:"Status";
@@ -1262,6 +1290,7 @@ let from_settings_file ~workspace_root path =
     with Yojson.Json_error msg -> raise (Invalid_config ("settings.json parse error: " ^ msg))
   in
   let tracker_raw = member "tracker" root in
+  let compozy_raw = member "compozy" tracker_raw in
   let project_raw = member "project" root in
   let polling_raw = member "polling" root in
   let workspace_raw = member "workspace" root in
@@ -1317,6 +1346,12 @@ let from_settings_file ~workspace_root path =
         minibeads_root =
           json_string "root" tracker_raw ~default:default_minibeads_root |> expand_path ~base_dir:workspace_root;
         minibeads_command = json_string "command" tracker_raw ~default:default_minibeads_command;
+        compozy_root =
+          json_string "root" compozy_raw ~default:default_compozy_root
+          |> expand_path_preserving_missing ~base_dir:workspace_root;
+        compozy_max_task_step_retries =
+          positive "tracker.compozy.maxTaskStepRetries"
+            (json_int "maxTaskStepRetries" compozy_raw ~default:default_compozy_max_task_step_retries);
         active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
         terminal_states;
         project_status_field = json_string "statusField" project_raw ~default:"Status";
