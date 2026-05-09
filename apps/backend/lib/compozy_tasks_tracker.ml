@@ -541,6 +541,14 @@ let update_task_frontmatter ~compozy_root path update =
 let update_status ~compozy_root path status =
   update_task_frontmatter ~compozy_root path { status = Some status; retry_count = None; last_error = None }
 
+let task_step_path run (step : task_step) = Filename.concat run.path step.file
+
+let mark_step_started ~compozy_root run step =
+  update_status ~compozy_root (task_step_path run step) "in_progress"
+
+let mark_step_finished ~compozy_root run step =
+  update_status ~compozy_root (task_step_path run step) "completed"
+
 let update_retry_count ~compozy_root path retry_count =
   if retry_count < 0 then Error (Printf.sprintf "invalid symphony_retry_count for %s: %d" (Filename.basename path) retry_count)
   else update_task_frontmatter ~compozy_root path { status = None; retry_count = Some retry_count; last_error = None }

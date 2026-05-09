@@ -6819,6 +6819,156 @@ let test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_chang
       Alcotest.(check bool) "GitHub prompt has no Compozy wrapper" false
         (contains_substring github_prompt "Compozy Task Step"))
 
+let compozy_task_status compozy_root path =
+  let task = Compozy_tasks_tracker.parse_task_file ~compozy_root path |> require_ok "parse Compozy task" in
+  task.status
+
+let compozy_test_config root compozy_root =
+  {
+    Config.workflow_path = "settings.json";
+    repository_root = root;
+    tracker =
+      {
+        kind = "compozy_tasks";
+        owner = "acme";
+        repo = "widgets";
+        project_number = 7;
+        api_key_env = "GITHUB_TOKEN";
+        api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
+        compozy_root;
+        compozy_max_task_step_retries = 2;
+        active_states = [ "pending"; "in_progress" ];
+        terminal_states = [ "completed"; "failed"; "skipped" ];
+        project_status_field = "Status";
+        project_status_on_dispatch = None;
+        project_status_on_success = Some "completed";
+        project_status_on_retry = Some "pending";
+        ensure_project_statuses = true;
+      };
+    polling = { interval_ms = 1000 };
+    workspace = { root = Filename.concat root ".symphony/workspaces" };
+    git = git_policy ();
+    agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+    codex =
+      {
+        command = "true";
+        model = Config.default_model;
+        reasoning_effort = Config.default_reasoning_effort;
+        turn_timeout_ms = 1000;
+        read_timeout_ms = 100;
+        stall_timeout_ms = 1000;
+      };
+    agent_harnesses_explicit = false;
+    agent_harnesses = [];
+    logical_agents = [];
+    legacy_agent_harness_paths = [];
+    server = { port = None };
+    pull_request = Config.default_pull_request;
+    protected_paths = Config.default_protected_paths;
+    stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+  }
+
+let test_compozy_completion_relaunches_next_step_in_same_worktree () =
+  with_temp_dir "symphony-compozy-sequential-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "sequential-feature" in
+      Util.mkdir_p prd_dir;
+      let task_01 = Filename.concat prd_dir "task_01.md" in
+      let task_02 = Filename.concat prd_dir "task_02.md" in
+      write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst step sentinel.\n" task_01;
+      write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond step sentinel.\n" task_02;
+      ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
+      let config = compozy_test_config root compozy_root in
+      let launches = ref [] in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+        let branch = run_ok ~cwd:workspace.path "branch" "git branch --show-current" in
+        launches := (issue, workspace, prompt, branch) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some (string_of_int (List.length !launches));
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let commit_calls = ref [] in
+      let commit_stage _config (workspace : Workspace.t) issue _stage next_status =
+        commit_calls := (workspace.path, issue.Issue.identifier, next_status) :: !commit_calls;
+        Ok ()
+      in
+      let completed_compozy_child issue workspace =
+        {
+          Orchestrator.pid = 0;
+          issue;
+          stage = None;
+          harness = test_child_harness;
+          issue_id = issue.Issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let first_issue, first_workspace, first_prompt, first_branch =
+        match List.rev !launches with
+        | [ launch ] -> launch
+        | _ -> Alcotest.fail "expected first Compozy launch"
+      in
+      let workspace_compozy_root = Filename.concat (Filename.concat first_workspace.path ".compozy") "tasks" in
+      let workspace_task_01 = Filename.concat (Filename.concat workspace_compozy_root "sequential-feature") "task_01.md" in
+      let workspace_task_02 = Filename.concat (Filename.concat workspace_compozy_root "sequential-feature") "task_02.md" in
+      Alcotest.(check string) "first task started" "in_progress"
+        (compozy_task_status workspace_compozy_root workspace_task_01);
+      Alcotest.(check bool) "first prompt includes first task" true (contains_substring first_prompt "First step sentinel.");
+      let first_child = completed_compozy_child first_issue first_workspace in
+      Orchestrator.mark_completed orchestrator first_child;
+      let first_progress =
+        match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
+        | Some progress -> progress
+        | None -> Alcotest.fail "expected Compozy progress after first completion"
+      in
+      Alcotest.(check int) "no intermediate stage commit" 0 (List.length !commit_calls);
+      Alcotest.(check string) "first task completed" "completed"
+        (compozy_task_status workspace_compozy_root workspace_task_01);
+      Alcotest.(check (option string)) "runtime current step" (Some "task_02.md") first_progress.current_step;
+      Alcotest.(check int) "runtime completed count" 1 first_progress.completed;
+      let second_issue, second_workspace, second_prompt, second_branch =
+        match List.rev !launches with
+        | [ _first; second ] -> second
+        | _ -> Alcotest.fail "expected relaunch for second Compozy task"
+      in
+      Alcotest.(check string) "second task started" "in_progress"
+        (compozy_task_status workspace_compozy_root workspace_task_02);
+      Alcotest.(check string) "same workspace" first_workspace.path second_workspace.path;
+      Alcotest.(check string) "same task branch" first_branch second_branch;
+      Alcotest.(check bool) "second prompt includes second task" true (contains_substring second_prompt "Second step sentinel.");
+      Alcotest.(check bool) "intermediate integration deferred" true
+        ((Orchestrator.get_state orchestrator).Runtime_state.task_branch_integrations = []);
+      let second_child = completed_compozy_child second_issue second_workspace in
+      Orchestrator.mark_completed orchestrator second_child;
+      let final_progress =
+        match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
+        | Some progress -> progress
+        | None -> Alcotest.fail "expected final Compozy progress"
+      in
+      Alcotest.(check int) "final stage commit" 1 (List.length !commit_calls);
+      Alcotest.(check string) "second task completed" "completed"
+        (compozy_task_status workspace_compozy_root workspace_task_02);
+      Alcotest.(check (option string)) "no current step after final completion" None final_progress.current_step;
+      Alcotest.(check int) "all steps completed" 2 final_progress.completed)
+
 let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
   { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
 
@@ -10556,6 +10706,8 @@ let () =
           Alcotest.test_case "skips blank loop command" `Quick test_compose_prompt_skips_blank_loop_command;
           Alcotest.test_case "wraps Compozy task-step prompt without GitHub prompt changes" `Quick
             test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change;
+          Alcotest.test_case "relaunches Compozy task steps in one worktree" `Quick
+            test_compozy_completion_relaunches_next_step_in_same_worktree;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick
             test_orchestrator_runs_stage_context_command_before_launch;

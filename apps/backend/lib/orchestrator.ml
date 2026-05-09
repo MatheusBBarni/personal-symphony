@@ -1813,6 +1813,43 @@ let set_state orchestrator state =
 
 let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
 
+let is_compozy_prd_run_child orchestrator issue =
+  orchestrator.tracker.kind = "compozy_tasks" && Util.starts_with ~prefix:"compozy:" issue.Issue.identifier
+
+let compozy_workspace_root config (workspace : Workspace.t) =
+  let repository_root = Unix.realpath config.Config.repository_root in
+  let compozy_root = Unix.realpath config.Config.tracker.compozy_root in
+  let prefix = repository_root ^ Filename.dir_sep in
+  let relative =
+    match Util.drop_prefix ~prefix compozy_root with
+    | Some relative -> relative
+    | None -> Filename.basename compozy_root
+  in
+  Filename.concat workspace.path relative
+
+let compozy_prd_run_for_workspace_issue config workspace issue =
+  let compozy_root = compozy_workspace_root config workspace in
+  match Compozy_tasks_tracker.discover_prd_runs ~compozy_root with
+  | Error error -> Error error
+  | Ok runs -> (
+      match List.find_opt (fun (run : Compozy_tasks_tracker.prd_run) -> run.id = issue.Issue.identifier) runs with
+      | Some run -> Ok run
+      | None -> Error (Printf.sprintf "Compozy PRD run not found for %s" issue.Issue.identifier))
+
+let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_tracker.prd_run)
+    (step : Compozy_tasks_tracker.task_step) status =
+  let compozy_root = compozy_workspace_root config workspace in
+  match status with
+  | "in_progress" -> Compozy_tasks_tracker.mark_step_started ~compozy_root run step
+  | "completed" -> Compozy_tasks_tracker.mark_step_finished ~compozy_root run step
+  | status ->
+      let path = Filename.concat (Filename.concat compozy_root run.slug) step.file in
+      Compozy_tasks_tracker.update_status ~compozy_root path status
+
+let update_compozy_progress orchestrator run =
+  update_state orchestrator (fun state ->
+    { state with Runtime_state.compozy_progress = Some (Runtime_state.compozy_progress_of_prd_run run) })
+
 let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
     () =
   match orchestrator.state.Runtime_state.ordered_queue with
@@ -2693,91 +2730,115 @@ let dispatch_issue orchestrator issue =
         let attempt = Hashtbl.find_opt orchestrator.attempts issue.id in
         let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
         let previous_attempt_output = Hashtbl.find_opt orchestrator.previous_attempt_outputs issue.id in
-        let composition =
-          compose_prompt_result ?stage ?previous_attempt_output orchestrator.config issue attempt rendered ~workspace
-            ~loop_start_branch:(Some orchestrator.loop_start_branch)
+        let composition_result =
+          if is_compozy_prd_run_child orchestrator issue then
+            match compozy_prd_run_for_workspace_issue orchestrator.config workspace issue with
+            | Error _ as error -> error
+            | Ok run -> (
+                match run.current_step with
+                | None -> Error (Printf.sprintf "no runnable Compozy task step for %s" run.id)
+                | Some step -> (
+                    match update_compozy_workspace_step_status orchestrator.config workspace run step "in_progress" with
+                    | Error _ as error -> error
+                    | Ok () -> (
+                        match compozy_prd_run_for_workspace_issue orchestrator.config workspace issue with
+                        | Error _ as error -> error
+                        | Ok run ->
+                            update_compozy_progress orchestrator run;
+                            compose_compozy_task_step_prompt_result ?stage ?previous_attempt_output orchestrator.config run
+                              attempt ~workspace ~loop_start_branch:(Some orchestrator.loop_start_branch))))
+          else
+            Ok
+              (compose_prompt_result ?stage ?previous_attempt_output orchestrator.config issue attempt rendered ~workspace
+                 ~loop_start_branch:(Some orchestrator.loop_start_branch))
         in
-        let context_diagnostic_result =
-          match (composition.context_diagnostics, stage) with
-          | Some diagnostics, Some stage -> (
-              try Ok (Some (persist_context_generation_diagnostics orchestrator.config issue stage attempt diagnostics))
-              with exn -> Error ("Context Diagnostics persistence failed: " ^ Printexc.to_string exn))
-          | _ -> Ok None
-        in
-        let context_diagnostic_summary, context_diagnostic_error =
-          match context_diagnostic_result with Ok summary -> (summary, None) | Error error -> (None, Some error)
-        in
-        let context_status =
-          match context_diagnostic_summary with
-          | Some summary -> { composition.context_status with Runtime_state.diagnostics_path = Some summary.diagnostic_path }
-          | None -> composition.context_status
-        in
-        let prompt = composition.prompt in
-        let harness =
-          Option.value (Config.selected_agent_harness orchestrator.config stage)
-            ~default:(Config.default_agent_harness orchestrator.config)
-        in
-        let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
-        let now = Util.now_iso8601 () in
-        let stage_agent, stage_states = selected_stage_fields stage in
-        let row =
-          {
-            Runtime_state.issue;
-            stage_agent;
-            harness_name = Some harness.name;
-            harness_kind = Some harness.kind;
-            stage_states;
-            session_id = launched.session_id;
-            turn_count = 0;
-            last_event = Some launched.event;
-            last_message = None;
-            started_at = now;
-            last_event_at = Some now;
-            tokens = runtime_tokens;
-            goal_usage = None;
-          }
-        in
-        Hashtbl.remove orchestrator.retry_due issue.id;
-        Hashtbl.remove orchestrator.previous_attempt_outputs issue.id;
-        update_state orchestrator (fun state ->
-          {
-            state with
-            issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) state.issues;
-            running = row :: state.running;
-            retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue.id) state.retrying;
-            issue_errors =
-              List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
-            context_diagnostics =
-              (match context_diagnostic_summary with
-              | Some summary -> append_context_diagnostic_summary state.context_diagnostics summary
-              | None -> state.context_diagnostics);
-            last_error = context_diagnostic_error;
-          }
-          |> Runtime_state.set_context_status issue.id context_status);
-        update_ordered_queue_entries orchestrator ~candidates:[ issue ] ();
-        (match launched.pid with
-        | Some pid ->
-            let now_float = Unix.time () in
-            orchestrator.children <-
+        match composition_result with
+        | Error error ->
+            set_error orchestrator error;
+            render_dispatch_retrying issue.identifier 0 error;
+            ignore (move_issue_status orchestrator issue orchestrator.config.git.merge_attention_status)
+        | Ok composition ->
+            let context_diagnostic_result =
+              match (composition.context_diagnostics, stage) with
+              | Some diagnostics, Some stage -> (
+                  try Ok (Some (persist_context_generation_diagnostics orchestrator.config issue stage attempt diagnostics))
+                  with exn -> Error ("Context Diagnostics persistence failed: " ^ Printexc.to_string exn))
+              | _ -> Ok None
+            in
+            let context_diagnostic_summary, context_diagnostic_error =
+              match context_diagnostic_result with Ok summary -> (summary, None) | Error error -> (None, Some error)
+            in
+            let context_status =
+              match context_diagnostic_summary with
+              | Some summary -> { composition.context_status with Runtime_state.diagnostics_path = Some summary.diagnostic_path }
+              | None -> composition.context_status
+            in
+            let prompt = composition.prompt in
+            let harness =
+              Option.value (Config.selected_agent_harness orchestrator.config stage)
+                ~default:(Config.default_agent_harness orchestrator.config)
+            in
+            let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
+            let now = Util.now_iso8601 () in
+            let stage_agent, stage_states = selected_stage_fields stage in
+            let row =
               {
-                pid;
-                issue;
-                stage;
-                harness;
-                issue_id = issue.id;
-                issue_identifier = issue.identifier;
-                issue_title = issue.title;
-                workspace;
-                started_at = now_float;
-                last_output_at = now_float;
-                stdout_path = launched.stdout_path;
-                stderr_path = launched.stderr_path;
-                stdout_size = file_size launched.stdout_path;
-                stderr_size = file_size launched.stderr_path;
+                Runtime_state.issue;
+                stage_agent;
+                harness_name = Some harness.name;
+                harness_kind = Some harness.kind;
+                stage_states;
+                session_id = launched.session_id;
+                turn_count = 0;
+                last_event = Some launched.event;
+                last_message = None;
+                started_at = now;
+                last_event_at = Some now;
+                tokens = runtime_tokens;
+                goal_usage = None;
               }
-              :: orchestrator.children
-        | None -> ());
-        render_dispatch_started issue)
+            in
+            Hashtbl.remove orchestrator.retry_due issue.id;
+            Hashtbl.remove orchestrator.previous_attempt_outputs issue.id;
+            update_state orchestrator (fun state ->
+              {
+                state with
+                issues = List.map (fun candidate -> if candidate.Issue.id = issue.id then issue else candidate) state.issues;
+                running = row :: state.running;
+                retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue.id) state.retrying;
+                issue_errors =
+                  List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue.id) state.issue_errors;
+                context_diagnostics =
+                  (match context_diagnostic_summary with
+                  | Some summary -> append_context_diagnostic_summary state.context_diagnostics summary
+                  | None -> state.context_diagnostics);
+                last_error = context_diagnostic_error;
+              }
+              |> Runtime_state.set_context_status issue.id context_status);
+            update_ordered_queue_entries orchestrator ~candidates:[ issue ] ();
+            (match launched.pid with
+            | Some pid ->
+                let now_float = Unix.time () in
+                orchestrator.children <-
+                  {
+                    pid;
+                    issue;
+                    stage;
+                    harness;
+                    issue_id = issue.id;
+                    issue_identifier = issue.identifier;
+                    issue_title = issue.title;
+                    workspace;
+                    started_at = now_float;
+                    last_output_at = now_float;
+                    stdout_path = launched.stdout_path;
+                    stderr_path = launched.stderr_path;
+                    stdout_size = file_size launched.stdout_path;
+                    stderr_size = file_size launched.stderr_path;
+                  }
+                  :: orchestrator.children
+            | None -> ());
+            render_dispatch_started issue)
 
 let mark_retrying orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
@@ -2961,45 +3022,79 @@ let mark_merge_attention orchestrator child error =
     |> Runtime_state.clear_context_status child.issue_id);
   update_ordered_queue_entries orchestrator ~skipped:(child.issue_identifier, error) ~candidates:[ child.issue ] ()
 
+type compozy_completion =
+  | Not_compozy_child
+  | Compozy_final_step
+  | Compozy_next_step of Compozy_tasks_tracker.prd_run
+
+let complete_compozy_task_step orchestrator child =
+  if not (is_compozy_prd_run_child orchestrator child.issue) then Ok Not_compozy_child
+  else
+    match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
+    | Error _ as error -> error
+    | Ok run -> (
+        match run.current_step with
+        | None -> Error (Printf.sprintf "no runnable Compozy task step for %s" run.id)
+        | Some step -> (
+            match update_compozy_workspace_step_status orchestrator.config child.workspace run step "completed" with
+            | Error _ as error -> error
+            | Ok () -> (
+                match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
+                | Error _ as error -> error
+                | Ok updated_run ->
+                    update_compozy_progress orchestrator updated_run;
+                    match updated_run.current_step with
+                    | Some _ -> Ok (Compozy_next_step updated_run)
+                    | None -> Ok Compozy_final_step)))
+
 let mark_completed orchestrator child =
   let issue_id = child.issue_id in
   let stage = match child.stage with Some _ -> child.stage | None -> stage_for_issue orchestrator.config child.issue in
   let next_status = success_status ?stage orchestrator child.issue in
-  match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
+  match complete_compozy_task_step orchestrator child with
   | Error error ->
       render_commit_failed child.issue_identifier error;
-      if human_attention_completion_error error then mark_merge_attention orchestrator child error
-      else if non_retryable_completion_error error then (
-        set_error orchestrator error;
-        mark_blocked orchestrator issue_id error)
-      else mark_retrying orchestrator issue_id error
-  | Ok () ->
-      let status_moved_before_merge =
-        match next_status with
-        | Some status when task_pull_request_before_auto_merge orchestrator status ->
-            if move_issue_status orchestrator child.issue status then (
-              attempt_task_pull_request orchestrator child.issue;
-              Some true)
-            else (
-              mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status);
-              None)
-        | _ -> Some false
-      in
-      (match status_moved_before_merge with
-      | None -> ()
-      | Some status_moved_before_merge -> (
-          match auto_merge_child orchestrator child with
-          | Error error -> mark_merge_attention orchestrator child error
-          | Ok () -> (
-              match next_status with
-              | None -> complete_child orchestrator child
-              | Some status ->
-                  if status_moved_before_merge then complete_child ~next_status:status orchestrator child
-                  else if not (move_issue_status orchestrator child.issue status) then
-                    mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
-                  else (
-                    maybe_open_review_pull_request orchestrator child.issue status;
-                    complete_child ~next_status:status orchestrator child))))
+      mark_retrying orchestrator issue_id error
+  | Ok (Compozy_next_step run) ->
+      let next_issue = Compozy_tasks_tracker.issue_of_prd_run run in
+      complete_child ~next_status:run.state orchestrator child;
+      dispatch_issue orchestrator next_issue
+  | Ok (Not_compozy_child | Compozy_final_step) -> (
+      match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
+      | Error error ->
+          render_commit_failed child.issue_identifier error;
+          if human_attention_completion_error error then mark_merge_attention orchestrator child error
+          else if non_retryable_completion_error error then (
+            set_error orchestrator error;
+            mark_blocked orchestrator issue_id error)
+          else mark_retrying orchestrator issue_id error
+      | Ok () ->
+          let status_moved_before_merge =
+            match next_status with
+            | Some status when task_pull_request_before_auto_merge orchestrator status ->
+                if move_issue_status orchestrator child.issue status then (
+                  attempt_task_pull_request orchestrator child.issue;
+                  Some true)
+                else (
+                  mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status);
+                  None)
+            | _ -> Some false
+          in
+          match status_moved_before_merge with
+          | None -> ()
+          | Some status_moved_before_merge -> (
+              match auto_merge_child orchestrator child with
+              | Error error -> mark_merge_attention orchestrator child error
+              | Ok () -> (
+                  match next_status with
+                  | None -> complete_child orchestrator child
+                  | Some status ->
+                      if status_moved_before_merge then complete_child ~next_status:status orchestrator child
+                      else if not (move_issue_status orchestrator child.issue status) then
+                        mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
+                      else (
+                        maybe_open_review_pull_request orchestrator child.issue status;
+                        complete_child ~next_status:status orchestrator child))))
 
 let signal_child child signal =
   try Unix.kill (-child.pid) signal
