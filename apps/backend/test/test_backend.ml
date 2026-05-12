@@ -4184,6 +4184,92 @@ let test_terminal_console_mosaic_initial_model_uses_projection () =
       | None -> Alcotest.fail "expected detail")
   | _ -> Alcotest.fail "expected one active shell row"
 
+let terminal_console_runtime_branch_name = function
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Manual_merge -> "manual_merge"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Once -> "once"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Web_dashboard Runtime_policy.Serve_readiness_state ->
+      "web_dashboard_readiness"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Web_dashboard Runtime_policy.Run_orchestrator ->
+      "web_dashboard_orchestrator"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Terminal_console_readiness -> "terminal_console_readiness"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Terminal_console_orchestrator ->
+      "terminal_console_orchestrator"
+
+let test_terminal_console_runtime_selects_non_mosaic_paths () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let readiness_gaps = [ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ] in
+  let select ?(once = false) ?(mode = Cli_mode.Terminal_console) ?(merge_args = []) ?(readiness_gaps = [])
+      () =
+    Runtime.select_branch ~once ~mode ~merge_args ~readiness_gaps |> terminal_console_runtime_branch_name
+  in
+  Alcotest.(check string) "--once" "once" (select ~once:true ());
+  Alcotest.(check string) "--web readiness" "web_dashboard_readiness"
+    (select ~mode:Cli_mode.Web_dashboard ~readiness_gaps ());
+  Alcotest.(check string) "--web run" "web_dashboard_orchestrator" (select ~mode:Cli_mode.Web_dashboard ());
+  Alcotest.(check string) "manual merge" "manual_merge" (select ~merge_args:[ "#20" ] ());
+  Alcotest.(check string) "default readiness" "terminal_console_readiness" (select ~readiness_gaps ());
+  Alcotest.(check string) "default run" "terminal_console_orchestrator" (select ())
+
+let test_terminal_console_runtime_handoff_latest_state () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let initial = Runtime_state.empty ~last_error:"initial" () in
+  let handoff = Runtime.create_state_handoff initial in
+  let next = Runtime_state.empty ~last_error:"next" () in
+  Runtime.publish_state handoff next;
+  Alcotest.(check int) "version incremented" 1 (Runtime.version handoff);
+  Alcotest.(check (option string)) "published state unchanged" (Some "next") next.Runtime_state.last_error;
+  Alcotest.(check (option string)) "latest state" (Some "next") (Runtime.latest_state handoff).last_error;
+  let runtime = Runtime.runtime_of_handoff handoff in
+  runtime.safe_aid Terminal_console_model.Refresh_view;
+  Alcotest.(check (option string)) "safe aid does not mutate state" (Some "next")
+    (Runtime.latest_state handoff).last_error;
+  Runtime.close_state_handoff handoff
+
+let test_terminal_console_runtime_handoff_subscribes_latest_snapshot () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let handoff = Runtime.create_state_handoff (Runtime_state.empty ~last_error:"initial" ()) in
+  Runtime.publish_state handoff (Runtime_state.empty ~last_error:"first" ());
+  Runtime.publish_state handoff (Runtime_state.empty ~last_error:"second" ());
+  Runtime.close_state_handoff handoff;
+  let observed = ref [] in
+  Runtime.subscribe_state handoff (fun state -> observed := state.Runtime_state.last_error :: !observed);
+  Alcotest.(check (list (option string))) "latest-state subscription" [ Some "second" ] (List.rev !observed)
+
+let test_terminal_console_runtime_readiness_runs_ui_without_orchestration () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let readiness_state =
+    Runtime_state.empty
+      ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+      ()
+  in
+  let initial_seen = ref None in
+  Runtime.run ~initial_state:readiness_state
+    ~run_ui:(fun runtime -> initial_seen := Some runtime.Shell.initial_state)
+    ();
+  match !initial_seen with
+  | Some state ->
+      Alcotest.(check int) "readiness gaps exposed" 1 (List.length state.Runtime_state.readiness_gaps)
+  | None -> Alcotest.fail "expected UI runtime to start"
+
+let test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let start_called = ref false in
+  let ui_initial = ref None in
+  Runtime.run ~initial_state:(Runtime_state.empty ~last_error:"readiness" ())
+    ~start_orchestration:(fun ~notify_state ->
+      start_called := true;
+      notify_state (Runtime_state.empty ~last_error:"orchestrator" ()))
+    ~run_ui:(fun runtime -> ui_initial := Some runtime.Shell.initial_state)
+    ();
+  Alcotest.(check bool) "orchestration starter called" true !start_called;
+  match !ui_initial with
+  | Some state ->
+      Alcotest.(check (option string)) "notify_state snapshot reaches UI" (Some "orchestrator")
+        state.Runtime_state.last_error
+  | None -> Alcotest.fail "expected UI runtime to start"
+
 let websocket_request () =
   {
     Server.request_line = "GET /api/v1/state/live HTTP/1.1";
@@ -11272,6 +11358,14 @@ let () =
             test_terminal_console_mosaic_status_labels;
           Alcotest.test_case "builds Mosaic shell model from sanitized projection" `Quick
             test_terminal_console_mosaic_initial_model_uses_projection;
+          Alcotest.test_case "stores latest Terminal Console runtime state" `Quick
+            test_terminal_console_runtime_handoff_latest_state;
+          Alcotest.test_case "subscribes to latest Terminal Console runtime state" `Quick
+            test_terminal_console_runtime_handoff_subscribes_latest_snapshot;
+          Alcotest.test_case "runs readiness Terminal Console without orchestration" `Quick
+            test_terminal_console_runtime_readiness_runs_ui_without_orchestration;
+          Alcotest.test_case "wires orchestrator notifications into Terminal Console UI" `Quick
+            test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state;
         ] );
       ( "server",
         [
@@ -11285,6 +11379,8 @@ let () =
       ( "cli",
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
+          Alcotest.test_case "selects Terminal Console runtime branches" `Quick
+            test_terminal_console_runtime_selects_non_mosaic_paths;
           Alcotest.test_case "evaluates runtime command from backend library" `Quick
             test_cli_command_evaluates_runtime_from_library;
           Alcotest.test_case "parses runtime invocation override flags" `Quick
