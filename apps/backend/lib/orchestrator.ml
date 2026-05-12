@@ -1847,7 +1847,11 @@ let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_t
 
 let update_compozy_progress orchestrator run =
   update_state orchestrator (fun state ->
-    { state with Runtime_state.compozy_progress = Some (Runtime_state.compozy_progress_of_prd_run run) })
+    {
+      state with
+      Runtime_state.compozy_progress =
+        Some (Runtime_state.compozy_progress_of_prd_run_for_runtime orchestrator.config run);
+    })
 
 let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
     () =

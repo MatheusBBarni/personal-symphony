@@ -43,6 +43,12 @@ type compozy_progress = {
   failed : int;
   skipped : int;
   total : int;
+  lifecycle_state : string option;
+  dispatch_state : string option;
+  stage_agent : string option;
+  pr_readiness : string option;
+  reason : string option;
+  handoff_status : string option;
 }
 type startup_reconciliation = {
   issue_id : string option;
@@ -254,7 +260,15 @@ let ordered_queue_entry_to_yojson (row : ordered_queue_entry) =
 let ordered_queue_to_yojson (row : ordered_queue) =
   `Assoc [ ("entries", `List (List.map ordered_queue_entry_to_yojson row.entries)) ]
 
-let compozy_progress_of_prd_run (run : Compozy_tasks_tracker.prd_run) =
+let handoff_status_of_lifecycle (lifecycle : Compozy_lifecycle.t) =
+  match lifecycle.pr_readiness with
+  | Compozy_lifecycle.Handoff_attempting
+  | Compozy_lifecycle.Handoff_completed
+  | Compozy_lifecycle.Handoff_failed ->
+      Some (Compozy_lifecycle.pr_readiness_to_string lifecycle.pr_readiness)
+  | _ -> None
+
+let compozy_progress_of_prd_run ?lifecycle (run : Compozy_tasks_tracker.prd_run) =
   let counts = run.counts in
   {
     run_id = run.id;
@@ -264,7 +278,19 @@ let compozy_progress_of_prd_run (run : Compozy_tasks_tracker.prd_run) =
     failed = counts.failed;
     skipped = counts.skipped;
     total = counts.total;
+    lifecycle_state = Option.map (fun lifecycle -> Compozy_lifecycle.lifecycle_state_to_string lifecycle.Compozy_lifecycle.lifecycle_state) lifecycle;
+    dispatch_state = Option.map (fun lifecycle -> lifecycle.Compozy_lifecycle.dispatch_state) lifecycle;
+    stage_agent = Option.bind lifecycle (fun lifecycle -> lifecycle.Compozy_lifecycle.stage_agent);
+    pr_readiness = Option.map (fun lifecycle -> Compozy_lifecycle.pr_readiness_to_string lifecycle.Compozy_lifecycle.pr_readiness) lifecycle;
+    reason = Option.bind lifecycle (fun lifecycle -> lifecycle.Compozy_lifecycle.reason);
+    handoff_status = Option.bind lifecycle handoff_status_of_lifecycle;
   }
+
+let lifecycle_metadata_for_progress config run =
+  match Compozy_lifecycle.load config run with Ok (Some lifecycle) -> Some lifecycle | _ -> None
+
+let compozy_progress_of_prd_run_for_runtime config run =
+  compozy_progress_of_prd_run ?lifecycle:(lifecycle_metadata_for_progress config run) run
 
 let initial_compozy_progress (config : Config.t) =
   if config.tracker.kind <> "compozy_tasks" then None
@@ -278,18 +304,25 @@ let initial_compozy_progress (config : Config.t) =
           | Some run -> Some run
           | None -> List.find_opt (fun (_ : Compozy_tasks_tracker.prd_run) -> true) runs
         in
-        Option.map compozy_progress_of_prd_run selected
+        Option.map (compozy_progress_of_prd_run_for_runtime config) selected
 
 let compozy_progress_to_yojson (row : compozy_progress) =
+  let option_string = function Some value -> `String value | None -> `Null in
   `Assoc
     [
       ("run_id", `String row.run_id);
       ("slug", `String row.slug);
-      ("current_step", (match row.current_step with Some step -> `String step | None -> `Null));
+      ("current_step", option_string row.current_step);
       ("completed", `Int row.completed);
       ("failed", `Int row.failed);
       ("skipped", `Int row.skipped);
       ("total", `Int row.total);
+      ("lifecycle_state", option_string row.lifecycle_state);
+      ("dispatch_state", option_string row.dispatch_state);
+      ("stage_agent", option_string row.stage_agent);
+      ("pr_readiness", option_string row.pr_readiness);
+      ("reason", option_string row.reason);
+      ("handoff_status", option_string row.handoff_status);
     ]
 
 let startup_reconciliation_to_yojson (row : startup_reconciliation) =
@@ -356,6 +389,12 @@ let compozy_progress_of_yojson json =
           failed = Option.value (json_int_member "failed" json) ~default:0;
           skipped = Option.value (json_int_member "skipped" json) ~default:0;
           total = Option.value (json_int_member "total" json) ~default:0;
+          lifecycle_state = json_string_member "lifecycle_state" json;
+          dispatch_state = json_string_member "dispatch_state" json;
+          stage_agent = json_string_member "stage_agent" json;
+          pr_readiness = json_string_member "pr_readiness" json;
+          reason = json_string_member "reason" json;
+          handoff_status = json_string_member "handoff_status" json;
         }
   | _ -> None
 

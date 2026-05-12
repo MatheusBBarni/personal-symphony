@@ -3504,7 +3504,29 @@ let test_runtime_state_absent_compozy_progress_is_compatible () =
   Alcotest.(check string) "older snapshot tracker default" "github"
     (Runtime_state.tracker_kind_from_snapshot_yojson older_snapshot);
   Alcotest.(check bool) "older snapshot progress absent" true
-    (Option.is_none (Runtime_state.compozy_progress_from_snapshot_yojson older_snapshot))
+    (Option.is_none (Runtime_state.compozy_progress_from_snapshot_yojson older_snapshot));
+  let older_progress_snapshot =
+    `Assoc
+      [
+        ( "compozy_progress",
+          `Assoc
+            [
+              ("run_id", `String "compozy:legacy-feature");
+              ("slug", `String "legacy-feature");
+              ("current_step", `String "task_01.md");
+              ("completed", `Int 0);
+              ("failed", `Int 0);
+              ("skipped", `Int 0);
+              ("total", `Int 1);
+            ] );
+      ]
+  in
+  match Runtime_state.compozy_progress_from_snapshot_yojson older_progress_snapshot with
+  | Some parsed ->
+      Alcotest.(check string) "legacy parsed run id" "compozy:legacy-feature" parsed.Runtime_state.run_id;
+      Alcotest.(check (option string)) "legacy lifecycle absent" None parsed.lifecycle_state;
+      Alcotest.(check (option string)) "legacy readiness absent" None parsed.pr_readiness
+  | None -> Alcotest.fail "expected legacy Compozy progress to parse"
 
 let test_runtime_state_exposes_compozy_progress () =
   with_temp_dir "symphony-compozy-progress-" (fun root ->
@@ -3533,12 +3555,76 @@ let test_runtime_state_exposes_compozy_progress () =
       Alcotest.(check int) "failed" 1 (payload |> member "failed" |> to_int);
       Alcotest.(check int) "skipped" 1 (payload |> member "skipped" |> to_int);
       Alcotest.(check int) "total" 5 (payload |> member "total" |> to_int);
+      let optional_field_absent field = match payload |> member field with `Null -> true | _ -> false in
+      Alcotest.(check bool) "lifecycle absent" true (optional_field_absent "lifecycle_state");
+      Alcotest.(check bool) "dispatch absent" true (optional_field_absent "dispatch_state");
+      Alcotest.(check bool) "stage absent" true (optional_field_absent "stage_agent");
+      Alcotest.(check bool) "readiness absent" true (optional_field_absent "pr_readiness");
+      Alcotest.(check bool) "reason absent" true (optional_field_absent "reason");
+      Alcotest.(check bool) "handoff absent" true (optional_field_absent "handoff_status");
       match Runtime_state.compozy_progress_from_snapshot_yojson json with
       | Some parsed ->
           Alcotest.(check string) "parsed run id" progress.run_id parsed.Runtime_state.run_id;
           Alcotest.(check (option string)) "parsed current step" (Some "task_02.md") parsed.current_step;
-          Alcotest.(check int) "parsed total" 5 parsed.total
+          Alcotest.(check int) "parsed total" 5 parsed.total;
+          Alcotest.(check (option string)) "parsed lifecycle absent" None parsed.lifecycle_state;
+          Alcotest.(check (option string)) "parsed readiness absent" None parsed.pr_readiness
       | None -> Alcotest.fail "expected parsed Compozy progress")
+
+let test_runtime_state_compozy_progress_merges_lifecycle_metadata () =
+  with_temp_dir "symphony-compozy-progress-lifecycle-" (fun root ->
+      let compozy_root = Filename.concat root ".compozy/tasks" in
+      let prd_dir = Filename.concat compozy_root "lifecycle-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" ~title:"Done" (Filename.concat prd_dir "task_01.md");
+      write_compozy_task ~status:"in_progress" ~title:"Running" (Filename.concat prd_dir "task_02.md");
+      write_compozy_task ~status:"failed" ~title:"Failed" (Filename.concat prd_dir "task_03.md");
+      write_compozy_task ~status:"skipped" ~title:"Skipped" (Filename.concat prd_dir "task_04.md");
+      let run = Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir |> require_ok "build PRD run" in
+      let lifecycle : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.Pr_handoff;
+          dispatch_state = "In review";
+          stage_agent = Some "reviewer";
+          pr_readiness = Compozy_lifecycle.Handoff_completed;
+          reason = Some "Existing Batch Pull Request reused.";
+          updated_at = "2026-05-12T21:00:00Z";
+        }
+      in
+      let progress = Runtime_state.compozy_progress_of_prd_run ~lifecycle run in
+      Alcotest.(check string) "run id unchanged" "compozy:lifecycle-feature" progress.run_id;
+      Alcotest.(check (option string)) "current step unchanged" (Some "task_02.md") progress.current_step;
+      Alcotest.(check int) "completed unchanged" 1 progress.completed;
+      Alcotest.(check int) "failed unchanged" 1 progress.failed;
+      Alcotest.(check int) "skipped unchanged" 1 progress.skipped;
+      Alcotest.(check int) "total unchanged" 4 progress.total;
+      Alcotest.(check (option string)) "lifecycle" (Some "pr_handoff") progress.lifecycle_state;
+      Alcotest.(check (option string)) "dispatch" (Some "In review") progress.dispatch_state;
+      Alcotest.(check (option string)) "stage" (Some "reviewer") progress.stage_agent;
+      Alcotest.(check (option string)) "readiness" (Some "handoff_completed") progress.pr_readiness;
+      Alcotest.(check (option string)) "reason" (Some "Existing Batch Pull Request reused.") progress.reason;
+      Alcotest.(check (option string)) "handoff" (Some "handoff_completed") progress.handoff_status;
+      let json = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress () |> Runtime_state.to_yojson in
+      let open Yojson.Safe.Util in
+      let payload = json |> member "compozy_progress" in
+      Alcotest.(check string) "json lifecycle" "pr_handoff" (payload |> member "lifecycle_state" |> to_string);
+      Alcotest.(check string) "json dispatch" "In review" (payload |> member "dispatch_state" |> to_string);
+      Alcotest.(check string) "json stage" "reviewer" (payload |> member "stage_agent" |> to_string);
+      Alcotest.(check string) "json readiness" "handoff_completed" (payload |> member "pr_readiness" |> to_string);
+      Alcotest.(check string) "json reason" "Existing Batch Pull Request reused." (payload |> member "reason" |> to_string);
+      Alcotest.(check string) "json handoff" "handoff_completed" (payload |> member "handoff_status" |> to_string);
+      match Runtime_state.compozy_progress_from_snapshot_yojson json with
+      | Some parsed ->
+          Alcotest.(check (option string)) "parsed lifecycle" (Some "pr_handoff") parsed.lifecycle_state;
+          Alcotest.(check (option string)) "parsed dispatch" (Some "In review") parsed.dispatch_state;
+          Alcotest.(check (option string)) "parsed stage" (Some "reviewer") parsed.stage_agent;
+          Alcotest.(check (option string)) "parsed readiness" (Some "handoff_completed") parsed.pr_readiness;
+          Alcotest.(check (option string)) "parsed reason" (Some "Existing Batch Pull Request reused.") parsed.reason;
+          Alcotest.(check (option string)) "parsed handoff" (Some "handoff_completed") parsed.handoff_status
+      | None -> Alcotest.fail "expected extended Compozy progress to parse")
 
 let test_ordered_queue_parses_cli_identifiers () =
   match Ordered_queue.parse "19,#22,31,mb-20,compozy:example-feature" with
@@ -4046,6 +4132,12 @@ let test_http_state_can_include_compozy_progress () =
       failed = 0;
       skipped = 0;
       total = 8;
+      lifecycle_state = Some "in_execution";
+      dispatch_state = Some "In progress";
+      stage_agent = Some "engineer";
+      pr_readiness = Some "not_ready";
+      reason = None;
+      handoff_status = None;
     }
   in
   let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress () in
@@ -4061,7 +4153,9 @@ let test_http_state_can_include_compozy_progress () =
   let payload = json |> member "compozy_progress" in
   Alcotest.(check string) "run id" progress.run_id (payload |> member "run_id" |> to_string);
   Alcotest.(check string) "current step" "task_02.md" (payload |> member "current_step" |> to_string);
-  Alcotest.(check int) "total" 8 (payload |> member "total" |> to_int)
+  Alcotest.(check int) "total" 8 (payload |> member "total" |> to_int);
+  Alcotest.(check string) "lifecycle" "in_execution" (payload |> member "lifecycle_state" |> to_string);
+  Alcotest.(check string) "readiness" "not_ready" (payload |> member "pr_readiness" |> to_string)
 
 let test_websocket_context_status_snapshot_and_http_state () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Context status" ~state:"Todo" in
@@ -11167,6 +11261,8 @@ let () =
           Alcotest.test_case "accepts absent Compozy progress" `Quick
             test_runtime_state_absent_compozy_progress_is_compatible;
           Alcotest.test_case "exposes Compozy progress" `Quick test_runtime_state_exposes_compozy_progress;
+          Alcotest.test_case "merges Compozy lifecycle metadata into progress" `Quick
+            test_runtime_state_compozy_progress_merges_lifecycle_metadata;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
           Alcotest.test_case "validates ordered queue through selected tracker" `Quick
             test_ordered_queue_validation_uses_selected_tracker;
