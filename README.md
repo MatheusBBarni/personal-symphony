@@ -502,14 +502,16 @@ Product Repository development is separate from Workspace Repository operation. 
 actual orchestration belong in the Workspace Repository where `symphony init` is run; this source
 repository keeps code, tests, packaging scripts, fixtures, and documentation.
 
-Product Repository development requires `pnpm` 10.x and an OCaml toolchain with `opam`, `dune`,
-`cmdliner`, `yojson`, and `alcotest`. The local scripts run OCaml commands through `opam exec`, so
-make sure the active opam switch has the required packages installed.
+Product Repository development requires `pnpm` 10.x and an OCaml toolchain with `opam`, OCaml
+`>= 5.1`, Dune `>= 3.19`, `cmdliner`, `yojson`, `alcotest`, and `mosaic`. The local scripts run
+OCaml commands through `opam exec`, so make sure the active opam switch has the required packages
+installed.
 
 Install dependencies:
 
 ```sh
 pnpm install
+opam install . --deps-only --with-test --yes
 ```
 
 Run the backend test suite:

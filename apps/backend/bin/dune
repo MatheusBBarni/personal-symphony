@@ -1,4 +1,10 @@
+(library
+ (name symphony_terminal_console_shell)
+ (modules terminal_console_mosaic)
+ (libraries symphony_backend mosaic))
+
 (executable
  (public_name symphony)
  (name main)
- (libraries symphony_backend cmdliner unix yojson))
+ (modules main)
+ (libraries symphony_backend symphony_terminal_console_shell cmdliner unix yojson))

@@ -4149,6 +4149,41 @@ let test_terminal_console_model_sanitizes_untrusted_text () =
   Alcotest.(check string) "secret assignment redacted" "GITHUB_TOKEN=[redacted]"
     (Terminal_console_model.sanitize "GITHUB_TOKEN=super-secret")
 
+let test_terminal_console_mosaic_status_labels () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  Alcotest.(check string) "idle" "Idle" (Shell.status_label "idle");
+  Alcotest.(check string) "running" "Running" (Shell.status_label "running");
+  Alcotest.(check string) "retrying" "Retrying" (Shell.status_label "retrying");
+  Alcotest.(check string) "attention" "Needs attention" (Shell.status_label "attention");
+  Alcotest.(check string) "readiness blocked" "Readiness blocked" (Shell.status_label "readiness_blocked")
+
+let test_terminal_console_mosaic_initial_model_uses_projection () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let issue, running =
+    terminal_console_running_row ~identifier:"\027[32m#9\027[0m"
+      ~title:"Render\027]0;spoof\007 Mosaic\000 shell"
+      ~branch_name:"feature/\027[31mmosaic\027[0m" "I9"
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      running = [ running ];
+    }
+  in
+  let model = Shell.initial_model state in
+  Alcotest.(check string) "status label" "Running" model.Shell.status_label;
+  match model.snapshot.Terminal_console_model.active with
+  | [ row ] ->
+      Alcotest.(check string) "identifier sanitized" "#9" row.Terminal_console_model.id;
+      Alcotest.(check string) "title sanitized" "Render Mosaic shell" row.title;
+      (match row.detail with
+      | Some detail ->
+          Alcotest.(check bool) "branch sanitized" true (contains_substring detail "branch feature/mosaic");
+          check_no_terminal_control "detail has no terminal controls" detail
+      | None -> Alcotest.fail "expected detail")
+  | _ -> Alcotest.fail "expected one active shell row"
+
 let websocket_request () =
   {
     Server.request_line = "GET /api/v1/state/live HTTP/1.1";
@@ -11233,6 +11268,10 @@ let () =
             test_terminal_console_model_projects_compozy_progress;
           Alcotest.test_case "sanitizes Terminal Console display text" `Quick
             test_terminal_console_model_sanitizes_untrusted_text;
+          Alcotest.test_case "labels Mosaic Terminal Console modes" `Quick
+            test_terminal_console_mosaic_status_labels;
+          Alcotest.test_case "builds Mosaic shell model from sanitized projection" `Quick
+            test_terminal_console_mosaic_initial_model_uses_projection;
         ] );
       ( "server",
         [

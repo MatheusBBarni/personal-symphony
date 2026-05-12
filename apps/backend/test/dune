@@ -1,3 +1,3 @@
 (test
  (name test_backend)
- (libraries symphony_backend alcotest unix threads yojson cmdliner))
+ (libraries symphony_backend symphony_terminal_console_shell alcotest unix threads yojson cmdliner))

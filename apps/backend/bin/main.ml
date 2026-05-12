@@ -40,6 +40,9 @@ let package_json_candidates () =
 let version =
   package_json_candidates () |> List.find_map version_from_package_json |> Option.value ~default:"unknown"
 
+let _terminal_console_mosaic_link_anchor =
+  Symphony_terminal_console_shell.Terminal_console_mosaic.compile_anchor
+
 let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
 let color code text = ansi code ^ text ^ ansi "0"
 let blue text = color "34;1" text
