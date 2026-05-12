@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Build Terminal Console View-Model Projection"
 type: backend
 complexity: medium
@@ -29,12 +29,12 @@ Build the pure backend projection that turns Runtime State into the Terminal Con
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add the Terminal Console projection module in the backend library.
-- [ ] 1.2 Add display-mode classification for Runtime State scenarios required by the PRD.
-- [ ] 1.3 Add sanitized task, readiness, queue, and Compozy progress rows for downstream rendering.
-- [ ] 1.4 Add safe-aid descriptors for non-mutating MVP actions.
-- [ ] 1.5 Add focused backend tests for projection behavior and sanitization.
-- [ ] 1.6 Confirm no Runtime State schema or orchestration code changes are introduced.
+- [x] 1.1 Add the Terminal Console projection module in the backend library.
+- [x] 1.2 Add display-mode classification for Runtime State scenarios required by the PRD.
+- [x] 1.3 Add sanitized task, readiness, queue, and Compozy progress rows for downstream rendering.
+- [x] 1.4 Add safe-aid descriptors for non-mutating MVP actions.
+- [x] 1.5 Add focused backend tests for projection behavior and sanitization.
+- [x] 1.6 Confirm no Runtime State schema or orchestration code changes are introduced.
 
 ## Implementation Details
 Create `apps/backend/lib/terminal_console_model.ml` and expose it through the existing backend library. Keep the module pure and Mosaic-independent. Reference the TechSpec "Core Interfaces", "Terminal Console View Model", and "Sanitization Model" sections for the expected projection boundary.
@@ -66,17 +66,17 @@ Add targeted test cases in `apps/backend/test/test_backend.ml` near the existing
 
 ## Tests
 - Unit tests:
-  - [ ] Empty Runtime State projects to idle mode with no active rows.
-  - [ ] Runtime State with one running issue projects to running mode with sanitized issue identifier and title.
-  - [ ] Runtime State with retrying work projects retry attempt, due time, and error summary.
-  - [ ] Runtime State with `issue_errors` projects attention mode and task error summaries.
-  - [ ] Runtime State with Readiness Gaps projects requirement/remediation pairs and readiness-blocked mode when no work is active.
-  - [ ] Ordered Queue entries project pending/running/retrying/completed/skipped states and skip reasons.
-  - [ ] Compozy PRD Run progress projects current step and completed/failed/skipped/total counts.
-  - [ ] Sanitization strips ANSI escape sequences and unsafe control characters from issue titles, branch-like text, and agent messages.
+  - [x] Empty Runtime State projects to idle mode with no active rows.
+  - [x] Runtime State with one running issue projects to running mode with sanitized issue identifier and title.
+  - [x] Runtime State with retrying work projects retry attempt, due time, and error summary.
+  - [x] Runtime State with `issue_errors` projects attention mode and task error summaries.
+  - [x] Runtime State with Readiness Gaps projects requirement/remediation pairs and readiness-blocked mode when no work is active.
+  - [x] Ordered Queue entries project pending/running/retrying/completed/skipped states and skip reasons.
+  - [x] Compozy PRD Run progress projects current step and completed/failed/skipped/total counts.
+  - [x] Sanitization strips ANSI escape sequences and unsafe control characters from issue titles, branch-like text, and agent messages.
 - Integration tests:
-  - [ ] Existing Runtime State JSON tests still pass without schema changes.
-  - [ ] Projection fixtures cover Goal Usage and context status fields already exposed by Runtime State.
+  - [x] Existing Runtime State JSON tests still pass without schema changes.
+  - [x] Projection fixtures cover Goal Usage and context status fields already exposed by Runtime State.
 - Test coverage target: >=80%
 - All tests must pass
 

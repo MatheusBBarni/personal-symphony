@@ -3894,6 +3894,261 @@ let test_runtime_state_exposes_context_status () =
   let skipped_summary = json |> member "running" |> to_list |> List.hd |> member "context_status" |> member "summary" |> to_string in
   Alcotest.(check string) "default skipped summary" "Context behavior disabled or not applicable." skipped_summary
 
+let has_unsafe_terminal_control text =
+  let rec loop index =
+    if index >= String.length text then false
+    else
+      let code = Char.code text.[index] in
+      code = 0x1b || code = 0x7f || (code < 0x20 && text.[index] <> '\n' && text.[index] <> '\r' && text.[index] <> '\t')
+      || loop (index + 1)
+  in
+  loop 0
+
+let check_no_terminal_control label text =
+  Alcotest.(check bool) label false (has_unsafe_terminal_control text)
+
+let terminal_console_running_row ?(identifier = "#1") ?(title = "Running task") ?branch_name ?goal_usage issue_id =
+  let issue =
+    {
+      (Issue.empty ~id:issue_id ~identifier ~title ~state:"In progress") with
+      branch_name;
+    }
+  in
+  ( issue,
+    {
+      Runtime_state.issue;
+      stage_agent = Some "engineer";
+      harness_name = Some "codex";
+      harness_kind = Some "codex";
+      stage_states = [ "Todo"; "In progress" ];
+      session_id = Some "pid:123";
+      turn_count = 3;
+      last_event = Some "agent_output";
+      last_message = Some "agent\027[31m output\027[0m\000ready";
+      started_at = "2026-05-04T00:00:00Z";
+      last_event_at = Some "2026-05-04T00:00:10Z";
+      tokens = { Runtime_state.input_tokens = 1; output_tokens = 2; total_tokens = 3 };
+      goal_usage;
+    } )
+
+let test_terminal_console_model_projects_idle () =
+  let model = Terminal_console_model.of_runtime_state (Runtime_state.empty ()) in
+  Alcotest.(check string) "mode" "idle" model.Terminal_console_model.mode;
+  Alcotest.(check int) "active rows" 0 (List.length model.active);
+  Alcotest.(check int) "readiness rows" 0 (List.length model.readiness);
+  Alcotest.(check int) "queue rows" 0 (List.length model.queue);
+  Alcotest.(check bool) "generated timestamp present" true (model.generated_at <> "");
+  Alcotest.(check bool) "refresh aid"
+    true
+    (List.exists (function Terminal_console_model.Refresh_view -> true | _ -> false) model.safe_aids);
+  Alcotest.(check bool) "web handoff aid"
+    true
+    (List.exists (function Terminal_console_model.Show_web_handoff -> true | _ -> false) model.safe_aids)
+
+let test_terminal_console_model_projects_running_sanitized () =
+  let usage = { Runtime_state.status = Some "active"; time_used_seconds = Some 12.; tokens_used = Some 77 } in
+  let issue, running =
+    terminal_console_running_row ~identifier:"\027[32m#1\027[0m"
+      ~title:"Build\000 Terminal\027]0;spoof\007 Console"
+      ~branch_name:"feature/\027[31mconsole\027[0m" ~goal_usage:usage "I1"
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      running = [ running ];
+    }
+    |> Runtime_state.set_context_status "I1"
+         (Runtime_state.make_context_status ~state:"warning\027[0m"
+            ~summary:"Context\027[31m needs review\027[0m"
+            ~diagnostics_path:"/tmp/\027[33mdiag.txt\027[0m" ())
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "running" model.mode;
+  match model.active with
+  | [ row ] ->
+      Alcotest.(check string) "identifier sanitized" "#1" row.Terminal_console_model.id;
+      Alcotest.(check string) "title sanitized" "Build Terminal Console" row.title;
+      Alcotest.(check string) "state" "running" row.state;
+      (match row.detail with
+      | Some detail ->
+          Alcotest.(check bool) "branch detail" true (contains_substring detail "branch feature/console");
+          Alcotest.(check bool) "message detail" true (contains_substring detail "last message agent outputready");
+          check_no_terminal_control "detail sanitized" detail
+      | None -> Alcotest.fail "expected running detail");
+      (match row.goal_usage with
+      | Some goal ->
+          Alcotest.(check (option string)) "goal status" (Some "active") goal.status;
+          Alcotest.(check (option int)) "goal tokens" (Some 77) goal.tokens_used;
+          Alcotest.(check (option string)) "goal text" (Some "status active | time 12s | tokens 77") goal.text
+      | None -> Alcotest.fail "expected goal usage");
+      (match row.context_status with
+      | Some context ->
+          Alcotest.(check string) "context state" "warning" context.state;
+          Alcotest.(check string) "context summary" "Context needs review" context.summary;
+          Alcotest.(check (option string)) "diagnostics path" (Some "/tmp/diag.txt") context.diagnostics_path
+      | None -> Alcotest.fail "expected context status")
+  | _ -> Alcotest.fail "expected one active row"
+
+let test_terminal_console_model_projects_retrying () =
+  let retry_usage = { Runtime_state.status = Some "retrying"; time_used_seconds = Some 4.; tokens_used = Some 42 } in
+  let issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 2;
+            due_at = "2026-05-04T00:02:00Z";
+            error = Some "agent\027[31m failed\027[0m";
+            goal_usage = Some retry_usage;
+          };
+        ];
+    }
+    |> Runtime_state.set_context_status "I2"
+         (Runtime_state.make_context_status ~state:"timed_out" ~summary:"Context Command timed out." ())
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "retrying" model.mode;
+  match model.active with
+  | [ row ] ->
+      Alcotest.(check string) "state" "retrying" row.Terminal_console_model.state;
+      Alcotest.(check (option string)) "error" (Some "agent failed") row.error;
+      (match row.detail with
+      | Some detail ->
+          Alcotest.(check bool) "attempt detail" true (contains_substring detail "attempt 2");
+          Alcotest.(check bool) "due detail" true (contains_substring detail "due 2026-05-04T00:02:00Z")
+      | None -> Alcotest.fail "expected retry detail");
+      (match row.goal_usage with
+      | Some goal -> Alcotest.(check (option string)) "goal text" (Some "status retrying | time 4s | tokens 42") goal.text
+      | None -> Alcotest.fail "expected retry goal usage");
+      (match row.context_status with
+      | Some context -> Alcotest.(check string) "context state" "timed_out" context.state
+      | None -> Alcotest.fail "expected retry context status")
+  | _ -> Alcotest.fail "expected one retrying row"
+
+let test_terminal_console_model_projects_attention () =
+  let issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Needs attention" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ~last_error:"global\027[31m failure\027[0m" ()) with
+      issues = [ issue ];
+      issue_errors =
+        [
+          {
+            Runtime_state.issue_id = "I3";
+            issue_identifier = "#3";
+            error = "commit\027[31m required\027[0m";
+            goal_usage = Some { Runtime_state.status = Some "blocked"; time_used_seconds = Some 2.; tokens_used = None };
+          };
+        ];
+    }
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "attention" model.mode;
+  Alcotest.(check (option string)) "last error" (Some "global failure") model.last_error;
+  Alcotest.(check bool) "summary includes last error" true
+    (List.exists (fun line -> line = "Last error: global failure") model.summary);
+  match model.active with
+  | [ row ] ->
+      Alcotest.(check string) "state" "attention" row.Terminal_console_model.state;
+      Alcotest.(check (option string)) "error" (Some "commit required") row.error;
+      (match row.goal_usage with
+      | Some goal -> Alcotest.(check (option string)) "goal status" (Some "blocked") goal.status
+      | None -> Alcotest.fail "expected attention goal usage")
+  | _ -> Alcotest.fail "expected one attention row"
+
+let test_terminal_console_model_projects_readiness_blocked () =
+  let state =
+    Runtime_state.empty
+      ~readiness_gaps:
+        [
+          {
+            Runtime_state.requirement = "tracker.\027[31mowner\027[0m";
+            remediation = "set\000 tracker owner";
+          };
+        ]
+      ()
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "readiness_blocked" model.mode;
+  Alcotest.(check int) "no active rows" 0 (List.length model.active);
+  match model.readiness with
+  | [ gap ] ->
+      Alcotest.(check string) "requirement" "tracker.owner" gap.Terminal_console_model.requirement;
+      Alcotest.(check string) "remediation" "set tracker owner" gap.remediation
+  | _ -> Alcotest.fail "expected one readiness gap"
+
+let test_terminal_console_model_projects_ordered_queue () =
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "pending"; skip_reason = None };
+          { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "running"; skip_reason = None };
+          { Runtime_state.issue_identifier = "#3"; title = Some "Three"; state = "retrying"; skip_reason = None };
+          { Runtime_state.issue_identifier = "#4"; title = Some "Four"; state = "completed"; skip_reason = None };
+          {
+            Runtime_state.issue_identifier = "#5";
+            title = Some "Five";
+            state = "skipped";
+            skip_reason = Some "Issue\027[31m skipped\027[0m";
+          };
+        ];
+    }
+  in
+  let model = Terminal_console_model.of_runtime_state (Runtime_state.empty ~ordered_queue:queue ()) in
+  Alcotest.(check string) "mode" "ready" model.mode;
+  Alcotest.(check (list string)) "queue states"
+    [ "pending"; "running"; "retrying"; "completed"; "skipped" ]
+    (List.map (fun (row : Terminal_console_model.task_row) -> row.state) model.queue);
+  let skipped = List.nth model.queue 4 in
+  Alcotest.(check (option string)) "skip reason" (Some "Issue skipped") skipped.error;
+  Alcotest.(check bool) "summary next work" true
+    (List.exists (fun line -> line = "Next work: #1 One") model.summary)
+
+let test_terminal_console_model_projects_compozy_progress () =
+  let progress =
+    {
+      Runtime_state.run_id = "compozy:\027[31mrun\027[0m";
+      slug = "mosaic-tui";
+      current_step = Some "task_02.md";
+      completed = 1;
+      failed = 2;
+      skipped = 3;
+      total = 9;
+    }
+  in
+  let model =
+    Terminal_console_model.of_runtime_state
+      (Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress ())
+  in
+  match model.compozy with
+  | Some projected ->
+      Alcotest.(check string) "run id sanitized" "compozy:run" projected.Terminal_console_model.run_id;
+      Alcotest.(check (option string)) "current step" (Some "task_02.md") projected.current_step;
+      Alcotest.(check int) "completed" 1 projected.completed;
+      Alcotest.(check int) "failed" 2 projected.failed;
+      Alcotest.(check int) "skipped" 3 projected.skipped;
+      Alcotest.(check int) "total" 9 projected.total;
+      Alcotest.(check string) "summary" "mosaic-tui: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
+        projected.summary
+  | None -> Alcotest.fail "expected Compozy progress"
+
+let test_terminal_console_model_sanitizes_untrusted_text () =
+  Alcotest.(check string) "ansi stripped" "red" (Terminal_console_model.sanitize "\027[31mred\027[0m");
+  Alcotest.(check string) "osc stripped" "title ok" (Terminal_console_model.sanitize "title\027]0;spoof\007 ok");
+  Alcotest.(check string) "controls stripped" "badtext next"
+    (Terminal_console_model.sanitize "bad\000text\031 next");
+  Alcotest.(check string) "safe whitespace normalized" "line tab carriage"
+    (Terminal_console_model.sanitize "line\ttab\rcarriage");
+  Alcotest.(check string) "secret assignment redacted" "GITHUB_TOKEN=[redacted]"
+    (Terminal_console_model.sanitize "GITHUB_TOKEN=super-secret")
+
 let websocket_request () =
   {
     Server.request_line = "GET /api/v1/state/live HTTP/1.1";
@@ -10963,6 +11218,21 @@ let () =
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
           Alcotest.test_case "exposes context status" `Quick test_runtime_state_exposes_context_status;
+          Alcotest.test_case "projects Terminal Console idle mode" `Quick test_terminal_console_model_projects_idle;
+          Alcotest.test_case "projects Terminal Console running rows sanitized" `Quick
+            test_terminal_console_model_projects_running_sanitized;
+          Alcotest.test_case "projects Terminal Console retrying rows" `Quick
+            test_terminal_console_model_projects_retrying;
+          Alcotest.test_case "projects Terminal Console attention rows" `Quick
+            test_terminal_console_model_projects_attention;
+          Alcotest.test_case "projects Terminal Console readiness gaps" `Quick
+            test_terminal_console_model_projects_readiness_blocked;
+          Alcotest.test_case "projects Terminal Console ordered queue rows" `Quick
+            test_terminal_console_model_projects_ordered_queue;
+          Alcotest.test_case "projects Terminal Console Compozy progress" `Quick
+            test_terminal_console_model_projects_compozy_progress;
+          Alcotest.test_case "sanitizes Terminal Console display text" `Quick
+            test_terminal_console_model_sanitizes_untrusted_text;
         ] );
       ( "server",
         [
