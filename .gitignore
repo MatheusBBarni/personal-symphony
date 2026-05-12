@@ -3,6 +3,7 @@ node_modules/
 _build/
 _build_*/
 dist/
+vendor/
 apps/frontend/lib/
 apps/frontend/src/**/*.res.js
 .symphony-workspaces/
