@@ -4184,6 +4184,252 @@ let test_terminal_console_mosaic_initial_model_uses_projection () =
       | None -> Alcotest.fail "expected detail")
   | _ -> Alcotest.fail "expected one active shell row"
 
+let check_line_contains label lines expected =
+  Alcotest.(check bool) label true (List.exists (fun line -> contains_substring line expected) lines)
+
+let check_line_absent label lines unexpected =
+  Alcotest.(check bool) label false (List.exists (fun line -> contains_substring line unexpected) lines)
+
+let check_wrapped_text_contains label lines expected =
+  Alcotest.(check bool) label true (contains_substring (String.concat " " lines) expected)
+
+let terminal_console_snapshot state = Terminal_console_model.of_runtime_state state
+
+let terminal_console_rendered ?terminal_size state =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  Shell.render_snapshot ?terminal_size (terminal_console_snapshot state)
+
+let terminal_console_panel ?terminal_size state title =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  Shell.panel_lines (terminal_console_rendered ?terminal_size state) title
+
+let terminal_console_queue_fixture () =
+  {
+    Runtime_state.entries =
+      [
+        { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "pending"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "running"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#3"; title = Some "Three"; state = "retrying"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#4"; title = Some "Four"; state = "completed"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#5"; title = Some "Five"; state = "skipped"; skip_reason = Some "Issue skipped" };
+      ];
+  }
+
+let terminal_console_compozy_fixture =
+  {
+    Runtime_state.run_id = "compozy:run";
+    slug = "mosaic-tui";
+    current_step = Some "task_04.md";
+    completed = 2;
+    failed = 1;
+    skipped = 3;
+    total = 8;
+  }
+
+let test_terminal_console_mosaic_active_home_panel () =
+  let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
+  let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ~ordered_queue:(terminal_console_queue_fixture ()) ()) with
+      issues = [ running_issue; retry_issue; attention_issue ];
+      running = [ running ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 2;
+            due_at = "2026-05-04T00:02:00Z";
+            error = Some "agent failed";
+            goal_usage = None;
+          };
+        ];
+      issue_errors = [ { Runtime_state.issue_id = "I3"; issue_identifier = "#3"; error = "needs merge"; goal_usage = None } ];
+      usage_totals = { Runtime_state.input_tokens = 40; output_tokens = 60; total_tokens = 100 };
+    }
+  in
+  let lines = terminal_console_panel state "Active Work" in
+  check_line_contains "home includes running row" lines "RUNNING #1 Running task";
+  check_line_contains "home includes retrying row" lines "RETRYING #2 Retry task";
+  check_line_contains "home includes attention row" lines "ATTENTION #3 Attention task";
+  check_line_contains "home includes next queued work" lines "Next work: NEXT PENDING #1 One";
+  check_line_contains "home includes token total" lines "Total tokens: 100";
+  check_line_contains "home includes update context" lines "Updated:"
+
+let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let size : Shell.terminal_size = { columns = 80; rows = 24 } in
+  let state =
+    Runtime_state.empty
+      ~readiness_gaps:
+        [
+          {
+            Runtime_state.requirement = "tracker.owner";
+            remediation =
+              "Set tracker.owner in Runtime Settings so dispatch can discover Workspace Repository issues.";
+          };
+          {
+            Runtime_state.requirement = "stageAgents.engineer.context.command";
+            remediation =
+              "Use stageAgents.stages[].context.command with an argv array and a Workspace Repository safe cwd.";
+          };
+        ]
+      ()
+  in
+  let lines = terminal_console_panel ~terminal_size:size state "Readiness and Attention" in
+  check_line_contains "first requirement" lines "READINESS GAP 1 requirement: tracker.owner";
+  check_wrapped_text_contains "first remediation retained" lines
+    "Set tracker.owner in Runtime Settings so dispatch can discover Workspace Repository issues.";
+  check_line_contains "second requirement" lines "READINESS GAP 2 requirement: stageAgents.engineer.context.command";
+  check_wrapped_text_contains "second remediation retained" lines
+    "Use stageAgents.stages[].context.command with an argv array and a Workspace Repository safe cwd"
+
+let test_terminal_console_mosaic_ordered_queue_panel_states () =
+  let state = Runtime_state.empty ~ordered_queue:(terminal_console_queue_fixture ()) () in
+  let lines = terminal_console_panel state "Ordered Queue" in
+  check_line_contains "queue next work" lines "Next work: NEXT PENDING #1 One";
+  check_line_contains "pending state" lines "PENDING #1 One";
+  check_line_contains "running state" lines "RUNNING #2 Two";
+  check_line_contains "retrying state" lines "RETRYING #3 Three";
+  check_line_contains "completed state" lines "COMPLETED #4 Four";
+  check_line_contains "skipped state" lines "SKIPPED #5 Five";
+  check_line_contains "skip reason" lines "skip reason: Issue skipped"
+
+let test_terminal_console_mosaic_compozy_panel_counts () =
+  let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:terminal_console_compozy_fixture () in
+  let lines = terminal_console_panel state "Compozy PRD Run" in
+  check_line_contains "compozy slug" lines "Compozy PRD Run: mosaic-tui";
+  check_line_contains "compozy current step" lines "Current step: task_04.md";
+  check_line_contains "compozy counts" lines "Progress: completed 2 | failed 1 | skipped 3 | total 8"
+
+let test_terminal_console_mosaic_task_detail_panel_includes_context () =
+  let usage = { Runtime_state.status = Some "active"; time_used_seconds = Some 12.; tokens_used = Some 77 } in
+  let issue, running =
+    terminal_console_running_row ~identifier:"#10" ~title:"Detailed task" ~branch_name:"feature/detail"
+      ~goal_usage:usage "I10"
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      running = [ running ];
+    }
+    |> Runtime_state.set_context_status "I10"
+         (Runtime_state.make_context_status ~state:"warning" ~summary:"Context needs review" ())
+  in
+  let lines = terminal_console_panel state "Task Detail" in
+  check_line_contains "detail task" lines "Task: #10 Detailed task";
+  check_line_contains "detail issue metadata" lines "Issue metadata: issue state In progress";
+  check_line_contains "detail stage state" lines "Stage state: stage agent engineer";
+  check_line_contains "detail harness" lines "Harness identity: harness codex | harness kind codex";
+  check_line_contains "detail goal usage" lines "Goal Usage: status active | time 12s | tokens 77";
+  check_line_contains "detail context" lines "Context Status: warning: Context needs review"
+
+let test_terminal_console_mosaic_task_detail_omits_absent_optional_fields () =
+  let issue = Issue.empty ~id:"I11" ~identifier:"#11" ~title:"Attention without extras" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      issue_errors = [ { Runtime_state.issue_id = "I11"; issue_identifier = "#11"; error = "needs user"; goal_usage = None } ];
+    }
+  in
+  let lines = terminal_console_panel state "Task Detail" in
+  check_line_contains "detail error" lines "Current error: needs user";
+  check_line_absent "goal omitted" lines "Goal Usage:";
+  check_line_absent "context omitted" lines "Context Status:"
+
+let test_terminal_console_mosaic_no_color_labels_remain_distinct () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
+  let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
+  let active_state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ running_issue; retry_issue; attention_issue ];
+      running = [ running ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 1;
+            due_at = "2026-05-04T00:02:00Z";
+            error = None;
+            goal_usage = None;
+          };
+        ];
+      issue_errors = [ { Runtime_state.issue_id = "I3"; issue_identifier = "#3"; error = "blocked"; goal_usage = None } ];
+    }
+  in
+  let active_lines = terminal_console_rendered active_state |> Shell.rendered_lines in
+  check_line_contains "running text label" active_lines "RUNNING #1";
+  check_line_contains "retrying text label" active_lines "RETRYING #2";
+  check_line_contains "attention text label" active_lines "ATTENTION #3";
+  let readiness_lines =
+    Runtime_state.empty
+      ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+      ()
+    |> terminal_console_rendered |> Shell.rendered_lines
+  in
+  check_line_contains "readiness text label" readiness_lines "READINESS GAP";
+  let idle_lines = Runtime_state.empty () |> terminal_console_rendered |> Shell.rendered_lines in
+  check_line_contains "idle text label" idle_lines "IDLE No active work"
+
+let test_terminal_console_mosaic_renders_runtime_state_fixtures () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let running_issue, running = terminal_console_running_row ~identifier:"#20" ~title:"Running fixture" "I20" in
+  let retry_issue = Issue.empty ~id:"I21" ~identifier:"#21" ~title:"Retry fixture" ~state:"Todo" in
+  let states =
+    [
+      ("idle", Runtime_state.empty ());
+      ( "readiness",
+        Runtime_state.empty
+          ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+          () );
+      ("running", { (Runtime_state.empty ()) with issues = [ running_issue ]; running = [ running ] });
+      ( "retrying",
+        {
+          (Runtime_state.empty ()) with
+          issues = [ retry_issue ];
+          retrying =
+            [
+              {
+                Runtime_state.issue_id = "I21";
+                issue_identifier = "#21";
+                attempt = 2;
+                due_at = "2026-05-04T00:02:00Z";
+                error = Some "failed";
+                goal_usage = None;
+              };
+            ];
+        } );
+      ( "compozy",
+        Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:(terminal_console_queue_fixture ())
+          ~compozy_progress:terminal_console_compozy_fixture () );
+    ]
+  in
+  List.iter
+    (fun (name, state) ->
+      let model = Shell.initial_model state in
+      ignore (Shell.view model);
+      let rendered = Shell.render_model model in
+      Alcotest.(check bool) (name ^ " rendered lines") true (Shell.rendered_lines rendered <> []))
+    states
+
+let test_terminal_console_mosaic_minimum_size_message () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let small : Shell.terminal_size = { columns = 72; rows = 20 } in
+  let rendered = Shell.render_snapshot ~terminal_size:small (terminal_console_snapshot (Runtime_state.empty ())) in
+  let lines = Shell.rendered_lines rendered in
+  check_line_contains "minimum message" lines "Terminal Console needs at least 80 columns x 24 rows.";
+  check_line_contains "current size" lines "Current size: 72 columns x 20 rows.";
+  check_line_contains "resize help" lines "Resize the terminal to continue.";
+  ignore (Shell.view (Shell.initial_model ~terminal_size:small (Runtime_state.empty ())))
+
 let terminal_console_runtime_branch_name = function
   | Symphony_terminal_console_shell.Terminal_console_runtime.Manual_merge -> "manual_merge"
   | Symphony_terminal_console_shell.Terminal_console_runtime.Once -> "once"
@@ -11358,6 +11604,24 @@ let () =
             test_terminal_console_mosaic_status_labels;
           Alcotest.test_case "builds Mosaic shell model from sanitized projection" `Quick
             test_terminal_console_mosaic_initial_model_uses_projection;
+          Alcotest.test_case "renders Active Work Home panel" `Quick
+            test_terminal_console_mosaic_active_home_panel;
+          Alcotest.test_case "renders readiness remediation panel" `Quick
+            test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation;
+          Alcotest.test_case "renders Ordered Queue panel states" `Quick
+            test_terminal_console_mosaic_ordered_queue_panel_states;
+          Alcotest.test_case "renders Compozy PRD Run panel counts" `Quick
+            test_terminal_console_mosaic_compozy_panel_counts;
+          Alcotest.test_case "renders task detail context" `Quick
+            test_terminal_console_mosaic_task_detail_panel_includes_context;
+          Alcotest.test_case "omits absent task detail fields" `Quick
+            test_terminal_console_mosaic_task_detail_omits_absent_optional_fields;
+          Alcotest.test_case "keeps no-color status labels distinct" `Quick
+            test_terminal_console_mosaic_no_color_labels_remain_distinct;
+          Alcotest.test_case "renders Terminal Console fixture snapshots" `Quick
+            test_terminal_console_mosaic_renders_runtime_state_fixtures;
+          Alcotest.test_case "renders Terminal Console minimum-size message" `Quick
+            test_terminal_console_mosaic_minimum_size_message;
           Alcotest.test_case "stores latest Terminal Console runtime state" `Quick
             test_terminal_console_runtime_handoff_latest_state;
           Alcotest.test_case "subscribes to latest Terminal Console runtime state" `Quick
