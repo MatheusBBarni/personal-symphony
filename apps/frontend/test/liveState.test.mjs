@@ -34,7 +34,7 @@ globalThis.fetch = () => {
 
 const disconnectLiveState = createLiveStateConnection({
   WebSocketCtor: MockWebSocket,
-  locationObj: { protocol: "http:", host: "127.0.0.1:8080" },
+  locationObj: { protocol: "http:", host: "127.0.0.1:8080", search: "" },
   setTimeoutFn: (fn, delay) => {
     timers.push({ fn, delay });
     return timers.length;
@@ -444,3 +444,18 @@ disconnectLiveState();
 assert.equal(sockets[1].readyState, MockWebSocket.CLOSED);
 sockets[1].onclose();
 assert.equal(timers.length, 1);
+
+const authSocketIndex = sockets.length;
+const disconnectAuthLiveState = createLiveStateConnection({
+  WebSocketCtor: MockWebSocket,
+  locationObj: { protocol: "http:", host: "127.0.0.1:8080", search: "?symphony_auth=local token&ignored=1" },
+  setTimeoutFn: (fn, delay) => {
+    timers.push({ fn, delay });
+    return timers.length;
+  },
+  onSnapshot: snapshot => snapshots.push(snapshot),
+  onConnectionError: message => errors.push(message),
+});
+
+assert.equal(sockets[authSocketIndex].url, "ws://127.0.0.1:8080/api/v1/state/live?symphony_auth=local%20token");
+disconnectAuthLiveState();

@@ -313,6 +313,8 @@ _Avoid_: sound settings, Runtime Settings, repository audio config
 
 **Live Dashboard Connection**:
 The browser-to-local-server connection that streams Runtime State snapshots to the Web Dashboard.
+The local server binds to loopback by default; operators must explicitly set `server.host` in Runtime Settings for non-loopback access.
+Non-loopback Live Dashboard Connection and Runtime State HTTP access require the server-generated local dashboard auth token.
 _Avoid_: polling, replace HTTP
 
 **Audio Notification**:
@@ -638,6 +640,7 @@ _Avoid_: reinitialize, reset
 - The Web Dashboard receives routine Runtime State updates through the **Live Dashboard Connection**, while HTTP state reads may remain for diagnostics.
 - The **Live Dashboard Connection** endpoint is scoped to the Runtime State resource.
 - The **Live Dashboard Connection** message is the Runtime State snapshot, not an event envelope.
+- A **Live Dashboard Connection** on a non-loopback server host requires a local dashboard auth token.
 - Each Runtime State change broadcasts the current Runtime State snapshot, even when consecutive snapshots are identical.
 - The **Live Dashboard Connection** delivers Runtime State snapshots from server to browser, not browser commands to the server.
 - A slow or closed **Live Dashboard Connection** must not block orchestration progress.

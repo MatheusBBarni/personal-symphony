@@ -94,10 +94,15 @@ let render_startup_completed ~mode ~config ~runtime_home =
     (cyan config.Config.tracker.kind) (tracker_issue_source config)
     (dim event)
 
-let render_web_dashboard_starting ~port =
-  let url = Printf.sprintf "http://0.0.0.0:%d/" port in
+let dashboard_url ?auth_token ~host ~port () =
+  let base = Printf.sprintf "http://%s:%d/" host port in
+  match auth_token with None -> base | Some token -> base ^ "?symphony_auth=" ^ token
+
+let render_web_dashboard_starting ?auth_token ~host ~port () =
+  let url = dashboard_url ?auth_token ~host ~port () in
+  let auth_status = match auth_token with Some _ -> "required" | None -> "not_required" in
   Printf.eprintf "%s %s %s %s %s\n%!" (blue "web_dashboard") (yellow "starting") (dim "url") (cyan url)
-    (dim (Printf.sprintf "event=web_dashboard status=starting url=%s" url))
+    (dim (Printf.sprintf "event=web_dashboard status=starting server_host=%s server_port=%d auth=%s" host port auth_status))
 
 let symphony_banner =
   [
@@ -175,9 +180,11 @@ let run_legacy workflow_path port once =
       config.tracker.owner config.tracker.repo config.tracker.project_number config.workspace.root;
     if once then 0
     else
+      let host = config.server.host in
       let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+      let auth_token = if Server.host_requires_auth host then Some (Server.generate_auth_token ()) else None in
       let live = Server.create_live_state ~get_state:(fun () -> state) in
-      run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
+      run_until_stopped (fun () -> Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> state) ())
   with
   | Workflow.Error err ->
       Printf.eprintf "event=startup outcome=failed reason=%s\n%!" (Workflow.string_of_error err);
@@ -245,8 +252,11 @@ let run_runtime port once web queue_arg merge_args overrides =
         if merge_args <> [] then run_manual_merge config merge_args
         else (
           let state = Runtime_readiness.state ?ordered_queue ~queue_parse_problems config in
+          let terminal_console_host = config.server.host in
           let terminal_console_port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-          let terminal_console_web_handoff = Terminal_console_mosaic.default_web_handoff ~port:terminal_console_port () in
+          let terminal_console_web_handoff =
+            Terminal_console_mosaic.default_web_handoff ~host:terminal_console_host ~port:terminal_console_port ()
+          in
           let terminal_console_local_surfaces =
             [
               Terminal_console_mosaic.local_surface ~label:"Workspace Repository" ~root:config.repository_root;
@@ -263,13 +273,17 @@ let run_runtime port once web queue_arg merge_args overrides =
               if mode = Cli_mode.Terminal_console then render_terminal_console config state;
               0
           | Web_dashboard Runtime_policy.Serve_readiness_state ->
+              let host = config.server.host in
               let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-              render_web_dashboard_starting ~port;
+              let auth_token = if Server.host_requires_auth host then Some (Server.generate_auth_token ()) else None in
+              render_web_dashboard_starting ?auth_token ~host ~port ();
               let live = Server.create_live_state ~get_state:(fun () -> state) in
-              run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
+              run_until_stopped (fun () -> Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> state) ())
           | Web_dashboard Runtime_policy.Run_orchestrator ->
+              let host = config.server.host in
               let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-              render_web_dashboard_starting ~port;
+              let auth_token = if Server.host_requires_auth host then Some (Server.generate_auth_token ()) else None in
+              render_web_dashboard_starting ?auth_token ~host ~port ();
               let orchestrator_ref = ref None in
               let live =
                 Server.create_live_state ~get_state:(fun () ->
@@ -285,7 +299,7 @@ let run_runtime port once web queue_arg merge_args overrides =
               orchestrator_ref := Some orchestrator;
               ignore (Thread.create Orchestrator.run_forever orchestrator);
               run_until_stopped (fun () ->
-                  Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
+                  Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
           | Terminal_console_readiness ->
               Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
                 ~local_surfaces:terminal_console_local_surfaces ~initial_state:state ();

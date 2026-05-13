@@ -70,8 +70,8 @@ type msg = Snapshot_received of Runtime_state.t | Key_press of ui_key | Resize o
 
 let compile_anchor = "terminal-console-mosaic"
 let minimum_terminal_size = { columns = 80; rows = 24 }
-let default_web_handoff ?(port = 8080) () =
-  { command = Printf.sprintf "symphony --web --port %d" port; url = Printf.sprintf "http://127.0.0.1:%d/" port }
+let default_web_handoff ?(host = "127.0.0.1") ?(port = 8080) () =
+  { command = Printf.sprintf "symphony --web --port %d" port; url = Printf.sprintf "http://%s:%d/" host port }
 
 let local_surface ~label ~root = { label = Projection.sanitize label; root }
 

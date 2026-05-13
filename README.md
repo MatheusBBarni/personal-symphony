@@ -634,7 +634,11 @@ The backend serves:
 
 - Backend/API root: `http://127.0.0.1:8080/`
 - Runtime state JSON: `http://127.0.0.1:8080/api/v1/state`
-- Tailscale/LAN access: `http://<machine-ip>:8080/` because the backend binds to `0.0.0.0`.
+
+The backend binds to `127.0.0.1` by default. To expose the Web Dashboard on Tailscale or a LAN,
+set `"server": {"host": "0.0.0.0", "port": 8080}` in `.symphony/settings.json`; non-loopback
+binds print a one-time `symphony_auth` URL token and require that token for Runtime State HTTP and
+Live Dashboard Connection access.
 
 Start the Web Dashboard dev server in another terminal:
 

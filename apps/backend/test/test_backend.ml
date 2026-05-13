@@ -1170,7 +1170,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -1261,7 +1261,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
               };
             ];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -1376,7 +1376,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
               };
             ];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -2733,7 +2733,7 @@ let test_project_status_order_uses_transition_flow () =
       agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-      server = { port = None };
+      server = Config.default_server;
       pull_request = Config.default_pull_request;
       protected_paths = Config.default_protected_paths;
       stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
@@ -2965,6 +2965,7 @@ let test_settings_and_prompt_loading () =
       Alcotest.(check string) "repo placeholder" "your-repo" config.tracker.repo;
       Alcotest.(check int) "project number" 1 config.tracker.project_number;
       Alcotest.(check string) "workspace root" (Filename.concat (Unix.realpath root) ".symphony/workspaces") config.workspace.root;
+      Alcotest.(check string) "server host" "127.0.0.1" config.server.host;
       Alcotest.(check int) "server port" 8080 (Option.get config.server.port);
       Alcotest.(check string) "codex model" "gpt-5.5" config.codex.model;
       Alcotest.(check string) "codex reasoning" "medium" config.codex.reasoning_effort;
@@ -3002,6 +3003,31 @@ let test_settings_and_prompt_loading () =
         (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "environment.GITHUB_TOKEN") gaps));
   (match original_github_token with Some value -> Unix.putenv "GITHUB_TOKEN" value | None -> Unix.putenv "GITHUB_TOKEN" "");
   match original_gh_token with Some value -> Unix.putenv "GH_TOKEN" value | None -> Unix.putenv "GH_TOKEN" ""
+
+let test_server_host_settings () =
+  with_temp_dir "symphony-server-host-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      let write host =
+        Util.write_file settings
+          (Printf.sprintf
+             {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {"enabled": false},
+  "server": {"host": %S, "port": 9090}
+}|}
+             host)
+      in
+      write "0.0.0.0";
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "configured host" "0.0.0.0" config.server.host;
+      Alcotest.(check int) "configured port" 9090 (Option.get config.server.port);
+      write "localhost";
+      let loopback = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "localhost normalizes" "127.0.0.1" loopback.server.host;
+      write "not-a-host";
+      Alcotest.check_raises "rejects non-IP host" (Config.Invalid_config "server.host must be an IPv4 bind address")
+        (fun () -> ignore (Config.from_settings_file ~workspace_root:root settings)))
 
 let test_runtime_env_loading () =
   let original_github_token = Sys.getenv_opt "GITHUB_TOKEN" in
@@ -3894,7 +3920,7 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -4983,7 +5009,19 @@ let read_http_upgrade fd =
   Alcotest.(check bool) "switching protocols" true (String.contains response '1');
   response
 
-let with_websocket_client state f =
+let read_until_eof fd =
+  let buffer = Bytes.create 4096 in
+  let output = Buffer.create 4096 in
+  let rec loop () =
+    match Unix.read fd buffer 0 (Bytes.length buffer) with
+    | 0 -> Buffer.contents output
+    | read ->
+        Buffer.add_subbytes output buffer 0 read;
+        loop ()
+  in
+  loop ()
+
+let with_websocket_client ?auth_token ?(request = websocket_request ()) state f =
   let current_state = ref state in
   let live = Server.create_live_state ~get_state:(fun () -> !current_state) in
   let server_fd, client_fd = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
@@ -4993,7 +5031,7 @@ let with_websocket_client state f =
       (fun () ->
         Fun.protect
           ~finally:(fun () -> close_out_noerr server_oc)
-          (fun () -> Server.handle_websocket live server_fd server_oc (websocket_request ())))
+          (fun () -> Server.handle_websocket ?auth_token live server_fd server_oc request))
       ()
   in
   Fun.protect
@@ -5071,6 +5109,59 @@ let test_websocket_readiness_snapshot_and_http_state () =
   let open Yojson.Safe.Util in
   let json = Yojson.Safe.from_string body in
   Alcotest.(check string) "http tracker kind" "minibeads" (json |> member "tracker_kind" |> to_string)
+
+let test_runtime_state_auth_token_gates_non_loopback_surfaces () =
+  Alcotest.(check bool) "loopback host is public" false (Server.host_requires_auth "127.0.0.1");
+  Alcotest.(check bool) "wildcard host requires token" true (Server.host_requires_auth "0.0.0.0");
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ Issue.empty ~id:"I-auth" ~identifier:"#auth" ~title:"Secret task" ~state:"Todo" ];
+    }
+  in
+  let unauthorized =
+    Server.handle_request ~auth_token:"secret" (fun () -> state)
+      { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+  in
+  Alcotest.(check bool) "http state rejects missing token" true (contains_substring unauthorized "401 Unauthorized");
+  let authorized =
+    Server.handle_request ~auth_token:"secret" (fun () -> state)
+      {
+        Server.request_line = "GET /api/v1/state?symphony_auth=secret HTTP/1.1";
+        path = "/api/v1/state";
+        headers = [];
+      }
+  in
+  Alcotest.(check bool) "http state accepts query token" true (contains_substring authorized "Secret task");
+  let live = Server.create_live_state ~get_state:(fun () -> state) in
+  let server_fd, client_fd = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  let server_oc = Unix.out_channel_of_descr server_fd in
+  let thread =
+    Thread.create
+      (fun () ->
+        Fun.protect
+          ~finally:(fun () -> close_out_noerr server_oc)
+          (fun () -> Server.handle_websocket ~auth_token:"secret" live server_fd server_oc (websocket_request ())))
+      ()
+  in
+  let websocket_response =
+    Fun.protect
+      ~finally:(fun () ->
+        Unix.close client_fd;
+        Thread.join thread)
+      (fun () -> read_until_eof client_fd)
+  in
+  Alcotest.(check bool) "websocket rejects missing token" true (contains_substring websocket_response "401 Unauthorized");
+  let authenticated_request =
+    {
+      (websocket_request ()) with
+      request_line = "GET /api/v1/state/live?symphony_auth=secret HTTP/1.1";
+      path = "/api/v1/state/live";
+    }
+  in
+  with_websocket_client ~auth_token:"secret" ~request:authenticated_request state
+    (fun ~set_state:_ ~live:_ ~client_fd:_ ~initial ->
+      Alcotest.(check bool) "websocket accepts query token" true (contains_substring initial "Secret task"))
 
 let test_http_state_can_include_compozy_progress () =
   let progress = compozy_progress_fixture () in
@@ -5209,7 +5300,7 @@ let test_orchestrator_notifies_each_state_mutation () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -5261,7 +5352,7 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -5377,7 +5468,7 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -5509,7 +5600,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -5618,7 +5709,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -6413,7 +6504,7 @@ let stage_capacity_config root ~global_cap =
       agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-      server = { port = None };
+      server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
     stage_agents =
@@ -6504,7 +6595,7 @@ let test_orchestrator_dispatch_limits () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -6727,7 +6818,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
             agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-            server = { port = None };
+            server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -6849,7 +6940,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
       agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-      server = { port = None };
+      server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -6968,7 +7059,7 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -7110,7 +7201,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -7170,7 +7261,7 @@ let test_orchestrator_retries_failed_agent () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -7235,7 +7326,7 @@ let test_github_child_failure_retry_behavior_unchanged () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -7334,7 +7425,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -7399,7 +7490,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
             agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-            server = { port = None };
+            server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -7466,7 +7557,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -7572,7 +7663,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -7708,7 +7799,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -7795,7 +7886,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
       agent_harnesses;
           logical_agents;
           legacy_agent_harness_paths = [];
-      server = { port = None };
+      server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
     stage_agents =
@@ -8048,7 +8139,7 @@ let compozy_test_config root compozy_root =
     agent_harnesses = [];
     logical_agents = [];
     legacy_agent_harness_paths = [];
-    server = { port = None };
+    server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -10006,7 +10097,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -10292,7 +10383,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -10444,7 +10535,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -10519,7 +10610,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-          server = { port = None };
+          server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -10621,7 +10712,7 @@ let test_stage_commit_requires_code_changes () =
             agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-            server = { port = None };
+            server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -10685,7 +10776,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
             agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-            server = { port = None };
+            server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
           stage_agents =
@@ -10795,7 +10886,7 @@ let base_orchestrator_config root git =
   agent_harnesses = [];
           logical_agents = [];
           legacy_agent_harness_paths = [];
-  server = { port = None };
+  server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
@@ -12941,6 +13032,7 @@ let () =
             test_bootstrap_default_runtime_contract_shape;
           Alcotest.test_case "requires git repository root" `Quick test_root_validation;
           Alcotest.test_case "loads settings and prompt" `Quick test_settings_and_prompt_loading;
+          Alcotest.test_case "parses server host settings" `Quick test_server_host_settings;
           Alcotest.test_case "loads runtime env file" `Quick test_runtime_env_loading;
           Alcotest.test_case "rejects repo URL in settings" `Quick test_repo_url_readiness_gap;
           Alcotest.test_case "writes ignore rules" `Quick test_runtime_gitignore_contents;
@@ -13230,6 +13322,8 @@ let () =
           Alcotest.test_case "handles websocket upgrade and initial snapshot" `Quick test_websocket_accept_and_initial_snapshot;
           Alcotest.test_case "broadcasts after state change" `Quick test_websocket_broadcast_after_state_change;
           Alcotest.test_case "serves readiness live snapshot and diagnostic state" `Quick test_websocket_readiness_snapshot_and_http_state;
+          Alcotest.test_case "requires auth token for non-loopback runtime state" `Quick
+            test_runtime_state_auth_token_gates_non_loopback_surfaces;
           Alcotest.test_case "serves Compozy progress in HTTP state" `Quick test_http_state_can_include_compozy_progress;
           Alcotest.test_case "serves Compozy progress in live snapshot" `Quick
             test_websocket_compozy_progress_snapshot_shape;

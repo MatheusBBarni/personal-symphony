@@ -17,10 +17,60 @@ let response ?(status = "200 OK") ?(content_type = "application/json") body =
   Printf.sprintf "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s"
     status content_type (String.length body) body
 
+let unauthorized_response () =
+  response ~status:"401 Unauthorized"
+    (`Assoc
+       [
+         ("error", `Assoc [ ("code", `String "unauthorized"); ("message", `String "dashboard auth token required") ]);
+       ]
+    |> Yojson.Safe.to_string)
+
 let websocket_response accept_key =
   Printf.sprintf
     "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n"
     accept_key
+
+let default_host = "127.0.0.1"
+
+let normalize_host host =
+  match String.trim host |> String.lowercase_ascii with "" | "localhost" -> default_host | value -> value
+
+let inet_addr_of_host host =
+  let host = normalize_host host in
+  if String.contains host ':' then invalid_arg "server host must be an IPv4 bind address";
+  try Unix.inet_addr_of_string host with Unix.Unix_error _ | Failure _ -> invalid_arg "server host must be an IPv4 bind address"
+
+let host_requires_auth host =
+  let host = Unix.string_of_inet_addr (inet_addr_of_host host) in
+  not (host = "127.0.0.1" || (String.length host >= 4 && String.sub host 0 4 = "127."))
+
+let hex bytes =
+  let alphabet = "0123456789abcdef" in
+  let len = Bytes.length bytes in
+  let out = Bytes.create (len * 2) in
+  for i = 0 to len - 1 do
+    let value = Char.code (Bytes.get bytes i) in
+    Bytes.set out (i * 2) alphabet.[value lsr 4];
+    Bytes.set out ((i * 2) + 1) alphabet.[value land 0x0f]
+  done;
+  Bytes.unsafe_to_string out
+
+let random_bytes_from_urandom length =
+  let fd = Unix.openfile "/dev/urandom" [ Unix.O_RDONLY ] 0 in
+  Unix.set_close_on_exec fd;
+  Fun.protect
+    ~finally:(fun () -> Unix.close fd)
+    (fun () ->
+      let bytes = Bytes.create length in
+      let rec loop offset =
+        if offset < length then
+          let read = Unix.read fd bytes offset (length - offset) in
+          if read = 0 then failwith "short read from /dev/urandom" else loop (offset + read)
+      in
+      loop 0;
+      bytes)
+
+let generate_auth_token () = random_bytes_from_urandom 32 |> hex
 
 let dirname path =
   let dir = Filename.dirname path in
@@ -101,6 +151,9 @@ let missing_frontend_response () =
 let parse_path request_line =
   match String.split_on_char ' ' request_line with _method :: path :: _ -> strip_query path | _ -> "/"
 
+let parse_target request_line =
+  match String.split_on_char ' ' request_line with _method :: target :: _ -> target | _ -> "/"
+
 let parse_header line =
   match String.index_opt line ':' with
   | None -> None
@@ -126,6 +179,54 @@ let read_request ic =
   { request_line; path = parse_path request_line; headers = loop [] }
 
 let header request name = List.assoc_opt (String.lowercase_ascii name) request.headers
+
+let query request =
+  let target = parse_target request.request_line in
+  match String.index_opt target '?' with
+  | None -> []
+  | Some index ->
+      String.sub target (index + 1) (String.length target - index - 1)
+      |> String.split_on_char '&'
+      |> List.filter_map (fun pair ->
+             match String.split_on_char '=' pair with
+             | [ key; value ] -> Some (key, value)
+             | [ key ] -> Some (key, "")
+             | key :: value_parts -> Some (key, String.concat "=" value_parts)
+             | [] -> None)
+
+let constant_time_equal a b =
+  let len_a = String.length a in
+  let len_b = String.length b in
+  let max_len = max len_a len_b in
+  let diff = ref (len_a lxor len_b) in
+  for i = 0 to max_len - 1 do
+    let char_a = if i < len_a then Char.code a.[i] else 0 in
+    let char_b = if i < len_b then Char.code b.[i] else 0 in
+    diff := !diff lor (char_a lxor char_b)
+  done;
+  !diff = 0
+
+let bearer_token value =
+  let prefix = "Bearer " in
+  if String.length value > String.length prefix
+     && String.lowercase_ascii (String.sub value 0 (String.length prefix)) = String.lowercase_ascii prefix
+  then
+    Some (String.sub value (String.length prefix) (String.length value - String.length prefix))
+  else None
+
+let request_auth_token request =
+  match header request "x-symphony-auth" with
+  | Some token -> Some token
+  | None -> (
+      match Option.bind (header request "authorization") bearer_token with
+      | Some token -> Some token
+      | None -> List.assoc_opt "symphony_auth" (query request))
+
+let authenticated ?auth_token request =
+  match auth_token with
+  | None -> true
+  | Some token -> (
+      match request_auth_token request with Some candidate -> constant_time_equal token candidate | None -> false)
 
 let has_token header_value token =
   header_value |> String.split_on_char ','
@@ -301,8 +402,9 @@ let drain_websocket fd =
   in
   loop ()
 
-let handle_request get_state request =
+let handle_request ?auth_token get_state request =
   match request.path with
+  | ("/api/v1/state" | "/api/v1/refresh") when not (authenticated ?auth_token request) -> unauthorized_response ()
   | "/" as path -> (
       match serve_static path with Some body -> body | None -> missing_frontend_response ())
   | "/api/v1/state" -> Runtime_state.to_yojson (get_state ()) |> Yojson.Safe.to_string |> response
@@ -323,8 +425,11 @@ let handle_request get_state request =
             (`Assoc [ ("error", `Assoc [ ("code", `String "not_found"); ("message", `String "route not found") ]) ]
             |> Yojson.Safe.to_string))
 
-let handle_websocket live fd oc request =
-  match header request "sec-websocket-key" with
+let handle_websocket ?auth_token live fd oc request =
+  if not (authenticated ?auth_token request) then (
+    output_string oc (unauthorized_response ());
+    flush oc)
+  else match header request "sec-websocket-key" with
   | None ->
       output_string oc (response ~status:"400 Bad Request" (`Assoc [ ("error", `String "missing websocket key") ] |> Yojson.Safe.to_string));
       flush oc
@@ -345,21 +450,23 @@ let green text = color "32;1" text
 let cyan text = color "36;1" text
 let dim text = color "2" text
 
-let render_server_ready ~port =
+let render_server_ready ~host ~port =
   Printf.eprintf "%s %s %s %s %s\n%!" (blue "server") (green "ready") (dim "listening")
-    (cyan (Printf.sprintf "0.0.0.0:%d" port))
-    (dim (Printf.sprintf "event=startup outcome=completed server_host=0.0.0.0 server_port=%d" port))
+    (cyan (Printf.sprintf "%s:%d" host port))
+    (dim (Printf.sprintf "event=startup outcome=completed server_host=%s server_port=%d" host port))
 
-let serve ?live ~port ~get_state () =
+let serve ?live ?auth_token ?(host = default_host) ~port ~get_state () =
+  let host = normalize_host host in
+  if host_requires_auth host && auth_token = None then invalid_arg "non-loopback dashboard host requires an auth token";
   let socket = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   Unix.set_close_on_exec socket;
   Unix.setsockopt socket Unix.SO_REUSEADDR true;
-  Unix.bind socket (Unix.ADDR_INET (Unix.inet_addr_any, port));
+  Unix.bind socket (Unix.ADDR_INET (inet_addr_of_host host, port));
   Unix.listen socket 16;
   let actual_port =
     match Unix.getsockname socket with Unix.ADDR_INET (_, port) -> port | _ -> port
   in
-  render_server_ready ~port:actual_port;
+  render_server_ready ~host ~port:actual_port;
   while true do
     let client, _ = Unix.accept socket in
     Unix.set_close_on_exec client;
@@ -374,9 +481,9 @@ let serve ?live ~port ~get_state () =
                let request = read_request ic in
                match live with
                | Some live when request.path = "/api/v1/state/live" && is_websocket_upgrade request ->
-                   handle_websocket live client oc request
+                   handle_websocket ?auth_token live client oc request
                | _ ->
-                   let body = handle_request get_state request in
+                   let body = handle_request ?auth_token get_state request in
                    output_string oc body;
                    flush oc))
          client)

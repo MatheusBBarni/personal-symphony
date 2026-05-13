@@ -1,6 +1,7 @@
 type locationObj = {
   protocol: string,
   host: string,
+  search: string,
 }
 
 type messageEvent = {
@@ -13,6 +14,12 @@ type webSocketCtor
 %%raw(`
 function makeSocket(WebSocketCtor, url) {
   return new WebSocketCtor(url);
+}
+
+function symphonyAuthSearch(search) {
+  const params = new URLSearchParams(search || "");
+  const token = params.get("symphony_auth");
+  return token ? "?symphony_auth=" + encodeURIComponent(token) : "";
 }
 `)
 
@@ -36,6 +43,7 @@ type connectionOptions<'snapshot> = {
 @val @scope("window") external location: locationObj = "location"
 @val @scope("window") external setTimeout: (unit => unit, int) => int = "setTimeout"
 @scope("JSON") @val external parseJson: string => 'snapshot = "parse"
+@val external symphonyAuthSearch: string => string = "symphonyAuthSearch"
 
 let liveStateUrl = locationObj => {
   let protocol = if locationObj.protocol == "https:" {
@@ -43,7 +51,7 @@ let liveStateUrl = locationObj => {
   } else {
     "ws:"
   }
-  protocol ++ "//" ++ locationObj.host ++ "/api/v1/state/live"
+  protocol ++ "//" ++ locationObj.host ++ "/api/v1/state/live" ++ symphonyAuthSearch(locationObj.search)
 }
 
 let createLiveStateConnection = options => {

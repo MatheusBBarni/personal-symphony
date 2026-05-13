@@ -59,7 +59,7 @@ type codex = {
   read_timeout_ms : int;
   stall_timeout_ms : int;
 }
-type server = { port : int option }
+type server = { host : string; port : int option }
 type protected_path_pattern = { name : string; pattern : string; reason : string option }
 type protected_path_authorization = { issue_section : string }
 type protected_paths = { patterns : protected_path_pattern list; authorization : protected_path_authorization }
@@ -164,6 +164,8 @@ let default_minibeads_root = ".beads"
 let default_minibeads_command = "mb"
 let default_compozy_root = ".compozy/tasks"
 let default_compozy_max_task_step_retries = 2
+let default_server_host = "127.0.0.1"
+let default_server = { host = default_server_host; port = None }
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
 let default_protected_paths = { patterns = []; authorization = default_protected_path_authorization }
 let default_pull_request =
@@ -332,6 +334,16 @@ let parse_tracker_kind raw =
         (Invalid_config
            (Printf.sprintf "Unsupported tracker.kind %s. Set tracker.kind to github, minibeads, or compozy_tasks." shown))
 
+let parse_server_host field raw =
+  let host =
+    match Util.trim raw |> String.lowercase_ascii with
+    | "" | "localhost" -> default_server_host
+    | value -> value
+  in
+  if String.contains host ':' then raise (Invalid_config (field ^ " must be an IPv4 bind address"));
+  try Unix.inet_addr_of_string host |> Unix.string_of_inet_addr
+  with Unix.Unix_error _ | Failure _ -> raise (Invalid_config (field ^ " must be an IPv4 bind address"))
+
 let apply_runtime_invocation_overrides ~workspace_root config overrides =
   let polling =
     match overrides.polling_interval_ms with
@@ -458,7 +470,11 @@ let from_workflow workflow =
     agent_harnesses = [ harness_of_codex codex ];
     logical_agents = [];
     legacy_agent_harness_paths = [];
-    server = { port = Simple_yaml.get_int "port" server_raw };
+    server =
+      {
+        host = Simple_yaml.get_string "host" server_raw |> Option.value ~default:default_server_host |> parse_server_host "server.host";
+        port = Simple_yaml.get_int "port" server_raw;
+      };
     pull_request = default_pull_request;
     protected_paths = default_protected_paths;
     stage_agents = { enabled = false; root = Filename.concat workflow.dir ".symphony/agents"; default_agent = None; stages = [] };
@@ -1396,7 +1412,11 @@ let from_settings_file ~workspace_root path =
     agent_harnesses;
     logical_agents;
     legacy_agent_harness_paths;
-    server = { port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080)) };
+    server =
+      {
+        host = json_string "host" server_raw ~default:default_server_host |> parse_server_host "server.host";
+        port = (match member "port" server_raw with `Null -> None | _ -> Some (json_int "port" server_raw ~default:8080));
+      };
     pull_request =
       {
         enabled = json_bool "enabled" pull_request_raw ~default:default_pull_request.enabled;
