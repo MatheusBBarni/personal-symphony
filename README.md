@@ -152,6 +152,48 @@ next runnable task step. Runtime State, the Terminal Console, and the Web Dashbo
 tracker kind, Compozy PRD Run identifier, current task step, completed count, failed count, skipped
 count, and total count when Compozy tracking is selected.
 
+Compozy tracking has two status layers:
+
+- The Compozy PRD Run lifecycle describes the whole work item. Runtime State, the Terminal Console,
+  and the Web Dashboard show lifecycle details with compact labels such as `Lifecycle`,
+  `Dispatch state`, `Stage agent`, `PR readiness`, `Handoff`, and `Reason`.
+- Compozy Task Step progress describes ordered execution inside that run. Step counts and current
+  step selection still come from `task_NN.md` frontmatter and do not replace run-level lifecycle or
+  pull-request readiness.
+
+Compozy PRD Run lifecycle meanings:
+
+| Lifecycle state | Meaning |
+| --- | --- |
+| `pending` | The run exists but has not entered active Stage Agent work. |
+| `in_planning` | Planner-stage work is active or selected for the run. |
+| `in_execution` | Engineering or task-step execution work is active. |
+| `in_review` | Reviewer-stage work is active or selected for the run. |
+| `blocked` | Symphony needs operator attention before the run should continue. |
+| `completed` | The run completed successfully from the lifecycle perspective. |
+| `failed` | The run ended with failed task-step or orchestration outcome. |
+| `skipped` | The run ended with skipped work and is not ready for a Batch Pull Request. |
+| `not_pr_ready` | The run is stopped or terminal but cannot open a Batch Pull Request; this is the not-PR-ready lifecycle and `Reason` explains why. |
+| `pr_handoff` | Pull-request handoff for the aggregate Batch Pull Request is attempting, completed, or failed. |
+
+PR readiness is separate from both lifecycle and task-step counts:
+
+| PR readiness | Meaning |
+| --- | --- |
+| `disabled` | The Pull Request Policy does not enable automatic Batch Pull Requests. |
+| `not_ready` | The run is in the not-ready outcome for a Batch Pull Request; `Reason` describes the broad blocker. |
+| `ready` | The run completed successfully and is eligible for one aggregate Batch Pull Request. |
+| `handoff_attempting` | Symphony is attempting the Batch Pull Request handoff. |
+| `handoff_completed` | Symphony opened, completed, or reused the aggregate Batch Pull Request. |
+| `handoff_failed` | Batch Pull Request handoff failed and may be retried after the cause is fixed. |
+
+Terminal task-step progress does not imply Batch Pull Request readiness. A run with failed, skipped,
+blocked, or otherwise terminal Compozy Task Steps remains `not_ready` unless the Compozy PRD Run
+completed successfully, final integration is safe, and the Pull Request Policy allows handoff.
+In `batch` Pull Request Mode, Compozy tracking preserves aggregate Batch Pull Request behavior:
+Symphony never opens one pull request per Compozy Task Step. At most one Batch Pull Request is
+eligible for the completed Compozy PRD Run, using the Loop-Start Branch as the pull-request head.
+
 Where selector-based flows support Compozy tracking, use the stable identifier form
 `compozy:<task_name>`. For example, `.compozy/tasks/compozy-tasks-run-integration/` is selected as
 `compozy:compozy-tasks-run-integration` in Ordered Queue and Manual Task Merge flows. GitHub numeric

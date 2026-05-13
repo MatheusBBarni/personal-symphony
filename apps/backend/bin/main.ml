@@ -114,11 +114,8 @@ let render_compozy_progress = function
   | None -> ()
   | Some (progress : Runtime_state.compozy_progress) ->
       print_section "PRD Run Progress";
-      Printf.printf "  %s %s\n%!" (dim "Run") progress.run_id;
-      Printf.printf "  %s %s\n%!" (dim "Slug") progress.slug;
-      Printf.printf "  %s %s\n%!" (dim "Current step") (Option.value progress.current_step ~default:"none");
-      Printf.printf "  %s %d completed, %d failed, %d skipped, %d total\n%!" (dim "Steps") progress.completed
-        progress.failed progress.skipped progress.total
+      Terminal_console.compozy_progress_lines progress
+      |> List.iter (fun (label, value) -> Printf.printf "  %s %s\n%!" (dim label) value)
 
 let render_banner () =
   List.iter (fun line -> Printf.printf "%s\n%!" (blue line)) symphony_banner;

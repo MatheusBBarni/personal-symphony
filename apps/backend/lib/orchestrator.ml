@@ -1847,7 +1847,11 @@ let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_t
 
 let update_compozy_progress orchestrator run =
   update_state orchestrator (fun state ->
-    { state with Runtime_state.compozy_progress = Some (Runtime_state.compozy_progress_of_prd_run run) })
+    {
+      state with
+      Runtime_state.compozy_progress =
+        Some (Runtime_state.compozy_progress_of_prd_run_for_runtime orchestrator.config run);
+    })
 
 let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
     () =
@@ -1915,6 +1919,85 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
         old_entries new_entries
 
 let set_error orchestrator msg = update_state orchestrator (fun state -> { state with Runtime_state.last_error = Some msg })
+
+let apply_compozy_lifecycle_update orchestrator run result =
+  match result with
+  | Ok _lifecycle ->
+      update_compozy_progress orchestrator run;
+      Ok ()
+  | Error error -> Error ("could not update Compozy lifecycle: " ^ error)
+
+let note_compozy_lifecycle_update orchestrator run result =
+  match apply_compozy_lifecycle_update orchestrator run result with
+  | Ok () -> ()
+  | Error error -> set_error orchestrator error
+
+let refresh_compozy_child_progress orchestrator child =
+  if is_compozy_prd_run_child orchestrator child.issue then
+    match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
+    | Ok run -> update_compozy_progress orchestrator run
+    | Error error -> set_error orchestrator error
+
+let compozy_task_step_retry_reason (step : Compozy_tasks_tracker.task_step) retry_count error =
+  Printf.sprintf "Compozy Task Step %s will retry after attempt %d failed: %s" step.file retry_count error
+
+let compozy_task_step_failed_reason (step : Compozy_tasks_tracker.task_step) retry_count error =
+  Printf.sprintf "Compozy Task Step %s failed after %d attempts: %s" step.file retry_count error
+
+let mark_compozy_child_blocked orchestrator child reason =
+  if is_compozy_prd_run_child orchestrator child.issue then
+    match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
+    | Ok run -> note_compozy_lifecycle_update orchestrator run (Compozy_lifecycle.mark_blocked orchestrator.config run ~reason)
+    | Error error -> set_error orchestrator error
+
+let mark_compozy_run_completed orchestrator run =
+  note_compozy_lifecycle_update orchestrator run (Compozy_lifecycle.mark_completed orchestrator.config run)
+
+let current_compozy_prd_run_for_progress orchestrator =
+  if orchestrator.tracker.kind <> "compozy_tasks" then Ok None
+  else
+    match orchestrator.state.Runtime_state.compozy_progress with
+    | None -> Ok None
+    | Some progress -> (
+        match Compozy_tasks_tracker.discover_prd_runs ~compozy_root:orchestrator.config.Config.tracker.compozy_root with
+        | Error _ as error -> error
+        | Ok runs ->
+            Ok (List.find_opt (fun (run : Compozy_tasks_tracker.prd_run) -> run.id = progress.run_id) runs))
+
+let note_current_compozy_batch_handoff orchestrator status reason =
+  match current_compozy_prd_run_for_progress orchestrator with
+  | Error error -> set_error orchestrator ("could not update Compozy Batch Pull Request lifecycle: " ^ error)
+  | Ok None -> ()
+  | Ok (Some run) ->
+      note_compozy_lifecycle_update orchestrator run
+        (Compozy_lifecycle.mark_pr_handoff orchestrator.config run ~status ~reason)
+
+let compozy_pr_readiness_allows_batch_handoff = function
+  | Compozy_lifecycle.Ready
+  | Compozy_lifecycle.Handoff_attempting
+  | Compozy_lifecycle.Handoff_failed ->
+      true
+  | Compozy_lifecycle.Disabled
+  | Compozy_lifecycle.Not_ready
+  | Compozy_lifecycle.Handoff_completed ->
+      false
+
+let current_compozy_batch_handoff_ready orchestrator =
+  if orchestrator.tracker.kind <> "compozy_tasks" then true
+  else
+    match current_compozy_prd_run_for_progress orchestrator with
+    | Error error ->
+        set_error orchestrator ("could not read Compozy Batch Pull Request readiness: " ^ error);
+        false
+    | Ok None -> false
+    | Ok (Some run) -> (
+        match Compozy_lifecycle.load_or_backfill_reconciled orchestrator.config run with
+        | Error error ->
+            set_error orchestrator ("could not read Compozy Batch Pull Request readiness: " ^ error);
+            false
+        | Ok lifecycle ->
+            update_compozy_progress orchestrator run;
+            compozy_pr_readiness_allows_batch_handoff lifecycle.pr_readiness)
 
 let seconds_until timestamp =
   max 1 (int_of_float (ceil (timestamp -. Unix.time ())))
@@ -2617,13 +2700,16 @@ let set_pull_request_handoff orchestrator ?issue ?head_branch status ?url ?error
 let attempt_batch_pull_request orchestrator =
   let policy = orchestrator.config.Config.pull_request in
   set_pull_request_handoff orchestrator "attempting" ();
+  note_current_compozy_batch_handoff orchestrator "attempting" None;
   match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
   | Ok url ->
       orchestrator.batch_pull_request_completed <- true;
       set_pull_request_handoff orchestrator "completed" ?url ();
+      note_current_compozy_batch_handoff orchestrator "completed" None;
       render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
   | Error error ->
       set_pull_request_handoff orchestrator "retryable_failure" ~error ();
+      note_current_compozy_batch_handoff orchestrator "retryable_failure" (Some error);
       render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
 
 let attempt_task_pull_request orchestrator issue =
@@ -2668,7 +2754,7 @@ let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
       && not has_attention
     in
     if idle then (
-      attempt_batch_pull_request orchestrator)
+      if current_compozy_batch_handoff_ready orchestrator then attempt_batch_pull_request orchestrator)
 
 let stage_running_counts config running =
   let counts = Hashtbl.create 8 in
@@ -2730,7 +2816,7 @@ let dispatch_issue orchestrator issue =
         let rendered = Prompt.render ~issue ~attempt orchestrator.prompt_template in
         let previous_attempt_output = Hashtbl.find_opt orchestrator.previous_attempt_outputs issue.id in
         let composition_result =
-          if is_compozy_prd_run_child orchestrator issue then
+          if is_compozy_prd_run_child orchestrator issue then (
             match compozy_prd_run_for_workspace_issue orchestrator.config workspace issue with
             | Error _ as error -> error
             | Ok run -> (
@@ -2743,9 +2829,17 @@ let dispatch_issue orchestrator issue =
                         match compozy_prd_run_for_workspace_issue orchestrator.config workspace issue with
                         | Error _ as error -> error
                         | Ok run ->
-                            update_compozy_progress orchestrator run;
-                            compose_compozy_task_step_prompt_result ?stage ?previous_attempt_output orchestrator.config run
-                              attempt ~workspace ~loop_start_branch:(Some orchestrator.loop_start_branch))))
+                            let stage_agent = Option.map (fun (stage : Config.stage_agent) -> stage.agent) stage in
+                            let lifecycle_result =
+                              Compozy_lifecycle.mark_stage_started orchestrator.config run ~stage_agent
+                                ~dispatch_state:issue.Issue.state
+                            in
+                            (match apply_compozy_lifecycle_update orchestrator run lifecycle_result with
+                            | Error _ as error -> error
+                            | Ok () ->
+                                compose_compozy_task_step_prompt_result ?stage ?previous_attempt_output
+                                  orchestrator.config run attempt ~workspace
+                                  ~loop_start_branch:(Some orchestrator.loop_start_branch))))))
           else
             Ok
               (compose_prompt_result ?stage ?previous_attempt_output orchestrator.config issue attempt rendered ~workspace
@@ -2913,12 +3007,22 @@ let record_compozy_task_step_failure orchestrator child error =
                 match compozy_prd_run_for_workspace_issue orchestrator.config child.workspace child.issue with
                 | Error _ as error -> error
                 | Ok updated_run ->
-                    update_compozy_progress orchestrator updated_run;
-                    if not over_limit then Ok Compozy_retry_step
-                    else
-                      match updated_run.current_step with
-                      | Some _ -> Ok (Compozy_next_after_failure updated_run)
-                      | None -> Ok (Compozy_finished_after_failure updated_run)))
+                    let lifecycle_result =
+                      if over_limit then
+                        Compozy_lifecycle.mark_failed orchestrator.config updated_run
+                          ~reason:(compozy_task_step_failed_reason step retry_count error)
+                      else
+                        Compozy_lifecycle.mark_retrying orchestrator.config updated_run
+                          ~reason:(compozy_task_step_retry_reason step retry_count error)
+                    in
+                    (match apply_compozy_lifecycle_update orchestrator updated_run lifecycle_result with
+                    | Error _ as error -> error
+                    | Ok () ->
+                        if not over_limit then Ok Compozy_retry_step
+                        else
+                          match updated_run.current_step with
+                          | Some _ -> Ok (Compozy_next_after_failure updated_run)
+                          | None -> Ok (Compozy_finished_after_failure updated_run))))
 
 let non_retryable_completion_error = function
   | "commit required but agent produced no code changes" | "commit required but no staged changes were found" -> true
@@ -2931,7 +3035,7 @@ let human_attention_completion_error error =
   protected_path_completion_error error ||
   Util.starts_with ~prefix:stage_commit_classification_conflict_prefix error
 
-let mark_blocked orchestrator issue_id error =
+let mark_blocked ?child orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
   | None -> ()
   | Some row ->
@@ -2945,6 +3049,12 @@ let mark_blocked orchestrator issue_id error =
       | Some status ->
           if move_issue_status orchestrator row.issue status then
             Hashtbl.replace orchestrator.blocked (block_key { row.issue with Issue.state = status }) error);
+      let lifecycle_child =
+        match child with
+        | Some child when child.issue_id = issue_id -> Some child
+        | _ -> List.find_opt (fun child -> child.issue_id = issue_id) orchestrator.children
+      in
+      (match lifecycle_child with Some child -> mark_compozy_child_blocked orchestrator child error | None -> ());
       update_state orchestrator (fun state ->
         {
           state with
@@ -2997,7 +3107,10 @@ let mark_child_failed orchestrator child error =
   | Error failure_error ->
       render_commit_failed child.issue_identifier failure_error;
       mark_retrying orchestrator child.issue_id failure_error
-  | Ok Not_compozy_failure | Ok Compozy_retry_step -> mark_retrying orchestrator child.issue_id error
+  | Ok Not_compozy_failure -> mark_retrying orchestrator child.issue_id error
+  | Ok Compozy_retry_step ->
+      mark_retrying orchestrator child.issue_id error;
+      refresh_compozy_child_progress orchestrator child
   | Ok (Compozy_next_after_failure run) ->
       let next_issue = Compozy_tasks_tracker.issue_of_prd_run run in
       complete_child ~next_status:run.state orchestrator child;
@@ -3044,6 +3157,7 @@ let auto_merge_child orchestrator child =
 let mark_merge_attention orchestrator child error =
   set_error orchestrator error;
   ignore (move_issue_status orchestrator child.issue orchestrator.config.git.merge_attention_status);
+  mark_compozy_child_blocked orchestrator child error;
   let goal_usage =
     match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = child.issue_id) orchestrator.state.running with
     | Some row -> row.goal_usage
@@ -3131,12 +3245,14 @@ let mark_completed orchestrator child =
           if human_attention_completion_error error then mark_merge_attention orchestrator child error
           else if non_retryable_completion_error error then (
             set_error orchestrator error;
-            mark_blocked orchestrator issue_id error)
+            mark_blocked ~child orchestrator issue_id error)
           else mark_retrying orchestrator issue_id error
       | Ok () ->
-          (match completion with
-          | Ok (Compozy_final_step (run, _step)) -> update_compozy_progress orchestrator run
-          | _ -> ());
+          let mark_final_compozy_completion () =
+            match completion with
+            | Ok (Compozy_final_step (run, _step)) -> mark_compozy_run_completed orchestrator run
+            | _ -> ()
+          in
           let status_moved_before_merge =
             match next_status with
             | Some status when task_pull_request_before_auto_merge orchestrator status ->
@@ -3155,12 +3271,17 @@ let mark_completed orchestrator child =
               | Error error -> mark_merge_attention orchestrator child error
               | Ok () -> (
                   match next_status with
-                  | None -> complete_child orchestrator child
+                  | None ->
+                      mark_final_compozy_completion ();
+                      complete_child orchestrator child
                   | Some status ->
-                      if status_moved_before_merge then complete_child ~next_status:status orchestrator child
+                      if status_moved_before_merge then (
+                        mark_final_compozy_completion ();
+                        complete_child ~next_status:status orchestrator child)
                       else if not (move_issue_status orchestrator child.issue status) then
                         mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
                       else (
+                        mark_final_compozy_completion ();
                         maybe_open_review_pull_request orchestrator child.issue status;
                         complete_child ~next_status:status orchestrator child))))
 

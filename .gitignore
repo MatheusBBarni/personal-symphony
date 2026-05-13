@@ -15,3 +15,5 @@ apps/frontend/src/**/*.res.js
 prompt.md
 stderr.log
 stdout.log
+
+.codex-goals
