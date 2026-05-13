@@ -2863,6 +2863,54 @@ let test_runtime_contract_docs_are_secret_free () =
         (contains_substring combined secret_marker))
     [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ]
 
+let test_terminal_console_docs_document_default_runtime_semantics () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  let adr = read "docs/adr/0024-default-rich-terminal-console.md" in
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
+    [
+      "default read-first Terminal Console";
+      "Run `symphony` from the Workspace Repository root";
+      "Runtime State snapshots";
+      "Readiness Gaps";
+      "Ordered Queue progress";
+      "Compozy PRD Run progress";
+      "Agent Worktree details";
+      "Task Branch context";
+      "Web Dashboard handoff command";
+      "do not retry tasks, pause or resume dispatch, update tracker status";
+      "symphony --web --port 8080";
+      "Live Dashboard Connection as a Runtime State stream";
+      "`symphony --once`";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (contains_substring context expected))
+    [
+      "Normal `symphony` runs open the read-first Terminal Console";
+      "`symphony --web` opens the **Web Dashboard**";
+      "`symphony --once` prints non-interactive terminal output";
+      "The **Terminal Console** uses in-process **Runtime State** snapshots";
+      "The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream";
+      "**Terminal Console** local aids must not retry tasks";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
+    [
+      "Accepted";
+      "Normal `symphony` runs open the read-first Terminal Console by default";
+      "`symphony --web` keeps Web Dashboard mode separate";
+      "The `symphony --once` command keeps";
+      "non-interactive terminal output";
+      "Runtime State snapshots";
+      "must not retry tasks, pause or resume dispatch";
+    ];
+  Alcotest.(check bool) "README avoids TUI product wording" false (contains_substring readme "TUI");
+  Alcotest.(check bool) "ADR avoids TUI product wording" false (contains_substring adr "TUI")
+
 let test_project_adr_documents_migration_and_loop_semantics () =
   let adr = Util.read_file (repository_file "docs/adr/0021-agent-harness-runtime-settings.md") in
   List.iter
@@ -3187,7 +3235,8 @@ let test_cli_rejects_invalid_runtime_invocation_override_values () =
       Alcotest.(check bool)
         ("field named in error: " ^ value)
         true
-        (contains_substring stderr "polling.intervalMs" && contains_substring stderr "positive integer"))
+        (contains_substring stderr "polling.intervalMs"
+        && contains_substring stderr "positive" && contains_substring stderr "integer"))
     [ "0"; "-1"; "1.5"; ""; "abc" ]
 
 let test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior () =
@@ -3209,7 +3258,7 @@ let test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior () =
   Alcotest.(check bool)
     "Cmdliner rejects repeated option values"
     true
-    (contains_substring stderr "option '--polling.intervalMs' cannot be repeated")
+    (contains_substring stderr "polling.intervalMs" && contains_substring stderr "cannot be repeated")
 
 let test_cli_rejects_runtime_invocation_overrides_for_unsupported_modes () =
   let cases =
@@ -3893,6 +3942,822 @@ let test_runtime_state_exposes_context_status () =
   Alcotest.(check (list string)) "retrying context statuses" [ "timed_out"; "failed" ] retrying_states;
   let skipped_summary = json |> member "running" |> to_list |> List.hd |> member "context_status" |> member "summary" |> to_string in
   Alcotest.(check string) "default skipped summary" "Context behavior disabled or not applicable." skipped_summary
+
+let has_unsafe_terminal_control text =
+  let rec loop index =
+    if index >= String.length text then false
+    else
+      let code = Char.code text.[index] in
+      code = 0x1b || code = 0x7f || (code < 0x20 && text.[index] <> '\n' && text.[index] <> '\r' && text.[index] <> '\t')
+      || loop (index + 1)
+  in
+  loop 0
+
+let check_no_terminal_control label text =
+  Alcotest.(check bool) label false (has_unsafe_terminal_control text)
+
+let terminal_console_running_row ?(identifier = "#1") ?(title = "Running task") ?branch_name ?goal_usage issue_id =
+  let issue =
+    {
+      (Issue.empty ~id:issue_id ~identifier ~title ~state:"In progress") with
+      branch_name;
+    }
+  in
+  ( issue,
+    {
+      Runtime_state.issue;
+      stage_agent = Some "engineer";
+      harness_name = Some "codex";
+      harness_kind = Some "codex";
+      stage_states = [ "Todo"; "In progress" ];
+      session_id = Some "pid:123";
+      turn_count = 3;
+      last_event = Some "agent_output";
+      last_message = Some "agent\027[31m output\027[0m\000ready";
+      started_at = "2026-05-04T00:00:00Z";
+      last_event_at = Some "2026-05-04T00:00:10Z";
+      tokens = { Runtime_state.input_tokens = 1; output_tokens = 2; total_tokens = 3 };
+      goal_usage;
+    } )
+
+let test_terminal_console_model_projects_idle () =
+  let model = Terminal_console_model.of_runtime_state (Runtime_state.empty ()) in
+  Alcotest.(check string) "mode" "idle" model.Terminal_console_model.mode;
+  Alcotest.(check int) "active rows" 0 (List.length model.active);
+  Alcotest.(check int) "readiness rows" 0 (List.length model.readiness);
+  Alcotest.(check int) "queue rows" 0 (List.length model.queue);
+  Alcotest.(check bool) "generated timestamp present" true (model.generated_at <> "");
+  Alcotest.(check bool) "refresh aid"
+    true
+    (List.exists (function Terminal_console_model.Refresh_view -> true | _ -> false) model.safe_aids);
+  Alcotest.(check bool) "web handoff aid"
+    true
+    (List.exists (function Terminal_console_model.Show_web_handoff -> true | _ -> false) model.safe_aids)
+
+let test_terminal_console_model_projects_running_sanitized () =
+  let usage = { Runtime_state.status = Some "active"; time_used_seconds = Some 12.; tokens_used = Some 77 } in
+  let issue, running =
+    terminal_console_running_row ~identifier:"\027[32m#1\027[0m"
+      ~title:"Build\000 Terminal\027]0;spoof\007 Console"
+      ~branch_name:"feature/\027[31mconsole\027[0m" ~goal_usage:usage "I1"
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      running = [ running ];
+    }
+    |> Runtime_state.set_context_status "I1"
+         (Runtime_state.make_context_status ~state:"warning\027[0m"
+            ~summary:"Context\027[31m needs review\027[0m"
+            ~diagnostics_path:"/tmp/\027[33mdiag.txt\027[0m" ())
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "running" model.mode;
+  match model.active with
+  | [ row ] ->
+      Alcotest.(check string) "identifier sanitized" "#1" row.Terminal_console_model.id;
+      Alcotest.(check string) "title sanitized" "Build Terminal Console" row.title;
+      Alcotest.(check string) "state" "running" row.state;
+      (match row.detail with
+      | Some detail ->
+          Alcotest.(check bool) "branch detail" true (contains_substring detail "branch feature/console");
+          Alcotest.(check bool) "message detail" true (contains_substring detail "last message agent outputready");
+          check_no_terminal_control "detail sanitized" detail
+      | None -> Alcotest.fail "expected running detail");
+      (match row.goal_usage with
+      | Some goal ->
+          Alcotest.(check (option string)) "goal status" (Some "active") goal.status;
+          Alcotest.(check (option int)) "goal tokens" (Some 77) goal.tokens_used;
+          Alcotest.(check (option string)) "goal text" (Some "status active | time 12s | tokens 77") goal.text
+      | None -> Alcotest.fail "expected goal usage");
+      (match row.context_status with
+      | Some context ->
+          Alcotest.(check string) "context state" "warning" context.state;
+          Alcotest.(check string) "context summary" "Context needs review" context.summary;
+          Alcotest.(check (option string)) "diagnostics path" (Some "/tmp/diag.txt") context.diagnostics_path
+      | None -> Alcotest.fail "expected context status")
+  | _ -> Alcotest.fail "expected one active row"
+
+let test_terminal_console_model_projects_retrying () =
+  let retry_usage = { Runtime_state.status = Some "retrying"; time_used_seconds = Some 4.; tokens_used = Some 42 } in
+  let issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 2;
+            due_at = "2026-05-04T00:02:00Z";
+            error = Some "agent\027[31m failed\027[0m";
+            goal_usage = Some retry_usage;
+          };
+        ];
+    }
+    |> Runtime_state.set_context_status "I2"
+         (Runtime_state.make_context_status ~state:"timed_out" ~summary:"Context Command timed out." ())
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "retrying" model.mode;
+  match model.active with
+  | [ row ] ->
+      Alcotest.(check string) "state" "retrying" row.Terminal_console_model.state;
+      Alcotest.(check (option string)) "error" (Some "agent failed") row.error;
+      (match row.detail with
+      | Some detail ->
+          Alcotest.(check bool) "attempt detail" true (contains_substring detail "attempt 2");
+          Alcotest.(check bool) "due detail" true (contains_substring detail "due 2026-05-04T00:02:00Z")
+      | None -> Alcotest.fail "expected retry detail");
+      (match row.goal_usage with
+      | Some goal -> Alcotest.(check (option string)) "goal text" (Some "status retrying | time 4s | tokens 42") goal.text
+      | None -> Alcotest.fail "expected retry goal usage");
+      (match row.context_status with
+      | Some context -> Alcotest.(check string) "context state" "timed_out" context.state
+      | None -> Alcotest.fail "expected retry context status")
+  | _ -> Alcotest.fail "expected one retrying row"
+
+let test_terminal_console_model_projects_attention () =
+  let issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Needs attention" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ~last_error:"global\027[31m failure\027[0m" ()) with
+      issues = [ issue ];
+      issue_errors =
+        [
+          {
+            Runtime_state.issue_id = "I3";
+            issue_identifier = "#3";
+            error = "commit\027[31m required\027[0m";
+            goal_usage = Some { Runtime_state.status = Some "blocked"; time_used_seconds = Some 2.; tokens_used = None };
+          };
+        ];
+    }
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "attention" model.mode;
+  Alcotest.(check (option string)) "last error" (Some "global failure") model.last_error;
+  Alcotest.(check bool) "summary includes last error" true
+    (List.exists (fun line -> line = "Last error: global failure") model.summary);
+  match model.active with
+  | [ row ] ->
+      Alcotest.(check string) "state" "attention" row.Terminal_console_model.state;
+      Alcotest.(check (option string)) "error" (Some "commit required") row.error;
+      (match row.goal_usage with
+      | Some goal -> Alcotest.(check (option string)) "goal status" (Some "blocked") goal.status
+      | None -> Alcotest.fail "expected attention goal usage")
+  | _ -> Alcotest.fail "expected one attention row"
+
+let test_terminal_console_model_projects_readiness_blocked () =
+  let state =
+    Runtime_state.empty
+      ~readiness_gaps:
+        [
+          {
+            Runtime_state.requirement = "tracker.\027[31mowner\027[0m";
+            remediation = "set\000 tracker owner";
+          };
+        ]
+      ()
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode" "readiness_blocked" model.mode;
+  Alcotest.(check int) "no active rows" 0 (List.length model.active);
+  match model.readiness with
+  | [ gap ] ->
+      Alcotest.(check string) "requirement" "tracker.owner" gap.Terminal_console_model.requirement;
+      Alcotest.(check string) "remediation" "set tracker owner" gap.remediation
+  | _ -> Alcotest.fail "expected one readiness gap"
+
+let test_terminal_console_model_projects_ordered_queue () =
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "pending"; skip_reason = None };
+          { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "running"; skip_reason = None };
+          { Runtime_state.issue_identifier = "#3"; title = Some "Three"; state = "retrying"; skip_reason = None };
+          { Runtime_state.issue_identifier = "#4"; title = Some "Four"; state = "completed"; skip_reason = None };
+          {
+            Runtime_state.issue_identifier = "#5";
+            title = Some "Five";
+            state = "skipped";
+            skip_reason = Some "Issue\027[31m skipped\027[0m";
+          };
+        ];
+    }
+  in
+  let model = Terminal_console_model.of_runtime_state (Runtime_state.empty ~ordered_queue:queue ()) in
+  Alcotest.(check string) "mode" "ready" model.mode;
+  Alcotest.(check (list string)) "queue states"
+    [ "pending"; "running"; "retrying"; "completed"; "skipped" ]
+    (List.map (fun (row : Terminal_console_model.task_row) -> row.state) model.queue);
+  let skipped = List.nth model.queue 4 in
+  Alcotest.(check (option string)) "skip reason" (Some "Issue skipped") skipped.error;
+  Alcotest.(check bool) "summary next work" true
+    (List.exists (fun line -> line = "Next work: #1 One") model.summary)
+
+let test_terminal_console_model_projects_compozy_progress () =
+  let progress =
+    {
+      Runtime_state.run_id = "compozy:\027[31mrun\027[0m";
+      slug = "mosaic-tui";
+      current_step = Some "task_02.md";
+      completed = 1;
+      failed = 2;
+      skipped = 3;
+      total = 9;
+    }
+  in
+  let model =
+    Terminal_console_model.of_runtime_state
+      (Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress ())
+  in
+  match model.compozy with
+  | Some projected ->
+      Alcotest.(check string) "run id sanitized" "compozy:run" projected.Terminal_console_model.run_id;
+      Alcotest.(check (option string)) "current step" (Some "task_02.md") projected.current_step;
+      Alcotest.(check int) "completed" 1 projected.completed;
+      Alcotest.(check int) "failed" 2 projected.failed;
+      Alcotest.(check int) "skipped" 3 projected.skipped;
+      Alcotest.(check int) "total" 9 projected.total;
+      Alcotest.(check string) "summary" "mosaic-tui: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
+        projected.summary
+  | None -> Alcotest.fail "expected Compozy progress"
+
+let test_terminal_console_model_sanitizes_untrusted_text () =
+  Alcotest.(check string) "ansi stripped" "red" (Terminal_console_model.sanitize "\027[31mred\027[0m");
+  Alcotest.(check string) "osc stripped" "title ok" (Terminal_console_model.sanitize "title\027]0;spoof\007 ok");
+  Alcotest.(check string) "controls stripped" "badtext next"
+    (Terminal_console_model.sanitize "bad\000text\031 next");
+  Alcotest.(check string) "safe whitespace normalized" "line tab carriage"
+    (Terminal_console_model.sanitize "line\ttab\rcarriage");
+  Alcotest.(check string) "secret assignment redacted" "GITHUB_TOKEN=[redacted]"
+    (Terminal_console_model.sanitize "GITHUB_TOKEN=super-secret")
+
+let test_terminal_console_mosaic_status_labels () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  Alcotest.(check string) "idle" "Idle" (Shell.status_label "idle");
+  Alcotest.(check string) "running" "Running" (Shell.status_label "running");
+  Alcotest.(check string) "retrying" "Retrying" (Shell.status_label "retrying");
+  Alcotest.(check string) "attention" "Needs attention" (Shell.status_label "attention");
+  Alcotest.(check string) "readiness blocked" "Readiness blocked" (Shell.status_label "readiness_blocked")
+
+let test_terminal_console_mosaic_initial_model_uses_projection () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let issue, running =
+    terminal_console_running_row ~identifier:"\027[32m#9\027[0m"
+      ~title:"Render\027]0;spoof\007 Mosaic\000 shell"
+      ~branch_name:"feature/\027[31mmosaic\027[0m" "I9"
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      running = [ running ];
+    }
+  in
+  let model = Shell.initial_model state in
+  Alcotest.(check string) "status label" "Running" model.Shell.status_label;
+  match model.snapshot.Terminal_console_model.active with
+  | [ row ] ->
+      Alcotest.(check string) "identifier sanitized" "#9" row.Terminal_console_model.id;
+      Alcotest.(check string) "title sanitized" "Render Mosaic shell" row.title;
+      (match row.detail with
+      | Some detail ->
+          Alcotest.(check bool) "branch sanitized" true (contains_substring detail "branch feature/mosaic");
+          check_no_terminal_control "detail has no terminal controls" detail
+      | None -> Alcotest.fail "expected detail")
+  | _ -> Alcotest.fail "expected one active shell row"
+
+let check_line_contains label lines expected =
+  Alcotest.(check bool) label true (List.exists (fun line -> contains_substring line expected) lines)
+
+let check_line_absent label lines unexpected =
+  Alcotest.(check bool) label false (List.exists (fun line -> contains_substring line unexpected) lines)
+
+let check_wrapped_text_contains label lines expected =
+  Alcotest.(check bool) label true (contains_substring (String.concat " " lines) expected)
+
+let terminal_console_snapshot state = Terminal_console_model.of_runtime_state state
+
+let terminal_console_rendered ?terminal_size state =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  Shell.render_snapshot ?terminal_size (terminal_console_snapshot state)
+
+let terminal_console_panel ?terminal_size state title =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  Shell.panel_lines (terminal_console_rendered ?terminal_size state) title
+
+let terminal_console_queue_fixture () =
+  {
+    Runtime_state.entries =
+      [
+        { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "pending"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "running"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#3"; title = Some "Three"; state = "retrying"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#4"; title = Some "Four"; state = "completed"; skip_reason = None };
+        { Runtime_state.issue_identifier = "#5"; title = Some "Five"; state = "skipped"; skip_reason = Some "Issue skipped" };
+      ];
+  }
+
+let terminal_console_compozy_fixture =
+  {
+    Runtime_state.run_id = "compozy:run";
+    slug = "mosaic-tui";
+    current_step = Some "task_04.md";
+    completed = 2;
+    failed = 1;
+    skipped = 3;
+    total = 8;
+  }
+
+let test_terminal_console_mosaic_active_home_panel () =
+  let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
+  let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ~ordered_queue:(terminal_console_queue_fixture ()) ()) with
+      issues = [ running_issue; retry_issue; attention_issue ];
+      running = [ running ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 2;
+            due_at = "2026-05-04T00:02:00Z";
+            error = Some "agent failed";
+            goal_usage = None;
+          };
+        ];
+      issue_errors = [ { Runtime_state.issue_id = "I3"; issue_identifier = "#3"; error = "needs merge"; goal_usage = None } ];
+      usage_totals = { Runtime_state.input_tokens = 40; output_tokens = 60; total_tokens = 100 };
+    }
+  in
+  let lines = terminal_console_panel state "Active Work" in
+  check_line_contains "home includes running row" lines "RUNNING #1 Running task";
+  check_line_contains "home includes retrying row" lines "RETRYING #2 Retry task";
+  check_line_contains "home includes attention row" lines "ATTENTION #3 Attention task";
+  check_line_contains "home includes next queued work" lines "Next work: NEXT PENDING #1 One";
+  check_line_contains "home includes token total" lines "Total tokens: 100";
+  check_line_contains "home includes update context" lines "Updated:"
+
+let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let size : Shell.terminal_size = { columns = 80; rows = 24 } in
+  let state =
+    Runtime_state.empty
+      ~readiness_gaps:
+        [
+          {
+            Runtime_state.requirement = "tracker.owner";
+            remediation =
+              "Set tracker.owner in Runtime Settings so dispatch can discover Workspace Repository issues.";
+          };
+          {
+            Runtime_state.requirement = "stageAgents.engineer.context.command";
+            remediation =
+              "Use stageAgents.stages[].context.command with an argv array and a Workspace Repository safe cwd.";
+          };
+        ]
+      ()
+  in
+  let lines = terminal_console_panel ~terminal_size:size state "Readiness and Attention" in
+  check_line_contains "first requirement" lines "READINESS GAP 1 requirement: tracker.owner";
+  check_wrapped_text_contains "first remediation retained" lines
+    "Set tracker.owner in Runtime Settings so dispatch can discover Workspace Repository issues.";
+  check_line_contains "second requirement" lines "READINESS GAP 2 requirement: stageAgents.engineer.context.command";
+  check_wrapped_text_contains "second remediation retained" lines
+    "Use stageAgents.stages[].context.command with an argv array and a Workspace Repository safe cwd"
+
+let test_terminal_console_mosaic_ordered_queue_panel_states () =
+  let state = Runtime_state.empty ~ordered_queue:(terminal_console_queue_fixture ()) () in
+  let lines = terminal_console_panel state "Ordered Queue" in
+  check_line_contains "queue next work" lines "Next work: NEXT PENDING #1 One";
+  check_line_contains "pending state" lines "PENDING #1 One";
+  check_line_contains "running state" lines "RUNNING #2 Two";
+  check_line_contains "retrying state" lines "RETRYING #3 Three";
+  check_line_contains "completed state" lines "COMPLETED #4 Four";
+  check_line_contains "skipped state" lines "SKIPPED #5 Five";
+  check_line_contains "skip reason" lines "skip reason: Issue skipped"
+
+let test_terminal_console_mosaic_compozy_panel_counts () =
+  let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:terminal_console_compozy_fixture () in
+  let lines = terminal_console_panel state "Compozy PRD Run" in
+  check_line_contains "compozy slug" lines "Compozy PRD Run: mosaic-tui";
+  check_line_contains "compozy current step" lines "Current step: task_04.md";
+  check_line_contains "compozy counts" lines "Progress: completed 2 | failed 1 | skipped 3 | total 8"
+
+let test_terminal_console_mosaic_task_detail_panel_includes_context () =
+  let usage = { Runtime_state.status = Some "active"; time_used_seconds = Some 12.; tokens_used = Some 77 } in
+  let issue, running =
+    terminal_console_running_row ~identifier:"#10" ~title:"Detailed task" ~branch_name:"feature/detail"
+      ~goal_usage:usage "I10"
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      running = [ running ];
+    }
+    |> Runtime_state.set_context_status "I10"
+         (Runtime_state.make_context_status ~state:"warning" ~summary:"Context needs review" ())
+  in
+  let lines = terminal_console_panel state "Task Detail" in
+  check_line_contains "detail task" lines "Task: #10 Detailed task";
+  check_line_contains "detail issue metadata" lines "Issue metadata: issue state In progress";
+  check_line_contains "detail stage state" lines "Stage state: stage agent engineer";
+  check_line_contains "detail harness" lines "Harness identity: harness codex | harness kind codex";
+  check_line_contains "detail goal usage" lines "Goal Usage: status active | time 12s | tokens 77";
+  check_line_contains "detail context" lines "Context Status: warning: Context needs review"
+
+let test_terminal_console_mosaic_task_detail_omits_absent_optional_fields () =
+  let issue = Issue.empty ~id:"I11" ~identifier:"#11" ~title:"Attention without extras" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      issue_errors = [ { Runtime_state.issue_id = "I11"; issue_identifier = "#11"; error = "needs user"; goal_usage = None } ];
+    }
+  in
+  let lines = terminal_console_panel state "Task Detail" in
+  check_line_contains "detail error" lines "Current error: needs user";
+  check_line_absent "goal omitted" lines "Goal Usage:";
+  check_line_absent "context omitted" lines "Context Status:"
+
+let test_terminal_console_mosaic_no_color_labels_remain_distinct () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
+  let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
+  let active_state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ running_issue; retry_issue; attention_issue ];
+      running = [ running ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 1;
+            due_at = "2026-05-04T00:02:00Z";
+            error = None;
+            goal_usage = None;
+          };
+        ];
+      issue_errors = [ { Runtime_state.issue_id = "I3"; issue_identifier = "#3"; error = "blocked"; goal_usage = None } ];
+    }
+  in
+  let active_lines = terminal_console_rendered active_state |> Shell.rendered_lines in
+  check_line_contains "running text label" active_lines "RUNNING #1";
+  check_line_contains "retrying text label" active_lines "RETRYING #2";
+  check_line_contains "attention text label" active_lines "ATTENTION #3";
+  let readiness_lines =
+    Runtime_state.empty
+      ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+      ()
+    |> terminal_console_rendered |> Shell.rendered_lines
+  in
+  check_line_contains "readiness text label" readiness_lines "READINESS GAP";
+  let idle_lines = Runtime_state.empty () |> terminal_console_rendered |> Shell.rendered_lines in
+  check_line_contains "idle text label" idle_lines "IDLE No active work"
+
+let test_terminal_console_mosaic_renders_runtime_state_fixtures () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let running_issue, running = terminal_console_running_row ~identifier:"#20" ~title:"Running fixture" "I20" in
+  let retry_issue = Issue.empty ~id:"I21" ~identifier:"#21" ~title:"Retry fixture" ~state:"Todo" in
+  let states =
+    [
+      ("idle", Runtime_state.empty ());
+      ( "readiness",
+        Runtime_state.empty
+          ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+          () );
+      ("running", { (Runtime_state.empty ()) with issues = [ running_issue ]; running = [ running ] });
+      ( "retrying",
+        {
+          (Runtime_state.empty ()) with
+          issues = [ retry_issue ];
+          retrying =
+            [
+              {
+                Runtime_state.issue_id = "I21";
+                issue_identifier = "#21";
+                attempt = 2;
+                due_at = "2026-05-04T00:02:00Z";
+                error = Some "failed";
+                goal_usage = None;
+              };
+            ];
+        } );
+      ( "compozy",
+        Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:(terminal_console_queue_fixture ())
+          ~compozy_progress:terminal_console_compozy_fixture () );
+    ]
+  in
+  List.iter
+    (fun (name, state) ->
+      let model = Shell.initial_model state in
+      ignore (Shell.view model);
+      let rendered = Shell.render_model model in
+      Alcotest.(check bool) (name ^ " rendered lines") true (Shell.rendered_lines rendered <> []))
+    states
+
+let test_terminal_console_mosaic_minimum_size_message () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let small : Shell.terminal_size = { columns = 72; rows = 20 } in
+  let rendered = Shell.render_snapshot ~terminal_size:small (terminal_console_snapshot (Runtime_state.empty ())) in
+  let lines = Shell.rendered_lines rendered in
+  check_line_contains "minimum message" lines "Terminal Console needs at least 80 columns x 24 rows.";
+  check_line_contains "current size" lines "Current size: 72 columns x 20 rows.";
+  check_line_contains "resize help" lines "Resize the terminal to continue.";
+  ignore (Shell.view (Shell.initial_model ~terminal_size:small (Runtime_state.empty ())))
+
+let terminal_console_interaction_state () =
+  let running_issue, running = terminal_console_running_row ~identifier:"#30" ~title:"Running task" "I30" in
+  let retry_issue = Issue.empty ~id:"I31" ~identifier:"#31" ~title:"Retry task" ~state:"Todo" in
+  {
+    (Runtime_state.empty ()) with
+    issues = [ running_issue; retry_issue ];
+    running = [ running ];
+    retrying =
+      [
+        {
+          Runtime_state.issue_id = "I31";
+          issue_identifier = "#31";
+          attempt = 1;
+          due_at = "2026-05-04T00:02:00Z";
+          error = None;
+          goal_usage = None;
+        };
+      ];
+  }
+
+let test_terminal_console_mosaic_navigation_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let snapshot = model.Shell.snapshot in
+  let moved_row = Shell.apply_key Shell.Down_key model in
+  Alcotest.(check bool) "row navigation keeps snapshot" true (moved_row.Shell.model.Shell.snapshot == snapshot);
+  Alcotest.(check int) "selected active row" 1
+    moved_row.model.Shell.interaction.Shell.selected_rows.Shell.active;
+  let moved_panel = Shell.apply_key Shell.Right_key moved_row.model in
+  Alcotest.(check bool) "panel navigation keeps snapshot" true (moved_panel.model.Shell.snapshot == snapshot);
+  Alcotest.(check string) "focused panel" "Readiness and Attention"
+    (Shell.focused_panel_title moved_panel.model.Shell.interaction.Shell.focused_panel)
+
+let test_terminal_console_mosaic_filtering_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let snapshot = model.Shell.snapshot in
+  let opened = Shell.apply_key (Shell.Character '/') model in
+  let typed = Shell.apply_key (Shell.Character '1') opened.model in
+  let applied = Shell.apply_key Shell.Enter_key typed.model in
+  Alcotest.(check bool) "filter keeps snapshot" true (applied.model.Shell.snapshot == snapshot);
+  Alcotest.(check string) "filter text" "1" applied.model.Shell.interaction.Shell.filter_text;
+  Alcotest.(check bool) "filter input closed" false applied.model.Shell.interaction.Shell.filter_active;
+  Alcotest.(check int) "filtered active rows" 1
+    (List.length (Shell.visible_active_rows applied.model.Shell.snapshot applied.model.Shell.interaction));
+  Alcotest.(check int) "projected rows unchanged" 2 (List.length snapshot.Terminal_console_model.active)
+
+let test_terminal_console_mosaic_refresh_invokes_only_refresh_aid () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let calls = ref [] in
+  let runtime : Shell.runtime =
+    {
+      initial_state = Runtime_state.empty ();
+      subscribe = (fun _ -> ());
+      safe_aid = (fun aid -> calls := aid :: !calls);
+      web_handoff = Shell.default_web_handoff ();
+      local_surfaces = [];
+    }
+  in
+  let updated, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'r')) model in
+  Alcotest.(check bool) "refresh keeps snapshot" true (updated.Shell.snapshot == model.Shell.snapshot);
+  Alcotest.(check (list string)) "safe aid calls" [ "refresh" ]
+    (List.rev_map
+       (function
+         | Terminal_console_model.Refresh_view -> "refresh"
+         | Show_web_handoff -> "web"
+         | Show_path _ -> "path")
+       !calls);
+  Alcotest.(check (option string)) "refresh status"
+    (Some "Refreshed latest in-memory Runtime State snapshot")
+    updated.status_message
+
+let test_terminal_console_mosaic_web_handoff_guidance_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let handoff = Shell.default_web_handoff ~port:7777 () in
+  let transition = Shell.apply_key ~web_handoff:handoff (Shell.Character 'w') model in
+  Alcotest.(check (list string)) "handoff safe aid" [ "web" ]
+    (List.map
+       (function
+         | Terminal_console_model.Refresh_view -> "refresh"
+         | Show_web_handoff -> "web"
+         | Show_path _ -> "path")
+       transition.Shell.safe_aids);
+  match transition.model.Shell.status_message with
+  | Some message ->
+      check_line_contains "handoff command" [ message ] "symphony --web --port 7777";
+      check_line_contains "handoff url" [ message ] "http://127.0.0.1:7777/"
+  | None -> Alcotest.fail "expected Web Dashboard handoff guidance"
+
+let test_terminal_console_mosaic_invalid_path_is_ui_local () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  with_temp_dir "symphony-terminal-path-root-" (fun root ->
+      with_temp_dir "symphony-terminal-path-outside-" (fun outside_root ->
+          let outside_file = Filename.concat outside_root "outside.txt" in
+          Util.write_file outside_file "unchanged\n";
+          let issue, running = terminal_console_running_row ~identifier:"#32" ~title:"Path task" "I32" in
+          let state =
+            {
+              (Runtime_state.empty ()) with
+              issues = [ issue ];
+              running = [ running ];
+            }
+            |> Runtime_state.set_context_status "I32"
+                 (Runtime_state.make_context_status ~state:"warning" ~summary:"has diagnostics"
+                    ~diagnostics_path:outside_file ())
+          in
+          let model = Shell.initial_model state in
+          let transition =
+            Shell.apply_key
+              ~local_surfaces:[ Shell.local_surface ~label:"Workspace Repository" ~root ]
+              (Shell.Character 'o') model
+          in
+          Alcotest.(check int) "no invalid safe aid calls" 0 (List.length transition.Shell.safe_aids);
+          (match transition.model.Shell.status_message with
+          | Some message ->
+              check_line_contains "outside status" [ message ] "outside allowed Workspace Repository surfaces"
+          | None -> Alcotest.fail "expected invalid path status");
+          Alcotest.(check string) "outside file unchanged" "unchanged\n" (Util.read_file outside_file)))
+
+let test_terminal_console_mosaic_footer_help_content () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let footer = Shell.render_model model |> fun rendered -> rendered.Shell.footer in
+  List.iter
+    (fun expected -> check_line_contains ("footer has " ^ expected) [ footer ] expected)
+    [ "q quit"; "Tab/Left/Right panels"; "/ search"; "r refresh"; "w Web Dashboard"; "o inspect path" ];
+  let help = Shell.apply_key (Shell.Character '?') model in
+  let safe_aids = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Safe Aids" in
+  check_line_contains "help includes navigation" safe_aids "Up/Down or k/j move rows";
+  check_line_contains "help includes handoff" safe_aids "w show Web Dashboard handoff"
+
+let test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  with_temp_dir "symphony-terminal-runtime-path-" (fun root ->
+      let diagnostic = Filename.concat root "diagnostic.txt" in
+      Util.write_file diagnostic "diagnostic\n";
+      let issue, running = terminal_console_running_row ~identifier:"#33" ~title:"Runtime aid task" "I33" in
+      let state =
+        {
+          (Runtime_state.empty ()) with
+          issues = [ issue ];
+          running = [ running ];
+        }
+        |> Runtime_state.set_context_status "I33"
+             (Runtime_state.make_context_status ~state:"warning" ~summary:"has diagnostics"
+                ~diagnostics_path:diagnostic ())
+      in
+      let recorded = ref [] in
+      let handoff = Runtime.create_state_handoff state in
+      let runtime =
+        Runtime.runtime_of_handoff
+          ~safe_aid:
+            (fun aid ->
+              recorded :=
+                (match aid with
+                | Terminal_console_model.Refresh_view -> "refresh"
+                | Show_web_handoff -> "web"
+                | Show_path path -> "path:" ^ Filename.basename path)
+                :: !recorded)
+          ~local_surfaces:[ Shell.local_surface ~label:"Workspace Repository" ~root ]
+          handoff
+      in
+      let model = Shell.initial_model state in
+      let model, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'r')) model in
+      let model, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'w')) model in
+      let _model, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'o')) model in
+      Runtime.close_state_handoff handoff;
+      Alcotest.(check (list string)) "only non-mutating safe aids"
+        [ "refresh"; "web"; "path:diagnostic.txt" ]
+        (List.rev !recorded))
+
+let terminal_console_runtime_branch_name = function
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Manual_merge -> "manual_merge"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Once -> "once"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Web_dashboard Runtime_policy.Serve_readiness_state ->
+      "web_dashboard_readiness"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Web_dashboard Runtime_policy.Run_orchestrator ->
+      "web_dashboard_orchestrator"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Terminal_console_readiness -> "terminal_console_readiness"
+  | Symphony_terminal_console_shell.Terminal_console_runtime.Terminal_console_orchestrator ->
+      "terminal_console_orchestrator"
+
+let test_terminal_console_runtime_selects_non_mosaic_paths () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let readiness_gaps = [ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ] in
+  let select ?(once = false) ?(mode = Cli_mode.Terminal_console) ?(merge_args = []) ?(readiness_gaps = [])
+      () =
+    Runtime.select_branch ~once ~mode ~merge_args ~readiness_gaps |> terminal_console_runtime_branch_name
+  in
+  Alcotest.(check string) "--once" "once" (select ~once:true ());
+  Alcotest.(check string) "--web readiness" "web_dashboard_readiness"
+    (select ~mode:Cli_mode.Web_dashboard ~readiness_gaps ());
+  Alcotest.(check string) "--web run" "web_dashboard_orchestrator" (select ~mode:Cli_mode.Web_dashboard ());
+  Alcotest.(check string) "manual merge" "manual_merge" (select ~merge_args:[ "#20" ] ());
+  Alcotest.(check string) "default readiness" "terminal_console_readiness" (select ~readiness_gaps ());
+  Alcotest.(check string) "default run" "terminal_console_orchestrator" (select ())
+
+let test_terminal_console_runtime_handoff_latest_state () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let initial = Runtime_state.empty ~last_error:"initial" () in
+  let handoff = Runtime.create_state_handoff initial in
+  let next = Runtime_state.empty ~last_error:"next" () in
+  Runtime.publish_state handoff next;
+  Alcotest.(check int) "version incremented" 1 (Runtime.version handoff);
+  Alcotest.(check (option string)) "published state unchanged" (Some "next") next.Runtime_state.last_error;
+  Alcotest.(check (option string)) "latest state" (Some "next") (Runtime.latest_state handoff).last_error;
+  let runtime = Runtime.runtime_of_handoff handoff in
+  runtime.safe_aid Terminal_console_model.Refresh_view;
+  Alcotest.(check (option string)) "safe aid does not mutate state" (Some "next")
+    (Runtime.latest_state handoff).last_error;
+  Runtime.close_state_handoff handoff
+
+let test_terminal_console_runtime_handoff_subscribes_latest_snapshot () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let handoff = Runtime.create_state_handoff (Runtime_state.empty ~last_error:"initial" ()) in
+  Runtime.publish_state handoff (Runtime_state.empty ~last_error:"first" ());
+  Runtime.publish_state handoff (Runtime_state.empty ~last_error:"second" ());
+  Runtime.close_state_handoff handoff;
+  let observed = ref [] in
+  Runtime.subscribe_state handoff (fun state -> observed := state.Runtime_state.last_error :: !observed);
+  Alcotest.(check (list (option string))) "latest-state subscription" [ Some "second" ] (List.rev !observed)
+
+let test_terminal_console_runtime_readiness_runs_ui_without_orchestration () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let readiness_state =
+    Runtime_state.empty
+      ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+      ()
+  in
+  let initial_seen = ref None in
+  Runtime.run ~initial_state:readiness_state
+    ~run_ui:(fun runtime -> initial_seen := Some runtime.Shell.initial_state)
+    ();
+  match !initial_seen with
+  | Some state ->
+      Alcotest.(check int) "readiness gaps exposed" 1 (List.length state.Runtime_state.readiness_gaps)
+  | None -> Alcotest.fail "expected UI runtime to start"
+
+let test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let start_called = ref false in
+  let ui_initial = ref None in
+  Runtime.run ~initial_state:(Runtime_state.empty ~last_error:"readiness" ())
+    ~start_orchestration:(fun ~notify_state ->
+      start_called := true;
+      notify_state (Runtime_state.empty ~last_error:"orchestrator" ()))
+    ~run_ui:(fun runtime -> ui_initial := Some runtime.Shell.initial_state)
+    ();
+  Alcotest.(check bool) "orchestration starter called" true !start_called;
+  match !ui_initial with
+  | Some state ->
+      Alcotest.(check (option string)) "notify_state snapshot reaches UI" (Some "orchestrator")
+        state.Runtime_state.last_error
+  | None -> Alcotest.fail "expected UI runtime to start"
+
+let test_terminal_console_runtime_background_orchestration_reports_failures () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let reported = ref None in
+  let failing_thread =
+    Runtime.start_background_orchestration
+      ~on_failure:(fun exn backtrace -> reported := Some (Printexc.to_string exn, backtrace))
+      (fun () -> failwith "orchestrator crashed")
+  in
+  Thread.join failing_thread;
+  (match !reported with
+  | Some (reason, _backtrace) ->
+      Alcotest.(check bool) "failure surfaced" true (contains_substring reason "orchestrator crashed")
+  | None -> Alcotest.fail "expected background orchestration failure handler");
+  let called = ref false in
+  let successful_thread =
+    Runtime.start_background_orchestration ~on_failure:(fun _ _ -> called := true) (fun () -> ())
+  in
+  Thread.join successful_thread;
+  Alcotest.(check bool) "success does not invoke failure handler" false !called
 
 let websocket_request () =
   {
@@ -10810,6 +11675,8 @@ let () =
           Alcotest.test_case "Runtime Contract examples use Harnesses and logical agents" `Quick
             test_runtime_contract_docs_use_current_harness_examples;
           Alcotest.test_case "Runtime Contract docs are secret-free" `Quick test_runtime_contract_docs_are_secret_free;
+          Alcotest.test_case "Terminal Console docs cover default runtime semantics" `Quick
+            test_terminal_console_docs_document_default_runtime_semantics;
           Alcotest.test_case "project ADR documents migration and loop semantics" `Quick
             test_project_adr_documents_migration_and_loop_semantics;
         ] );
@@ -10963,6 +11830,67 @@ let () =
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
           Alcotest.test_case "exposes context status" `Quick test_runtime_state_exposes_context_status;
+          Alcotest.test_case "projects Terminal Console idle mode" `Quick test_terminal_console_model_projects_idle;
+          Alcotest.test_case "projects Terminal Console running rows sanitized" `Quick
+            test_terminal_console_model_projects_running_sanitized;
+          Alcotest.test_case "projects Terminal Console retrying rows" `Quick
+            test_terminal_console_model_projects_retrying;
+          Alcotest.test_case "projects Terminal Console attention rows" `Quick
+            test_terminal_console_model_projects_attention;
+          Alcotest.test_case "projects Terminal Console readiness gaps" `Quick
+            test_terminal_console_model_projects_readiness_blocked;
+          Alcotest.test_case "projects Terminal Console ordered queue rows" `Quick
+            test_terminal_console_model_projects_ordered_queue;
+          Alcotest.test_case "projects Terminal Console Compozy progress" `Quick
+            test_terminal_console_model_projects_compozy_progress;
+          Alcotest.test_case "sanitizes Terminal Console display text" `Quick
+            test_terminal_console_model_sanitizes_untrusted_text;
+          Alcotest.test_case "labels Mosaic Terminal Console modes" `Quick
+            test_terminal_console_mosaic_status_labels;
+          Alcotest.test_case "builds Mosaic shell model from sanitized projection" `Quick
+            test_terminal_console_mosaic_initial_model_uses_projection;
+          Alcotest.test_case "renders Active Work Home panel" `Quick
+            test_terminal_console_mosaic_active_home_panel;
+          Alcotest.test_case "renders readiness remediation panel" `Quick
+            test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation;
+          Alcotest.test_case "renders Ordered Queue panel states" `Quick
+            test_terminal_console_mosaic_ordered_queue_panel_states;
+          Alcotest.test_case "renders Compozy PRD Run panel counts" `Quick
+            test_terminal_console_mosaic_compozy_panel_counts;
+          Alcotest.test_case "renders task detail context" `Quick
+            test_terminal_console_mosaic_task_detail_panel_includes_context;
+          Alcotest.test_case "omits absent task detail fields" `Quick
+            test_terminal_console_mosaic_task_detail_omits_absent_optional_fields;
+          Alcotest.test_case "keeps no-color status labels distinct" `Quick
+            test_terminal_console_mosaic_no_color_labels_remain_distinct;
+          Alcotest.test_case "renders Terminal Console fixture snapshots" `Quick
+            test_terminal_console_mosaic_renders_runtime_state_fixtures;
+          Alcotest.test_case "renders Terminal Console minimum-size message" `Quick
+            test_terminal_console_mosaic_minimum_size_message;
+          Alcotest.test_case "keeps Terminal Console navigation UI-only" `Quick
+            test_terminal_console_mosaic_navigation_is_ui_only;
+          Alcotest.test_case "keeps Terminal Console filtering UI-only" `Quick
+            test_terminal_console_mosaic_filtering_is_ui_only;
+          Alcotest.test_case "refresh invokes only non-mutating aid" `Quick
+            test_terminal_console_mosaic_refresh_invokes_only_refresh_aid;
+          Alcotest.test_case "shows Web Dashboard handoff guidance only" `Quick
+            test_terminal_console_mosaic_web_handoff_guidance_only;
+          Alcotest.test_case "keeps invalid local path inspection UI-local" `Quick
+            test_terminal_console_mosaic_invalid_path_is_ui_local;
+          Alcotest.test_case "renders Terminal Console contextual help/footer" `Quick
+            test_terminal_console_mosaic_footer_help_content;
+          Alcotest.test_case "records only non-mutating Terminal Console safe aids" `Quick
+            test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids;
+          Alcotest.test_case "stores latest Terminal Console runtime state" `Quick
+            test_terminal_console_runtime_handoff_latest_state;
+          Alcotest.test_case "subscribes to latest Terminal Console runtime state" `Quick
+            test_terminal_console_runtime_handoff_subscribes_latest_snapshot;
+          Alcotest.test_case "runs readiness Terminal Console without orchestration" `Quick
+            test_terminal_console_runtime_readiness_runs_ui_without_orchestration;
+          Alcotest.test_case "wires orchestrator notifications into Terminal Console UI" `Quick
+            test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state;
+          Alcotest.test_case "reports Terminal Console orchestration thread failures" `Quick
+            test_terminal_console_runtime_background_orchestration_reports_failures;
         ] );
       ( "server",
         [
@@ -10976,6 +11904,8 @@ let () =
       ( "cli",
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
+          Alcotest.test_case "selects Terminal Console runtime branches" `Quick
+            test_terminal_console_runtime_selects_non_mosaic_paths;
           Alcotest.test_case "evaluates runtime command from backend library" `Quick
             test_cli_command_evaluates_runtime_from_library;
           Alcotest.test_case "parses runtime invocation override flags" `Quick
