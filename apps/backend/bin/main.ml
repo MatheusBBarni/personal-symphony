@@ -40,6 +40,12 @@ let package_json_candidates () =
 let version =
   package_json_candidates () |> List.find_map version_from_package_json |> Option.value ~default:"unknown"
 
+let _terminal_console_mosaic_link_anchor =
+  Symphony_terminal_console_shell.Terminal_console_mosaic.compile_anchor
+
+module Terminal_console_mosaic = Symphony_terminal_console_shell.Terminal_console_mosaic
+module Terminal_console_runtime = Symphony_terminal_console_shell.Terminal_console_runtime
+
 let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
 let color code text = ansi code ^ text ^ ansi "0"
 let blue text = color "34;1" text
@@ -239,50 +245,62 @@ let run_runtime port once web queue_arg merge_args overrides =
         if merge_args <> [] then run_manual_merge config merge_args
         else (
           let state = Runtime_readiness.state ?ordered_queue ~queue_parse_problems config in
+          let terminal_console_port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+          let terminal_console_web_handoff = Terminal_console_mosaic.default_web_handoff ~port:terminal_console_port () in
+          let terminal_console_local_surfaces =
+            [
+              Terminal_console_mosaic.local_surface ~label:"Workspace Repository" ~root:config.repository_root;
+              Terminal_console_mosaic.local_surface ~label:"Runtime Home" ~root:home.runtime_dir;
+            ]
+          in
           if mode = Cli_mode.Web_dashboard then render_banner ();
-          if once then (
-            if mode = Cli_mode.Terminal_console then render_terminal_console config state;
-            0)
-          else
-            match Runtime_policy.action ~mode ~readiness_gaps:state.Runtime_state.readiness_gaps with
-            | Runtime_policy.Serve_readiness_state -> (
-                match mode with
-                | Cli_mode.Web_dashboard ->
-                    let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-                    render_web_dashboard_starting ~port;
-                    let live = Server.create_live_state ~get_state:(fun () -> state) in
-                    run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
-                | Cli_mode.Terminal_console ->
-                    render_terminal_console config state;
-                    run_until_stopped (fun () ->
-                        while true do
-                          Unix.sleep 60
-                        done))
-            | Runtime_policy.Run_orchestrator ->
-                (match mode with
-                | Cli_mode.Web_dashboard ->
-                    let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
-                    render_web_dashboard_starting ~port;
-                    let orchestrator_ref = ref None in
-                    let live =
-                      Server.create_live_state ~get_state:(fun () ->
-                          match !orchestrator_ref with
-                          | Some orchestrator -> Orchestrator.get_state orchestrator
-                          | None -> state)
-                    in
-                    let orchestrator =
-                      Orchestrator.make ?ordered_queue ~config ~prompt_template
-                        ~notify_state:(fun _ -> Server.broadcast_live_state live)
-                        ()
-                    in
-                    orchestrator_ref := Some orchestrator;
-                    ignore (Thread.create Orchestrator.run_forever orchestrator);
-                    run_until_stopped (fun () ->
-                        Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
-                | Cli_mode.Terminal_console ->
-                    let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template () in
-                    render_terminal_console config state;
-                    run_until_stopped (fun () -> Orchestrator.run_forever orchestrator)))
+          match
+            Terminal_console_runtime.select_branch ~once ~mode ~merge_args:[]
+              ~readiness_gaps:state.Runtime_state.readiness_gaps
+          with
+          | Terminal_console_runtime.Manual_merge -> assert false
+          | Once ->
+              if mode = Cli_mode.Terminal_console then render_terminal_console config state;
+              0
+          | Web_dashboard Runtime_policy.Serve_readiness_state ->
+              let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+              render_web_dashboard_starting ~port;
+              let live = Server.create_live_state ~get_state:(fun () -> state) in
+              run_until_stopped (fun () -> Server.serve ~live ~port ~get_state:(fun () -> state) ())
+          | Web_dashboard Runtime_policy.Run_orchestrator ->
+              let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+              render_web_dashboard_starting ~port;
+              let orchestrator_ref = ref None in
+              let live =
+                Server.create_live_state ~get_state:(fun () ->
+                    match !orchestrator_ref with
+                    | Some orchestrator -> Orchestrator.get_state orchestrator
+                    | None -> state)
+              in
+              let orchestrator =
+                Orchestrator.make ?ordered_queue ~config ~prompt_template
+                  ~notify_state:(fun _ -> Server.broadcast_live_state live)
+                  ()
+              in
+              orchestrator_ref := Some orchestrator;
+              ignore (Thread.create Orchestrator.run_forever orchestrator);
+              run_until_stopped (fun () ->
+                  Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
+          | Terminal_console_readiness ->
+              Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
+                ~local_surfaces:terminal_console_local_surfaces ~initial_state:state ();
+              0
+          | Terminal_console_orchestrator ->
+              Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
+                ~local_surfaces:terminal_console_local_surfaces ~initial_state:state
+                ~start_orchestration:(fun ~notify_state ->
+                  let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template ~notify_state () in
+                  notify_state (Orchestrator.get_state orchestrator);
+                  ignore
+                    (Terminal_console_runtime.start_background_orchestration (fun () ->
+                         Orchestrator.run_forever orchestrator)))
+                ();
+              0)
   with
   | Runtime_home.Runtime_home_error msg | Config.Invalid_config msg | Prompt.Template_render_error msg
   | Workspace.Workspace_error msg ->

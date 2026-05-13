@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Keyboard Navigation And Safe Local Aids"
 type: backend
 complexity: medium
@@ -31,12 +31,12 @@ Add the interaction layer that makes the Terminal Console keyboard-first while p
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add UI-only focus and selection state for panels and rows.
-- [ ] 5.2 Add keyboard navigation and discoverable contextual footer/help behavior.
-- [ ] 5.3 Add filtering/search that changes only UI model state.
-- [ ] 5.4 Add refresh redraw/latest-snapshot aid with no tracker polling side effect.
-- [ ] 5.5 Add Web Dashboard handoff guidance and validated local path inspection aids.
-- [ ] 5.6 Add tests proving key handlers are non-mutating.
+- [x] 5.1 Add UI-only focus and selection state for panels and rows.
+- [x] 5.2 Add keyboard navigation and discoverable contextual footer/help behavior.
+- [x] 5.3 Add filtering/search that changes only UI model state.
+- [x] 5.4 Add refresh redraw/latest-snapshot aid with no tracker polling side effect.
+- [x] 5.5 Add Web Dashboard handoff guidance and validated local path inspection aids.
+- [x] 5.6 Add tests proving key handlers are non-mutating.
 
 ## Implementation Details
 Modify `apps/backend/bin/terminal_console_mosaic.ml` and any small supporting modules for UI state reducers. Reference the TechSpec "Safe Aid Model", "Terminal Environment", and "Known Risks" sections. Keep lifecycle functions outside this module to make MVP boundaries obvious during review.
@@ -71,15 +71,15 @@ Avoid binding terminal-owned interrupt keys such as `Ctrl+C` and ensure the term
 
 ## Tests
 - Unit tests:
-  - [ ] Pressing navigation keys changes selected panel or row without changing the projected Runtime State snapshot.
-  - [ ] Filtering visible rows updates UI-only filter state and leaves Runtime State-derived data unchanged.
-  - [ ] Refresh aid uses the latest in-memory snapshot and does not call tracker polling, status update, retry, merge, push, or cleanup functions.
-  - [ ] Web Dashboard handoff aid returns command/URL guidance and does not start `Server.serve`.
-  - [ ] Invalid local path inspection reports a UI-local status message and does not read or modify outside the allowed Workspace Repository surfaces.
-  - [ ] Help/footer content includes `q`, navigation, filter/search, refresh, and handoff keys when those actions are available.
+  - [x] Pressing navigation keys changes selected panel or row without changing the projected Runtime State snapshot.
+  - [x] Filtering visible rows updates UI-only filter state and leaves Runtime State-derived data unchanged.
+  - [x] Refresh aid uses the latest in-memory snapshot and does not call tracker polling, status update, retry, merge, push, or cleanup functions.
+  - [x] Web Dashboard handoff aid returns command/URL guidance and does not start `Server.serve`.
+  - [x] Invalid local path inspection reports a UI-local status message and does not read or modify outside the allowed Workspace Repository surfaces.
+  - [x] Help/footer content includes `q`, navigation, filter/search, refresh, and handoff keys when those actions are available.
 - Integration tests:
-  - [ ] Terminal Console runtime with a fake safe-aid handler records only non-mutating safe-aid invocations.
-  - [ ] Existing Web Dashboard endpoint tests still pass unchanged after handoff aid work.
+  - [x] Terminal Console runtime with a fake safe-aid handler records only non-mutating safe-aid invocations.
+  - [x] Existing Web Dashboard endpoint tests still pass unchanged after handoff aid work.
 - Test coverage target: >=80%
 - All tests must pass
 

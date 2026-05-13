@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Adopt Mosaic Dependency And Executable Shell"
 type: infra
 complexity: medium
@@ -30,12 +30,12 @@ Add Mosaic as the explicit Terminal Console UI dependency and create the minimal
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Update Product Repository build metadata for the Mosaic dependency.
-- [ ] 2.2 Add a minimal executable-side Mosaic module that consumes the projection from task 01.
-- [ ] 2.3 Keep the shell non-mutating and independent from orchestration runtime wiring.
-- [ ] 2.4 Add compile-focused tests or smoke coverage for the shell boundary.
-- [ ] 2.5 Run backend build validation after dependency changes.
-- [ ] 2.6 Record any dependency compatibility findings for later tasks.
+- [x] 2.1 Update Product Repository build metadata for the Mosaic dependency.
+- [x] 2.2 Add a minimal executable-side Mosaic module that consumes the projection from task 01.
+- [x] 2.3 Keep the shell non-mutating and independent from orchestration runtime wiring.
+- [x] 2.4 Add compile-focused tests or smoke coverage for the shell boundary.
+- [x] 2.5 Run backend build validation after dependency changes.
+- [x] 2.6 Record any dependency compatibility findings for later tasks.
 
 ## Implementation Details
 Modify build metadata and Dune files so the dependency is reproducible. Reference the TechSpec "Mosaic / opam / Dune" section and ADR-004 for the dependency decision. The initial shell should prove Mosaic can render from the view-model projection without starting orchestration or adding lifecycle controls.
@@ -67,12 +67,12 @@ Do not change npm package files, `bin/symphony.js`, or packaged-binary behavior 
 
 ## Tests
 - Unit tests:
-  - [ ] Any shell helper that maps projected status to display labels returns stable labels for idle, running, retrying, attention, and readiness-blocked modes.
-  - [ ] Any shell helper for initial model construction uses sanitized projection fields from task 01.
+  - [x] Any shell helper that maps projected status to display labels returns stable labels for idle, running, retrying, attention, and readiness-blocked modes.
+  - [x] Any shell helper for initial model construction uses sanitized projection fields from task 01.
 - Integration tests:
-  - [ ] `pnpm backend:build` succeeds with Mosaic dependency metadata.
-  - [ ] Existing `pnpm test` backend suite still compiles after dependency metadata changes.
-  - [ ] The minimal Mosaic module can be linked into the backend executable without changing `--web` or `--once` behavior.
+  - [x] `pnpm backend:build` succeeds with Mosaic dependency metadata.
+  - [x] Existing `pnpm test` backend suite still compiles after dependency metadata changes.
+  - [x] The minimal Mosaic module can be linked into the backend executable without changing `--web` or `--once` behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

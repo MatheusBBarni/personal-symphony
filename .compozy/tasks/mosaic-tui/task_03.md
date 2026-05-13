@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Wire In-Process Terminal Console Runtime"
 type: backend
 complexity: high
@@ -31,12 +31,12 @@ Wire the default Terminal Console mode so Mosaic owns the foreground terminal lo
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add a runtime coordination seam for starting the Terminal Console UI with an initial Runtime State.
-- [ ] 3.2 Add a synchronized Runtime State handoff from `notify_state` to the UI runtime.
-- [ ] 3.3 Start orchestration in a background thread only when runtime policy allows dispatch.
-- [ ] 3.4 Preserve readiness-blocked Terminal Console rendering without orchestrator startup.
-- [ ] 3.5 Preserve existing `--once`, `--web`, and manual merge branches.
-- [ ] 3.6 Add focused tests for mode selection, state handoff, and non-mutating behavior.
+- [x] 3.1 Add a runtime coordination seam for starting the Terminal Console UI with an initial Runtime State.
+- [x] 3.2 Add a synchronized Runtime State handoff from `notify_state` to the UI runtime.
+- [x] 3.3 Start orchestration in a background thread only when runtime policy allows dispatch.
+- [x] 3.4 Preserve readiness-blocked Terminal Console rendering without orchestrator startup.
+- [x] 3.5 Preserve existing `--once`, `--web`, and manual merge branches.
+- [x] 3.6 Add focused tests for mode selection, state handoff, and non-mutating behavior.
 
 ## Implementation Details
 Modify `apps/backend/bin/main.ml` and, if useful, add a small executable-side runtime module. Reference the TechSpec "Data Flow", "Readiness-Blocked Flow", and "Development Sequencing" sections. Use the existing Web Dashboard branch as evidence that `notify_state` can drive another foreground surface, but do not reuse the Live Dashboard Connection for Terminal Console commands.
@@ -70,14 +70,14 @@ Avoid timing workarounds. Use explicit synchronization primitives rather than sl
 
 ## Tests
 - Unit tests:
-  - [ ] Runtime handoff stores the latest Runtime State snapshot without mutating it.
-  - [ ] Runtime handoff delivers repeated `notify_state` snapshots in deterministic order or latest-state semantics documented by the implementation.
-  - [ ] Readiness-blocked branch exposes the readiness Runtime State to the UI runtime and does not start orchestration.
+  - [x] Runtime handoff stores the latest Runtime State snapshot without mutating it.
+  - [x] Runtime handoff delivers repeated `notify_state` snapshots in deterministic order or latest-state semantics documented by the implementation.
+  - [x] Readiness-blocked branch exposes the readiness Runtime State to the UI runtime and does not start orchestration.
 - Integration tests:
-  - [ ] `--once` invokes existing non-interactive rendering and does not call the Mosaic runtime.
-  - [ ] `--web` starts existing Web Dashboard behavior and does not call the Mosaic runtime.
-  - [ ] Default Terminal Console mode starts the UI runtime and wires `notify_state` when runtime policy returns `Run_orchestrator`.
-  - [ ] Manual merge arguments still run one-shot Manual Task Merge instead of starting Mosaic.
+  - [x] `--once` invokes existing non-interactive rendering and does not call the Mosaic runtime.
+  - [x] `--web` starts existing Web Dashboard behavior and does not call the Mosaic runtime.
+  - [x] Default Terminal Console mode starts the UI runtime and wires `notify_state` when runtime policy returns `Run_orchestrator`.
+  - [x] Manual merge arguments still run one-shot Manual Task Merge instead of starting Mosaic.
 - Test coverage target: >=80%
 - All tests must pass
 

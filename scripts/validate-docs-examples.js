@@ -173,6 +173,69 @@ function assertCompozyGuidance(readme) {
   }
 }
 
+function assertTerminalConsoleGuidance(readme) {
+  const requiredReadme = [
+    "default read-first Terminal Console",
+    "Run `symphony` from the Workspace Repository root",
+    "Runtime State snapshots",
+    "Readiness Gaps",
+    "Ordered Queue progress",
+    "Compozy PRD Run progress",
+    "Agent Worktree details",
+    "Task Branch context",
+    "safe local aids",
+    "Web Dashboard handoff command",
+    "do not retry tasks, pause or resume dispatch, update tracker status",
+    "symphony --web --port 8080",
+    "Live Dashboard Connection as a Runtime State stream",
+    "`symphony --once`",
+  ];
+
+  for (const phrase of requiredReadme) {
+    if (!readme.includes(phrase)) {
+      fail(`README.md is missing Terminal Console guidance for ${phrase}`);
+    }
+  }
+
+  const requiredContext = [
+    "Normal `symphony` runs open the read-first Terminal Console",
+    "`symphony --web` opens the **Web Dashboard**",
+    "`symphony --once` prints non-interactive terminal output",
+    "The **Terminal Console** uses in-process **Runtime State** snapshots",
+    "The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream",
+    "**Terminal Console** local aids must not retry tasks",
+  ];
+
+  for (const phrase of requiredContext) {
+    if (!context.includes(phrase)) {
+      fail(`CONTEXT.md is missing Terminal Console semantics for ${phrase}`);
+    }
+  }
+
+  const adrPath = "docs/adr/0024-default-rich-terminal-console.md";
+  const adr = readDoc(adrPath);
+  const requiredAdr = [
+    "Accepted",
+    "Normal `symphony` runs open the read-first Terminal Console by default",
+    "`symphony --web` keeps Web Dashboard mode separate",
+    "The `symphony --once` command keeps",
+    "non-interactive terminal output",
+    "Runtime State snapshots",
+    "must not retry tasks, pause or resume dispatch",
+  ];
+
+  for (const phrase of requiredAdr) {
+    if (!adr.includes(phrase)) {
+      fail(`${adrPath} is missing Terminal Console decision text for ${phrase}`);
+    }
+  }
+
+  const userFacingText = `${readme}\n${adr}`;
+  if (/\bTUI\b/.test(userFacingText)) {
+    fail("Terminal Console docs must not introduce user-facing TUI product wording");
+  }
+}
+
 function assertGitHubScope(projectTracking) {
   const required = [
     'tracker.kind` is `"github"`',
@@ -255,6 +318,7 @@ assertTrackerExamples(jsonBlocks);
 assertGlossaryTerms();
 assertReadinessGuidance(markdownByPath.get("README.md"));
 assertCompozyGuidance(markdownByPath.get("README.md"));
+assertTerminalConsoleGuidance(markdownByPath.get("README.md"));
 assertGitHubScope(markdownByPath.get(".github/project-tracking.md"));
 assertLegacyWorkflowReferencesAreScoped();
 assertNoGeneratedResJsDiff();

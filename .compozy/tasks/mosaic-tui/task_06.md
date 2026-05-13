@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Document Runtime Semantics And Finalize Validation"
 type: docs
 complexity: medium
@@ -30,12 +30,12 @@ Update project documentation and architecture records for the default richer Ter
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Review implemented behavior against PRD, TechSpec, and task ADRs.
-- [ ] 6.2 Update `CONTEXT.md` for any confirmed domain or runtime semantic changes.
-- [ ] 6.3 Add or update a Product Repository ADR under `docs/adr/` if required by the runtime change.
-- [ ] 6.4 Update README or operator docs for default Terminal Console behavior and safe-aid boundaries.
-- [ ] 6.5 Add or update documentation assertions if existing tests cover docs examples.
-- [ ] 6.6 Run final backend, task, and package-sensitive validation.
+- [x] 6.1 Review implemented behavior against PRD, TechSpec, and task ADRs.
+- [x] 6.2 Update `CONTEXT.md` for any confirmed domain or runtime semantic changes.
+- [x] 6.3 Add or update a Product Repository ADR under `docs/adr/` if required by the runtime change.
+- [x] 6.4 Update README or operator docs for default Terminal Console behavior and safe-aid boundaries.
+- [x] 6.5 Add or update documentation assertions if existing tests cover docs examples.
+- [x] 6.6 Run final backend, task, and package-sensitive validation.
 
 ## Implementation Details
 Use this as the final feature integration task after code tasks are complete. Reference the TechSpec "Impact Analysis", "Monitoring and Observability", and "Development Sequencing" sections. Follow the Project Context rule that `CONTEXT.md` is the source of truth for product terminology and that architecture decisions changing runtime semantics need ADR coverage under `docs/adr/`.
@@ -74,14 +74,14 @@ Do not change npm package files, `bin/symphony.js`, or packaged-binary behavior 
 
 ## Tests
 - Unit tests:
-  - [ ] Any changed doc-example assertions verify Terminal Console mode, Web Dashboard mode, and Runtime State terminology.
-  - [ ] Any helper changed for documentation output keeps secret values redacted and uses only variable names.
+  - [x] Any changed doc-example assertions verify Terminal Console mode, Web Dashboard mode, and Runtime State terminology.
+  - [x] Any helper changed for documentation output keeps secret values redacted and uses only variable names.
 - Integration tests:
-  - [ ] `pnpm backend:build` succeeds after all Mosaic Terminal Console changes.
-  - [ ] `pnpm test` succeeds with all backend tests.
-  - [ ] `compozy tasks validate --name mosaic-tui` succeeds.
-  - [ ] Package-sensitive validation from the TechSpec succeeds or records explicit follow-up if packaging requires separate approval.
-  - [ ] Documentation text uses established glossary terms and avoids introducing conflicting user-facing `TUI` product language.
+  - [x] `pnpm backend:build` succeeds after all Mosaic Terminal Console changes.
+  - [x] `pnpm test` succeeds with all backend tests.
+  - [x] `compozy tasks validate --name mosaic-tui` succeeds.
+  - [x] Package-sensitive validation from the TechSpec succeeds or records explicit follow-up if packaging requires separate approval.
+  - [x] Documentation text uses established glossary terms and avoids introducing conflicting user-facing `TUI` product language.
 - Test coverage target: >=80%
 - All tests must pass
 
