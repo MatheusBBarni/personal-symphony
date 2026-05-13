@@ -58,6 +58,19 @@ let close_state_handoff handoff =
       handoff.closed <- true;
       Condition.broadcast handoff.condition)
 
+let default_background_orchestration_failure_handler exn backtrace =
+  Printf.eprintf "event=orchestrator outcome=failed reason=%s\n%!" (Printexc.to_string exn);
+  if backtrace <> "" then Printf.eprintf "event=orchestrator outcome=failed backtrace=%S\n%!" backtrace;
+  exit 1
+
+let start_background_orchestration ?(on_failure = default_background_orchestration_failure_handler) run =
+  Thread.create
+    (fun () ->
+      try run () with exn ->
+        let backtrace = Printexc.get_backtrace () in
+        on_failure exn backtrace)
+    ()
+
 let subscribe_state handoff dispatch =
   let snapshot () =
     with_lock handoff (fun () -> (handoff.latest, handoff.version, handoff.closed))

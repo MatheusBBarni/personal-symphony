@@ -299,7 +299,9 @@ let run_runtime port once web queue_arg merge_args overrides =
                 ~start_orchestration:(fun ~notify_state ->
                   let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template ~notify_state () in
                   notify_state (Orchestrator.get_state orchestrator);
-                  ignore (Thread.create Orchestrator.run_forever orchestrator))
+                  ignore
+                    (Terminal_console_runtime.start_background_orchestration (fun () ->
+                         Orchestrator.run_forever orchestrator)))
                 ();
               0)
   with

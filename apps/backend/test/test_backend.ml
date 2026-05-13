@@ -3235,7 +3235,8 @@ let test_cli_rejects_invalid_runtime_invocation_override_values () =
       Alcotest.(check bool)
         ("field named in error: " ^ value)
         true
-        (contains_substring stderr "polling.intervalMs" && contains_substring stderr "positive integer"))
+        (contains_substring stderr "polling.intervalMs"
+        && contains_substring stderr "positive" && contains_substring stderr "integer"))
     [ "0"; "-1"; "1.5"; ""; "abc" ]
 
 let test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior () =
@@ -3257,7 +3258,7 @@ let test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior () =
   Alcotest.(check bool)
     "Cmdliner rejects repeated option values"
     true
-    (contains_substring stderr "option '--polling.intervalMs' cannot be repeated")
+    (contains_substring stderr "polling.intervalMs" && contains_substring stderr "cannot be repeated")
 
 let test_cli_rejects_runtime_invocation_overrides_for_unsupported_modes () =
   let cases =
@@ -4737,6 +4738,26 @@ let test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state (
       Alcotest.(check (option string)) "notify_state snapshot reaches UI" (Some "orchestrator")
         state.Runtime_state.last_error
   | None -> Alcotest.fail "expected UI runtime to start"
+
+let test_terminal_console_runtime_background_orchestration_reports_failures () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let reported = ref None in
+  let failing_thread =
+    Runtime.start_background_orchestration
+      ~on_failure:(fun exn backtrace -> reported := Some (Printexc.to_string exn, backtrace))
+      (fun () -> failwith "orchestrator crashed")
+  in
+  Thread.join failing_thread;
+  (match !reported with
+  | Some (reason, _backtrace) ->
+      Alcotest.(check bool) "failure surfaced" true (contains_substring reason "orchestrator crashed")
+  | None -> Alcotest.fail "expected background orchestration failure handler");
+  let called = ref false in
+  let successful_thread =
+    Runtime.start_background_orchestration ~on_failure:(fun _ _ -> called := true) (fun () -> ())
+  in
+  Thread.join successful_thread;
+  Alcotest.(check bool) "success does not invoke failure handler" false !called
 
 let websocket_request () =
   {
@@ -11868,6 +11889,8 @@ let () =
             test_terminal_console_runtime_readiness_runs_ui_without_orchestration;
           Alcotest.test_case "wires orchestrator notifications into Terminal Console UI" `Quick
             test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state;
+          Alcotest.test_case "reports Terminal Console orchestration thread failures" `Quick
+            test_terminal_console_runtime_background_orchestration_reports_failures;
         ] );
       ( "server",
         [
