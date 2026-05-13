@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Update queue shortcut docs and CLI help"
 type: docs
 complexity: medium
@@ -31,11 +31,11 @@ Update the user-facing queue contract after the runtime behavior is stable. This
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Update `apps/backend/lib/cli_command.ml` help text for `--queue`.
-- [ ] 4.2 Update README queue examples and Compozy selector guidance for the MVP shortcut.
-- [ ] 4.3 Update `CONTEXT.md` if glossary or invariant language needs to reflect raw-input resume semantics.
-- [ ] 4.4 Add or update the relevant project ADR under `docs/adr/` for queue runtime semantics if implementation changes warrant it.
-- [ ] 4.5 Add or update tests and verification steps that keep docs and help text aligned with runtime behavior.
+- [x] 4.1 Update `apps/backend/lib/cli_command.ml` help text for `--queue`.
+- [x] 4.2 Update README queue examples and Compozy selector guidance for the MVP shortcut.
+- [x] 4.3 Update `CONTEXT.md` if glossary or invariant language needs to reflect raw-input resume semantics.
+- [x] 4.4 Add or update the relevant project ADR under `docs/adr/` for queue runtime semantics if implementation changes warrant it.
+- [x] 4.5 Add or update tests and verification steps that keep docs and help text aligned with runtime behavior.
 
 ## Implementation Details
 Reference TechSpec "Integration Points", "Monitoring and Observability", and "Known Risks". Complete this task only after tasks 02 and 03 settle the exact readiness message shape and resume behavior. Keep legacy canonical Compozy selector guidance for non-queue selector surfaces unless implementation broadens them separately.
@@ -67,14 +67,14 @@ Reference TechSpec "Integration Points", "Monitoring and Observability", and "Kn
 
 ## Tests
 - Unit tests:
-  - [ ] `--queue` help text mentions the Compozy bare-slug shortcut scope without removing generic queue support wording.
-  - [ ] README examples preserve canonical `compozy:<slug>` guidance for non-queue selector surfaces.
-  - [ ] Documentation text does not include secret values and references only environment variable names when applicable.
-  - [ ] Project ADR or glossary updates match the implemented raw-input resume semantics if those documents change.
+  - [x] `--queue` help text mentions the Compozy bare-slug shortcut scope without removing generic queue support wording.
+  - [x] README examples preserve canonical `compozy:<slug>` guidance for non-queue selector surfaces.
+  - [x] Documentation text does not include secret values and references only environment variable names when applicable.
+  - [x] Project ADR or glossary updates match the implemented raw-input resume semantics if those documents change.
 - Integration tests:
-  - [ ] Backend queue tests introduced in tasks 02 and 03 still pass after CLI help and documentation changes are aligned.
-  - [ ] Documented bare-slug queue examples correspond to passing runtime behavior under `tracker.kind = "compozy_tasks"`.
-  - [ ] Documented mismatch examples correspond to a blocking **Readiness Gap** under non-Compozy tracker modes.
+  - [x] Backend queue tests introduced in tasks 02 and 03 still pass after CLI help and documentation changes are aligned.
+  - [x] Documented bare-slug queue examples correspond to passing runtime behavior under `tracker.kind = "compozy_tasks"`.
+  - [x] Documented mismatch examples correspond to a blocking **Readiness Gap** under non-Compozy tracker modes.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add tracker-aware Ordered Queue resolution primitives"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ Add the queue-resolution primitives that let `--queue` preserve raw operator inp
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Extend the ordered queue model to preserve raw queue identifiers and expose a resolved queue-entry shape for downstream callers.
-- [ ] 1.2 Update queue parsing so structurally valid bare tokens survive parse-time validation without becoming Compozy-specific selectors.
-- [ ] 1.3 Add a shared queue-resolution helper that uses the selected tracker normalization rules to derive canonical identifiers.
-- [ ] 1.4 Extend Compozy tracker normalization to accept bare slugs and legacy canonical selectors without changing GitHub or minibeads behavior.
-- [ ] 1.5 Add duplicate-detection coverage based on resolved canonical identifiers rather than raw queue text alone.
+- [x] 1.1 Extend the ordered queue model to preserve raw queue identifiers and expose a resolved queue-entry shape for downstream callers.
+- [x] 1.2 Update queue parsing so structurally valid bare tokens survive parse-time validation without becoming Compozy-specific selectors.
+- [x] 1.3 Add a shared queue-resolution helper that uses the selected tracker normalization rules to derive canonical identifiers.
+- [x] 1.4 Extend Compozy tracker normalization to accept bare slugs and legacy canonical selectors without changing GitHub or minibeads behavior.
+- [x] 1.5 Add duplicate-detection coverage based on resolved canonical identifiers rather than raw queue text alone.
 
 ## Implementation Details
 Reference TechSpec "Implementation Design", especially "Core Interfaces", "Ordered Queue Entry", "Resolved Queue Entry", and "Compozy Normalization Rules". Keep this task focused on raw-versus-canonical queue representation and selected-tracker normalization; readiness messaging and orchestration changes belong to later tasks.
@@ -62,15 +62,15 @@ Reference TechSpec "Implementation Design", especially "Core Interfaces", "Order
 
 ## Tests
 - Unit tests:
-  - [ ] `Ordered_queue.parse "example-feature"` succeeds as a structurally valid opaque queue token.
-  - [ ] `Ordered_queue.parse "owner/repo#20"` still fails with the existing cross-repository reference diagnostic.
-  - [ ] Compozy normalization resolves `example-feature` to `compozy:example-feature`.
-  - [ ] Compozy normalization preserves `compozy:example-feature` as the canonical identifier.
-  - [ ] Resolved duplicate detection reports a collision when two bare Compozy slugs normalize to the same canonical identifier.
-  - [ ] Task-step-like Compozy selectors such as `compozy:task_01` remain missing at the PRD-run boundary.
+  - [x] `Ordered_queue.parse "example-feature"` succeeds as a structurally valid opaque queue token.
+  - [x] `Ordered_queue.parse "owner/repo#20"` still fails with the existing cross-repository reference diagnostic.
+  - [x] Compozy normalization resolves `example-feature` to `compozy:example-feature`.
+  - [x] Compozy normalization preserves `compozy:example-feature` as the canonical identifier.
+  - [x] Resolved duplicate detection reports a collision when two bare Compozy slugs normalize to the same canonical identifier.
+  - [x] Task-step-like Compozy selectors such as `compozy:task_01` remain missing at the PRD-run boundary.
 - Integration tests:
-  - [ ] Selected Compozy tracker lookup resolves a bare slug and returns the same issue identity as the legacy canonical selector.
-  - [ ] Existing canonical Compozy ordered-queue validation tests continue to pass unchanged.
+  - [x] Selected Compozy tracker lookup resolves a bare slug and returns the same issue identity as the legacy canonical selector.
+  - [x] Existing canonical Compozy ordered-queue validation tests continue to pass unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

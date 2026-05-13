@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Wire readiness-first queue diagnostics for bare Compozy slugs"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Route bare-slug queue feedback through startup readiness after `.symphony/settin
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Update runtime readiness to validate queues through the shared resolved queue-entry helper.
-- [ ] 2.2 Add guided remediation for bare Compozy slugs used while the selected tracker kind is not `compozy_tasks`.
-- [ ] 2.3 Add readiness validation for mixed bare and canonical Compozy selector styles in one queue.
-- [ ] 2.4 Preserve separation between structural parse failures and tracker-aware readiness failures in startup wiring.
-- [ ] 2.5 Add readiness-focused test coverage for tracker mismatch, mixed-style Compozy input, and resolved duplicate handling.
+- [x] 2.1 Update runtime readiness to validate queues through the shared resolved queue-entry helper.
+- [x] 2.2 Add guided remediation for bare Compozy slugs used while the selected tracker kind is not `compozy_tasks`.
+- [x] 2.3 Add readiness validation for mixed bare and canonical Compozy selector styles in one queue.
+- [x] 2.4 Preserve separation between structural parse failures and tracker-aware readiness failures in startup wiring.
+- [x] 2.5 Add readiness-focused test coverage for tracker mismatch, mixed-style Compozy input, and resolved duplicate handling.
 
 ## Implementation Details
 Reference TechSpec "System Architecture" and "Development Sequencing" steps 4 and 5. Keep this task focused on startup validation and diagnostics. Do not change queue dispatch, queue-state persistence, or resume behavior here.
@@ -64,14 +64,14 @@ Reference TechSpec "System Architecture" and "Development Sequencing" steps 4 an
 
 ## Tests
 - Unit tests:
-  - [ ] A bare Compozy slug under `tracker.kind = "github"` produces a readiness remediation that mentions the tracker mismatch.
-  - [ ] A bare Compozy slug under `tracker.kind = "minibeads"` produces the same class of readiness remediation.
-  - [ ] Mixed `example-feature,compozy:example-feature` Compozy queue input produces a readiness validation failure in MVP.
-  - [ ] Structural parse failures such as an empty queue entry still appear as parse-stage remediation rather than tracker-mismatch remediation.
-  - [ ] Resolved duplicate canonical identifiers are reported through queue readiness validation.
+  - [x] A bare Compozy slug under `tracker.kind = "github"` produces a readiness remediation that mentions the tracker mismatch.
+  - [x] A bare Compozy slug under `tracker.kind = "minibeads"` produces the same class of readiness remediation.
+  - [x] Mixed `example-feature,compozy:example-feature` Compozy queue input produces a readiness validation failure in MVP.
+  - [x] Structural parse failures such as an empty queue entry still appear as parse-stage remediation rather than tracker-mismatch remediation.
+  - [x] Resolved duplicate canonical identifiers are reported through queue readiness validation.
 - Integration tests:
-  - [ ] `symphony --once --queue example-feature` with a non-Compozy tracker reports a blocking **Readiness Gap** and does not begin orchestration.
-  - [ ] Existing canonical Compozy queue readiness validation still passes when `tracker.kind = "compozy_tasks"`.
+  - [x] `symphony --once --queue example-feature` with a non-Compozy tracker reports a blocking **Readiness Gap** and does not begin orchestration.
+  - [x] Existing canonical Compozy queue readiness validation still passes when `tracker.kind = "compozy_tasks"`.
 - Test coverage target: >=80%
 - All tests must pass
 
