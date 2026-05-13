@@ -32,7 +32,7 @@ globalThis.fetch = () => {
   throw new Error("fetch polling must not be used by live dashboard state");
 };
 
-createLiveStateConnection({
+const disconnectLiveState = createLiveStateConnection({
   WebSocketCtor: MockWebSocket,
   locationObj: { protocol: "http:", host: "127.0.0.1:8080" },
   setTimeoutFn: (fn, delay) => {
@@ -96,6 +96,12 @@ sockets[0].onmessage({
       failed: 0,
       skipped: 0,
       total: 8,
+      lifecycle_state: "in_review",
+      dispatch_state: "In review",
+      stage_agent: "reviewer",
+      pr_readiness: "not_ready",
+      reason: "Reviewer found failing verification.",
+      handoff_status: "handoff_failed",
     },
   }),
 });
@@ -113,6 +119,12 @@ assert.equal(snapshots[0].compozy_progress.completed, 1);
 assert.equal(snapshots[0].compozy_progress.failed, 0);
 assert.equal(snapshots[0].compozy_progress.skipped, 0);
 assert.equal(snapshots[0].compozy_progress.total, 8);
+assert.equal(snapshots[0].compozy_progress.lifecycle_state, "in_review");
+assert.equal(snapshots[0].compozy_progress.dispatch_state, "In review");
+assert.equal(snapshots[0].compozy_progress.stage_agent, "reviewer");
+assert.equal(snapshots[0].compozy_progress.pr_readiness, "not_ready");
+assert.equal(snapshots[0].compozy_progress.reason, "Reviewer found failing verification.");
+assert.equal(snapshots[0].compozy_progress.handoff_status, "handoff_failed");
 
 const dashboardSnapshot = snapshotFromState(snapshots[0]);
 assert.equal(dashboardSnapshot.trackerKind, "compozy_tasks");
@@ -124,6 +136,35 @@ assert.equal(dashboardSnapshot.compozyProgress.completed, "1");
 assert.equal(dashboardSnapshot.compozyProgress.failed, "0");
 assert.equal(dashboardSnapshot.compozyProgress.skipped, "0");
 assert.equal(dashboardSnapshot.compozyProgress.total, "8");
+assert.equal(dashboardSnapshot.compozyProgress.lifecycleState, "in_review");
+assert.equal(dashboardSnapshot.compozyProgress.dispatchState, "In review");
+assert.equal(dashboardSnapshot.compozyProgress.stageAgent, "reviewer");
+assert.equal(dashboardSnapshot.compozyProgress.prReadiness, "not_ready");
+assert.equal(dashboardSnapshot.compozyProgress.reason, "Reviewer found failing verification.");
+assert.equal(dashboardSnapshot.compozyProgress.handoffStatus, "handoff_failed");
+
+const lifecycleMarkup = renderToStaticMarkup(
+  React.createElement(Dashboard, { snapshot: dashboardSnapshot, error: undefined }),
+);
+assert.match(lifecycleMarkup, /PRD run progress/);
+assert.match(lifecycleMarkup, /Lifecycle/);
+assert.match(lifecycleMarkup, /in_review/);
+assert.match(lifecycleMarkup, /Dispatch state/);
+assert.match(lifecycleMarkup, /In review/);
+assert.match(lifecycleMarkup, /Stage agent/);
+assert.match(lifecycleMarkup, /reviewer/);
+assert.match(lifecycleMarkup, /PR readiness/);
+assert.match(lifecycleMarkup, /not_ready/);
+assert.match(lifecycleMarkup, /Handoff/);
+assert.match(lifecycleMarkup, /handoff_failed/);
+assert.match(lifecycleMarkup, /Reason/);
+assert.match(lifecycleMarkup, /Reviewer found failing verification\./);
+assert.match(lifecycleMarkup, /Current step/);
+assert.match(lifecycleMarkup, /task_02\.md/);
+assert.match(lifecycleMarkup, /Completed/);
+assert.match(lifecycleMarkup, /Failed/);
+assert.match(lifecycleMarkup, /Skipped/);
+assert.match(lifecycleMarkup, /Total/);
 
 const compozyDashboardSnapshot = snapshotFromState({
   tracker_kind: "compozy_tasks",
@@ -160,14 +201,23 @@ assert.equal(compozyDashboardSnapshot.compozyProgress.completed, "1");
 assert.equal(compozyDashboardSnapshot.compozyProgress.failed, "0");
 assert.equal(compozyDashboardSnapshot.compozyProgress.skipped, "1");
 assert.equal(compozyDashboardSnapshot.compozyProgress.total, "8");
+assert.equal(compozyDashboardSnapshot.compozyProgress.lifecycleState, "");
+assert.equal(compozyDashboardSnapshot.compozyProgress.dispatchState, "");
+assert.equal(compozyDashboardSnapshot.compozyProgress.stageAgent, "");
+assert.equal(compozyDashboardSnapshot.compozyProgress.prReadiness, "");
+assert.equal(compozyDashboardSnapshot.compozyProgress.reason, "");
+assert.equal(compozyDashboardSnapshot.compozyProgress.handoffStatus, "");
 
 const compozyMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: compozyDashboardSnapshot, error: undefined }),
 );
 assert.match(compozyMarkup, /PRD run progress/);
 assert.match(compozyMarkup, /task_02\.md/);
+assert.match(compozyMarkup, /Current step/);
 assert.match(compozyMarkup, /Completed/);
+assert.match(compozyMarkup, /Failed/);
 assert.match(compozyMarkup, /Skipped/);
+assert.match(compozyMarkup, /Total/);
 assert.match(compozyMarkup, /1 tracked PRD runs/);
 assert.match(compozyMarkup, /work item states/);
 
@@ -315,6 +365,53 @@ assert.equal(richDashboardSnapshot.issues[4].goalUsage, "time 3s");
 assert.equal(richDashboardSnapshot.issues[4].contextStatus, "timed out: Context Command timed out");
 assert.equal(richDashboardSnapshot.issues[5].error, "");
 
+const richMarkup = renderToStaticMarkup(
+  React.createElement(Dashboard, { snapshot: richDashboardSnapshot, error: "live socket warning" }),
+);
+assert.match(richMarkup, /Live Dashboard Connection/);
+assert.match(richMarkup, /live socket warning/);
+assert.match(richMarkup, /Readiness Gaps/);
+assert.match(richMarkup, /claude: Install Claude CLI/);
+assert.match(richMarkup, /Startup Reconciliation/);
+assert.match(richMarkup, /Startup check completed/);
+assert.match(richMarkup, /Runtime State Error/);
+assert.match(richMarkup, /global runtime issue/);
+assert.match(richMarkup, /Ordered Queue/);
+assert.match(richMarkup, /Pending work item details/);
+assert.match(richMarkup, /not dispatchable/);
+assert.match(richMarkup, /Goal Usage/);
+assert.match(richMarkup, /status running \| time 1\.5s \| tokens 7/);
+assert.match(richMarkup, /Context Status/);
+assert.match(richMarkup, /timed out: Context Command timed out/);
+assert.match(richMarkup, /Harness/);
+assert.match(richMarkup, /planner \(codex\)/);
+assert.match(richMarkup, /human action required/);
+assert.match(richMarkup, /6 tracked issues/);
+assert.match(richMarkup, /Tracker github/);
+
+const emptyTrackerSnapshot = snapshotFromState({
+  tracker_kind: "github",
+  counts: { running: 0, retrying: 0 },
+  usage_totals: { total_tokens: 0 },
+  generated_at: "2026-05-04T00:04:00Z",
+  status_order: [],
+  issues: [],
+  running: [],
+  retrying: [],
+  issue_errors: [],
+});
+
+const emptyTrackerMarkup = renderToStaticMarkup(
+  React.createElement(Dashboard, { snapshot: emptyTrackerSnapshot, error: undefined }),
+);
+assert.match(emptyTrackerMarkup, /No tracked issues were returned by the latest snapshot\./);
+
+const loadingMarkup = renderToStaticMarkup(
+  React.createElement(Dashboard, { snapshot: undefined, error: "backend unavailable" }),
+);
+assert.match(loadingMarkup, /Backend unavailable/);
+assert.match(loadingMarkup, /Loading runtime state/);
+
 sockets[0].onmessage({
   data: JSON.stringify({
     counts: { running: 1, retrying: 0 },
@@ -342,3 +439,8 @@ assert.equal(sockets[1].url, "ws://127.0.0.1:8080/api/v1/state/live");
 
 sockets[1].onerror();
 assert.equal(errors.at(-1), "Live dashboard connection failed. Reconnecting...");
+
+disconnectLiveState();
+assert.equal(sockets[1].readyState, MockWebSocket.CLOSED);
+sockets[1].onclose();
+assert.equal(timers.length, 1);

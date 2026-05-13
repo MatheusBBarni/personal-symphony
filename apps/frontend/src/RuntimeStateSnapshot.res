@@ -100,6 +100,12 @@ type compozyProgress = {
   failed: int,
   skipped: int,
   total: int,
+  lifecycle_state: option<string>,
+  dispatch_state: option<string>,
+  stage_agent: option<string>,
+  pr_readiness: option<string>,
+  reason: option<string>,
+  handoff_status: option<string>,
 }
 
 type startupReconciliation = {
@@ -240,6 +246,12 @@ let compozyProgressForDashboard = state =>
       failed: progress.failed->Int.toString,
       skipped: progress.skipped->Int.toString,
       total: progress.total->Int.toString,
+      lifecycleState: stringOrEmpty(progress.lifecycle_state),
+      dispatchState: stringOrEmpty(progress.dispatch_state),
+      stageAgent: stringOrEmpty(progress.stage_agent),
+      prReadiness: stringOrEmpty(progress.pr_readiness),
+      reason: stringOrEmpty(progress.reason),
+      handoffStatus: stringOrEmpty(progress.handoff_status),
     })
   | None => None
   }

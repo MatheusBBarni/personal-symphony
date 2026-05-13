@@ -25,6 +25,12 @@ type compozyProgress = {
   failed: string,
   skipped: string,
   total: string,
+  lifecycleState: string,
+  dispatchState: string,
+  stageAgent: string,
+  prReadiness: string,
+  reason: string,
+  handoffStatus: string,
 }
 
 type snapshot = {
@@ -357,6 +363,28 @@ let metricTile = (label, value, tone) =>
     </div>
   </div>
 
+let progressDetailTile = (label, value) =>
+  switch normalizedRuntimeValue(value) {
+  | None => React.null
+  | Some(value) =>
+    <div className="rounded border border-neutral-800 bg-[#1d1d1d] px-3 py-3">
+      <div className="text-[11px] font-semibold uppercase tracking-normal text-neutral-500">
+        {React.string(label)}
+      </div>
+      <div className="mt-2 break-words font-mono text-sm leading-5 text-neutral-100">
+        {React.string(value)}
+      </div>
+    </div>
+  }
+
+let hasProgressDetails = progress =>
+  progress.lifecycleState != "" ||
+  progress.dispatchState != "" ||
+  progress.stageAgent != "" ||
+  progress.prReadiness != "" ||
+  progress.handoffStatus != "" ||
+  progress.reason != ""
+
 let compozyProgressPanel = (progress: option<compozyProgress>) =>
   switch progress {
   | None => React.null
@@ -382,6 +410,18 @@ let compozyProgressPanel = (progress: option<compozyProgress>) =>
         </HeroUI.Chip>
       </HeroUI.CardHeader>
       <HeroUI.CardContent className="p-4">
+        {switch hasProgressDetails(progress) {
+        | false => React.null
+        | true =>
+          <div className="mb-3 grid gap-3 md:grid-cols-3">
+            {progressDetailTile("Lifecycle", progress.lifecycleState)}
+            {progressDetailTile("Dispatch state", progress.dispatchState)}
+            {progressDetailTile("Stage agent", progress.stageAgent)}
+            {progressDetailTile("PR readiness", progress.prReadiness)}
+            {progressDetailTile("Handoff", progress.handoffStatus)}
+            {progressDetailTile("Reason", progress.reason)}
+          </div>
+        }}
         <div className="grid gap-3 md:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(5rem,1fr))]">
           <div className="rounded border border-neutral-800 bg-[#1d1d1d] px-3 py-3">
             <div className="text-[11px] font-semibold uppercase tracking-normal text-neutral-500">
