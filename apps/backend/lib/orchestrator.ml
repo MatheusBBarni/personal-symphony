@@ -41,7 +41,7 @@ type t = {
   loop_start_branch : string;
   mutable startup_reconciliation_done : bool;
   mutable batch_pull_request_completed : bool;
-  ordered_queue : Ordered_queue.t option;
+  ordered_queue : Ordered_queue.resolved option;
 }
 
 and child = {
@@ -62,6 +62,23 @@ and child = {
 }
 
 exception Orchestrator_error of string
+
+let ordered_queue_resolution_error (problems : Ordered_queue.resolution_problem list) =
+  problems
+  |> List.map (fun (problem : Ordered_queue.resolution_problem) ->
+         match problem.canonical_identifier with
+         | Some canonical_identifier ->
+             Printf.sprintf "%s -> %s: %s" problem.queue_identifier canonical_identifier problem.reason
+         | None -> Printf.sprintf "%s: %s" problem.queue_identifier problem.reason)
+  |> String.concat "; "
+  |> Printf.sprintf "Ordered Queue resolution failed: %s"
+
+let resolve_ordered_queue tracker = function
+  | None -> None
+  | Some queue -> (
+      match Ordered_queue.resolve tracker queue with
+      | Ok resolved_queue -> Some resolved_queue
+      | Error problems -> raise (Orchestrator_error (ordered_queue_resolution_error problems)))
 
 type protected_path_match = { path : string; pattern_name : string; pattern : string }
 
@@ -354,14 +371,17 @@ let persist_ordered_queue_state config = function
       Util.mkdir_p (Filename.dirname path);
       Util.write_file path (Runtime_state.ordered_queue_to_yojson queue |> Yojson.Safe.pretty_to_string)
 
-let queue_contains_issue queue issue =
-  List.exists
-    (fun (entry : Ordered_queue.entry) -> entry.issue_identifier = issue.Issue.identifier)
-    queue.Ordered_queue.entries
+let queue_entry_for_issue (queue : Ordered_queue.resolved) issue =
+  queue.resolved_entries
+  |> List.find_opt (fun (entry : Ordered_queue.resolved_entry) ->
+         entry.canonical_identifier = issue.Issue.identifier)
 
-let queue_index queue issue =
-  queue.Ordered_queue.entries
-  |> List.mapi (fun index (entry : Ordered_queue.entry) -> (index, entry.issue_identifier))
+let queue_contains_issue queue issue =
+  Option.is_some (queue_entry_for_issue queue issue)
+
+let queue_index (queue : Ordered_queue.resolved) issue =
+  queue.resolved_entries
+  |> List.mapi (fun index (entry : Ordered_queue.resolved_entry) -> (index, entry.canonical_identifier))
   |> List.find_map (fun (index, candidate_identifier) ->
          if candidate_identifier = issue.Issue.identifier then Some index else None)
   |> Option.value ~default:max_int
@@ -381,13 +401,21 @@ let issue_identifier_key issue =
           | None -> (2, max_int, identifier))
       | None -> (2, max_int, identifier))
 
-let queue_entry_allows_dispatch state issue =
+let queue_entry_allows_dispatch resolved_queue state issue =
   match state.Runtime_state.ordered_queue with
   | None -> true
-  | Some queue -> (
-      match List.find_opt (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier = issue.Issue.identifier) queue.entries with
-      | Some entry when entry.state = "completed" || entry.state = "skipped" -> false
-      | _ -> true)
+  | Some state_queue -> (
+      match queue_entry_for_issue resolved_queue issue with
+      | None -> true
+      | Some queue_entry -> (
+          match
+            List.find_opt
+              (fun (entry : Runtime_state.ordered_queue_entry) ->
+                entry.issue_identifier = queue_entry.queue_identifier)
+              state_queue.entries
+          with
+          | Some entry when entry.state = "completed" || entry.state = "skipped" -> false
+          | _ -> true))
 
 let ordered_queue_finished orchestrator =
   match orchestrator.state.Runtime_state.ordered_queue with
@@ -1777,6 +1805,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
     match Util.trim config.tracker.repo with "" -> Filename.basename config.repository_root | repo -> repo
   in
   let tracker = Issue_tracker.make config in
+  let resolved_ordered_queue = resolve_ordered_queue tracker ordered_queue in
   {
     config;
     prompt_template;
@@ -1801,7 +1830,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
     loop_start_branch = current_branch config.repository_root;
     startup_reconciliation_done = false;
     batch_pull_request_completed = false;
-    ordered_queue;
+    ordered_queue = resolved_ordered_queue;
   }
 
 let get_state orchestrator = orchestrator.state
@@ -1853,23 +1882,39 @@ let update_compozy_progress orchestrator run =
         Some (Runtime_state.compozy_progress_of_prd_run_for_runtime orchestrator.config run);
     })
 
+let canonical_identifier_for_queue_identifier orchestrator queue_identifier =
+  match orchestrator.ordered_queue with
+  | None -> queue_identifier
+  | Some queue -> (
+      match
+        List.find_opt
+          (fun (entry : Ordered_queue.resolved_entry) -> entry.queue_identifier = queue_identifier)
+          queue.Ordered_queue.resolved_entries
+      with
+      | Some entry -> entry.canonical_identifier
+      | None -> queue_identifier)
+
 let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
     () =
   match orchestrator.state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->
-      let candidate_for identifier = List.find_opt (fun issue -> issue.Issue.identifier = identifier) candidates in
-      let candidate_not_dispatchable identifier =
-        match candidate_for identifier with
+      let canonical_identifier queue_identifier = canonical_identifier_for_queue_identifier orchestrator queue_identifier in
+      let candidate_for queue_identifier =
+        let canonical_identifier = canonical_identifier queue_identifier in
+        List.find_opt (fun issue -> issue.Issue.identifier = canonical_identifier) candidates
+      in
+      let candidate_not_dispatchable queue_identifier =
+        match candidate_for queue_identifier with
         | Some issue -> not (issue_state_is_dispatchable orchestrator issue.Issue.state)
         | None -> false
       in
-      let candidate_dispatchable identifier =
-        match candidate_for identifier with
+      let candidate_dispatchable queue_identifier =
+        match candidate_for queue_identifier with
         | Some issue -> issue_state_is_dispatchable orchestrator issue.Issue.state
         | None -> false
       in
-      let candidate_missing identifier = candidate_for identifier = None in
+      let candidate_missing queue_identifier = candidate_for queue_identifier = None in
       let skipped_identifier, skipped_reason =
         match skipped with Some (identifier, reason) -> (Some identifier, Some reason) | None -> (None, None)
       in
@@ -1877,18 +1922,19 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
       let next_entries state =
         old_entries
         |> List.map (fun (entry : Runtime_state.ordered_queue_entry) ->
+               let canonical_identifier = canonical_identifier entry.issue_identifier in
                let title = match candidate_for entry.issue_identifier with Some issue -> Some issue.Issue.title | None -> entry.title in
                let state_name =
                  match completed_identifier with
-                 | Some identifier when identifier = entry.issue_identifier -> "completed"
+                 | Some identifier when identifier = canonical_identifier -> "completed"
                  | _ -> (
                      match pending_identifier with
-                     | Some identifier when identifier = entry.issue_identifier -> "pending"
+                     | Some identifier when identifier = canonical_identifier -> "pending"
                      | _ -> (
                          match skipped_identifier with
-                         | Some identifier when identifier = entry.issue_identifier -> "skipped"
+                         | Some identifier when identifier = canonical_identifier -> "skipped"
                          | _ -> (
-                             match entry_state_for_issue state entry.issue_identifier with
+                             match entry_state_for_issue state canonical_identifier with
                              | Some state -> state
                              | None
                                when skip_missing && entry.state = "pending"
@@ -1900,8 +1946,8 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                in
                let skip_reason =
                  match skipped_identifier with
-                 | Some identifier when identifier = entry.issue_identifier -> skipped_reason
-                 | _ when pending_identifier = Some entry.issue_identifier -> None
+                 | Some identifier when identifier = canonical_identifier -> skipped_reason
+                 | _ when pending_identifier = Some canonical_identifier -> None
                  | _ when skip_missing && entry.state = "pending" && candidate_missing entry.issue_identifier ->
                      Some "Issue became unavailable or not dispatchable before admission."
                  | _ when skip_missing && entry.state = "pending" && candidate_not_dispatchable entry.issue_identifier ->
@@ -3448,7 +3494,7 @@ let poll_once orchestrator =
                | Some queue ->
                    issues
                    |> List.filter (queue_contains_issue queue)
-                   |> List.filter (queue_entry_allows_dispatch orchestrator.state)
+                   |> List.filter (queue_entry_allows_dispatch queue orchestrator.state)
                    |> List.sort (fun left right -> compare (queue_index queue left) (queue_index queue right)))
         in
         update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();

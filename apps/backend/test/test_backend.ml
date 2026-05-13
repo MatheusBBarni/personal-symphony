@@ -4173,6 +4173,77 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
       | None -> Alcotest.fail "expected resumed local ordered queue"))
 
+let test_orchestrator_resumes_bare_compozy_ordered_queue_by_raw_sequence () =
+  with_temp_dir "symphony-compozy-queue-raw-resume-" (fun root ->
+      let config = write_compozy_settings root in
+      write_ready_compozy_run config "second-feature";
+      write_ready_compozy_run config "first-feature";
+      let persisted =
+        {
+          Runtime_state.entries =
+            [
+              { Runtime_state.issue_identifier = "second-feature"; title = Some "Second"; state = "completed"; skip_reason = None };
+              { Runtime_state.issue_identifier = "first-feature"; title = Some "First"; state = "pending"; skip_reason = None };
+            ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let bare_queue = ordered_queue_or_fail "second-feature,first-feature" in
+      let canonical_queue = ordered_queue_or_fail "compozy:second-feature,compozy:first-feature" in
+      Alcotest.(check bool) "raw sequence matches bare queue" true
+        (Orchestrator.ordered_queue_state_matches bare_queue persisted);
+      Alcotest.(check bool) "raw sequence differs from canonical selectors" false
+        (Orchestrator.ordered_queue_state_matches canonical_queue persisted);
+      let resumed =
+        Orchestrator.make ~ordered_queue:bare_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      (match (Orchestrator.get_state resumed).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "resumed raw identifiers" [ "second-feature"; "first-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries);
+          Alcotest.(check (list string)) "resumed raw states" [ "completed"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected resumed bare Compozy ordered queue");
+      let reset =
+        Orchestrator.make ~ordered_queue:canonical_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      match (Orchestrator.get_state reset).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "canonical restart identifiers"
+            [ "compozy:second-feature"; "compozy:first-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries);
+          Alcotest.(check (list string)) "canonical restart resets progress" [ "pending"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected reset canonical Compozy ordered queue")
+
+let test_orchestrator_skipped_bare_compozy_queue_uses_operator_identifier () =
+  with_temp_dir "symphony-compozy-queue-skip-raw-" (fun root ->
+      let config = write_compozy_settings root in
+      write_ready_compozy_run config "done-feature";
+      let ordered_queue = ordered_queue_or_fail "done-feature" in
+      let terminal_issue =
+        Issue.empty ~id:"compozy:done-feature" ~identifier:"compozy:done-feature" ~title:"Done feature" ~state:"completed"
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~fetch:(fun _ -> Ok [ terminal_issue ])
+          ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      let _, _, stderr = capture_process_output (fun () -> Orchestrator.poll_once orchestrator) in
+      (match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue -> (
+          match queue.entries with
+          | [ entry ] ->
+              Alcotest.(check string) "raw skipped identifier" "done-feature" entry.issue_identifier;
+              Alcotest.(check string) "skipped state" "skipped" entry.state
+          | entries -> Alcotest.fail (Printf.sprintf "expected one queue entry, got %d" (List.length entries)))
+      | None -> Alcotest.fail "expected ordered queue state");
+      Alcotest.(check bool) "skip diagnostic uses raw queue identifier" true
+        (contains_substring stderr "done-feature");
+      Alcotest.(check bool) "skip diagnostic does not expose canonical selector" false
+        (contains_substring stderr "compozy:done-feature"))
+
 let test_runtime_state_exposes_goal_usage_when_available () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add goal usage" ~state:"In progress" in
   let state =
@@ -7089,6 +7160,64 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
       | Some queue ->
           Alcotest.(check (list string)) "queue states" [ "running"; "running" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries))
+
+let test_orchestrator_dispatches_bare_compozy_ordered_queue_only_in_order () =
+  with_temp_dir "symphony-compozy-orchestrator-queue-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      let base_config = write_compozy_settings root in
+      let config =
+        {
+          base_config with
+          Config.agent = { base_config.agent with max_concurrent_agents = 2 };
+        }
+      in
+      write_ready_compozy_run config "first-feature";
+      write_ready_compozy_run config "second-feature";
+      ignore (run_ok ~cwd:root "commit Compozy queue fixtures" "git add .compozy && git commit -q -m compozy-queue");
+      let issue_for slug =
+        let prd_dir = Filename.concat config.Config.tracker.compozy_root slug in
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok ("build PRD run " ^ slug)
+        |> Compozy_tasks_tracker.issue_of_prd_run
+      in
+      let first_issue = issue_for "first-feature" in
+      let second_issue = issue_for "second-feature" in
+      let ordered_queue = ordered_queue_or_fail "second-feature,first-feature" in
+      let persisted = Orchestrator.ordered_queue_state ordered_queue in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ first_issue; second_issue ])
+          ~set_status:(fun _ _ _ -> Ok ()) ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "launch order"
+        [ "compozy:second-feature"; "compozy:first-feature" ]
+        (List.rev !launched);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "only queued Compozy runs running" 2 (List.length state.Runtime_state.running);
+      (match state.Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected ordered queue state"
+      | Some queue ->
+          Alcotest.(check (list string)) "runtime state keeps raw identifiers"
+            [ "second-feature"; "first-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries);
+          Alcotest.(check (list string)) "queue states" [ "running"; "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries));
+      let persisted_after =
+        Yojson.Safe.from_file path |> Runtime_state.ordered_queue_of_yojson
+        |> Option.value ~default:{ Runtime_state.entries = [] }
+      in
+      Alcotest.(check (list string)) "persisted state keeps raw identifiers"
+        [ "second-feature"; "first-feature" ]
+        (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) persisted_after.entries))
 
 let test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable () =
   with_temp_dir "symphony-orchestrator-local-queue-" (fun root ->
@@ -13383,6 +13512,10 @@ let () =
             test_ordered_queue_validation_resolves_compozy_prd_run_without_github_project;
           Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
+          Alcotest.test_case "resumes bare Compozy queue by raw sequence" `Quick
+            test_orchestrator_resumes_bare_compozy_ordered_queue_by_raw_sequence;
+          Alcotest.test_case "skips bare Compozy queue with operator identifier" `Quick
+            test_orchestrator_skipped_bare_compozy_queue_uses_operator_identifier;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
           Alcotest.test_case "exposes context status" `Quick test_runtime_state_exposes_context_status;
           Alcotest.test_case "projects Terminal Console idle mode" `Quick test_terminal_console_model_projects_idle;
@@ -13556,6 +13689,8 @@ let () =
           Alcotest.test_case "skips full stage capacity in ordered queue" `Quick
             test_orchestrator_stage_capacity_skips_full_ordered_stage;
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
+          Alcotest.test_case "dispatches bare Compozy ordered queue only in order" `Quick
+            test_orchestrator_dispatches_bare_compozy_ordered_queue_only_in_order;
           Alcotest.test_case "dispatches minibeads ordered queue only when dispatchable" `Quick
             test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
           Alcotest.test_case "keeps ordered queue stage handoffs pending" `Quick
