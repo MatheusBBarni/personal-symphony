@@ -1953,6 +1953,50 @@ let mark_compozy_child_blocked orchestrator child reason =
 let mark_compozy_run_completed orchestrator run =
   note_compozy_lifecycle_update orchestrator run (Compozy_lifecycle.mark_completed orchestrator.config run)
 
+let current_compozy_prd_run_for_progress orchestrator =
+  if orchestrator.tracker.kind <> "compozy_tasks" then Ok None
+  else
+    match orchestrator.state.Runtime_state.compozy_progress with
+    | None -> Ok None
+    | Some progress -> (
+        match Compozy_tasks_tracker.discover_prd_runs ~compozy_root:orchestrator.config.Config.tracker.compozy_root with
+        | Error _ as error -> error
+        | Ok runs ->
+            Ok (List.find_opt (fun (run : Compozy_tasks_tracker.prd_run) -> run.id = progress.run_id) runs))
+
+let note_current_compozy_batch_handoff orchestrator status reason =
+  match current_compozy_prd_run_for_progress orchestrator with
+  | Error error -> set_error orchestrator ("could not update Compozy Batch Pull Request lifecycle: " ^ error)
+  | Ok None -> ()
+  | Ok (Some run) ->
+      note_compozy_lifecycle_update orchestrator run
+        (Compozy_lifecycle.mark_pr_handoff orchestrator.config run ~status ~reason)
+
+let compozy_pr_readiness_allows_batch_handoff = function
+  | Compozy_lifecycle.Ready | Compozy_lifecycle.Handoff_failed -> true
+  | Compozy_lifecycle.Disabled
+  | Compozy_lifecycle.Not_ready
+  | Compozy_lifecycle.Handoff_attempting
+  | Compozy_lifecycle.Handoff_completed ->
+      false
+
+let current_compozy_batch_handoff_ready orchestrator =
+  if orchestrator.tracker.kind <> "compozy_tasks" then true
+  else
+    match current_compozy_prd_run_for_progress orchestrator with
+    | Error error ->
+        set_error orchestrator ("could not read Compozy Batch Pull Request readiness: " ^ error);
+        false
+    | Ok None -> false
+    | Ok (Some run) -> (
+        match Compozy_lifecycle.load_or_backfill_reconciled orchestrator.config run with
+        | Error error ->
+            set_error orchestrator ("could not read Compozy Batch Pull Request readiness: " ^ error);
+            false
+        | Ok lifecycle ->
+            update_compozy_progress orchestrator run;
+            compozy_pr_readiness_allows_batch_handoff lifecycle.pr_readiness)
+
 let seconds_until timestamp =
   max 1 (int_of_float (ceil (timestamp -. Unix.time ())))
 
@@ -2654,13 +2698,16 @@ let set_pull_request_handoff orchestrator ?issue ?head_branch status ?url ?error
 let attempt_batch_pull_request orchestrator =
   let policy = orchestrator.config.Config.pull_request in
   set_pull_request_handoff orchestrator "attempting" ();
+  note_current_compozy_batch_handoff orchestrator "attempting" None;
   match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
   | Ok url ->
       orchestrator.batch_pull_request_completed <- true;
       set_pull_request_handoff orchestrator "completed" ?url ();
+      note_current_compozy_batch_handoff orchestrator "completed" None;
       render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
   | Error error ->
       set_pull_request_handoff orchestrator "retryable_failure" ~error ();
+      note_current_compozy_batch_handoff orchestrator "retryable_failure" (Some error);
       render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
 
 let attempt_task_pull_request orchestrator issue =
@@ -2705,7 +2752,7 @@ let maybe_open_batch_pull_request orchestrator ~candidates ~dispatchable_count =
       && not has_attention
     in
     if idle then (
-      attempt_batch_pull_request orchestrator)
+      if current_compozy_batch_handoff_ready orchestrator then attempt_batch_pull_request orchestrator)
 
 let stage_running_counts config running =
   let counts = Hashtbl.create 8 in
@@ -3232,8 +3279,8 @@ let mark_completed orchestrator child =
                       else if not (move_issue_status orchestrator child.issue status) then
                         mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
                       else (
-                        maybe_open_review_pull_request orchestrator child.issue status;
                         mark_final_compozy_completion ();
+                        maybe_open_review_pull_request orchestrator child.issue status;
                         complete_child ~next_status:status orchestrator child))))
 
 let signal_child child signal =
