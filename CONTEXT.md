@@ -100,6 +100,14 @@ _Avoid_: Compozy issue, task folder, PRD issue
 One `task_NN.md` file inside a Compozy PRD Run that Symphony executes as an ordered step in the same Agent Worktree and Task Branch.
 _Avoid_: separate Symphony issue, GitHub issue, standalone task
 
+**Compozy PRD Run Lifecycle**:
+The run-level state for one Compozy PRD Run, separate from Compozy Task Step progress, that reports whether the run is pending, planning, executing, reviewing, blocked, completed, failed, skipped, not PR-ready, or in Batch Pull Request handoff.
+_Avoid_: task status, step status, issue lane
+
+**Compozy PR Readiness**:
+The run-level Batch Pull Request eligibility summary for one Compozy PRD Run, separate from Compozy Task Step progress and represented as disabled, not-ready, ready, handoff attempting, handoff completed, or handoff failed.
+_Avoid_: completed steps, terminal progress, review status
+
 **Runtime Settings Invocation Override**:
 A command-line value on the default runtime command that replaces one loaded Runtime Settings field for the current Symphony process only, after Runtime Settings load and before orchestration uses the effective runtime config.
 _Avoid_: temporary config, settings rewrite, runtime patch
@@ -360,6 +368,10 @@ _Avoid_: reinitialize, reset
 - The **GitHub Tracker** remains the default Issue Tracker.
 - A **Local Issue Tracker** stores issue records in **Local Issue Files** owned by the Workspace Repository.
 - A Compozy-backed **Local Issue Tracker** treats one **Compozy PRD Run** as the issue-level work item and the contained **Compozy Task Steps** as ordered progress within that work item.
+- A **Compozy PRD Run Lifecycle** belongs to the **Compozy PRD Run**, not to an individual **Compozy Task Step**.
+- **Compozy Task Step** progress remains the source for current step and completed, failed, skipped, and total counts.
+- **Compozy PR Readiness** is separate from **Compozy Task Step** progress; failed, skipped, blocked, or terminal task-step progress does not by itself make a **Batch Pull Request** ready.
+- A Compozy-backed **Local Issue Tracker** in `batch` **Pull Request Mode** may become eligible for one aggregate **Batch Pull Request** for the completed **Compozy PRD Run** and must not open per-step pull requests for **Compozy Task Steps**.
 - A **Local Issue Tracker** must preserve Stage Agent dispatch, tracker status transitions, Agent Prompt rendering, Task Branch naming, retry, Stage Commit, Stage Push, and Task Branch Integration behavior.
 - A **Local Issue Tracker** must not require GitHub API access for issue fetches or tracker status updates.
 - Bootstrap must not overwrite existing **Local Issue Files**.

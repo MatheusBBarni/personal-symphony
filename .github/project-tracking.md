@@ -71,6 +71,10 @@ Run and uses `compozy:<task_name>` selectors where Compozy selector support is a
 tracking does not use GitHub Issues, GitHub Projects, or GitHub tracker token settings for issue
 dispatch.
 
+Compozy tracking reports Compozy PRD Run lifecycle and PR readiness at the run level. Compozy Task
+Step progress remains ordered progress inside the run, and Batch Pull Request behavior remains
+aggregate in `batch` Pull Request Mode rather than opening per-step pull requests.
+
 ## Authentication
 
 Set `GITHUB_TOKEN` or `GH_TOKEN` for the backend process. The token needs permission to read issues
