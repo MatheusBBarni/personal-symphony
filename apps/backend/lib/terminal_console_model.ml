@@ -312,7 +312,36 @@ let summary state mode (compozy : compozy_progress option) =
   let lines = match compozy with Some progress -> lines @ [ "Compozy PRD Run: " ^ progress.summary ] | None -> lines in
   match sanitize_option state.last_error with Some error -> lines @ [ "Last error: " ^ error ] | None -> lines
 
-let safe_aids = [ Refresh_view; Show_web_handoff ]
+let add_unique value values = if List.exists (String.equal value) values then values else value :: values
+
+let safe_path_aids state =
+  let add_path path paths =
+    match sanitize_option path with Some path -> add_unique path paths | None -> paths
+  in
+  let paths =
+    List.fold_left
+      (fun paths (_issue_id, (status : Runtime_state.context_status)) -> add_path status.diagnostics_path paths)
+      [] state.Runtime_state.context_statuses
+  in
+  let paths =
+    List.fold_left
+      (fun paths (diagnostic : Runtime_state.context_diagnostic) ->
+        add_path (Some diagnostic.diagnostic_path) paths)
+      paths state.context_diagnostics
+  in
+  let paths =
+    List.fold_left
+      (fun paths (row : Runtime_state.startup_reconciliation) -> add_path row.workspace_path paths)
+      paths state.startup_reconciliation
+  in
+  let paths =
+    List.fold_left
+      (fun paths (row : Runtime_state.task_branch_integration) -> add_path row.workspace_path paths)
+      paths state.task_branch_integrations
+  in
+  paths |> List.rev |> List.map (fun path -> Show_path path)
+
+let safe_aids state = [ Refresh_view; Show_web_handoff ] @ safe_path_aids state
 
 let of_runtime_state state =
   let mode = display_mode state in
@@ -334,6 +363,6 @@ let of_runtime_state state =
     readiness;
     queue;
     compozy;
-    safe_aids;
+    safe_aids = safe_aids state;
     last_error = sanitize_option state.last_error;
   }

@@ -43,6 +43,7 @@ let version =
 let _terminal_console_mosaic_link_anchor =
   Symphony_terminal_console_shell.Terminal_console_mosaic.compile_anchor
 
+module Terminal_console_mosaic = Symphony_terminal_console_shell.Terminal_console_mosaic
 module Terminal_console_runtime = Symphony_terminal_console_shell.Terminal_console_runtime
 
 let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
@@ -247,6 +248,14 @@ let run_runtime port once web queue_arg merge_args overrides =
         if merge_args <> [] then run_manual_merge config merge_args
         else (
           let state = Runtime_readiness.state ?ordered_queue ~queue_parse_problems config in
+          let terminal_console_port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+          let terminal_console_web_handoff = Terminal_console_mosaic.default_web_handoff ~port:terminal_console_port () in
+          let terminal_console_local_surfaces =
+            [
+              Terminal_console_mosaic.local_surface ~label:"Workspace Repository" ~root:config.repository_root;
+              Terminal_console_mosaic.local_surface ~label:"Runtime Home" ~root:home.runtime_dir;
+            ]
+          in
           if mode = Cli_mode.Web_dashboard then render_banner ();
           match
             Terminal_console_runtime.select_branch ~once ~mode ~merge_args:[]
@@ -281,10 +290,12 @@ let run_runtime port once web queue_arg merge_args overrides =
               run_until_stopped (fun () ->
                   Server.serve ~live ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
           | Terminal_console_readiness ->
-              Terminal_console_runtime.run ~initial_state:state ();
+              Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
+                ~local_surfaces:terminal_console_local_surfaces ~initial_state:state ();
               0
           | Terminal_console_orchestrator ->
-              Terminal_console_runtime.run ~initial_state:state
+              Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
+                ~local_surfaces:terminal_console_local_surfaces ~initial_state:state
                 ~start_orchestration:(fun ~notify_state ->
                   let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template ~notify_state () in
                   notify_state (Orchestrator.get_state orchestrator);

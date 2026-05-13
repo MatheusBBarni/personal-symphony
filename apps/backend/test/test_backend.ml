@@ -4430,6 +4430,180 @@ let test_terminal_console_mosaic_minimum_size_message () =
   check_line_contains "resize help" lines "Resize the terminal to continue.";
   ignore (Shell.view (Shell.initial_model ~terminal_size:small (Runtime_state.empty ())))
 
+let terminal_console_interaction_state () =
+  let running_issue, running = terminal_console_running_row ~identifier:"#30" ~title:"Running task" "I30" in
+  let retry_issue = Issue.empty ~id:"I31" ~identifier:"#31" ~title:"Retry task" ~state:"Todo" in
+  {
+    (Runtime_state.empty ()) with
+    issues = [ running_issue; retry_issue ];
+    running = [ running ];
+    retrying =
+      [
+        {
+          Runtime_state.issue_id = "I31";
+          issue_identifier = "#31";
+          attempt = 1;
+          due_at = "2026-05-04T00:02:00Z";
+          error = None;
+          goal_usage = None;
+        };
+      ];
+  }
+
+let test_terminal_console_mosaic_navigation_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let snapshot = model.Shell.snapshot in
+  let moved_row = Shell.apply_key Shell.Down_key model in
+  Alcotest.(check bool) "row navigation keeps snapshot" true (moved_row.Shell.model.Shell.snapshot == snapshot);
+  Alcotest.(check int) "selected active row" 1
+    moved_row.model.Shell.interaction.Shell.selected_rows.Shell.active;
+  let moved_panel = Shell.apply_key Shell.Right_key moved_row.model in
+  Alcotest.(check bool) "panel navigation keeps snapshot" true (moved_panel.model.Shell.snapshot == snapshot);
+  Alcotest.(check string) "focused panel" "Readiness and Attention"
+    (Shell.focused_panel_title moved_panel.model.Shell.interaction.Shell.focused_panel)
+
+let test_terminal_console_mosaic_filtering_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let snapshot = model.Shell.snapshot in
+  let opened = Shell.apply_key (Shell.Character '/') model in
+  let typed = Shell.apply_key (Shell.Character '1') opened.model in
+  let applied = Shell.apply_key Shell.Enter_key typed.model in
+  Alcotest.(check bool) "filter keeps snapshot" true (applied.model.Shell.snapshot == snapshot);
+  Alcotest.(check string) "filter text" "1" applied.model.Shell.interaction.Shell.filter_text;
+  Alcotest.(check bool) "filter input closed" false applied.model.Shell.interaction.Shell.filter_active;
+  Alcotest.(check int) "filtered active rows" 1
+    (List.length (Shell.visible_active_rows applied.model.Shell.snapshot applied.model.Shell.interaction));
+  Alcotest.(check int) "projected rows unchanged" 2 (List.length snapshot.Terminal_console_model.active)
+
+let test_terminal_console_mosaic_refresh_invokes_only_refresh_aid () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let calls = ref [] in
+  let runtime : Shell.runtime =
+    {
+      initial_state = Runtime_state.empty ();
+      subscribe = (fun _ -> ());
+      safe_aid = (fun aid -> calls := aid :: !calls);
+      web_handoff = Shell.default_web_handoff ();
+      local_surfaces = [];
+    }
+  in
+  let updated, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'r')) model in
+  Alcotest.(check bool) "refresh keeps snapshot" true (updated.Shell.snapshot == model.Shell.snapshot);
+  Alcotest.(check (list string)) "safe aid calls" [ "refresh" ]
+    (List.rev_map
+       (function
+         | Terminal_console_model.Refresh_view -> "refresh"
+         | Show_web_handoff -> "web"
+         | Show_path _ -> "path")
+       !calls);
+  Alcotest.(check (option string)) "refresh status"
+    (Some "Refreshed latest in-memory Runtime State snapshot")
+    updated.status_message
+
+let test_terminal_console_mosaic_web_handoff_guidance_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let handoff = Shell.default_web_handoff ~port:7777 () in
+  let transition = Shell.apply_key ~web_handoff:handoff (Shell.Character 'w') model in
+  Alcotest.(check (list string)) "handoff safe aid" [ "web" ]
+    (List.map
+       (function
+         | Terminal_console_model.Refresh_view -> "refresh"
+         | Show_web_handoff -> "web"
+         | Show_path _ -> "path")
+       transition.Shell.safe_aids);
+  match transition.model.Shell.status_message with
+  | Some message ->
+      check_line_contains "handoff command" [ message ] "symphony --web --port 7777";
+      check_line_contains "handoff url" [ message ] "http://127.0.0.1:7777/"
+  | None -> Alcotest.fail "expected Web Dashboard handoff guidance"
+
+let test_terminal_console_mosaic_invalid_path_is_ui_local () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  with_temp_dir "symphony-terminal-path-root-" (fun root ->
+      with_temp_dir "symphony-terminal-path-outside-" (fun outside_root ->
+          let outside_file = Filename.concat outside_root "outside.txt" in
+          Util.write_file outside_file "unchanged\n";
+          let issue, running = terminal_console_running_row ~identifier:"#32" ~title:"Path task" "I32" in
+          let state =
+            {
+              (Runtime_state.empty ()) with
+              issues = [ issue ];
+              running = [ running ];
+            }
+            |> Runtime_state.set_context_status "I32"
+                 (Runtime_state.make_context_status ~state:"warning" ~summary:"has diagnostics"
+                    ~diagnostics_path:outside_file ())
+          in
+          let model = Shell.initial_model state in
+          let transition =
+            Shell.apply_key
+              ~local_surfaces:[ Shell.local_surface ~label:"Workspace Repository" ~root ]
+              (Shell.Character 'o') model
+          in
+          Alcotest.(check int) "no invalid safe aid calls" 0 (List.length transition.Shell.safe_aids);
+          (match transition.model.Shell.status_message with
+          | Some message ->
+              check_line_contains "outside status" [ message ] "outside allowed Workspace Repository surfaces"
+          | None -> Alcotest.fail "expected invalid path status");
+          Alcotest.(check string) "outside file unchanged" "unchanged\n" (Util.read_file outside_file)))
+
+let test_terminal_console_mosaic_footer_help_content () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let footer = Shell.render_model model |> fun rendered -> rendered.Shell.footer in
+  List.iter
+    (fun expected -> check_line_contains ("footer has " ^ expected) [ footer ] expected)
+    [ "q quit"; "Tab/Left/Right panels"; "/ search"; "r refresh"; "w Web Dashboard"; "o inspect path" ];
+  let help = Shell.apply_key (Shell.Character '?') model in
+  let safe_aids = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Safe Aids" in
+  check_line_contains "help includes navigation" safe_aids "Up/Down or k/j move rows";
+  check_line_contains "help includes handoff" safe_aids "w show Web Dashboard handoff"
+
+let test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids () =
+  let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  with_temp_dir "symphony-terminal-runtime-path-" (fun root ->
+      let diagnostic = Filename.concat root "diagnostic.txt" in
+      Util.write_file diagnostic "diagnostic\n";
+      let issue, running = terminal_console_running_row ~identifier:"#33" ~title:"Runtime aid task" "I33" in
+      let state =
+        {
+          (Runtime_state.empty ()) with
+          issues = [ issue ];
+          running = [ running ];
+        }
+        |> Runtime_state.set_context_status "I33"
+             (Runtime_state.make_context_status ~state:"warning" ~summary:"has diagnostics"
+                ~diagnostics_path:diagnostic ())
+      in
+      let recorded = ref [] in
+      let handoff = Runtime.create_state_handoff state in
+      let runtime =
+        Runtime.runtime_of_handoff
+          ~safe_aid:
+            (fun aid ->
+              recorded :=
+                (match aid with
+                | Terminal_console_model.Refresh_view -> "refresh"
+                | Show_web_handoff -> "web"
+                | Show_path path -> "path:" ^ Filename.basename path)
+                :: !recorded)
+          ~local_surfaces:[ Shell.local_surface ~label:"Workspace Repository" ~root ]
+          handoff
+      in
+      let model = Shell.initial_model state in
+      let model, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'r')) model in
+      let model, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'w')) model in
+      let _model, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'o')) model in
+      Runtime.close_state_handoff handoff;
+      Alcotest.(check (list string)) "only non-mutating safe aids"
+        [ "refresh"; "web"; "path:diagnostic.txt" ]
+        (List.rev !recorded))
+
 let terminal_console_runtime_branch_name = function
   | Symphony_terminal_console_shell.Terminal_console_runtime.Manual_merge -> "manual_merge"
   | Symphony_terminal_console_shell.Terminal_console_runtime.Once -> "once"
@@ -11622,6 +11796,20 @@ let () =
             test_terminal_console_mosaic_renders_runtime_state_fixtures;
           Alcotest.test_case "renders Terminal Console minimum-size message" `Quick
             test_terminal_console_mosaic_minimum_size_message;
+          Alcotest.test_case "keeps Terminal Console navigation UI-only" `Quick
+            test_terminal_console_mosaic_navigation_is_ui_only;
+          Alcotest.test_case "keeps Terminal Console filtering UI-only" `Quick
+            test_terminal_console_mosaic_filtering_is_ui_only;
+          Alcotest.test_case "refresh invokes only non-mutating aid" `Quick
+            test_terminal_console_mosaic_refresh_invokes_only_refresh_aid;
+          Alcotest.test_case "shows Web Dashboard handoff guidance only" `Quick
+            test_terminal_console_mosaic_web_handoff_guidance_only;
+          Alcotest.test_case "keeps invalid local path inspection UI-local" `Quick
+            test_terminal_console_mosaic_invalid_path_is_ui_local;
+          Alcotest.test_case "renders Terminal Console contextual help/footer" `Quick
+            test_terminal_console_mosaic_footer_help_content;
+          Alcotest.test_case "records only non-mutating Terminal Console safe aids" `Quick
+            test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids;
           Alcotest.test_case "stores latest Terminal Console runtime state" `Quick
             test_terminal_console_runtime_handoff_latest_state;
           Alcotest.test_case "subscribes to latest Terminal Console runtime state" `Quick
