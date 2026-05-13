@@ -1,6 +1,6 @@
 ---
-status: completed
-title: "Wire Compozy tracker dispatch-aware lifecycle state"
+status: pending
+title: "Complete orchestrator lifecycle transitions for dispatch, retry, blocked, completion, and handoff"
 type: backend
 complexity: high
 dependencies:
@@ -8,10 +8,10 @@ dependencies:
   - task_02
 ---
 
-# Task 03: Wire Compozy tracker dispatch-aware lifecycle state
+# Task 03: Complete orchestrator lifecycle transitions for dispatch, retry, blocked, completion, and handoff
 
 ## Overview
-Update the Compozy-backed Local Issue Tracker so Compozy PRD Run candidates use lifecycle metadata for run-level dispatch state. This replaces the current no-op status update boundary while keeping Compozy Task Step files as ordered progress inside one work item.
+Finish the run-level transition matrix in orchestration so planners, engineers, reviewers, retries, blocked outcomes, completions, and Batch Pull Request handoff all update lifecycle and readiness consistently. This task covers the highest-risk behavioral paths because it determines whether operator-facing status changes are actually emitted at the right time.
 
 <critical>
 - ALWAYS READ the PRD and TechSpec before starting
@@ -22,62 +22,63 @@ Update the Compozy-backed Local Issue Tracker so Compozy PRD Run candidates use 
 </critical>
 
 <requirements>
-- R1 MUST load or lazy-backfill lifecycle metadata when the Compozy tracker discovers PRD Runs.
-- R2 MUST map Compozy PRD Run issue state from lifecycle dispatch state when metadata is available.
-- R3 MUST persist status updates for Compozy PRD Runs through lifecycle metadata instead of treating `update_status` as a no-op.
-- R4 MUST preserve one Compozy PRD Run as one Issue Tracker work item and must not expose Compozy Task Steps as separate issues.
-- R5 MUST keep the Compozy-backed Local Issue Tracker free from GitHub API requirements.
-- R6 SHOULD keep active and terminal checks compatible with existing configured tracker statuses and lifecycle dispatch state.
+- R1 MUST map planner, engineer, and reviewer dispatch to `in_planning`, `in_execution`, and `in_review` respectively.
+- R2 MUST keep retrying Compozy PRD Runs in lifecycle state `in_execution` while recording retry reasons and non-ready status.
+- R3 MUST mark over-limit or terminal task-step failures as `failed` with a concise operator-facing reason.
+- R4 MUST mark merge attention, protected-path attention, and non-retryable completion failures as `blocked` without implying successful completion.
+- R5 MUST mark successful run completion as `completed` with readiness `ready` or `disabled` according to Pull Request Policy.
+- R6 MUST keep Batch Pull Request handoff modeled as lifecycle phase `pr_handoff` with readiness `handoff_attempting`, `handoff_completed`, or `handoff_failed`.
+- R7 MUST prevent non-ready terminal states from appearing handoff-ready or triggering aggregate handoff success semantics.
 </requirements>
 
 ## Subtasks
-- [x] 3.1 Load or backfill lifecycle metadata during Compozy candidate discovery.
-- [x] 3.2 Return Compozy PRD Run issues with dispatch-aware state.
-- [x] 3.3 Persist Compozy tracker `update_status` calls into lifecycle metadata.
-- [x] 3.4 Keep lookup diagnostics and identifier normalization unchanged.
-- [x] 3.5 Add focused tracker tests for discovery, lookup, active/terminal behavior, and status updates.
+- [ ] 3.1 Audit existing Compozy transition writes across dispatch, retry, blocked, completion, and handoff paths.
+- [ ] 3.2 Align stage-started transitions for planner, engineer, and reviewer dispatch.
+- [ ] 3.3 Tighten retry and failure transitions so retrying, failed, and blocked outcomes remain distinct.
+- [ ] 3.4 Preserve completion and Batch Pull Request handoff semantics for ready, disabled, and failed handoff paths.
+- [ ] 3.5 Add focused backend integration coverage for representative transition sequences.
 
 ## Implementation Details
-Follow TechSpec "Data Flow" steps for discovery and tracker updates. Keep `Compozy_tasks_tracker` responsible for task-step parsing and prompt context, while `Issue_tracker.compozy` applies lifecycle metadata at the PRD Run boundary.
+Reference TechSpec "Implementation Design" mapping rules, TechSpec "Integration Tests", and ADR-004 through ADR-006. Keep the implementation centered on Compozy lifecycle update calls inside `orchestrator.ml`; do not redesign Stage Agent orchestration or Pull Request Policy defaults.
 
 ### Relevant Files
-- `apps/backend/lib/issue_tracker.ml` — Compozy adapter fetch, lookup, status update, active, and terminal behavior.
-- `apps/backend/lib/compozy_lifecycle.ml` — Lifecycle load, backfill, save, and transition helpers used by the adapter.
-- `apps/backend/lib/compozy_tasks_tracker.ml` — Source of discovered PRD Runs and canonical Compozy identifiers.
-- `apps/backend/test/test_backend.ml` — Existing Compozy adapter and tracker-selection tests.
+- `apps/backend/lib/orchestrator.ml` — Owns dispatch, retry, failure, blocked attention, completion, and Batch Pull Request handoff transitions.
+- `apps/backend/lib/compozy_lifecycle.ml` — Supplies lifecycle transition helpers invoked by orchestration.
+- `apps/backend/test/test_backend.ml` — Already contains Compozy dispatch, blocked, completion, and handoff tests to expand.
 
 ### Dependent Files
-- `apps/backend/lib/orchestrator.ml` — Calls tracker status updates and dispatch filters through `Issue_tracker.t`.
-- `apps/backend/lib/ordered_queue.ml` — Uses tracker lookup and active/terminal state for Compozy queue validation.
-- `apps/backend/lib/manual_merge.ml` — Uses selected tracker lookup and terminal semantics for manual merge flows.
-- `apps/backend/lib/runtime_state.ml` — Displays the selected lifecycle-enriched PRD Run progress.
+- `apps/backend/lib/runtime_state.ml` — Surfaces will expose the lifecycle and readiness outcomes this task emits.
+- `apps/backend/lib/terminal_console.ml` — Later tasks render the transition results for operators.
+- `apps/frontend/test/liveState.test.mjs` — Frontend checks should eventually mirror the final transition semantics.
 
 ### Related ADRs
-- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Prevents treating task steps as separate issues.
-- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Requires status updates to persist at the Runtime Home lifecycle boundary.
+- [ADR-004: Treat Compozy statuses as an explicit transition contract](adrs/adr-004.md) — Requires complete transition coverage rather than new status labels.
+- [ADR-005: Use a cross-surface transition contract as the PRD approach](adrs/adr-005.md) — Makes orchestration transition correctness a first-class operator outcome.
+- [ADR-006: Reconcile Compozy lifecycle from task-step progress while keeping readiness separate](adrs/adr-006.md) — Requires readiness and handoff outcomes to remain separate from lifecycle phase semantics.
 
 ## Deliverables
-- Compozy tracker discovery that backfills lifecycle metadata for PRD Runs.
-- Compozy tracker issue states derived from lifecycle dispatch state when present.
-- Non-no-op Compozy tracker status persistence through lifecycle metadata.
+- Orchestrator transition paths emit the approved lifecycle and readiness states for dispatch, retry, failure, blocked, completion, and handoff scenarios.
+- Representative transition paths have integration coverage in the backend suite.
+- Batch Pull Request handoff failure remains visible as `pr_handoff` plus failed readiness instead of a fake successful completion.
 - Unit tests with 80%+ coverage **(REQUIRED)**
-- Integration tests for Compozy tracker lifecycle discovery and updates **(REQUIRED)**
+- Integration tests for Compozy lifecycle transition coverage **(REQUIRED)**
 
 ## Tests
 - Unit tests:
-  - [x] Fetching a runnable Compozy PRD Run with no lifecycle file backfills metadata and returns one issue candidate.
-  - [x] Fetching a Compozy PRD Run with lifecycle dispatch state returns an issue whose state matches that dispatch state.
-  - [x] `update_status` on `compozy:example-feature` persists the requested dispatch state into lifecycle metadata.
-  - [x] Lookup for `compozy:example-feature` still returns one Compozy PRD Run issue and never task-step issues.
-  - [x] Active and terminal checks honor lifecycle dispatch state alongside configured Compozy tracker states.
+  - [ ] Planner dispatch records `in_planning` and reviewer dispatch records `in_review`.
+  - [ ] Engineer dispatch and retrying task-step failure keep lifecycle `in_execution` with non-ready status.
+  - [ ] Final failed task-step over retry limit records lifecycle `failed` with a reason.
+  - [ ] Non-retryable completion and protected-path attention record lifecycle `blocked`.
+  - [ ] Batch Pull Request handoff helper records `handoff_attempting`, `handoff_completed`, and `handoff_failed` while lifecycle remains `pr_handoff`.
 - Integration tests:
-  - [x] Ordered Queue validation resolves a Compozy PRD Run through the lifecycle-aware tracker without GitHub Project membership.
-  - [x] Manual merge lookup still accepts completed Compozy PRD Runs after lifecycle metadata exists.
+  - [ ] Successful Compozy PRD Run completion records `completed` and the expected readiness for Pull Request Policy mode.
+  - [ ] Failed, skipped, blocked, and handoff-failed runs never appear ready for an aggregate Batch Pull Request.
+  - [ ] Existing Compozy orchestration paths still avoid per-step pull requests in batch mode.
 - Test coverage target: >=80%
 - All tests must pass
 
 ## Success Criteria
 - All tests passing
 - Test coverage >=80%
-- Compozy tracker status updates are durable and visible at the Compozy PRD Run level.
-- Compozy Task Step progress remains internal ordered progress, not separate Issue Tracker work.
+- Orchestration emits the approved lifecycle transition set for the representative active, blocked, completion, and handoff paths.
+- Non-ready outcomes never contradict visible Pull Request readiness semantics.

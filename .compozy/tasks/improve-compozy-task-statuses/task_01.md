@@ -1,15 +1,15 @@
 ---
-status: completed
-title: "Add Compozy lifecycle storage and backfill"
+status: pending
+title: "Reconcile Compozy lifecycle metadata from task-step truth"
 type: backend
-complexity: high
+complexity: medium
 dependencies: []
 ---
 
-# Task 01: Add Compozy lifecycle storage and backfill
+# Task 01: Reconcile Compozy lifecycle metadata from task-step truth
 
 ## Overview
-Create the backend lifecycle layer that stores Compozy PRD Run status separately from Compozy Task Step frontmatter. This gives later Runtime State, Issue Tracker, and orchestration work a durable source for run-level lifecycle, dispatch state, PR readiness, and concise operator reasons.
+Tighten the Runtime Home lifecycle layer so it remains a reconciled run-level summary rather than an independent source of truth. This task keeps Compozy Task Step progress authoritative for current-step selection and terminal counts while ensuring persisted lifecycle metadata is backfilled and downgraded correctly when task-step truth changes.
 
 <critical>
 - ALWAYS READ the PRD and TechSpec before starting
@@ -20,63 +20,61 @@ Create the backend lifecycle layer that stores Compozy PRD Run status separately
 </critical>
 
 <requirements>
-- R1 MUST persist versioned Compozy PRD Run lifecycle metadata under Runtime Home `.symphony/state/compozy-lifecycle/`.
-- R2 MUST represent the TechSpec lifecycle, dispatch, Stage Agent, PR readiness, reason, and update timestamp fields without storing secrets.
-- R3 MUST lazy-backfill missing lifecycle metadata from Compozy Task Step progress using the TechSpec lazy backfill rules.
-- R4 MUST reconcile stale lifecycle metadata when Compozy Task Step files show failed, skipped, empty, or not-runnable terminal progress.
-- R5 MUST preserve Compozy Task Step frontmatter as the authoritative source for current-step selection and progress counts.
-- R6 SHOULD keep transition helper errors in `(value, string) result` form consistent with existing backend modules.
+- R1 MUST preserve `Compozy_tasks_tracker` as the authoritative source for `current_step`, `completed`, `failed`, `skipped`, and `total`.
+- R2 MUST make `Compozy_lifecycle.load_or_backfill_reconciled` the canonical lifecycle read path for Runtime Home lifecycle consumption.
+- R3 MUST backfill missing lifecycle metadata from current Compozy Task Step truth without rewriting task-step statuses.
+- R4 MUST downgrade stale lifecycle metadata when task-step truth shows failed, skipped, blocked, or other non-ready terminal outcomes.
+- R5 MUST preserve lifecycle schema compatibility for version `1` metadata already stored under Runtime Home.
+- R6 MUST keep Batch Pull Request handoff modeled as lifecycle phase `pr_handoff` with readiness and handoff outcome represented separately.
 </requirements>
 
 ## Subtasks
-- [x] 1.1 Add the lifecycle metadata model and persistence boundary.
-- [x] 1.2 Add Runtime Home path handling for Compozy lifecycle JSON files.
-- [x] 1.3 Add lazy backfill for active, completed, failed, skipped, empty, and not-runnable Compozy PRD Runs.
-- [x] 1.4 Add reconciliation for stale completed or ready metadata when task-step state disagrees.
-- [x] 1.5 Add transition helper coverage for later dispatch and readiness tasks.
-- [x] 1.6 Add focused backend tests for JSON persistence, backfill, and reconciliation.
+- [ ] 1.1 Audit lifecycle derive, backfill, and reconciliation helpers against the approved task-step-truth contract.
+- [ ] 1.2 Tighten lifecycle downgrade behavior for stale `completed`, `ready`, and other non-matching terminal metadata.
+- [ ] 1.3 Preserve existing lifecycle JSON schema and compatibility handling for optional fields.
+- [ ] 1.4 Keep handoff and readiness semantics separate from lifecycle phase semantics.
+- [ ] 1.5 Add focused backend tests for backfill, reconciliation, and terminal downgrade cases.
 
 ## Implementation Details
-Follow TechSpec sections "Core Interfaces", "Runtime Home lifecycle JSON", and "Lazy backfill rules". Keep lifecycle metadata in ignored Runtime Home state and do not add runtime churn to `.compozy/tasks/<slug>/` task files.
+Reference TechSpec "Data Models" sections 1 through 4 and ADR-006. Keep this task centered on `Compozy_lifecycle` and any narrowly scoped helper usage needed to reconcile Runtime Home metadata from Compozy Task Step truth.
 
 ### Relevant Files
-- `apps/backend/lib/compozy_lifecycle.ml` — New backend module owning lifecycle data, JSON persistence, backfill, reconciliation, and transition helpers.
-- `apps/backend/lib/compozy_tasks_tracker.ml` — Provides `prd_run`, task-step counts, current step, terminal state, and not-runnable reason inputs.
-- `apps/backend/lib/runtime_home.ml` — Defines Runtime Home behavior and idempotent runtime-file expectations.
-- `apps/backend/lib/util.ml` — Existing file, time, path, and JSON-adjacent utility patterns used by backend modules.
-- `apps/backend/test/test_backend.ml` — Existing Alcotest suite where focused Compozy lifecycle cases should be added.
+- `apps/backend/lib/compozy_lifecycle.ml` — Owns derive, backfill, reconciliation, lifecycle transition helpers, and Runtime Home persistence.
+- `apps/backend/lib/compozy_tasks_tracker.ml` — Defines current-step selection and terminal counts that lifecycle must respect.
+- `apps/backend/test/test_backend.ml` — Already contains lifecycle backfill, reconciliation, and JSON compatibility tests to extend.
 
 ### Dependent Files
-- `apps/backend/lib/runtime_state.ml` — Will consume lifecycle metadata in task_02.
-- `apps/backend/lib/issue_tracker.ml` — Will load/backfill lifecycle for Compozy tracker candidates in task_03.
-- `apps/backend/lib/orchestrator.ml` — Will call lifecycle transition helpers in later tasks.
+- `apps/backend/lib/issue_tracker.ml` — Later tasks rely on reconciled lifecycle reads for tracker issue state.
+- `apps/backend/lib/runtime_state.ml` — Merges task-step truth with reconciled lifecycle metadata for operator surfaces.
+- `apps/backend/lib/orchestrator.ml` — Transition helpers used during dispatch, retry, completion, blocked attention, and handoff depend on this contract.
 
 ### Related ADRs
-- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Requires lifecycle to belong to the Compozy PRD Run, not individual task steps.
-- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Defines Runtime Home persistence and dispatch-aware lifecycle metadata.
+- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Defines Runtime Home as the lifecycle persistence boundary.
+- [ADR-004: Treat Compozy statuses as an explicit transition contract](adrs/adr-004.md) — Requires explicit mapping and transition correctness across status layers.
+- [ADR-006: Reconcile Compozy lifecycle from task-step progress while keeping readiness separate](adrs/adr-006.md) — Requires task-step truth to win over stale lifecycle metadata.
 
 ## Deliverables
-- New lifecycle module with versioned JSON read/write behavior.
-- Lazy backfill and reconciliation for all TechSpec task-step conditions.
-- Transition helpers that later tasks can call without parsing task files directly.
+- Reconciled lifecycle read path that backfills missing metadata and repairs stale terminal metadata.
+- Preserved lifecycle JSON compatibility for existing Runtime Home state files.
+- Backend regression tests for active, completed, failed, skipped, blocked, and handoff-related lifecycle reconciliation.
 - Unit tests with 80%+ coverage **(REQUIRED)**
-- Integration tests for Runtime Home lifecycle persistence **(REQUIRED)**
+- Integration tests for Runtime Home lifecycle reconciliation behavior **(REQUIRED)**
 
 ## Tests
 - Unit tests:
-  - [x] Version 1 lifecycle JSON round-trips `run_id`, `slug`, `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `updated_at`.
-  - [x] Metadata with absent optional `stage_agent` and `reason` parses successfully.
-  - [x] A PRD Run with a pending or in-progress current step backfills `lifecycle_state = in_execution` and `pr_readiness = not_ready`.
-  - [x] A PRD Run with all steps completed backfills completed lifecycle and policy-aware readiness.
-  - [x] A PRD Run with failed, skipped, empty, or not-runnable step state backfills a non-ready lifecycle with a concise reason.
-  - [x] Stale completed or ready metadata downgrades when Compozy Task Step progress shows failed or skipped terminal state.
+  - [ ] Lifecycle JSON round-trip preserves version `1` schema and optional fields.
+  - [ ] Missing lifecycle metadata backfills from active task-step progress as `in_execution` and `not_ready`.
+  - [ ] Missing lifecycle metadata backfills from completed task-step progress as `completed` with the expected readiness policy.
+  - [ ] Stale `completed` or `ready` metadata is downgraded when task-step truth becomes `failed`, `skipped`, `blocked`, or `not_pr_ready`.
+  - [ ] Handoff-related metadata keeps `pr_handoff` as the lifecycle phase while readiness remains `handoff_attempting`, `handoff_completed`, or `handoff_failed`.
 - Integration tests:
-  - [x] Lifecycle metadata saves to `.symphony/state/compozy-lifecycle/<slug>.json` in a temp Workspace Repository and reloads after process-style reconstruction.
+  - [ ] Runtime lifecycle load for a discovered Compozy PRD Run returns reconciled metadata after a task-step truth change.
+  - [ ] Corrupt or stale lifecycle metadata is repaired from task-step truth without changing Compozy Task Step files.
 - Test coverage target: >=80%
 - All tests must pass
 
 ## Success Criteria
 - All tests passing
 - Test coverage >=80%
-- Lifecycle metadata can be persisted and recovered without editing Compozy Task Step files.
-- Backfilled lifecycle state matches the TechSpec table for every required task-step condition.
+- Runtime Home lifecycle metadata never overrides Compozy Task Step truth for current-step or terminal-count semantics.
+- Non-ready terminal task-step truth visibly downgrades stale lifecycle metadata before downstream surfaces consume it.

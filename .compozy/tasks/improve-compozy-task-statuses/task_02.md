@@ -1,16 +1,16 @@
 ---
-status: completed
-title: "Extend Runtime State Compozy progress lifecycle fields"
+status: pending
+title: "Use reconciled lifecycle state in the Compozy tracker adapter"
 type: backend
 complexity: medium
 dependencies:
   - task_01
 ---
 
-# Task 02: Extend Runtime State Compozy progress lifecycle fields
+# Task 02: Use reconciled lifecycle state in the Compozy tracker adapter
 
 ## Overview
-Extend the Runtime State `compozy_progress` payload so operator surfaces can read lifecycle and PR readiness from one structured place. The existing Compozy Task Step progress fields must remain stable and older snapshots without lifecycle fields must continue to parse.
+Align the Compozy-backed Local Issue Tracker with the reconciled lifecycle contract so tracker issue state reflects the same run summary operators see elsewhere. This task keeps dispatch-state routing config-driven while ensuring tracker candidate fetches, lookups, and status persistence all flow through the reconciled lifecycle path.
 
 <critical>
 - ALWAYS READ the PRD and TechSpec before starting
@@ -21,60 +21,61 @@ Extend the Runtime State `compozy_progress` payload so operator surfaces can rea
 </critical>
 
 <requirements>
-- R1 MUST add optional lifecycle, dispatch, Stage Agent, PR readiness, reason, and handoff summary fields to `Runtime_state.compozy_progress`.
-- R2 MUST preserve existing `run_id`, `slug`, `current_step`, `completed`, `failed`, `skipped`, and `total` semantics.
-- R3 MUST serialize extended fields in `Runtime_state.to_yojson` only as compatible JSON values.
-- R4 MUST parse older Runtime State snapshots that lack lifecycle fields without error.
-- R5 MUST combine Compozy Task Step progress with lifecycle metadata from task_01 when lifecycle metadata exists.
-- R6 SHOULD keep absence of lifecycle metadata representable as optional absence rather than synthesized frontend-only text.
+- R1 MUST load Compozy tracker candidates and lookups through reconciled lifecycle metadata from task_01.
+- R2 MUST keep the Compozy tracker issue boundary at one Compozy PRD Run per issue.
+- R3 MUST expose `dispatch_state` as the tracker issue state without collapsing it into lifecycle or task-step labels.
+- R4 MUST recover from corrupt or unreadable lifecycle JSON by rebuilding from task-step truth instead of failing the whole tracker poll.
+- R5 MUST persist explicit tracker status updates back into lifecycle `dispatch_state` without changing task-step progress semantics.
+- R6 MUST preserve Compozy tracker behavior without adding GitHub API dependencies.
 </requirements>
 
 ## Subtasks
-- [x] 2.1 Extend the backend Compozy progress record shape.
-- [x] 2.2 Add lifecycle-aware progress construction from a Compozy PRD Run and lifecycle metadata.
-- [x] 2.3 Preserve old snapshot parsing for absent lifecycle fields.
-- [x] 2.4 Extend JSON output tests for the new optional fields.
-- [x] 2.5 Extend compatibility tests for old snapshots and absent Compozy progress.
+- [ ] 2.1 Route Compozy candidate fetches and identifier lookups through the reconciled lifecycle loader.
+- [ ] 2.2 Preserve Compozy issue-state mapping from lifecycle `dispatch_state`.
+- [ ] 2.3 Keep corrupt-lifecycle fallback behavior narrow and task-step-derived.
+- [ ] 2.4 Ensure Compozy status updates persist dispatch-state changes back into lifecycle metadata only.
+- [ ] 2.5 Add focused tracker adapter tests for fetch, lookup, update, and lifecycle repair paths.
 
 ## Implementation Details
-Follow TechSpec sections "Extended `Runtime_state.compozy_progress`" and "API Endpoints". No new HTTP endpoint is required; this task only changes the Runtime State payload shape and backend parsing helpers.
+Reference TechSpec "System Architecture" component overview for `Issue_tracker.compozy` and TechSpec "Impact Analysis" for tracker adapter behavior. Keep this task scoped to `issue_tracker.ml` and the related backend tests; do not widen it into orchestrator transition work.
 
 ### Relevant Files
-- `apps/backend/lib/runtime_state.ml` — Owns the `compozy_progress` record, JSON serialization, snapshot parsing, and initial progress selection.
-- `apps/backend/lib/compozy_lifecycle.ml` — Provides lifecycle metadata to merge into Runtime State progress.
-- `apps/backend/lib/compozy_tasks_tracker.ml` — Continues to provide step counts and current-step data.
-- `apps/backend/test/test_backend.ml` — Contains existing Runtime State Compozy progress and old-snapshot compatibility tests.
+- `apps/backend/lib/issue_tracker.ml` — Implements the Compozy tracker adapter, candidate fetches, identifier normalization, and status persistence.
+- `apps/backend/lib/compozy_lifecycle.ml` — Supplies reconciled lifecycle metadata and dispatch-state persistence helpers.
+- `apps/backend/lib/compozy_tasks_tracker.ml` — Supplies PRD run discovery and runnable-run filtering for tracker candidates.
+- `apps/backend/test/test_backend.ml` — Contains existing Compozy tracker fetch, lookup, and status-update tests to extend.
 
 ### Dependent Files
-- `apps/backend/lib/server.ml` — Serves the extended Runtime State payload through existing HTTP and live state paths.
-- `apps/backend/bin/main.ml` — Terminal Console rendering will consume the extended fields in task_06.
-- `apps/frontend/src/RuntimeStateSnapshot.res` — Frontend parsing will consume the extended fields in task_07.
+- `apps/backend/lib/orchestrator.ml` — Relies on tracker issues having the correct dispatch-facing state for routing.
+- `apps/backend/lib/runtime_state.ml` — Later tasks will confirm surfaces tell the same story as the tracker adapter.
+- `README.md` — Documentation should reflect the eventual tracker-state behavior.
 
 ### Related ADRs
-- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Keeps task-step progress separate from lifecycle state.
-- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Requires extending `compozy_progress` instead of adding a separate top-level Runtime State object.
+- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Keeps the Compozy PRD Run as the issue-level unit.
+- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Defines dispatch-aware lifecycle persistence as the tracker state source.
+- [ADR-006: Reconcile Compozy lifecycle from task-step progress while keeping readiness separate](adrs/adr-006.md) — Requires tracker reads to consume reconciled lifecycle metadata.
 
 ## Deliverables
-- Extended `Runtime_state.compozy_progress` backend model and JSON contract.
-- Lifecycle-aware progress construction that preserves Compozy Task Step counts.
-- Backward-compatible snapshot parsing for older Runtime State payloads.
+- Compozy tracker adapter reads reconciled lifecycle metadata for fetches and lookups.
+- Compozy tracker adapter persists `dispatch_state` updates without altering task-step progress semantics.
+- Backend tests cover corrupt lifecycle repair, dispatch-state issue mapping, and status-update persistence.
 - Unit tests with 80%+ coverage **(REQUIRED)**
-- Integration tests for Runtime State JSON compatibility **(REQUIRED)**
+- Integration tests for Compozy tracker lifecycle-backed state behavior **(REQUIRED)**
 
 ## Tests
 - Unit tests:
-  - [x] `Runtime_state.compozy_progress_of_prd_run` still reports current step and completed/failed/skipped/total counts unchanged.
-  - [x] Lifecycle metadata adds `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `handoff_status` when present.
-  - [x] Missing lifecycle metadata leaves optional fields absent or null without changing count fields.
-  - [x] Older snapshots without lifecycle fields parse successfully.
-  - [x] Snapshot parsing preserves lifecycle fields when the extended payload is present.
+  - [ ] Candidate fetch maps each runnable Compozy PRD Run to a tracker issue using lifecycle `dispatch_state`.
+  - [ ] Identifier lookup returns the Compozy PRD Run issue and preserves the canonical `compozy:<slug>` identifier.
+  - [ ] Corrupt lifecycle JSON falls back to task-step-based backfill instead of failing the tracker adapter.
+  - [ ] `update_status` persists only lifecycle `dispatch_state` changes for a Compozy PRD Run.
 - Integration tests:
-  - [x] A Runtime State JSON payload containing extended `compozy_progress` can round-trip through backend snapshot helpers.
+  - [ ] Compozy tracker active and terminal checks continue to use dispatch-facing status semantics after lifecycle reconciliation.
+  - [ ] Queue or lookup flows consume repaired lifecycle metadata when a Runtime Home lifecycle file is stale or corrupt.
 - Test coverage target: >=80%
 - All tests must pass
 
 ## Success Criteria
 - All tests passing
 - Test coverage >=80%
-- Runtime State exposes lifecycle information without breaking existing Compozy progress consumers.
-- Older Runtime State snapshots remain compatible.
+- The Compozy tracker adapter uses the same reconciled lifecycle state that downstream Runtime State and UI surfaces consume.
+- Tracker dispatch-state behavior remains config-driven without breaking the Compozy PRD Run issue boundary.

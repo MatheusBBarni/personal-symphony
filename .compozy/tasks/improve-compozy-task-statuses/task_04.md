@@ -1,16 +1,16 @@
 ---
-status: completed
-title: "Update orchestrator lifecycle transitions"
+status: pending
+title: "Align Runtime State and Terminal Console with the shared Compozy status contract"
 type: backend
-complexity: high
+complexity: medium
 dependencies:
-  - task_03
+  - task_01
 ---
 
-# Task 04: Update orchestrator lifecycle transitions
+# Task 04: Align Runtime State and Terminal Console with the shared Compozy status contract
 
 ## Overview
-Teach orchestration paths to update Compozy PRD Run lifecycle metadata as Stage Agents start, retry, fail, complete, or require attention. This makes the lifecycle trustworthy during active execution while preserving existing Compozy Task Step status and retry behavior.
+Make Runtime State and the Terminal Console tell the same Compozy PRD Run story from one shared payload. This task keeps task-step truth intact while ensuring lifecycle, dispatch, readiness, handoff, and reason fields are merged and rendered consistently for backend-facing operator surfaces.
 
 <critical>
 - ALWAYS READ the PRD and TechSpec before starting
@@ -21,64 +21,61 @@ Teach orchestration paths to update Compozy PRD Run lifecycle metadata as Stage 
 </critical>
 
 <requirements>
-- R1 MUST mark planner Stage Agent dispatch as `in_planning` at the Compozy PRD Run lifecycle level.
-- R2 MUST mark engineer or task-step execution dispatch as `in_execution` while preserving task-step `in_progress` updates.
-- R3 MUST mark reviewer Stage Agent dispatch as `in_review` at the Compozy PRD Run lifecycle level.
-- R4 MUST mark failed, skipped, blocked, and attention outcomes with concise operator-facing reasons.
-- R5 MUST mark successful final Compozy PRD Run completion without implying PR readiness until readiness rules are evaluated.
-- R6 MUST preserve existing retry, current-step advancement, Agent Worktree, Task Branch, and Task Branch Integration behavior.
+- R1 MUST keep `Runtime_state.compozy_progress` as the single shared payload for Compozy PRD Run status.
+- R2 MUST preserve Compozy Task Step truth for `current_step`, `completed`, `failed`, `skipped`, and `total` when lifecycle metadata is merged.
+- R3 MUST expose `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `handoff_status` from reconciled lifecycle metadata when present.
+- R4 MUST preserve backward compatibility when older Runtime State snapshots omit lifecycle fields.
+- R5 MUST keep Terminal Console rendering aligned with the shared payload and omit empty optional lifecycle fields cleanly.
+- R6 MUST expose the same reconciled payload through HTTP and live Runtime State snapshots.
 </requirements>
 
 ## Subtasks
-- [x] 4.1 Record lifecycle state when a Compozy PRD Run is dispatched to a Stage Agent.
-- [x] 4.2 Record lifecycle state during Compozy Task Step retry and over-limit failure paths.
-- [x] 4.3 Record lifecycle state when execution advances to the next Compozy Task Step.
-- [x] 4.4 Record lifecycle state when the final task step completes successfully.
-- [x] 4.5 Record blocked or attention lifecycle reasons for merge, protected-path, and non-retryable completion failures.
-- [x] 4.6 Add focused orchestrator tests for planner, engineer, reviewer, failure, completion, and attention transitions.
+- [ ] 4.1 Audit `Runtime_state.compozy_progress` assembly against the approved merged-state contract.
+- [ ] 4.2 Preserve task-step truth for counts and current-step selection while attaching reconciled lifecycle metadata.
+- [ ] 4.3 Keep JSON serialization and parsing backward-compatible for older snapshots.
+- [ ] 4.4 Align Terminal Console Compozy progress lines with the shared payload fields and omission rules.
+- [ ] 4.5 Add backend tests for payload merge behavior, snapshot compatibility, terminal rendering, and Runtime State exposure.
 
 ## Implementation Details
-Follow TechSpec "Data Flow" and "Development Sequencing" steps for orchestrator transitions. Centralize writes through `Compozy_lifecycle` helpers and avoid changing the Compozy Task Step progress rules in `Compozy_tasks_tracker`.
+Reference TechSpec "Core Interfaces", "Shared Runtime State payload", and "API Endpoints". Keep this task limited to backend payload assembly and Terminal Console rendering; frontend parsing and markup belong to task_05.
 
 ### Relevant Files
-- `apps/backend/lib/orchestrator.ml` — Dispatch, retry, failure, completion, blocked, Task Branch Integration, and state-update paths.
-- `apps/backend/lib/compozy_lifecycle.ml` — Transition helpers for Stage Agent start, not-PR-ready, failure, blocked, and completion updates.
-- `apps/backend/lib/compozy_tasks_tracker.ml` — Task-step status and retry behavior that must remain authoritative for current-step progress.
-- `apps/backend/lib/config.ml` — Stage Agent status mappings and Pull Request Policy fields used during orchestration decisions.
-- `apps/backend/test/test_backend.ml` — Existing Compozy orchestration tests for sequential steps, retry, and final-step behavior.
+- `apps/backend/lib/runtime_state.ml` — Defines `compozy_progress`, JSON serialization/parsing, and payload assembly from task-step and lifecycle data.
+- `apps/backend/lib/terminal_console.ml` — Renders lifecycle, dispatch state, readiness, handoff, reason, and step-count lines.
+- `apps/backend/test/test_backend.ml` — Contains existing Runtime State merge, HTTP payload, live snapshot, and terminal line tests to extend.
 
 ### Dependent Files
-- `apps/backend/lib/runtime_state.ml` — Must reflect lifecycle changes in current snapshots.
-- `apps/backend/lib/issue_tracker.ml` — Supplies lifecycle-backed issue state to dispatch filtering.
-- `apps/backend/bin/main.ml` — Later renders lifecycle transitions to the Terminal Console.
+- `apps/frontend/src/RuntimeStateSnapshot.res` — Consumes the payload this task finalizes.
+- `apps/frontend/src/Pages/Dashboard.res` — Renders the lifecycle and readiness fields exposed here.
+- `README.md` — Documentation should describe the final payload semantics operators will see.
 
 ### Related ADRs
-- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Requires Stage Agent phases to be run-level lifecycle, not task-step statuses.
-- [ADR-002: Use full V1 operator trust as the PRD product approach](adrs/adr-002.md) — Requires lifecycle visibility for planner, engineer, reviewer, blocked, failed, skipped, and completed states.
-- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Requires durable dispatch-aware lifecycle transitions.
+- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Defines Runtime Home lifecycle as the metadata source for the shared payload.
+- [ADR-005: Use a cross-surface transition contract as the PRD approach](adrs/adr-005.md) — Requires the same story across Runtime State and the Terminal Console.
+- [ADR-006: Reconcile Compozy lifecycle from task-step progress while keeping readiness separate](adrs/adr-006.md) — Requires merged payload semantics that preserve task-step truth.
 
 ## Deliverables
-- Orchestrator lifecycle updates for Stage Agent dispatch and active execution.
-- Orchestrator lifecycle updates for retry, failure, blocked, attention, skipped, and successful completion outcomes.
-- Preservation of existing Compozy Task Step progress and retry semantics.
+- Shared backend `compozy_progress` payload assembled from task-step truth plus reconciled lifecycle metadata.
+- Backward-compatible Runtime State snapshot serialization and parsing for lifecycle-rich and legacy snapshots.
+- Terminal Console rendering aligned with the same payload semantics.
 - Unit tests with 80%+ coverage **(REQUIRED)**
-- Integration tests for Compozy lifecycle transitions through orchestration **(REQUIRED)**
+- Integration tests for Runtime State and Terminal Console consistency **(REQUIRED)**
 
 ## Tests
 - Unit tests:
-  - [x] Dispatching a planner-stage Compozy PRD Run records `lifecycle_state = in_planning` with `stage_agent = planner`.
-  - [x] Dispatching an engineer-stage Compozy PRD Run records `lifecycle_state = in_execution` and preserves task-step `in_progress`.
-  - [x] Dispatching a reviewer-stage Compozy PRD Run records `lifecycle_state = in_review` with `stage_agent = reviewer`.
-  - [x] A failed task step below retry limit keeps lifecycle non-ready and preserves retry behavior.
-  - [x] A failed task step over retry limit records failed lifecycle with a reason and advances only according to existing step rules.
-  - [x] A final successful Compozy PRD Run records completed lifecycle without losing step counts.
+  - [ ] `compozy_progress_of_prd_run` preserves task-step counts and current-step selection when lifecycle metadata is present.
+  - [ ] `handoff_status` is derived correctly from lifecycle readiness values.
+  - [ ] Legacy Runtime State snapshots without lifecycle fields continue to parse successfully.
+  - [ ] Terminal Console lifecycle lines omit absent optional values and include present ones in the expected order.
 - Integration tests:
-  - [x] Merge attention, protected-path attention, and non-retryable completion errors record blocked or not-ready lifecycle reasons in Runtime State.
+  - [ ] HTTP state payload includes reconciled `compozy_progress` lifecycle, readiness, reason, and handoff fields when present.
+  - [ ] Live Runtime State snapshots carry the same Compozy payload semantics as HTTP and terminal rendering.
+  - [ ] Backend-facing operator surfaces do not contradict task-step counts when lifecycle metadata is stale or repaired.
 - Test coverage target: >=80%
 - All tests must pass
 
 ## Success Criteria
 - All tests passing
 - Test coverage >=80%
-- Operators can distinguish planning, execution, review, failure, blocked, and completion from Runtime State after orchestration transitions.
-- Existing Compozy Task Step current-step and retry tests remain passing.
+- Runtime State and Terminal Console expose the same Compozy PRD Run contract from one payload.
+- Task-step counts and current-step selection remain unchanged in meaning while lifecycle and readiness fields become trustworthy.

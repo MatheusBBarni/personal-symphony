@@ -2,9 +2,9 @@
 
 ## Executive Summary
 
-This implementation adds a dispatch-aware Compozy PRD Run lifecycle layer while preserving existing Compozy Task Step progress. The lifecycle layer lives under Runtime Home `.symphony/state/`, feeds Stage Agent dispatch and readiness decisions, and surfaces through the existing `Runtime_state.compozy_progress` object so Terminal Console, HTTP/WebSocket Runtime State, and the Web Dashboard stay aligned.
+This implementation tightens the existing Compozy PRD Run lifecycle architecture instead of introducing a new status subsystem. The codebase already persists run-level lifecycle metadata in Runtime Home, already extends `Runtime_state.compozy_progress`, and already renders lifecycle fields in the Terminal Console and Web Dashboard. V1 should focus on making those existing pieces obey one explicit transition contract across Compozy Task Step progress, run lifecycle state, dispatch state, and Batch Pull Request readiness.
 
-The primary technical trade-off is adding a second persistence source for Compozy runs. Compozy Task Step frontmatter remains authoritative for step progress and current-step selection, while Runtime Home lifecycle metadata becomes authoritative for run-level lifecycle, dispatch state, PR readiness, and concise operator reasons. This avoids runtime churn in `.compozy/tasks/<slug>/` files but requires reconciliation to prevent stale Runtime Home state after manual task-file edits or restarts.
+The key technical trade-off is keeping two state sources while making only one of them authoritative for execution truth. Compozy Task Step files remain the source of truth for current-step selection and terminal counts. Runtime Home lifecycle metadata remains the persisted operator-facing summary for run phase, dispatch state, stage agent, readiness, and concise reasons, but it must reconcile to task-step progress whenever those disagree. This preserves backward-compatible Compozy Task Step behavior and keeps the current cross-surface payload shape, at the cost of stricter reconciliation logic and more focused regression coverage.
 
 ## System Architecture
 
@@ -12,124 +12,170 @@ The primary technical trade-off is adding a second persistence source for Compoz
 
 | Component | Responsibility | Boundary |
 | --- | --- | --- |
-| `Compozy_lifecycle` (new backend module) | Own run-level lifecycle metadata, JSON persistence under Runtime Home, lazy backfill, reconciliation, transition helpers, and PR readiness summaries. | Does not parse task files directly except through `Compozy_tasks_tracker.prd_run` inputs. |
-| `Compozy_tasks_tracker` | Continue parsing Compozy Task Step files, deriving step counts, current step, and prompt context. | Task-step progress remains `pending`, `in_progress`, `completed`, `failed`, and `skipped`. |
-| `Issue_tracker.compozy` | Fetch Compozy PRD Runs, apply lifecycle metadata to issue state for dispatch, and persist status updates through `Compozy_lifecycle`. | Does not call GitHub APIs. |
-| `Orchestrator` | Update lifecycle during dispatch, retry, failure, final completion, Task Branch Integration attention, and Batch Pull Request handoff. | Current-step selection stays in Compozy task-step logic. |
-| `Runtime_state` | Extend `compozy_progress` with lifecycle, dispatch, readiness, reason, stage, and handoff summary fields. | Older snapshots without lifecycle fields remain compatible. |
-| Terminal Console (`apps/backend/bin/main.ml`) | Render lifecycle and PR readiness alongside current Compozy Task Step progress. | No new CLI mode. |
-| HTTP/WebSocket server | Continue serving `/api/v1/state` and live snapshots with the extended Runtime State payload. | No new endpoint. |
-| Frontend ReScript Dashboard | Parse extended `compozy_progress` and render lifecycle/readiness in the existing PRD run progress panel. | Edit `.res` sources only. |
-| Docs and glossary | Explain lifecycle vs task-step progress and update domain language if new terms are introduced. | No secrets or local `.env` contents. |
+| `Compozy_tasks_tracker` | Parse Compozy Task Steps, select the current step, and derive completed, failed, skipped, and total counts for a Compozy PRD Run. | Remains the authoritative execution-progress source. |
+| `Compozy_lifecycle` | Persist Runtime Home lifecycle metadata, derive initial lifecycle state, reconcile stale metadata against Compozy Task Step truth, and provide transition helpers. | Owns run-level lifecycle summary, not task-step progress. |
+| `Issue_tracker.compozy` | Fetch Compozy PRD Run candidates, use lifecycle-backed dispatch state for tracker semantics, and persist dispatch-facing status updates. | Preserves the Compozy-backed Local Issue Tracker boundary and does not require GitHub API access. |
+| `Orchestrator` | Apply lifecycle transitions during dispatch, retry, failure, blocked attention, completion, and Batch Pull Request handoff. | Continues to own orchestration timing and Stage Agent routing. |
+| `Runtime_state` | Assemble one extended `compozy_progress` object from task-step truth plus reconciled lifecycle metadata. | Remains the shared payload for Runtime State, Terminal Console, and Web Dashboard. |
+| `Terminal_console` | Render Compozy PRD Run counts, lifecycle, readiness, handoff status, and reasons without contradicting Runtime State. | No new console mode or alternate payload. |
+| Frontend ReScript snapshot parser | Parse the existing extended `compozy_progress` payload from backend snapshots. | Must preserve compatibility with older snapshots missing lifecycle fields. |
+| Frontend Dashboard | Render the same run story the Terminal Console and Runtime State expose. | Must distinguish counts from lifecycle and readiness without inventing new backend semantics. |
+| Existing pull-request runtime records | Keep detailed Batch Pull Request attempt and failure evidence. | Remain the detailed handoff record; lifecycle only summarizes handoff phase and readiness. |
 
 ### Data Flow
 
-1. Compozy discovery loads Compozy PRD Runs through `Compozy_tasks_tracker.discover_prd_runs`.
-2. `Compozy_lifecycle` loads or lazily backfills lifecycle metadata from Runtime Home for each discovered run.
-3. `Issue_tracker.compozy` returns issue candidates whose dispatch state comes from lifecycle metadata when present, falling back to task-step-derived state when metadata is absent.
-4. `Orchestrator.dispatch_issue` updates lifecycle with the selected Stage Agent phase before launch.
-5. Completion, retry, failure, attention, and PR handoff paths update lifecycle state and PR readiness reason.
-6. `Runtime_state.compozy_progress_of_prd_run` combines task-step progress with lifecycle metadata.
-7. Terminal Console, HTTP/WebSocket snapshots, and Web Dashboard render the same lifecycle and readiness values.
+1. `Compozy_tasks_tracker.discover_prd_runs` loads Compozy PRD Runs from `.compozy/tasks/<slug>/`.
+2. `Compozy_lifecycle.load_or_backfill_reconciled` loads Runtime Home lifecycle metadata or derives it from Compozy Task Step progress when missing.
+3. `Issue_tracker.compozy` exposes the Compozy PRD Run as one tracker issue and uses lifecycle-backed `dispatch_state` for active and terminal checks.
+4. `Orchestrator.dispatch_issue` calls `Compozy_lifecycle.mark_stage_started` to map planner, engineer, or reviewer dispatch into run-level lifecycle.
+5. Retry, failure, blocked attention, completion, and Batch Pull Request handoff paths call the matching lifecycle transition helpers.
+6. `Runtime_state.compozy_progress_of_prd_run` merges Compozy Task Step counts with reconciled lifecycle metadata into one payload.
+7. Runtime State snapshots, the Terminal Console, and the Web Dashboard render that shared payload within one poll cycle.
 
 ## Implementation Design
 
 ### Core Interfaces
 
-The implementation will use OCaml records and functions, but this Go struct documents the cross-component JSON contract that Runtime State and frontend consumers depend on:
+The implementation stays in OCaml, but this Go struct documents the cross-surface payload contract that backend and frontend must keep aligned:
 
 ```go
-type CompozyLifecycle struct {
+type CompozyProgress struct {
     RunID          string  `json:"run_id"`
     Slug           string  `json:"slug"`
-    LifecycleState string  `json:"lifecycle_state"`
-    DispatchState  string  `json:"dispatch_state"`
+    CurrentStep    *string `json:"current_step,omitempty"`
+    Completed      int     `json:"completed"`
+    Failed         int     `json:"failed"`
+    Skipped        int     `json:"skipped"`
+    Total          int     `json:"total"`
+    LifecycleState *string `json:"lifecycle_state,omitempty"`
+    DispatchState  *string `json:"dispatch_state,omitempty"`
     StageAgent     *string `json:"stage_agent,omitempty"`
-    PRReadiness    string  `json:"pr_readiness"`
+    PRReadiness    *string `json:"pr_readiness,omitempty"`
     Reason         *string `json:"reason,omitempty"`
-    UpdatedAt      string  `json:"updated_at"`
+    HandoffStatus  *string `json:"handoff_status,omitempty"`
 }
 ```
 
-Backend module contract:
+Primary backend contracts:
 
-- `Compozy_lifecycle.path_for_run : Config.t -> Compozy_tasks_tracker.prd_run -> string`
-- `Compozy_lifecycle.load : Config.t -> Compozy_tasks_tracker.prd_run -> (t option, string) result`
-- `Compozy_lifecycle.backfill : Config.t -> Compozy_tasks_tracker.prd_run -> (t, string) result`
-- `Compozy_lifecycle.save : Config.t -> t -> (unit, string) result`
-- `Compozy_lifecycle.for_runtime : Config.t -> Runtime_state.t -> Compozy_tasks_tracker.prd_run -> (t, string) result`
-- `Compozy_lifecycle.mark_stage_started : Config.t -> run -> stage_agent:string option -> dispatch_state:string -> (t, string) result`
-- `Compozy_lifecycle.mark_not_pr_ready : Config.t -> run -> reason:string -> (t, string) result`
-- `Compozy_lifecycle.mark_pr_handoff : Config.t -> run -> status:string -> reason:string option -> (t, string) result`
+- `Compozy_lifecycle.load_or_backfill_reconciled : Config.t -> Compozy_tasks_tracker.prd_run -> (Compozy_lifecycle.t, string) result`
+- `Compozy_lifecycle.mark_stage_started : Config.t -> Compozy_tasks_tracker.prd_run -> stage_agent:string option -> dispatch_state:string -> (Compozy_lifecycle.t, string) result`
+- `Compozy_lifecycle.mark_retrying : Config.t -> Compozy_tasks_tracker.prd_run -> reason:string -> (Compozy_lifecycle.t, string) result`
+- `Compozy_lifecycle.mark_failed : Config.t -> Compozy_tasks_tracker.prd_run -> reason:string -> (Compozy_lifecycle.t, string) result`
+- `Compozy_lifecycle.mark_blocked : Config.t -> Compozy_tasks_tracker.prd_run -> reason:string -> (Compozy_lifecycle.t, string) result`
+- `Compozy_lifecycle.mark_completed : Config.t -> Compozy_tasks_tracker.prd_run -> (Compozy_lifecycle.t, string) result`
+- `Compozy_lifecycle.mark_pr_handoff : Config.t -> Compozy_tasks_tracker.prd_run -> status:string -> reason:string option -> (Compozy_lifecycle.t, string) result`
+- `Runtime_state.compozy_progress_of_prd_run : ?lifecycle:Compozy_lifecycle.t -> Compozy_tasks_tracker.prd_run -> Runtime_state.compozy_progress`
 
-All functions return `(value, string) result` to match existing backend error handling. The implementation should keep function names small and idiomatic; exact OCaml signatures may differ as long as the contracts remain.
+All new or updated helper calls should continue returning `(value, string) result` to match existing backend error handling.
 
 ### Data Models
 
-#### Runtime Home lifecycle JSON
+#### 1. Compozy Task Step truth
 
-Storage path:
+Compozy Task Step frontmatter remains the source of truth for:
+
+- `current_step`
+- `completed`
+- `failed`
+- `skipped`
+- `total`
+
+Allowed task-step statuses remain unchanged:
+
+- `pending`
+- `in_progress`
+- `completed`
+- `failed`
+- `skipped`
+
+V1 must not add run-level meaning to task-step statuses.
+
+#### 2. Runtime Home lifecycle summary
+
+Runtime Home lifecycle metadata remains stored at:
 
 ```text
 .symphony/state/compozy-lifecycle/<slug>.json
 ```
 
-Persisted JSON shape:
+Persisted JSON shape remains:
 
 ```json
 {
   "version": 1,
   "run_id": "compozy:improve-compozy-task-statuses",
   "slug": "improve-compozy-task-statuses",
-  "lifecycle_state": "in_execution",
-  "dispatch_state": "In progress",
-  "stage_agent": "engineer",
+  "lifecycle_state": "in_review",
+  "dispatch_state": "In review",
+  "stage_agent": "reviewer",
   "pr_readiness": "not_ready",
-  "reason": null,
-  "updated_at": "2026-05-12T21:00:00Z"
+  "reason": "Reviewer found failing verification.",
+  "updated_at": "2026-05-13T20:00:00Z"
 }
 ```
 
-Allowed `lifecycle_state` values:
+Canonical persisted lifecycle states remain:
 
-| Value | Meaning |
+| `lifecycle_state` | Meaning |
 | --- | --- |
-| `pending` | Run exists and has not entered active work. |
-| `in_planning` | Planner Stage Agent work is active or selected. |
-| `in_execution` | Engineering or task-step execution work is active. |
-| `in_review` | Reviewer Stage Agent work is active or selected. |
-| `blocked` | Run requires operator attention before dispatch should continue. |
-| `completed` | Run completed successfully from the lifecycle perspective. |
-| `failed` | Run ended with failed task-step or orchestration outcome. |
-| `skipped` | Run ended with skipped work and is not PR-ready. |
-| `pr_handoff` | Batch Pull Request handoff is attempting, completed, or failed. |
-| `not_pr_ready` | Run is stopped or terminal but cannot open a Batch Pull Request. |
+| `pending` | The Compozy PRD Run exists but has not entered active work. |
+| `in_planning` | Planner-stage work is active. |
+| `in_execution` | Engineer-stage work or active step execution is in progress. |
+| `in_review` | Reviewer-stage work is active. |
+| `blocked` | The run requires operator attention and is not progressing normally. |
+| `completed` | The run completed successfully from the lifecycle perspective. |
+| `failed` | The run ended with failed work and is not PR-ready. |
+| `skipped` | The run ended with skipped work and is not PR-ready. |
+| `not_pr_ready` | The run is terminal or stalled in a way that prevents Batch Pull Request readiness without being a normal success path. |
+| `pr_handoff` | The run is in Batch Pull Request handoff, including attempting, completed, or failed handoff outcomes. |
 
-Allowed `pr_readiness` values:
+Canonical persisted readiness states remain:
 
-| Value | Meaning |
+| `pr_readiness` | Meaning |
 | --- | --- |
-| `disabled` | Pull Request Policy does not enable automatic Batch Pull Requests. |
-| `not_ready` | Run is not eligible for a Batch Pull Request. |
-| `ready` | Run completed successfully and is eligible for one aggregate Batch Pull Request. |
+| `disabled` | Pull Request Policy disables automatic Batch Pull Requests. |
+| `not_ready` | The run is not eligible for a Batch Pull Request. |
+| `ready` | The run is complete and eligible for one aggregate Batch Pull Request. |
 | `handoff_attempting` | Batch Pull Request handoff is in progress. |
-| `handoff_completed` | Batch Pull Request handoff completed or reused an existing PR. |
-| `handoff_failed` | Batch Pull Request handoff failed and may be retryable. |
+| `handoff_completed` | Batch Pull Request handoff succeeded or reused an existing pull request. |
+| `handoff_failed` | Batch Pull Request handoff failed. |
 
-`dispatch_state` is the state string used for Stage Agent routing and tracker active/terminal checks. It may use existing configured statuses such as `Backlog`, `To-Do`, `In progress`, `In review`, or `Done`. `lifecycle_state` is the user-facing run category exposed in Runtime State.
+#### 3. Operator-facing mapping rules
 
-#### Extended `Runtime_state.compozy_progress`
+V1 keeps lifecycle, dispatch, and readiness separate instead of flattening them into one label.
 
-Add optional fields to the existing record and JSON output:
+| Source | Role | Example |
+| --- | --- | --- |
+| Task-step status | Execution progress | `task_02.md` is `in_progress` |
+| `lifecycle_state` | Operator-visible run phase | `in_review` |
+| `dispatch_state` | Config-driven routing/tracker status | `In review` or `Human attention` |
+| `pr_readiness` | Batch Pull Request eligibility | `not_ready` or `handoff_failed` |
 
-- `lifecycle_state : string option`
-- `dispatch_state : string option`
-- `stage_agent : string option`
-- `pr_readiness : string option`
-- `reason : string option`
-- `handoff_status : string option`
+Approved mapping rules:
 
-Existing fields remain unchanged:
+- planner dispatch maps to `lifecycle_state = in_planning`
+- reviewer dispatch maps to `lifecycle_state = in_review`
+- engineer dispatch and active task-step execution map to `lifecycle_state = in_execution`
+- retry does not add a new lifecycle value; it remains `in_execution` plus the existing retrying Runtime State context and a retry reason
+- attention-oriented dispatch states such as `Human attention` remain config-driven `dispatch_state` values while lifecycle shows `blocked`
+- failed Batch Pull Request handoff remains `lifecycle_state = pr_handoff` with `pr_readiness = handoff_failed` and `handoff_status = handoff_failed`
+
+#### 4. Reconciliation rules
+
+`Compozy_lifecycle.load_or_backfill_reconciled` becomes the required read path for Runtime State assembly and tracker candidate fetches.
+
+Reconciliation rules:
+
+- if lifecycle metadata is missing, derive it from current Compozy Task Step truth and persist it
+- if task-step progress shows a terminal failed, skipped, blocked, or otherwise non-ready outcome, stale lifecycle metadata must be downgraded to match that terminal outcome
+- task-step truth wins for `current_step` and terminal counts even when lifecycle metadata says `completed` or `ready`
+- lifecycle metadata may enrich the run with `stage_agent`, `dispatch_state`, `pr_readiness`, and `reason` only after reconciliation
+- handoff details stay summarized in lifecycle and fully detailed in existing pull-request runtime records
+
+#### 5. Shared Runtime State payload
+
+V1 keeps the existing single `Runtime_state.compozy_progress` object. It must continue exposing:
 
 - `run_id`
 - `slug`
@@ -138,195 +184,198 @@ Existing fields remain unchanged:
 - `failed`
 - `skipped`
 - `total`
+- `lifecycle_state`
+- `dispatch_state`
+- `stage_agent`
+- `pr_readiness`
+- `reason`
+- `handoff_status`
 
-Parsing older Runtime State snapshots must treat missing lifecycle fields as compatible absence.
-
-#### Lazy backfill rules
-
-When lifecycle metadata is missing:
-
-| Compozy Task Step condition | Backfilled lifecycle | Backfilled readiness |
-| --- | --- | --- |
-| Current step exists with `pending` or `in_progress` | `in_execution` | `not_ready` |
-| All steps completed | `completed` | `ready` if policy allows and integration is safe, otherwise `disabled` or `not_ready` with reason |
-| Any failed step and no current runnable step | `failed` | `not_ready` with failed-step reason |
-| Any skipped step and no current runnable step | `skipped` | `not_ready` with skipped-step reason |
-| No valid task steps | `blocked` or `not_pr_ready` | `not_ready` with not-runnable reason |
-
-Task-step progress remains authoritative for current step and counts. Lifecycle reconciliation may downgrade stale `ready` or `completed` metadata to `not_pr_ready`, `failed`, or `skipped` when task files show failed/skipped terminal progress.
+Older snapshots without lifecycle fields must continue parsing safely.
 
 ### API Endpoints
 
-No new endpoint is required.
+No new API endpoint is required.
 
-Existing surfaces change through Runtime State payloads:
+Existing surfaces continue to use the shared Runtime State payload:
 
-| Surface | Existing entry point | Change |
+| Surface | Entry point | Change |
 | --- | --- | --- |
-| HTTP | `GET /api/v1/state` | `compozy_progress` includes optional lifecycle fields. |
-| WebSocket/live state | Existing state snapshot broadcast | Broadcasts the same extended `compozy_progress` object. |
-| Terminal Console | Existing startup/status rendering | Prints lifecycle state, PR readiness, and reason when present. |
-| Web Dashboard | Existing Runtime State snapshot parser | Parses and renders lifecycle/readiness fields. |
+| HTTP | `GET /api/v1/state` | Must continue exposing reconciled `compozy_progress` values. |
+| Live snapshot stream | Existing Runtime State snapshot broadcast | Must broadcast the same reconciled payload as HTTP. |
+| Terminal Console | Existing Compozy PRD Run panel | Must render lifecycle, readiness, handoff, and reason from the same payload. |
+| Web Dashboard | Existing ReScript snapshot parser and dashboard panel | Must parse and render the same payload without inventing alternate state meaning. |
 
 ## Integration Points
 
-No new external service integration is required.
+This feature does not add a new external integration.
 
-Existing boundaries preserved:
+Existing system boundaries remain:
 
-- GitHub API remains unnecessary for Compozy-backed Local Issue Tracker status visibility.
-- Batch Pull Request creation continues to use the existing Pull Request Policy and `gh` handoff path when configured.
-- Protected Trunk Branch and Batch Branch Push behavior remain unchanged.
-- Runtime Home files remain ignored runtime metadata and must not include secrets.
+- the Compozy-backed Local Issue Tracker remains local-file based
+- GitHub API access remains unnecessary for Compozy lifecycle visibility
+- existing Batch Pull Request creation continues to use current pull-request policy and handoff paths
+- existing pull-request runtime records remain the detailed handoff evidence source
+- Protected Trunk Branch, Task Branch Integration, and pull-request policy defaults remain unchanged
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
 | --- | --- | --- | --- |
-| `apps/backend/lib/compozy_lifecycle.ml` | New | Encapsulates lifecycle persistence and reconciliation. Risk: stale metadata if reconciliation is incomplete. | Add module, JSON parsing/writing, lazy backfill, and transition helpers. |
-| `apps/backend/lib/compozy_tasks_tracker.ml` | Modified | May need helper functions for deriving lifecycle from `prd_run` without changing task-step semantics. Risk: accidentally changing current-step behavior. | Keep existing status counts stable; add only lifecycle-safe helpers if needed. |
-| `apps/backend/lib/issue_tracker.ml` | Modified | Compozy adapter must stop treating status updates as no-op and use lifecycle dispatch state for candidates. Risk: routing regressions. | Integrate `Compozy_lifecycle` load/backfill/save in `compozy` adapter. |
-| `apps/backend/lib/orchestrator.ml` | Modified | Dispatch, retry, completion, attention, integration, and PR handoff paths must update lifecycle. Risk: scattered transition writes. | Centralize transition calls through `Compozy_lifecycle` helpers. |
-| `apps/backend/lib/runtime_state.ml` | Modified | `compozy_progress` gains optional lifecycle fields. Risk: snapshot compatibility. | Keep optional parsing defaults and JSON compatibility tests. |
-| `apps/backend/bin/main.ml` | Modified | Terminal Console prints lifecycle/readiness. Risk: noisy output. | Add compact lines under PRD Run Progress. |
-| `apps/frontend/src/RuntimeStateSnapshot.res` | Modified | Parse new optional fields. Risk: ReScript build break. | Edit `.res` only and rebuild generated JS through build command. |
-| `apps/frontend/src/Pages/Dashboard.res` | Modified | Render lifecycle/readiness in PRD run progress panel. Risk: confusing copy. | Keep copy short and separate lifecycle from counts. |
-| `README.md` and `CONTEXT.md` | Modified | Document lifecycle and any new glossary terms. Risk: documentation drift. | Update Compozy-backed tracker docs and glossary language as needed. |
-| `apps/backend/test/test_backend.ml` | Modified | Large test suite gains focused Compozy lifecycle cases. Risk: broad fixture churn. | Add targeted tests near existing Compozy cases; do not split file. |
+| `apps/backend/lib/compozy_lifecycle.ml` | Modified | Existing lifecycle helpers already exist but need to become the strict reconciliation path for runtime reads and transition writes. Risk: stale ready/completed metadata surviving task-step truth. | Tighten reconciliation rules, preserve schema, and keep handoff semantics separate from lifecycle phase. |
+| `apps/backend/lib/compozy_tasks_tracker.ml` | Modified | Must continue to define current-step and terminal counts without lifecycle drift. Risk: accidental semantic changes to task-step progress. | Keep task-step status model unchanged and add only helper usage needed for lifecycle reconciliation. |
+| `apps/backend/lib/issue_tracker.ml` | Modified | Must consistently use reconciled lifecycle metadata for dispatch-facing status behavior. Risk: dispatch active/terminal checks diverge from visible lifecycle state. | Route candidate fetches and status persistence through reconciled lifecycle helpers. |
+| `apps/backend/lib/orchestrator.ml` | Modified | Already records lifecycle transitions in many paths; V1 needs complete coverage and consistent reasons. Risk: missing transition writes on retry, blocked completion, or handoff paths. | Consolidate all Compozy transition writes through existing lifecycle helper calls. |
+| `apps/backend/lib/runtime_state.ml` | Modified | Already carries the extended payload; V1 must ensure task-step truth always wins on merge. Risk: Runtime State surfaces stale lifecycle data. | Keep one shared payload and assemble it from task-step truth plus reconciled lifecycle metadata. |
+| `apps/backend/lib/terminal_console.ml` | Modified | Already renders lifecycle fields. Risk: surface wording drifts from Runtime State semantics. | Keep labels aligned with payload semantics and always show readiness or handoff when present. |
+| `apps/frontend/src/RuntimeStateSnapshot.res` | Modified | Already parses lifecycle fields. Risk: parser and backend drift apart on optional fields. | Preserve backward compatibility for absent fields and keep field names unchanged. |
+| `apps/frontend/src/Pages/Dashboard.res` | Modified | Already renders Compozy lifecycle details. Risk: dashboard implies a different story than the Terminal Console. | Render lifecycle, dispatch, readiness, and reason from the shared payload with clear separation from counts. |
+| `apps/frontend/test/liveState.test.mjs` | Modified | Existing live-state tests already cover lifecycle-rich snapshots. Risk: new semantics land without UI regression protection. | Expand focused snapshot and render assertions for transition consistency and handoff failure semantics. |
+| `apps/backend/test/test_backend.ml` | Modified | Existing backend coverage is strong but must close remaining transition and reconciliation gaps. Risk: regressions hide inside the large integration suite. | Add targeted cases near current Compozy lifecycle tests; do not split the file. |
+| `CONTEXT.md` and operator docs | Modified if needed | Current glossary already defines Compozy lifecycle and readiness terms. Risk: operator-facing copy diverges from the glossary. | Update only if implementation introduces new operator wording that changes domain language. |
 
 ## Testing Approach
 
 ### Unit Tests
 
-Backend unit coverage:
+Backend-focused coverage should stay close to the existing lifecycle helper tests in `apps/backend/test/test_backend.ml`:
 
-- `Compozy_lifecycle` JSON round-trip for version 1 metadata.
-- Missing optional fields remain compatible.
-- Lazy backfill for pending/in-progress, completed, failed, skipped, empty, and not-runnable PRD Runs.
-- Reconciliation downgrades stale lifecycle metadata when task-step progress shows failed or skipped terminal state.
-- `Runtime_state.compozy_progress_of_prd_run` includes optional lifecycle fields when metadata exists and omits them safely when absent.
-- `Runtime_state.compozy_progress_from_snapshot_yojson` handles older snapshots.
+- lifecycle JSON round-trip and optional-field compatibility
+- lifecycle backfill from active, completed, failed, skipped, and not-runnable Compozy PRD Runs
+- stale ready/completed lifecycle metadata downgraded by reconciliation when Compozy Task Step truth becomes failed, skipped, blocked, or otherwise non-ready
+- stage-agent mapping for planner, engineer, and reviewer dispatch
+- `mark_retrying`, `mark_failed`, `mark_blocked`, `mark_completed`, and `mark_pr_handoff` preserving the approved phase-versus-readiness split
 
-Frontend unit/live-state coverage:
+Frontend-focused coverage should stay in `apps/frontend/test/liveState.test.mjs`:
 
-- Runtime State snapshot parsing accepts lifecycle fields.
-- Runtime State snapshot parsing accepts older snapshots without lifecycle fields.
-- Dashboard displays lifecycle state, PR readiness, and reason without hiding current-step counts.
+- snapshot parsing with lifecycle-rich payloads
+- snapshot parsing when lifecycle fields are absent
+- dashboard rendering for blocked, review, and handoff-failed Compozy PRD Runs
+- dashboard rendering that keeps counts visible alongside lifecycle and readiness
 
 ### Integration Tests
 
-Backend integration coverage in `apps/backend/test/test_backend.ml`:
+Backend integration coverage in `apps/backend/test/test_backend.ml` should verify:
 
-- Compozy tracker lazy-backfills lifecycle on discovery when no Runtime Home metadata exists.
-- Compozy tracker `update_status` persists dispatch-aware lifecycle metadata.
-- Dispatch to planner maps to `in_planning` when the selected Stage Agent is planner.
-- Dispatch to engineer maps to `in_execution` while preserving task-step `in_progress` updates.
-- Dispatch to reviewer maps to `in_review` when the selected Stage Agent is reviewer.
-- Final successful Compozy PRD Run marks lifecycle `completed` and PR readiness `ready` or `disabled` based on Pull Request Policy.
-- Failed/skipped terminal runs mark lifecycle `failed`/`skipped` and `pr_readiness = not_ready` with reason.
-- Merge attention and protected-path attention mark lifecycle `blocked` or `not_pr_ready` with reason.
-- Batch Pull Request handoff mirrors `handoff_attempting`, `handoff_completed`, and `handoff_failed` readiness while preserving existing `pull_request` records.
-- Batch mode never opens per-step pull requests for Compozy Task Steps.
+- candidate fetches and queue lookups use `load_or_backfill_reconciled`
+- dispatch to planner, engineer, and reviewer records `in_planning`, `in_execution`, and `in_review`
+- retry keeps the run in `in_execution` while exposing retry context and reason
+- non-retryable completion errors, merge attention, and protected-path attention record `blocked`
+- final failed and skipped Compozy PRD Runs record terminal non-ready lifecycle states
+- successful completion records `completed` plus `ready` or `disabled` based on Pull Request Policy
+- failed handoff records `lifecycle_state = pr_handoff` and `pr_readiness = handoff_failed`
+- terminal non-ready runs do not attempt or appear eligible for Batch Pull Request handoff
+- batch mode never opens per-step pull requests for Compozy Task Steps
+
+Cross-surface verification should use existing tests instead of a new harness:
+
+- Terminal Console line rendering for lifecycle, readiness, reason, and handoff fields
+- HTTP Runtime State payload assertions
+- live snapshot assertions
+- frontend snapshot-to-dashboard render assertions
 
 Verification commands:
 
 - `pnpm test`
 - `pnpm frontend:test`
-- `pnpm frontend:build` after ReScript changes
-- `pnpm backend:build` if backend module wiring changes are broad
+- `pnpm frontend:build`
+- `pnpm backend:build`
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Define `Compozy_lifecycle` data model and Runtime Home storage helpers — no dependencies.
-2. Add lifecycle lazy-backfill and reconciliation helpers — depends on step 1.
-3. Extend `Runtime_state.compozy_progress` and JSON parsing/output with optional lifecycle fields — depends on step 1.
-4. Wire `Issue_tracker.compozy` to load/backfill lifecycle and persist status updates — depends on steps 1, 2, and 3.
-5. Add dispatch-aware lifecycle updates in `Orchestrator.dispatch_issue` — depends on step 4.
-6. Add lifecycle updates for retry, failed step, final completion, blocked, and merge-attention paths — depends on step 5.
-7. Mirror Batch Pull Request readiness and handoff status into lifecycle — depends on step 6.
-8. Update Terminal Console Compozy PRD Run Progress rendering — depends on step 3 and step 7.
-9. Update frontend Runtime State parsing and Web Dashboard PRD run progress panel — depends on step 3 and step 7.
-10. Add focused backend tests for lifecycle storage, dispatch, failure, and PR readiness — depends on steps 4, 5, 6, and 7.
-11. Add frontend snapshot/render tests — depends on step 9.
-12. Update README, CONTEXT glossary language, and examples — depends on steps 8 and 9.
-13. Run verification commands and fix root causes — depends on steps 10, 11, and 12.
+1. Tighten `Compozy_lifecycle` reconciliation and transition helper semantics around the approved contract. This step has no dependencies.
+2. Update `Issue_tracker.compozy` to consistently read reconciled lifecycle metadata and persist dispatch-state changes through lifecycle helpers. This step depends on step 1.
+3. Update `Orchestrator` transition writes so planner, engineer, reviewer, retry, blocked, completion, and handoff paths all use the approved lifecycle and readiness semantics. This step depends on steps 1 and 2.
+4. Update `Runtime_state.compozy_progress_of_prd_run` so task-step truth always wins while lifecycle enrichments come from reconciled metadata. This step depends on step 1.
+5. Align Terminal Console rendering with the shared payload and approved lifecycle-versus-readiness split. This step depends on step 4.
+6. Align `apps/frontend/src/RuntimeStateSnapshot.res` and `apps/frontend/src/Pages/Dashboard.res` with the same payload semantics and backward-compatible parsing. This step depends on step 4.
+7. Expand focused backend lifecycle tests in `apps/backend/test/test_backend.ml`. This step depends on steps 1 through 4.
+8. Expand focused frontend snapshot and render checks in `apps/frontend/test/liveState.test.mjs`. This step depends on step 6.
+9. Update glossary or operator docs only if the final implementation changes domain wording. This step depends on steps 5 and 6.
+10. Run verification and fix root causes. This step depends on steps 7, 8, and 9.
 
 ### Technical Dependencies
 
 - No new third-party packages are required.
-- Runtime Home `.symphony/state/` must remain writable in the Workspace Repository.
-- Existing `yojson` support is sufficient for lifecycle metadata.
-- Existing ReScript/Vite frontend build pipeline remains the frontend path.
-- Existing `gh`-based Batch Pull Request handoff remains the pull-request path when policy enables it.
+- Runtime Home `.symphony/state/` remains the persistence location for lifecycle metadata.
+- Existing `yojson`, Runtime State snapshot machinery, and ReScript frontend parsing are sufficient.
+- Existing pull-request runtime records remain the handoff detail source; no new storage file is required.
 
 ## Monitoring and Observability
 
-Runtime visibility:
+V1 should rely on existing observability surfaces instead of adding a new metrics system.
 
-- `Runtime_state.compozy_progress.lifecycle_state`
-- `Runtime_state.compozy_progress.pr_readiness`
-- `Runtime_state.compozy_progress.reason`
-- Existing `Runtime_state.pull_request` and `pull_requests` records
-- Existing `Runtime_state.task_branch_integrations` attention records
-- Existing `Runtime_state.last_error`
+Operational visibility should come from:
 
-Terminal Console should print compact lifecycle lines under `PRD Run Progress`:
+- Runtime Home lifecycle JSON under `.symphony/state/compozy-lifecycle/`
+- Runtime State `compozy_progress` payload in HTTP and live snapshots
+- Terminal Console Compozy PRD Run lines for lifecycle, readiness, handoff, and reason
+- existing pull-request runtime records for handoff attempts, completions, and failures
 
-- `Lifecycle`
-- `Dispatch state`
-- `Stage agent` when known
-- `PR readiness`
-- `Reason` when present
+Important observable events:
 
-Dashboard should show the same fields in the PRD run progress panel without replacing step-count metrics.
+- lifecycle metadata backfilled for a run with no persisted record
+- stale lifecycle metadata reconciled downward to a failed, skipped, blocked, or not-ready outcome
+- stage dispatch mapped to planner, engineer, or reviewer lifecycle
+- Batch Pull Request handoff moved to attempting, completed, or failed
+- blocked attention reason recorded for protected-path or merge-attention outcomes
 
-No alerting thresholds are required for V1. Lifecycle state is local operator observability, not an external monitoring system.
+Alerting is not a separate infrastructure task in V1. The practical guardrail is test-backed consistency across Runtime State, Terminal Console, and Web Dashboard.
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- **Decision:** Store lifecycle metadata under Runtime Home `.symphony/state/compozy-lifecycle/`.
-  - **Rationale:** Lifecycle is ignored runtime metadata, not user-authored Compozy Task Step content.
-  - **Trade-off:** Runtime Home state can drift from manually edited task files.
-  - **Alternatives rejected:** task-step frontmatter expansion, PRD-run sidecar file, pure derivation.
+- **Decision:** Keep one extended `Runtime_state.compozy_progress` payload.
+  - **Rationale:** The backend, Terminal Console, and Web Dashboard already depend on this shared shape.
+  - **Trade-off:** Conceptual layers stay in one object, so field semantics must be explicit.
+  - **Alternatives rejected:** separate lifecycle and readiness payloads would add churn without improving operator trust in V1.
 
-- **Decision:** Make lifecycle dispatch-aware but keep task-step progress authoritative for current-step selection.
-  - **Rationale:** The user selected dispatch-aware lifecycle, while ADR-001 preserves Compozy Task Step semantics.
-  - **Trade-off:** The system must reconcile dispatch state and step state carefully.
-  - **Alternatives rejected:** observational-only lifecycle, lifecycle as the sole current-step source.
+- **Decision:** Keep Compozy Task Step progress authoritative for current-step and terminal-count truth.
+  - **Rationale:** Task-step files are the closest execution record and must not regress.
+  - **Trade-off:** Runtime Home lifecycle metadata must reconcile instead of assuming it is correct.
+  - **Alternatives rejected:** making lifecycle metadata authoritative would allow stale operator state.
 
-- **Decision:** Extend `compozy_progress` instead of adding a new top-level Runtime State object.
-  - **Rationale:** Current consumers already treat Compozy progress as the selected run summary.
-  - **Trade-off:** `compozy_progress` becomes broader than pure step counts.
-  - **Alternatives rejected:** separate `compozy_lifecycle`, issue-row-only lifecycle fields.
+- **Decision:** Keep `dispatch_state` config-driven and separate from operator-facing `lifecycle_state`.
+  - **Rationale:** Routing and tracker semantics already depend on configured tracker states such as `Human attention`.
+  - **Trade-off:** Operators may need both fields in some scenarios.
+  - **Alternatives rejected:** flattening dispatch into lifecycle would lose configured tracker behavior.
 
-- **Decision:** Mirror PR readiness into lifecycle while keeping detailed handoff records in existing pull-request fields.
-  - **Rationale:** Operators need a run-level answer, and existing handoff records already contain details.
-  - **Trade-off:** Readiness is summarized in two places.
-  - **Alternatives rejected:** duplicate full handoff details, keep PR readiness separate from lifecycle.
+- **Decision:** Keep failed Batch Pull Request handoff as `pr_handoff` plus failed readiness.
+  - **Rationale:** Handoff failure is a readiness outcome within the handoff phase, not a new lifecycle phase.
+  - **Trade-off:** Some states require reading both `lifecycle_state` and `pr_readiness`.
+  - **Alternatives rejected:** adding a dedicated handoff-failed lifecycle state would create redundant vocabulary.
+
+- **Decision:** Expand focused regression coverage instead of introducing a new status test harness.
+  - **Rationale:** The repository already has strong backend Compozy lifecycle coverage and frontend live-state tests.
+  - **Trade-off:** The large backend test file remains large.
+  - **Alternatives rejected:** a new harness would increase maintenance cost without changing the core risk.
 
 ### Known Risks
 
-- **Stale Runtime Home lifecycle:** Manual task-file edits may make lifecycle metadata stale.
-  - **Mitigation:** Reconcile lifecycle from Compozy Task Step progress on discovery and polling.
+- **Risk:** Reconciliation misses a terminal downgrade path and leaves stale ready/completed metadata visible.
+  - **Likelihood:** Medium
+  - **Mitigation:** Add explicit backend cases for stale lifecycle repair across failed, skipped, blocked, and not-ready outcomes.
 
-- **Dispatch regression:** Using lifecycle dispatch state may alter which Stage Agent runs.
-  - **Mitigation:** Add tests for planner, engineer, and reviewer dispatch and keep task-step status as current-step authority.
+- **Risk:** Surface wording diverges even when the payload is correct.
+  - **Likelihood:** Medium
+  - **Mitigation:** Use the shared payload as the single contract and extend Terminal Console plus frontend render assertions.
 
-- **Snapshot compatibility regression:** Older Runtime State snapshots lack lifecycle fields.
-  - **Mitigation:** Keep fields optional in OCaml and ReScript parsers.
+- **Risk:** Retry and handoff semantics remain hard to read because they span more than one field.
+  - **Likelihood:** Medium
+  - **Mitigation:** Require reason and handoff-status visibility when those states are present; keep lifecycle labels canonical.
 
-- **PR readiness ambiguity:** Completed task steps may still be interpreted as PR-ready.
-  - **Mitigation:** Store `pr_readiness` separately and require reason text for `not_ready` or failed handoff.
-
-- **Frontend generated-file churn:** ReScript changes generate ignored `.res.js` files.
-  - **Mitigation:** Edit `.res` sources only and run the frontend build command without committing generated files.
+- **Risk:** Implementation accidentally changes Compozy Task Step semantics while tightening lifecycle logic.
+  - **Likelihood:** Low to medium
+  - **Mitigation:** Keep no-regression assertions for current-step selection and visible counts in backend and frontend tests.
 
 ## Architecture Decision Records
 
-- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Lifecycle status belongs to the Compozy PRD Run, while Compozy Task Step statuses remain execution progress.
-- [ADR-002: Use full V1 operator trust as the PRD product approach](adrs/adr-002.md) — V1 exposes lifecycle and PR readiness across Runtime State, Terminal Console, and Web Dashboard.
-- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Runtime Home stores dispatch-aware lifecycle metadata, and `compozy_progress` exposes lifecycle and PR readiness fields.
+- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Lifecycle belongs to the Compozy PRD Run, not to individual Compozy Task Steps.
+- [ADR-002: Use full V1 operator trust as the PRD product approach](adrs/adr-002.md) — V1 should make lifecycle and readiness visible across current operator surfaces.
+- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Runtime Home stores the lifecycle summary while Compozy Task Step files keep execution progress.
+- [ADR-004: Treat Compozy statuses as an explicit transition contract](adrs/adr-004.md) — The problem is status mapping and transition coverage, not missing labels alone.
+- [ADR-005: Use a cross-surface transition contract as the PRD approach](adrs/adr-005.md) — Runtime State, Terminal Console, and Web Dashboard must tell the same run story.
+- [ADR-006: Reconcile Compozy lifecycle from task-step progress while keeping readiness separate](adrs/adr-006.md) — Task-step truth wins, lifecycle enriches, dispatch stays separate, and handoff failure remains a readiness outcome.
