@@ -3743,27 +3743,12 @@ let test_runtime_state_compozy_progress_merges_lifecycle_metadata () =
       | None -> Alcotest.fail "expected extended Compozy progress to parse")
 
 let test_ordered_queue_parses_cli_identifiers () =
-  match Ordered_queue.parse "19,#22,31,mb-20,compozy:example-feature" with
+  match Ordered_queue.parse "19,#22,31,mb-20,compozy:example-feature,example-feature" with
   | Error _ -> Alcotest.fail "expected ordered queue parse success"
   | Ok queue ->
       Alcotest.(check (list string)) "identifiers"
-        [ "#19"; "#22"; "#31"; "mb-20"; "compozy:example-feature" ]
+        [ "#19"; "#22"; "#31"; "mb-20"; "compozy:example-feature"; "example-feature" ]
         (Ordered_queue.identifiers queue);
-      (match Ordered_queue.parse "20,#20" with
-      | Ok _ -> Alcotest.fail "expected duplicate canonical GitHub selector"
-      | Error problems ->
-          Alcotest.(check string) "duplicate GitHub" "duplicate issue identifier"
-            (List.hd problems).Ordered_queue.reason);
-      (match Ordered_queue.parse "mb-020,mb-20" with
-      | Ok _ -> Alcotest.fail "expected duplicate canonical minibeads selector"
-      | Error problems ->
-          Alcotest.(check string) "duplicate minibeads" "duplicate issue identifier"
-            (List.hd problems).Ordered_queue.reason);
-      (match Ordered_queue.parse "compozy:example-feature, compozy:example-feature" with
-      | Ok _ -> Alcotest.fail "expected duplicate canonical Compozy selector"
-      | Error problems ->
-          Alcotest.(check string) "duplicate Compozy" "duplicate issue identifier"
-            (List.hd problems).Ordered_queue.reason);
       (match Ordered_queue.parse "compozy:,compozy:feature/child" with
       | Ok _ -> Alcotest.fail "expected malformed Compozy selectors"
       | Error problems ->
@@ -3779,6 +3764,82 @@ let test_ordered_queue_parses_cli_identifiers () =
           Alcotest.(check (list string)) "rejected values"
             [ "owner/repo#20"; "https://github.com/acme/widgets/issues/20"; ""; "mb-"; "mb-zero"; "MB-20" ]
             (List.map (fun (problem : Ordered_queue.parse_problem) -> problem.value) problems))
+
+let test_ordered_queue_resolves_identifiers_through_selected_tracker () =
+  with_temp_dir "symphony-compozy-queue-resolve-" (fun root ->
+      let config = write_compozy_settings root in
+      let tracker = Issue_tracker.compozy config in
+      Alcotest.(check (result string string)) "bare normalization" (Ok "compozy:example-feature")
+        (tracker.normalize_identifier "example-feature");
+      Alcotest.(check (result string string)) "canonical normalization" (Ok "compozy:example-feature")
+        (tracker.normalize_identifier "compozy:example-feature");
+      let queue =
+        match Ordered_queue.parse "example-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "expected bare queue token to parse"
+      in
+      (match Ordered_queue.resolve tracker queue with
+      | Ok resolved ->
+          let entries = resolved.Ordered_queue.resolved_entries in
+          Alcotest.(check int) "resolved entry count" 1 (List.length entries);
+          let entry = List.hd entries in
+          Alcotest.(check string) "raw queue identifier" "example-feature" entry.queue_identifier;
+          Alcotest.(check string) "canonical identifier" "compozy:example-feature" entry.canonical_identifier
+      | Error problems ->
+          Alcotest.fail
+            (String.concat "; " (List.map (fun (p : Ordered_queue.resolution_problem) -> p.reason) problems)));
+      let duplicate_queue =
+        match Ordered_queue.parse "example-feature,example-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "expected duplicate bare tokens to parse before tracker resolution"
+      in
+      match Ordered_queue.resolve tracker duplicate_queue with
+      | Ok _ -> Alcotest.fail "expected duplicate resolved Compozy identifier"
+      | Error [ problem ] ->
+          Alcotest.(check string) "duplicate reason" "duplicate issue identifier" problem.reason;
+          Alcotest.(check (option string)) "duplicate canonical" (Some "compozy:example-feature")
+            problem.canonical_identifier
+      | Error problems -> Alcotest.fail (Printf.sprintf "expected one duplicate problem, got %d" (List.length problems)))
+
+let test_ordered_queue_detects_resolved_selector_collisions () =
+  let open Issue_tracker in
+  let tracker normalize_identifier =
+    {
+      kind = "test";
+      fetch_candidates = (fun () -> Ok []);
+      fetch_by_identifiers = (fun _ -> Ok []);
+      fetch_by_identifiers_detailed = (fun _ -> Ok []);
+      update_status = (fun _ _ -> Ok ());
+      readiness_gaps = (fun () -> []);
+      normalize_identifier;
+      is_active = (fun _ -> true);
+      is_terminal = (fun _ -> false);
+    }
+  in
+  let expect_duplicate label tracker raw expected =
+    let queue =
+      match Ordered_queue.parse raw with
+      | Ok queue -> queue
+      | Error _ -> Alcotest.fail ("queue parse failed for " ^ label)
+    in
+    match Ordered_queue.resolve tracker queue with
+    | Ok _ -> Alcotest.fail ("expected duplicate resolution for " ^ label)
+    | Error [ problem ] ->
+        Alcotest.(check string) (label ^ " reason") "duplicate issue identifier" problem.reason;
+        Alcotest.(check (option string)) (label ^ " canonical") (Some expected) problem.canonical_identifier
+    | Error problems -> Alcotest.fail (Printf.sprintf "expected one duplicate problem, got %d" (List.length problems))
+  in
+  expect_duplicate "GitHub" (tracker Issue_tracker.github_normalize_identifier) "20,#20" "#20";
+  let minibeads_normalize raw =
+    let identifier = Util.trim raw |> String.lowercase_ascii in
+    match Util.drop_prefix ~prefix:"mb-" identifier with
+    | Some number when Ordered_queue.digits_only number -> (
+        match int_of_string_opt number with
+        | Some parsed when parsed > 0 -> Ok ("mb-" ^ string_of_int parsed)
+        | _ -> Error "invalid minibeads issue identifier")
+    | _ -> Error "invalid minibeads issue identifier"
+  in
+  expect_duplicate "minibeads" (tracker minibeads_normalize) "mb-020,mb-20" "mb-20"
 
 let test_ordered_queue_validation_uses_selected_tracker () =
   let open Issue_tracker in
@@ -6126,8 +6187,10 @@ let test_issue_tracker_selects_compozy_adapter () =
       | Ok issues -> Alcotest.fail (Printf.sprintf "expected one candidate, got %d" (List.length issues))
       | Error (Issue_tracker.Failed message) -> Alcotest.fail message
       | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "Compozy tracker should not rate-limit");
-      match tracker.fetch_by_identifiers [ "compozy:adapter-run" ] with
-      | Ok [ Some issue ] -> Alcotest.(check string) "lookup hit" "compozy:adapter-run" issue.Issue.identifier
+      match tracker.fetch_by_identifiers [ "adapter-run"; "compozy:adapter-run" ] with
+      | Ok [ Some bare_issue; Some canonical_issue ] ->
+          Alcotest.(check string) "bare lookup hit" "compozy:adapter-run" bare_issue.Issue.identifier;
+          Alcotest.(check string) "canonical lookup hit" bare_issue.Issue.identifier canonical_issue.Issue.identifier
       | Ok _ -> Alcotest.fail "expected lookup hit"
       | Error message -> Alcotest.fail message)
 
@@ -13155,6 +13218,10 @@ let () =
           Alcotest.test_case "merges Compozy lifecycle metadata into progress" `Quick
             test_runtime_state_compozy_progress_merges_lifecycle_metadata;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
+          Alcotest.test_case "resolves ordered queue identifiers through selected tracker" `Quick
+            test_ordered_queue_resolves_identifiers_through_selected_tracker;
+          Alcotest.test_case "detects resolved ordered queue selector collisions" `Quick
+            test_ordered_queue_detects_resolved_selector_collisions;
           Alcotest.test_case "validates ordered queue through selected tracker" `Quick
             test_ordered_queue_validation_uses_selected_tracker;
           Alcotest.test_case "validates Compozy ordered queue without GitHub Project membership" `Quick

@@ -197,13 +197,19 @@ let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
 
 let compozy_identifier raw =
   let identifier = Util.trim raw in
+  let invalid () =
+    Error
+      (Printf.sprintf
+         "invalid Compozy PRD-run identifier %S; expected an identifier like compozy:task-name or task-name"
+         raw)
+  in
   match Util.drop_prefix ~prefix:"compozy:" identifier with
-  | Some slug when Util.trim slug <> "" && not (String.contains slug '/') -> Ok ("compozy:" ^ Util.trim slug)
-  | _ ->
-      Error
-        (Printf.sprintf
-           "invalid Compozy PRD-run identifier %S; expected an identifier like compozy:task-name"
-           raw)
+  | Some slug ->
+      let slug = Util.trim slug in
+      if slug = "" || String.contains slug '/' then invalid () else Ok ("compozy:" ^ slug)
+  | None ->
+      if identifier = "" || String.contains identifier '/' || String.contains identifier ':' then invalid ()
+      else Ok ("compozy:" ^ identifier)
 
 let string_equal_ci left right = String.lowercase_ascii left = String.lowercase_ascii right
 
