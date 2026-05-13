@@ -1,10 +1,10 @@
 {
   "tracker": {
-    "kind": "github",
-    "owner": "MatheusBBarni",
-    "repo": "symphony-orchestrator",
-    "projectNumber": 3,
-    "apiKeyEnv": "GITHUB_TOKEN"
+    "kind": "compozy_tasks",
+    "compozy": {
+      "root": ".compozy/tasks",
+      "maxTaskStepRetries": 2
+    }
   },
   "project": {
     "statusField": "Status",
