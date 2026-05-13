@@ -7102,6 +7102,58 @@ let compozy_test_config root compozy_root =
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
+let compozy_stage ?start_status ?success_status ?retry_status agent states =
+  {
+    Config.states;
+    agent;
+    harness = None;
+    max_concurrent_agents = None;
+    context_snapshot = None;
+    context_command = None;
+    skills = [];
+    start_status;
+    success_status;
+    retry_status;
+    goal = None;
+    commit = None;
+  }
+
+let compozy_test_config_with_stages root compozy_root stages =
+  let config = compozy_test_config root compozy_root in
+  let stage_states = stages |> List.map (fun (stage : Config.stage_agent) -> stage.states) |> List.flatten in
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        active_states = List.sort_uniq String.compare (config.tracker.active_states @ stage_states);
+      };
+    stage_agents =
+      {
+        enabled = true;
+        root = Filename.concat root "agents";
+        default_agent = None;
+        stages;
+      };
+  }
+
+let setup_compozy_repo root slug =
+  init_repo root "feature/start";
+  let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+  let prd_dir = Filename.concat compozy_root slug in
+  Util.mkdir_p prd_dir;
+  let task_01 = Filename.concat prd_dir "task_01.md" in
+  write_compozy_task ~title:"First step" ~body:"\n# First\n\nLifecycle sentinel.\n" task_01;
+  ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
+  ignore_runtime_home root;
+  (compozy_root, prd_dir, task_01)
+
+let compozy_protected_path_policy =
+  {
+    Config.patterns = [ { Config.name = "cli-entrypoint"; pattern = "bin/symphony.js"; reason = None } ];
+    authorization = { Config.issue_section = "Protected Path Authorization" };
+  }
+
 let compozy_child issue workspace =
   {
     Orchestrator.pid = 0;
@@ -7142,6 +7194,11 @@ let check_lifecycle_state label expected lifecycle =
 
 let check_pr_readiness label expected lifecycle =
   Alcotest.(check string) label expected (pr_readiness_text lifecycle)
+
+let load_compozy_lifecycle config run =
+  match Compozy_lifecycle.load config run |> require_ok "load Compozy lifecycle" with
+  | Some lifecycle -> lifecycle
+  | None -> Alcotest.fail "expected Compozy lifecycle metadata"
 
 let test_compozy_lifecycle_json_round_trip () =
   let lifecycle : Compozy_lifecycle.t =
@@ -7327,6 +7384,66 @@ let test_compozy_lifecycle_transition_helpers_persist () =
       in
       check_lifecycle_state "handoff lifecycle" "pr_handoff" handoff;
       check_pr_readiness "handoff readiness" "handoff_completed" handoff)
+
+let test_orchestrator_dispatch_records_compozy_stage_lifecycle () =
+  let cases =
+    [
+      ("planner", "Backlog", "in_planning", "planner");
+      ("engineer", "Todo", "in_execution", "engineer");
+      ("reviewer", "In review", "in_review", "reviewer");
+    ]
+  in
+  List.iter
+    (fun (agent, dispatch_state, expected_lifecycle, expected_stage) ->
+      with_temp_dir ("symphony-compozy-dispatch-" ^ agent ^ "-") (fun root ->
+          let compozy_root, prd_dir, _task_01 = setup_compozy_repo root (agent ^ "-feature") in
+          let stage = compozy_stage agent [ dispatch_state ] in
+          let config = compozy_test_config_with_stages root compozy_root [ stage ] in
+          let run =
+            Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir
+            |> require_ok "build Compozy PRD run"
+          in
+          ignore
+            (Compozy_lifecycle.update_dispatch_state config run ~dispatch_state
+            |> require_ok "seed dispatch state");
+          let launched_workspace = ref None in
+          let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+            launched_workspace := Some workspace;
+            {
+              Orchestrator.pid = None;
+              session_id = Some issue.Issue.id;
+              event = "test-launch";
+              stdout_path = None;
+              stderr_path = None;
+            }
+          in
+          let orchestrator =
+            Orchestrator.make ~launch ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+          in
+          Orchestrator.poll_once orchestrator;
+          let lifecycle = load_compozy_lifecycle config run in
+          check_lifecycle_state (agent ^ " lifecycle") expected_lifecycle lifecycle;
+          Alcotest.(check (option string)) (agent ^ " stage") (Some expected_stage) lifecycle.stage_agent;
+          check_pr_readiness (agent ^ " readiness") "not_ready" lifecycle;
+          let progress =
+            match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
+            | Some progress -> progress
+            | None -> Alcotest.fail "expected Compozy progress after dispatch"
+          in
+          Alcotest.(check (option string)) (agent ^ " runtime lifecycle") (Some expected_lifecycle)
+            progress.lifecycle_state;
+          if agent = "engineer" then (
+            let workspace =
+              match !launched_workspace with Some workspace -> workspace | None -> Alcotest.fail "expected launch"
+            in
+            let workspace_task =
+              Filename.concat
+                (Filename.concat (Filename.concat workspace.Workspace.path ".compozy/tasks") (agent ^ "-feature"))
+                "task_01.md"
+            in
+            Alcotest.(check string) "engineer task-step in progress" "in_progress"
+              (compozy_task_status (Filename.concat workspace.path ".compozy/tasks") workspace_task))))
+    cases
 
 let require_poll_ok label = function
   | Ok value -> value
@@ -7583,7 +7700,11 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
       Alcotest.(check string) "second task completed" "completed"
         (compozy_task_status workspace_compozy_root workspace_task_02);
       Alcotest.(check (option string)) "no current step after final completion" None final_progress.current_step;
-      Alcotest.(check int) "all steps completed" 2 final_progress.completed)
+      Alcotest.(check int) "all steps completed" 2 final_progress.completed;
+      Alcotest.(check (option string)) "final lifecycle completed" (Some "completed")
+        final_progress.lifecycle_state;
+      Alcotest.(check (option string)) "final readiness follows policy" (Some "disabled")
+        final_progress.pr_readiness)
 
 let test_compozy_failed_step_retries_then_advances_to_next_step () =
   with_temp_dir "symphony-compozy-retry-advance-" (fun root ->
@@ -7636,6 +7757,14 @@ let test_compozy_failed_step_retries_then_advances_to_next_step () =
         first_task_after_failure.last_error;
       let retry_state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "retry queued below limit" 1 (List.length retry_state.Runtime_state.retrying);
+      (match retry_state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "retry lifecycle stays executing" (Some "in_execution")
+            progress.lifecycle_state;
+          Alcotest.(check (option string)) "retry lifecycle non-ready" (Some "not_ready") progress.pr_readiness;
+          Alcotest.(check bool) "retry reason mentions task" true
+            (option_exists (fun reason -> contains_substring reason "task_01.md") progress.reason)
+      | None -> Alcotest.fail "expected Compozy progress after retry failure");
       Orchestrator.poll_once orchestrator;
       let second_issue, second_workspace, second_prompt =
         match List.rev !launches with
@@ -7758,6 +7887,195 @@ let test_compozy_final_step_commit_failure_keeps_step_runnable () =
           Alcotest.(check (option string)) "runtime current step restored" (Some "task_01.md") progress.current_step;
           Alcotest.(check int) "runtime completed count restored" 0 progress.completed
       | None -> Alcotest.fail "expected Compozy progress after final commit failure"))
+
+let test_compozy_failed_final_step_over_limit_records_failed_lifecycle () =
+  with_temp_dir "symphony-compozy-final-failed-lifecycle-" (fun root ->
+      let compozy_root, _prd_dir, task_01 = setup_compozy_repo root "failed-final-feature" in
+      let base_config = compozy_test_config root compozy_root in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with compozy_max_task_step_retries = 1 };
+        }
+      in
+      let launches = ref [] in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        launches := (issue, workspace) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some issue.Issue.id;
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let issue, workspace =
+        match !launches with [ launch ] -> launch | _ -> Alcotest.fail "expected one Compozy launch"
+      in
+      Orchestrator.mark_child_failed orchestrator (compozy_child issue workspace) "agent exited with code 1";
+      let workspace_compozy_root = Filename.concat (Filename.concat workspace.Workspace.path ".compozy") "tasks" in
+      let workspace_task = Filename.concat (Filename.concat workspace_compozy_root "failed-final-feature") "task_01.md" in
+      Alcotest.(check string) "final task failed" "failed" (compozy_task_status workspace_compozy_root workspace_task);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "not retrying over limit" 0 (List.length state.Runtime_state.retrying);
+      (match state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "failed lifecycle" (Some "failed") progress.lifecycle_state;
+          Alcotest.(check (option string)) "failed readiness" (Some "not_ready") progress.pr_readiness;
+          Alcotest.(check bool) "failed reason mentions task" true
+            (option_exists (fun reason -> contains_substring reason "task_01.md") progress.reason);
+          Alcotest.(check int) "failed count preserved" 1 progress.failed
+      | None -> Alcotest.fail "expected Compozy progress after over-limit failure");
+      Alcotest.(check string) "root task remains unchanged" "pending" (compozy_task_status compozy_root task_01))
+
+let test_compozy_non_retryable_completion_error_records_blocked_lifecycle () =
+  with_temp_dir "symphony-compozy-non-retryable-lifecycle-" (fun root ->
+      let compozy_root, _prd_dir, _task_01 = setup_compozy_repo root "non-retryable-feature" in
+      let config = compozy_test_config root compozy_root in
+      let launches = ref [] in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        launches := (issue, workspace) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some issue.Issue.id;
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        Error "commit required but agent produced no code changes"
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let issue, workspace =
+        match !launches with [ launch ] -> launch | _ -> Alcotest.fail "expected one Compozy launch"
+      in
+      Orchestrator.mark_completed orchestrator (compozy_child issue workspace);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "not retrying non-retryable error" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check int) "issue error recorded" 1 (List.length state.Runtime_state.issue_errors);
+      (match state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "blocked lifecycle" (Some "blocked") progress.lifecycle_state;
+          Alcotest.(check (option string)) "blocked readiness" (Some "not_ready") progress.pr_readiness;
+          Alcotest.(check (option string)) "current step restored" (Some "task_01.md") progress.current_step;
+          Alcotest.(check int) "completed count restored" 0 progress.completed;
+          Alcotest.(check bool) "blocked reason mentions no changes" true
+            (option_exists (fun reason -> contains_substring reason "no code changes") progress.reason)
+      | None -> Alcotest.fail "expected Compozy progress after non-retryable completion error"))
+
+let test_compozy_merge_attention_records_blocked_lifecycle () =
+  with_temp_dir "symphony-compozy-merge-attention-lifecycle-" (fun root ->
+      init_repo root "feature/start";
+      Util.write_file (Filename.concat root "shared.txt") "base\n";
+      ignore (run_ok ~cwd:root "commit shared base" "git add shared.txt && git commit -q -m shared-base");
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "merge-attention-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Merge attention" (Filename.concat prd_dir "task_01.md");
+      ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
+      ignore_runtime_home root;
+      let config =
+        {
+          (compozy_test_config root compozy_root) with
+          Config.git = git_policy ~auto_merge:true ();
+        }
+      in
+      let launches = ref [] in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        launches := (issue, workspace) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some issue.Issue.id;
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let commit_stage _config (workspace : Workspace.t) _issue _stage _next_status =
+        ignore
+          (run_ok ~cwd:workspace.path "commit Compozy completion"
+             "git add .compozy && git commit -q -m compozy-completed");
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let issue, workspace =
+        match !launches with [ launch ] -> launch | _ -> Alcotest.fail "expected one Compozy launch"
+      in
+      Util.write_file (Filename.concat workspace.Workspace.path "shared.txt") "task\n";
+      ignore (run_ok ~cwd:workspace.path "commit task conflict" "git add shared.txt && git commit -q -m task-conflict");
+      Util.write_file (Filename.concat root "shared.txt") "loop\n";
+      ignore (run_ok ~cwd:root "commit loop conflict" "git add shared.txt && git commit -q -m loop-conflict");
+      Orchestrator.mark_completed orchestrator (compozy_child issue workspace);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "merge attention issue error" 1 (List.length state.Runtime_state.issue_errors);
+      (match state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "merge attention lifecycle" (Some "blocked") progress.lifecycle_state;
+          Alcotest.(check (option string)) "merge attention readiness" (Some "not_ready") progress.pr_readiness;
+          Alcotest.(check bool) "merge attention reason" true
+            (option_exists (fun reason -> contains_substring reason "auto-merge failed") progress.reason)
+      | None -> Alcotest.fail "expected Compozy progress after merge attention"))
+
+let test_compozy_protected_path_attention_records_blocked_lifecycle () =
+  with_temp_dir "symphony-compozy-protected-attention-lifecycle-" (fun root ->
+      let compozy_root, _prd_dir, _task_01 = setup_compozy_repo root "protected-attention-feature" in
+      let config =
+        {
+          (compozy_test_config root compozy_root) with
+          Config.git = git_policy ~auto_merge:true ();
+          protected_paths = compozy_protected_path_policy;
+        }
+      in
+      let launches = ref [] in
+      let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt:_ ~issue =
+        launches := (issue, workspace) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some issue.Issue.id;
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let commit_stage _config (workspace : Workspace.t) _issue _stage _next_status =
+        ignore
+          (run_ok ~cwd:workspace.path "commit Compozy completion"
+             "git add .compozy && git commit -q -m compozy-completed");
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let issue, workspace =
+        match !launches with [ launch ] -> launch | _ -> Alcotest.fail "expected one Compozy launch"
+      in
+      Util.mkdir_p (Filename.concat workspace.Workspace.path "bin");
+      Util.write_file (Filename.concat workspace.path "bin/symphony.js") "protected\n";
+      ignore (run_ok ~cwd:workspace.path "commit protected file" "git add bin/symphony.js && git commit -q -m protected");
+      Orchestrator.mark_completed orchestrator (compozy_child issue workspace);
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "protected attention issue error" 1 (List.length state.Runtime_state.issue_errors);
+      (match state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "protected attention lifecycle" (Some "blocked")
+            progress.lifecycle_state;
+          Alcotest.(check (option string)) "protected attention readiness" (Some "not_ready")
+            progress.pr_readiness;
+          Alcotest.(check bool) "protected attention reason" true
+            (option_exists (fun reason -> contains_substring reason "Protected Path Policy") progress.reason)
+      | None -> Alcotest.fail "expected Compozy progress after protected-path attention"))
 
 let stage_context_command ?(cwd = "agentWorktree") ?(timeout_ms = 1000) ?(max_output_bytes = 4096) argv =
   { Config.argv; cwd; timeout_ms; max_output_bytes; validation_error = None }
@@ -11324,6 +11642,8 @@ let () =
             test_compozy_lifecycle_persists_under_runtime_home;
           Alcotest.test_case "persists Compozy lifecycle transition helpers" `Quick
             test_compozy_lifecycle_transition_helpers_persist;
+          Alcotest.test_case "orchestrator records Compozy stage lifecycle on dispatch" `Quick
+            test_orchestrator_dispatch_records_compozy_stage_lifecycle;
           Alcotest.test_case "Compozy tracker backfills lifecycle on fetch" `Quick
             test_compozy_tracker_fetch_backfills_lifecycle_candidate;
           Alcotest.test_case "Compozy tracker uses lifecycle dispatch state" `Quick
@@ -11600,6 +11920,14 @@ let () =
             test_compozy_dispatch_preserves_external_root_path;
           Alcotest.test_case "keeps final Compozy step runnable after commit failure" `Quick
             test_compozy_final_step_commit_failure_keeps_step_runnable;
+          Alcotest.test_case "records failed lifecycle after final Compozy retry limit" `Quick
+            test_compozy_failed_final_step_over_limit_records_failed_lifecycle;
+          Alcotest.test_case "records blocked lifecycle for non-retryable Compozy completion" `Quick
+            test_compozy_non_retryable_completion_error_records_blocked_lifecycle;
+          Alcotest.test_case "records blocked lifecycle for Compozy merge attention" `Quick
+            test_compozy_merge_attention_records_blocked_lifecycle;
+          Alcotest.test_case "records blocked lifecycle for Compozy protected-path attention" `Quick
+            test_compozy_protected_path_attention_records_blocked_lifecycle;
           Alcotest.test_case "skips stage goal handoff when disabled" `Quick test_orchestrator_skips_stage_goal_when_disabled;
           Alcotest.test_case "runs stage context command before launch" `Quick
             test_orchestrator_runs_stage_context_command_before_launch;

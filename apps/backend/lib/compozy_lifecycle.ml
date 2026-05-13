@@ -330,6 +330,89 @@ let mark_not_pr_ready config run ~reason =
       in
       (match save config updated with Ok () -> Ok updated | Error _ as error -> error)
 
+let reason_or_default ~default reason =
+  match Util.trim reason with "" -> default | reason -> reason
+
+let mark_retrying config run ~reason =
+  match load_or_backfill config run with
+  | Error _ as error -> error
+  | Ok lifecycle ->
+      let updated =
+        {
+          lifecycle with
+          lifecycle_state = In_execution;
+          dispatch_state = run.Compozy_tasks_tracker.state;
+          pr_readiness = Not_ready;
+          reason = Some (reason_or_default ~default:"Compozy Task Step will retry." reason);
+          updated_at = Util.now_iso8601 ();
+        }
+      in
+      (match save config updated with Ok () -> Ok updated | Error _ as error -> error)
+
+let mark_failed config run ~reason =
+  match load_or_backfill config run with
+  | Error _ as error -> error
+  | Ok lifecycle ->
+      let updated =
+        {
+          lifecycle with
+          lifecycle_state = Failed;
+          dispatch_state = run.Compozy_tasks_tracker.state;
+          pr_readiness = Not_ready;
+          reason = Some (reason_or_default ~default:(failed_reason run) reason);
+          updated_at = Util.now_iso8601 ();
+        }
+      in
+      (match save config updated with Ok () -> Ok updated | Error _ as error -> error)
+
+let mark_skipped config run ~reason =
+  match load_or_backfill config run with
+  | Error _ as error -> error
+  | Ok lifecycle ->
+      let updated =
+        {
+          lifecycle with
+          lifecycle_state = Skipped;
+          dispatch_state = run.Compozy_tasks_tracker.state;
+          pr_readiness = Not_ready;
+          reason = Some (reason_or_default ~default:(skipped_reason run) reason);
+          updated_at = Util.now_iso8601 ();
+        }
+      in
+      (match save config updated with Ok () -> Ok updated | Error _ as error -> error)
+
+let mark_blocked config run ~reason =
+  match load_or_backfill config run with
+  | Error _ as error -> error
+  | Ok lifecycle ->
+      let updated =
+        {
+          lifecycle with
+          lifecycle_state = Blocked;
+          pr_readiness = Not_ready;
+          reason = Some (reason_or_default ~default:(not_runnable_reason run) reason);
+          updated_at = Util.now_iso8601 ();
+        }
+      in
+      (match save config updated with Ok () -> Ok updated | Error _ as error -> error)
+
+let mark_completed config run =
+  match load_or_backfill config run with
+  | Error _ as error -> error
+  | Ok lifecycle ->
+      let pr_readiness, reason = completed_readiness config in
+      let updated =
+        {
+          lifecycle with
+          lifecycle_state = Completed;
+          dispatch_state = run.Compozy_tasks_tracker.state;
+          pr_readiness;
+          reason;
+          updated_at = Util.now_iso8601 ();
+        }
+      in
+      (match save config updated with Ok () -> Ok updated | Error _ as error -> error)
+
 let contains_substring text substring =
   let text_len = String.length text in
   let substring_len = String.length substring in
