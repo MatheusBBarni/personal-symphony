@@ -8,11 +8,11 @@
   },
   "project": {
     "statusField": "Status",
-    "activeStates": ["Backlog", "Todo", "In Progress", "In Review"],
-    "terminalStates": ["Human attention", "Done", "Closed", "Cancelled"],
-    "startStatus": "In Progress",
-    "reviewStatus": "In Review",
-    "retryStatus": "Todo",
+    "activeStates": ["pending", "in_progress", "in_review"],
+    "terminalStates": ["completed", "failed", "skipped"],
+    "startStatus": "in_progress",
+    "reviewStatus": "in_review",
+    "retryStatus": "in_progress",
     "ensureStatuses": true
   },
   "polling": {
@@ -25,7 +25,7 @@
     "taskBranchPrefix": "symphony/task-",
     "protectedTrunkBranches": ["main"],
     "autoMerge": false,
-    "mergeAttentionStatus": "Human attention",
+    "mergeAttentionStatus": "blocked",
     "cleanup": {
       "removeWorktreeAfterMerge": true,
       "keepTaskBranch": false
@@ -33,11 +33,11 @@
   },
   "pullRequest": {
     "enabled": true,
-    "mode": "task",
-    "openOnReview": true,
+    "mode": "batch",
+    "openOnReview": false,
     "baseBranch": "main",
-    "title": "Symphony: <issue_identifier> from <head_branch> into <base_branch>",
-    "body": "Automated Task Pull Request opened by Symphony after the task reached review.\n\nIssue: <issue_identifier>\nTask Branch: <head_branch>\nPull Request Base Branch: <base_branch>\n\nReview this task before merging into the Protected Trunk Branch."
+    "title": "Symphony batch from <head_branch> into <base_branch>",
+    "body": "Opened automatically by Symphony for completed Compozy PRD runs after orchestration became idle."
   },
   "paths": {
     "protected": {
@@ -94,12 +94,12 @@
     "defaultAgent": "engineer",
     "stages": [
       {
-        "states": ["Backlog"],
+        "states": ["pending"],
         "agent": "planner",
         "harness": "codex",
         "skills": [],
-        "successStatus": "Todo",
-        "retryStatus": "Backlog",
+        "successStatus": "in_progress",
+        "retryStatus": "pending",
         "goal": {
           "enabled": true
         },
@@ -111,13 +111,13 @@
         }
       },
       {
-        "states": ["Todo", "In Progress"],
+        "states": ["in_progress"],
         "agent": "engineer",
         "harness": "pi",
         "skills": [],
-        "startStatus": "In Progress",
-        "successStatus": "In Review",
-        "retryStatus": "Todo",
+        "startStatus": "in_progress",
+        "successStatus": "in_review",
+        "retryStatus": "in_progress",
         "goal": {
           "enabled": false
         },
@@ -129,12 +129,12 @@
         }
       },
       {
-        "states": ["In Review"],
+        "states": ["in_review"],
         "agent": "reviewer",
         "harness": "codex",
         "skills": [],
-        "successStatus": "Done",
-        "retryStatus": "Human attention",
+        "successStatus": "completed",
+        "retryStatus": "in_review",
         "goal": {
           "enabled": true
         },
