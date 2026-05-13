@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Render lifecycle in Terminal Console and backend state surfaces"
 type: backend
 complexity: medium
@@ -31,11 +31,11 @@ Expose Compozy PRD Run lifecycle and PR readiness in backend operator surfaces a
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Add compact Terminal Console lifecycle and readiness output under PRD Run Progress.
-- [ ] 6.2 Preserve existing current-step and step-count output.
-- [ ] 6.3 Verify HTTP Runtime State contains the extended Compozy lifecycle fields.
-- [ ] 6.4 Verify live Runtime State snapshots contain the same extended fields.
-- [ ] 6.5 Add focused backend tests or golden assertions for console/state-surface output.
+- [x] 6.1 Add compact Terminal Console lifecycle and readiness output under PRD Run Progress.
+- [x] 6.2 Preserve existing current-step and step-count output.
+- [x] 6.3 Verify HTTP Runtime State contains the extended Compozy lifecycle fields.
+- [x] 6.4 Verify live Runtime State snapshots contain the same extended fields.
+- [x] 6.5 Add focused backend tests or golden assertions for console/state-surface output.
 
 ## Implementation Details
 Follow TechSpec "API Endpoints" and "Monitoring and Observability". Do not add new endpoints or a new CLI mode; the existing Runtime State payload and Terminal Console are the surfaces for this task.
@@ -64,13 +64,13 @@ Follow TechSpec "API Endpoints" and "Monitoring and Observability". Do not add n
 
 ## Tests
 - Unit tests:
-  - [ ] Terminal Console rendering includes `Lifecycle`, `Dispatch state`, `Stage agent`, `PR readiness`, `Handoff`, and `Reason` when those fields are present.
-  - [ ] Terminal Console rendering omits absent optional lifecycle lines and still prints current step and step counts.
-  - [ ] Runtime State JSON includes lifecycle/readiness fields for a Compozy PRD Run with lifecycle metadata.
-  - [ ] Runtime State JSON remains compatible when `compozy_progress` is absent.
+  - [x] Terminal Console rendering includes `Lifecycle`, `Dispatch state`, `Stage agent`, `PR readiness`, `Handoff`, and `Reason` when those fields are present.
+  - [x] Terminal Console rendering omits absent optional lifecycle lines and still prints current step and step counts.
+  - [x] Runtime State JSON includes lifecycle/readiness fields for a Compozy PRD Run with lifecycle metadata.
+  - [x] Runtime State JSON remains compatible when `compozy_progress` is absent.
 - Integration tests:
-  - [ ] `GET /api/v1/state` returns extended `compozy_progress` fields for a Compozy tracker Runtime State snapshot.
-  - [ ] Live Dashboard Connection payload shape remains a full Runtime State snapshot containing `compozy_progress`, not an event envelope.
+  - [x] `GET /api/v1/state` returns extended `compozy_progress` fields for a Compozy tracker Runtime State snapshot.
+  - [x] Live Dashboard Connection payload shape remains a full Runtime State snapshot containing `compozy_progress`, not an event envelope.
 - Test coverage target: >=80%
 - All tests must pass
 

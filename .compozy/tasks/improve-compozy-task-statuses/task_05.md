@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Mirror Batch Pull Request readiness into lifecycle"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Connect Compozy PRD Run lifecycle metadata to Pull Request Policy and Batch Pull
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add PR readiness outcomes for completed, failed, skipped, blocked, and policy-disabled Compozy PRD Runs.
-- [ ] 5.2 Record readiness after safe final Task Branch Integration.
-- [ ] 5.3 Mirror Batch Pull Request handoff attempting, completed, and retryable failure states.
-- [ ] 5.4 Preserve aggregate-only Batch Pull Request behavior in Compozy batch mode.
-- [ ] 5.5 Add focused tests for policy-disabled, ready, not-ready, handoff success, handoff failure, and no per-step PR behavior.
+- [x] 5.1 Add PR readiness outcomes for completed, failed, skipped, blocked, and policy-disabled Compozy PRD Runs.
+- [x] 5.2 Record readiness after safe final Task Branch Integration.
+- [x] 5.3 Mirror Batch Pull Request handoff attempting, completed, and retryable failure states.
+- [x] 5.4 Preserve aggregate-only Batch Pull Request behavior in Compozy batch mode.
+- [x] 5.5 Add focused tests for policy-disabled, ready, not-ready, handoff success, handoff failure, and no per-step PR behavior.
 
 ## Implementation Details
 Follow TechSpec sections "Aggregate Batch Pull Request readiness", "Data Models", and "Technical Considerations". Use existing `pull_request` and `pull_requests` Runtime State records for detailed handoff data, and store only the run-level readiness summary in lifecycle metadata.
@@ -65,14 +65,14 @@ Follow TechSpec sections "Aggregate Batch Pull Request readiness", "Data Models"
 
 ## Tests
 - Unit tests:
-  - [ ] Completed Compozy PRD Run with automatic batch PR disabled records `pr_readiness = disabled` and no handoff attempt.
-  - [ ] Completed Compozy PRD Run with automatic batch PR enabled records `pr_readiness = ready` before handoff and handoff status during PR creation.
-  - [ ] Failed, skipped, blocked, and attention Compozy PRD Runs record `pr_readiness = not_ready` with a concise reason.
-  - [ ] Batch Pull Request handoff success records completed handoff readiness without duplicating detailed PR record fields.
-  - [ ] Batch Pull Request handoff failure records failed handoff readiness with the handoff error reason.
+  - [x] Completed Compozy PRD Run with automatic batch PR disabled records `pr_readiness = disabled` and no handoff attempt.
+  - [x] Completed Compozy PRD Run with automatic batch PR enabled records `pr_readiness = ready` before handoff and handoff status during PR creation.
+  - [x] Failed, skipped, blocked, and attention Compozy PRD Runs record `pr_readiness = not_ready` with a concise reason.
+  - [x] Batch Pull Request handoff success records completed handoff readiness without duplicating detailed PR record fields.
+  - [x] Batch Pull Request handoff failure records failed handoff readiness with the handoff error reason.
 - Integration tests:
-  - [ ] Batch mode opens no per-step pull requests while Compozy Task Steps advance within one Compozy PRD Run.
-  - [ ] Eligible Compozy PRD Run opens no more than one aggregate Batch Pull Request.
+  - [x] Batch mode opens no per-step pull requests while Compozy Task Steps advance within one Compozy PRD Run.
+  - [x] Eligible Compozy PRD Run opens no more than one aggregate Batch Pull Request.
 - Test coverage target: >=80%
 - All tests must pass
 

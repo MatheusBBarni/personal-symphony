@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Document Compozy lifecycle semantics"
 type: docs
 complexity: low
@@ -32,11 +32,11 @@ Update user-facing and architecture documentation so operators understand Compoz
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Update README operator documentation for Compozy lifecycle and readiness.
-- [ ] 8.2 Update `CONTEXT.md` glossary or relationships for any new lifecycle language.
-- [ ] 8.3 Add or update a repository ADR under `docs/adr/` for persisted run-level lifecycle semantics.
-- [ ] 8.4 Document disabled, not-ready, ready, and handoff readiness outcomes.
-- [ ] 8.5 Verify docs use glossary terms consistently and contain no secret values.
+- [x] 8.1 Update README operator documentation for Compozy lifecycle and readiness.
+- [x] 8.2 Update `CONTEXT.md` glossary or relationships for any new lifecycle language.
+- [x] 8.3 Add or update a repository ADR under `docs/adr/` for persisted run-level lifecycle semantics.
+- [x] 8.4 Document disabled, not-ready, ready, and handoff readiness outcomes.
+- [x] 8.5 Verify docs use glossary terms consistently and contain no secret values.
 
 ## Implementation Details
 Follow PRD "Documentation and examples" and TechSpec "Docs and glossary". The feature-level ADRs in `.compozy/tasks/improve-compozy-task-statuses/adrs/` are planning context; repository-level runtime semantics also need `docs/adr/` coverage per project rules.
@@ -67,15 +67,23 @@ Follow PRD "Documentation and examples" and TechSpec "Docs and glossary". The fe
 
 ## Tests
 - Unit tests:
-  - [ ] Documentation checklist covers at least eight lifecycle categories: pending, in planning, in execution, in review, blocked, completed, failed, skipped, pull-request handoff, and not PR-ready.
-  - [ ] Documentation checklist covers disabled, not-ready, ready, handoff attempting, handoff completed, and handoff failed readiness outcomes.
-  - [ ] Glossary scan confirms new or changed product terms are present in `CONTEXT.md` or existing glossary terms are reused unchanged.
-  - [ ] Secret scan confirms docs do not contain token values, webhook URLs, or local `.env` contents.
+  - [x] Documentation checklist covers at least eight lifecycle categories: pending, in planning, in execution, in review, blocked, completed, failed, skipped, pull-request handoff, and not PR-ready.
+  - [x] Documentation checklist covers disabled, not-ready, ready, handoff attempting, handoff completed, and handoff failed readiness outcomes.
+  - [x] Glossary scan confirms new or changed product terms are present in `CONTEXT.md` or existing glossary terms are reused unchanged.
+  - [x] Secret scan confirms docs do not contain token values, webhook URLs, or local `.env` contents.
 - Integration tests:
-  - [ ] `compozy tasks validate --name improve-compozy-task-statuses` succeeds after documentation task updates.
-  - [ ] Relevant project verification command runs if documentation examples or generated examples are changed.
+  - [x] `compozy tasks validate --name improve-compozy-task-statuses` succeeds after documentation task updates.
+  - [x] Relevant project verification command runs if documentation examples or generated examples are changed.
 - Test coverage target: >=80%
 - All tests must pass
+
+## Documentation Verification Notes
+
+- Lifecycle documentation coverage: 10/10 categories covered (`pending`, `in_planning`, `in_execution`, `in_review`, `blocked`, `completed`, `failed`, `skipped`, `not_pr_ready`, and `pr_handoff`) = 100%.
+- PR readiness documentation coverage: 6/6 outcomes covered (`disabled`, `not_ready`, `ready`, `handoff_attempting`, `handoff_completed`, and `handoff_failed`) = 100%.
+- Glossary scan confirmed `CONTEXT.md` includes Compozy PRD Run, Compozy Task Step, Compozy PRD Run Lifecycle, Compozy PR Readiness, Runtime State, Terminal Console, Web Dashboard, Pull Request Policy, and Batch Pull Request.
+- Secret scan over changed docs found no token values, webhook URLs, or local `.env` contents.
+- Integration checks passed: `compozy tasks validate --name improve-compozy-task-statuses` and `pnpm test`.
 
 ## Success Criteria
 - All tests passing

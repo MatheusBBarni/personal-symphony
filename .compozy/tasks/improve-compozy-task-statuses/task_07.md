@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Render lifecycle in the Web Dashboard"
 type: frontend
 complexity: medium
@@ -31,12 +31,12 @@ Update the Web Dashboard to parse and show the extended Compozy PRD Run lifecycl
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Extend ReScript Runtime State snapshot types for lifecycle and readiness fields.
-- [ ] 7.2 Map lifecycle fields into the dashboard snapshot model.
-- [ ] 7.3 Render lifecycle and PR readiness details in the PRD run progress panel.
-- [ ] 7.4 Preserve existing step-count and current-step dashboard behavior.
-- [ ] 7.5 Add frontend live-state and render tests for new fields and old snapshots.
-- [ ] 7.6 Run ReScript/frontend verification without committing generated `.res.js` files.
+- [x] 7.1 Extend ReScript Runtime State snapshot types for lifecycle and readiness fields.
+- [x] 7.2 Map lifecycle fields into the dashboard snapshot model.
+- [x] 7.3 Render lifecycle and PR readiness details in the PRD run progress panel.
+- [x] 7.4 Preserve existing step-count and current-step dashboard behavior.
+- [x] 7.5 Add frontend live-state and render tests for new fields and old snapshots.
+- [x] 7.6 Run ReScript/frontend verification without committing generated `.res.js` files.
 
 ## Implementation Details
 Follow TechSpec "Frontend ReScript Dashboard" and "Monitoring and Observability". Keep the Live Dashboard Connection as Runtime State snapshots and limit V1 UI scope to the existing PRD run progress panel.
@@ -65,13 +65,13 @@ Follow TechSpec "Frontend ReScript Dashboard" and "Monitoring and Observability"
 
 ## Tests
 - Unit tests:
-  - [ ] `snapshotFromState` maps `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `handoff_status` into dashboard props.
-  - [ ] `snapshotFromState` accepts a Compozy progress payload without lifecycle fields and preserves existing count strings.
-  - [ ] Dashboard markup contains lifecycle and PR readiness labels when fields are present.
-  - [ ] Dashboard markup contains reason text for a not-PR-ready Compozy PRD Run.
-  - [ ] Dashboard markup still shows current step, completed, failed, skipped, and total metrics.
+  - [x] `snapshotFromState` maps `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `handoff_status` into dashboard props.
+  - [x] `snapshotFromState` accepts a Compozy progress payload without lifecycle fields and preserves existing count strings.
+  - [x] Dashboard markup contains lifecycle and PR readiness labels when fields are present.
+  - [x] Dashboard markup contains reason text for a not-PR-ready Compozy PRD Run.
+  - [x] Dashboard markup still shows current step, completed, failed, skipped, and total metrics.
 - Integration tests:
-  - [ ] Live Dashboard Connection test ingests extended Runtime State JSON and renders the PRD run progress panel without using fetch polling.
+  - [x] Live Dashboard Connection test ingests extended Runtime State JSON and renders the PRD run progress panel without using fetch polling.
 - Test coverage target: >=80%
 - All tests must pass
 

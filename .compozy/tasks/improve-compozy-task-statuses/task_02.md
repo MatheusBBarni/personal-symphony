@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Extend Runtime State Compozy progress lifecycle fields"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Extend the Runtime State `compozy_progress` payload so operator surfaces can rea
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Extend the backend Compozy progress record shape.
-- [ ] 2.2 Add lifecycle-aware progress construction from a Compozy PRD Run and lifecycle metadata.
-- [ ] 2.3 Preserve old snapshot parsing for absent lifecycle fields.
-- [ ] 2.4 Extend JSON output tests for the new optional fields.
-- [ ] 2.5 Extend compatibility tests for old snapshots and absent Compozy progress.
+- [x] 2.1 Extend the backend Compozy progress record shape.
+- [x] 2.2 Add lifecycle-aware progress construction from a Compozy PRD Run and lifecycle metadata.
+- [x] 2.3 Preserve old snapshot parsing for absent lifecycle fields.
+- [x] 2.4 Extend JSON output tests for the new optional fields.
+- [x] 2.5 Extend compatibility tests for old snapshots and absent Compozy progress.
 
 ## Implementation Details
 Follow TechSpec sections "Extended `Runtime_state.compozy_progress`" and "API Endpoints". No new HTTP endpoint is required; this task only changes the Runtime State payload shape and backend parsing helpers.
@@ -63,13 +63,13 @@ Follow TechSpec sections "Extended `Runtime_state.compozy_progress`" and "API En
 
 ## Tests
 - Unit tests:
-  - [ ] `Runtime_state.compozy_progress_of_prd_run` still reports current step and completed/failed/skipped/total counts unchanged.
-  - [ ] Lifecycle metadata adds `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `handoff_status` when present.
-  - [ ] Missing lifecycle metadata leaves optional fields absent or null without changing count fields.
-  - [ ] Older snapshots without lifecycle fields parse successfully.
-  - [ ] Snapshot parsing preserves lifecycle fields when the extended payload is present.
+  - [x] `Runtime_state.compozy_progress_of_prd_run` still reports current step and completed/failed/skipped/total counts unchanged.
+  - [x] Lifecycle metadata adds `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `handoff_status` when present.
+  - [x] Missing lifecycle metadata leaves optional fields absent or null without changing count fields.
+  - [x] Older snapshots without lifecycle fields parse successfully.
+  - [x] Snapshot parsing preserves lifecycle fields when the extended payload is present.
 - Integration tests:
-  - [ ] A Runtime State JSON payload containing extended `compozy_progress` can round-trip through backend snapshot helpers.
+  - [x] A Runtime State JSON payload containing extended `compozy_progress` can round-trip through backend snapshot helpers.
 - Test coverage target: >=80%
 - All tests must pass
 

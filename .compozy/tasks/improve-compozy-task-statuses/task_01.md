@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Compozy lifecycle storage and backfill"
 type: backend
 complexity: high
@@ -29,12 +29,12 @@ Create the backend lifecycle layer that stores Compozy PRD Run status separately
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add the lifecycle metadata model and persistence boundary.
-- [ ] 1.2 Add Runtime Home path handling for Compozy lifecycle JSON files.
-- [ ] 1.3 Add lazy backfill for active, completed, failed, skipped, empty, and not-runnable Compozy PRD Runs.
-- [ ] 1.4 Add reconciliation for stale completed or ready metadata when task-step state disagrees.
-- [ ] 1.5 Add transition helper coverage for later dispatch and readiness tasks.
-- [ ] 1.6 Add focused backend tests for JSON persistence, backfill, and reconciliation.
+- [x] 1.1 Add the lifecycle metadata model and persistence boundary.
+- [x] 1.2 Add Runtime Home path handling for Compozy lifecycle JSON files.
+- [x] 1.3 Add lazy backfill for active, completed, failed, skipped, empty, and not-runnable Compozy PRD Runs.
+- [x] 1.4 Add reconciliation for stale completed or ready metadata when task-step state disagrees.
+- [x] 1.5 Add transition helper coverage for later dispatch and readiness tasks.
+- [x] 1.6 Add focused backend tests for JSON persistence, backfill, and reconciliation.
 
 ## Implementation Details
 Follow TechSpec sections "Core Interfaces", "Runtime Home lifecycle JSON", and "Lazy backfill rules". Keep lifecycle metadata in ignored Runtime Home state and do not add runtime churn to `.compozy/tasks/<slug>/` task files.
@@ -64,14 +64,14 @@ Follow TechSpec sections "Core Interfaces", "Runtime Home lifecycle JSON", and "
 
 ## Tests
 - Unit tests:
-  - [ ] Version 1 lifecycle JSON round-trips `run_id`, `slug`, `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `updated_at`.
-  - [ ] Metadata with absent optional `stage_agent` and `reason` parses successfully.
-  - [ ] A PRD Run with a pending or in-progress current step backfills `lifecycle_state = in_execution` and `pr_readiness = not_ready`.
-  - [ ] A PRD Run with all steps completed backfills completed lifecycle and policy-aware readiness.
-  - [ ] A PRD Run with failed, skipped, empty, or not-runnable step state backfills a non-ready lifecycle with a concise reason.
-  - [ ] Stale completed or ready metadata downgrades when Compozy Task Step progress shows failed or skipped terminal state.
+  - [x] Version 1 lifecycle JSON round-trips `run_id`, `slug`, `lifecycle_state`, `dispatch_state`, `stage_agent`, `pr_readiness`, `reason`, and `updated_at`.
+  - [x] Metadata with absent optional `stage_agent` and `reason` parses successfully.
+  - [x] A PRD Run with a pending or in-progress current step backfills `lifecycle_state = in_execution` and `pr_readiness = not_ready`.
+  - [x] A PRD Run with all steps completed backfills completed lifecycle and policy-aware readiness.
+  - [x] A PRD Run with failed, skipped, empty, or not-runnable step state backfills a non-ready lifecycle with a concise reason.
+  - [x] Stale completed or ready metadata downgrades when Compozy Task Step progress shows failed or skipped terminal state.
 - Integration tests:
-  - [ ] Lifecycle metadata saves to `.symphony/state/compozy-lifecycle/<slug>.json` in a temp Workspace Repository and reloads after process-style reconstruction.
+  - [x] Lifecycle metadata saves to `.symphony/state/compozy-lifecycle/<slug>.json` in a temp Workspace Repository and reloads after process-style reconstruction.
 - Test coverage target: >=80%
 - All tests must pass
 

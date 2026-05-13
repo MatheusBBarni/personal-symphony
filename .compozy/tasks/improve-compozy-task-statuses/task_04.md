@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Update orchestrator lifecycle transitions"
 type: backend
 complexity: high
@@ -30,12 +30,12 @@ Teach orchestration paths to update Compozy PRD Run lifecycle metadata as Stage 
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Record lifecycle state when a Compozy PRD Run is dispatched to a Stage Agent.
-- [ ] 4.2 Record lifecycle state during Compozy Task Step retry and over-limit failure paths.
-- [ ] 4.3 Record lifecycle state when execution advances to the next Compozy Task Step.
-- [ ] 4.4 Record lifecycle state when the final task step completes successfully.
-- [ ] 4.5 Record blocked or attention lifecycle reasons for merge, protected-path, and non-retryable completion failures.
-- [ ] 4.6 Add focused orchestrator tests for planner, engineer, reviewer, failure, completion, and attention transitions.
+- [x] 4.1 Record lifecycle state when a Compozy PRD Run is dispatched to a Stage Agent.
+- [x] 4.2 Record lifecycle state during Compozy Task Step retry and over-limit failure paths.
+- [x] 4.3 Record lifecycle state when execution advances to the next Compozy Task Step.
+- [x] 4.4 Record lifecycle state when the final task step completes successfully.
+- [x] 4.5 Record blocked or attention lifecycle reasons for merge, protected-path, and non-retryable completion failures.
+- [x] 4.6 Add focused orchestrator tests for planner, engineer, reviewer, failure, completion, and attention transitions.
 
 ## Implementation Details
 Follow TechSpec "Data Flow" and "Development Sequencing" steps for orchestrator transitions. Centralize writes through `Compozy_lifecycle` helpers and avoid changing the Compozy Task Step progress rules in `Compozy_tasks_tracker`.
@@ -66,14 +66,14 @@ Follow TechSpec "Data Flow" and "Development Sequencing" steps for orchestrator 
 
 ## Tests
 - Unit tests:
-  - [ ] Dispatching a planner-stage Compozy PRD Run records `lifecycle_state = in_planning` with `stage_agent = planner`.
-  - [ ] Dispatching an engineer-stage Compozy PRD Run records `lifecycle_state = in_execution` and preserves task-step `in_progress`.
-  - [ ] Dispatching a reviewer-stage Compozy PRD Run records `lifecycle_state = in_review` with `stage_agent = reviewer`.
-  - [ ] A failed task step below retry limit keeps lifecycle non-ready and preserves retry behavior.
-  - [ ] A failed task step over retry limit records failed lifecycle with a reason and advances only according to existing step rules.
-  - [ ] A final successful Compozy PRD Run records completed lifecycle without losing step counts.
+  - [x] Dispatching a planner-stage Compozy PRD Run records `lifecycle_state = in_planning` with `stage_agent = planner`.
+  - [x] Dispatching an engineer-stage Compozy PRD Run records `lifecycle_state = in_execution` and preserves task-step `in_progress`.
+  - [x] Dispatching a reviewer-stage Compozy PRD Run records `lifecycle_state = in_review` with `stage_agent = reviewer`.
+  - [x] A failed task step below retry limit keeps lifecycle non-ready and preserves retry behavior.
+  - [x] A failed task step over retry limit records failed lifecycle with a reason and advances only according to existing step rules.
+  - [x] A final successful Compozy PRD Run records completed lifecycle without losing step counts.
 - Integration tests:
-  - [ ] Merge attention, protected-path attention, and non-retryable completion errors record blocked or not-ready lifecycle reasons in Runtime State.
+  - [x] Merge attention, protected-path attention, and non-retryable completion errors record blocked or not-ready lifecycle reasons in Runtime State.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Wire Compozy tracker dispatch-aware lifecycle state"
 type: backend
 complexity: high
@@ -31,11 +31,11 @@ Update the Compozy-backed Local Issue Tracker so Compozy PRD Run candidates use 
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Load or backfill lifecycle metadata during Compozy candidate discovery.
-- [ ] 3.2 Return Compozy PRD Run issues with dispatch-aware state.
-- [ ] 3.3 Persist Compozy tracker `update_status` calls into lifecycle metadata.
-- [ ] 3.4 Keep lookup diagnostics and identifier normalization unchanged.
-- [ ] 3.5 Add focused tracker tests for discovery, lookup, active/terminal behavior, and status updates.
+- [x] 3.1 Load or backfill lifecycle metadata during Compozy candidate discovery.
+- [x] 3.2 Return Compozy PRD Run issues with dispatch-aware state.
+- [x] 3.3 Persist Compozy tracker `update_status` calls into lifecycle metadata.
+- [x] 3.4 Keep lookup diagnostics and identifier normalization unchanged.
+- [x] 3.5 Add focused tracker tests for discovery, lookup, active/terminal behavior, and status updates.
 
 ## Implementation Details
 Follow TechSpec "Data Flow" steps for discovery and tracker updates. Keep `Compozy_tasks_tracker` responsible for task-step parsing and prompt context, while `Issue_tracker.compozy` applies lifecycle metadata at the PRD Run boundary.
@@ -65,14 +65,14 @@ Follow TechSpec "Data Flow" steps for discovery and tracker updates. Keep `Compo
 
 ## Tests
 - Unit tests:
-  - [ ] Fetching a runnable Compozy PRD Run with no lifecycle file backfills metadata and returns one issue candidate.
-  - [ ] Fetching a Compozy PRD Run with lifecycle dispatch state returns an issue whose state matches that dispatch state.
-  - [ ] `update_status` on `compozy:example-feature` persists the requested dispatch state into lifecycle metadata.
-  - [ ] Lookup for `compozy:example-feature` still returns one Compozy PRD Run issue and never task-step issues.
-  - [ ] Active and terminal checks honor lifecycle dispatch state alongside configured Compozy tracker states.
+  - [x] Fetching a runnable Compozy PRD Run with no lifecycle file backfills metadata and returns one issue candidate.
+  - [x] Fetching a Compozy PRD Run with lifecycle dispatch state returns an issue whose state matches that dispatch state.
+  - [x] `update_status` on `compozy:example-feature` persists the requested dispatch state into lifecycle metadata.
+  - [x] Lookup for `compozy:example-feature` still returns one Compozy PRD Run issue and never task-step issues.
+  - [x] Active and terminal checks honor lifecycle dispatch state alongside configured Compozy tracker states.
 - Integration tests:
-  - [ ] Ordered Queue validation resolves a Compozy PRD Run through the lifecycle-aware tracker without GitHub Project membership.
-  - [ ] Manual merge lookup still accepts completed Compozy PRD Runs after lifecycle metadata exists.
+  - [x] Ordered Queue validation resolves a Compozy PRD Run through the lifecycle-aware tracker without GitHub Project membership.
+  - [x] Manual merge lookup still accepts completed Compozy PRD Runs after lifecycle metadata exists.
 - Test coverage target: >=80%
 - All tests must pass
 
