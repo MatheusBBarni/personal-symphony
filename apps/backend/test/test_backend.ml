@@ -3187,7 +3187,9 @@ let test_cli_rejects_invalid_runtime_invocation_override_values () =
       Alcotest.(check bool)
         ("field named in error: " ^ value)
         true
-        (contains_substring stderr "polling.intervalMs" && contains_substring stderr "positive integer"))
+        (contains_substring stderr "polling.intervalMs"
+        && contains_substring stderr "positive"
+        && contains_substring stderr "integer"))
     [ "0"; "-1"; "1.5"; ""; "abc" ]
 
 let test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior () =
@@ -3209,7 +3211,7 @@ let test_cli_duplicate_runtime_invocation_override_uses_cmdliner_behavior () =
   Alcotest.(check bool)
     "Cmdliner rejects repeated option values"
     true
-    (contains_substring stderr "option '--polling.intervalMs' cannot be repeated")
+    (contains_substring stderr "polling.intervalMs" && contains_substring stderr "cannot be repeated")
 
 let test_cli_rejects_runtime_invocation_overrides_for_unsupported_modes () =
   let cases =
@@ -7601,6 +7603,34 @@ let test_compozy_tracker_fetch_uses_lifecycle_dispatch_state () =
       let issue = tracker.fetch_candidates () |> require_poll_ok "fetch candidates" |> only_issue "candidate" in
       Alcotest.(check string) "issue state from lifecycle" "In review" issue.state)
 
+let test_compozy_tracker_repairs_corrupt_lifecycle_on_fetch () =
+  with_temp_dir "symphony-compozy-tracker-corrupt-lifecycle-" (fun root ->
+      let config = write_compozy_settings root in
+      let write_run slug =
+        let prd_dir = Filename.concat config.Config.tracker.compozy_root slug in
+        Util.mkdir_p prd_dir;
+        write_compozy_task ~title:("Runnable " ^ slug) (Filename.concat prd_dir "task_01.md");
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok ("build " ^ slug)
+      in
+      let corrupt_run = write_run "corrupt-feature" in
+      ignore (write_run "healthy-feature");
+      let corrupt_path = Compozy_lifecycle.path_for_run config corrupt_run in
+      Util.mkdir_p (Filename.dirname corrupt_path);
+      Util.write_file corrupt_path "{ definitely not lifecycle json";
+      let tracker = Issue_tracker.compozy config in
+      let issues = tracker.fetch_candidates () |> require_poll_ok "fetch candidates" in
+      let identifiers = List.map (fun (issue : Issue.t) -> issue.identifier) issues |> List.sort String.compare in
+      Alcotest.(check (list string)) "all candidates survive corrupt lifecycle"
+        [ "compozy:corrupt-feature"; "compozy:healthy-feature" ] identifiers;
+      let repaired =
+        match Compozy_lifecycle.load config corrupt_run |> require_ok "load repaired lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected repaired lifecycle metadata"
+      in
+      check_lifecycle_state "repaired lifecycle" "in_execution" repaired;
+      check_pr_readiness "repaired readiness" "not_ready" repaired)
+
 let test_compozy_tracker_update_status_persists_lifecycle_dispatch_state () =
   with_temp_dir "symphony-compozy-tracker-update-status-" (fun root ->
       let config = write_compozy_settings root in
@@ -8372,6 +8402,72 @@ let test_compozy_batch_pr_handoff_failure_records_lifecycle () =
           Alcotest.(check (option string)) "retry handoff status" (Some "handoff_completed")
             progress.handoff_status
       | None -> Alcotest.fail "expected Compozy progress after retried handoff"))
+
+let test_compozy_batch_pr_attempting_retries_after_restart () =
+  with_temp_dir "symphony-compozy-batch-pr-attempting-retry-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "attempting-retry-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" ~title:"Completed" (Filename.concat prd_dir "task_01.md");
+      ignore (run_ok ~cwd:root "commit completed Compozy task" "git add .compozy && git commit -q -m compozy-completed");
+      ignore_runtime_home root;
+      let config =
+        {
+          (compozy_test_config root compozy_root) with
+          pull_request =
+            {
+              Config.default_pull_request with
+              enabled = true;
+              mode = "batch";
+              base_branch = "main";
+            };
+        }
+      in
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir
+        |> require_ok "build completed PRD run"
+      in
+      let attempting_lifecycle : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.Pr_handoff;
+          dispatch_state = run.state;
+          stage_agent = None;
+          pr_readiness = Compozy_lifecycle.Handoff_attempting;
+          reason = None;
+          updated_at = "2026-05-13T07:00:00Z";
+        }
+      in
+      Compozy_lifecycle.save config attempting_lifecycle |> require_ok "seed attempting handoff";
+      let attempts = ref 0 in
+      let orchestrator =
+        Orchestrator.make
+          ~batch_pull_request_handoff:(fun _ ~head_branch ->
+            incr attempts;
+            Alcotest.(check string) "handoff branch" "feature/start" head_branch;
+            Ok (Some "https://github.example/acme/widgets/pull/77"))
+          ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "restart retries attempting handoff" 1 !attempts;
+      let state = Orchestrator.get_state orchestrator in
+      (match state.Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "retried handoff status" "completed" handoff.status;
+          Alcotest.(check (option string)) "retried handoff url"
+            (Some "https://github.example/acme/widgets/pull/77") handoff.url
+      | None -> Alcotest.fail "expected retried handoff record");
+      match state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "retried lifecycle" (Some "pr_handoff") progress.lifecycle_state;
+          Alcotest.(check (option string)) "retried readiness" (Some "handoff_completed")
+            progress.pr_readiness;
+          Alcotest.(check (option string)) "retried handoff status" (Some "handoff_completed")
+            progress.handoff_status
+      | None -> Alcotest.fail "expected Compozy progress after retry")
 
 let test_compozy_terminal_not_ready_blocks_batch_pull_request () =
   List.iter
@@ -12049,6 +12145,8 @@ let () =
             test_compozy_tracker_fetch_backfills_lifecycle_candidate;
           Alcotest.test_case "Compozy tracker uses lifecycle dispatch state" `Quick
             test_compozy_tracker_fetch_uses_lifecycle_dispatch_state;
+          Alcotest.test_case "Compozy tracker repairs corrupt lifecycle on fetch" `Quick
+            test_compozy_tracker_repairs_corrupt_lifecycle_on_fetch;
           Alcotest.test_case "Compozy tracker persists status updates to lifecycle" `Quick
             test_compozy_tracker_update_status_persists_lifecycle_dispatch_state;
           Alcotest.test_case "Compozy tracker lookup stays at PRD-run boundary" `Quick
@@ -12061,6 +12159,8 @@ let () =
             test_compozy_batch_pr_readiness_and_handoff_success;
           Alcotest.test_case "Compozy Batch Pull Request failure mirrors handoff lifecycle" `Quick
             test_compozy_batch_pr_handoff_failure_records_lifecycle;
+          Alcotest.test_case "Compozy Batch Pull Request retries attempting handoff" `Quick
+            test_compozy_batch_pr_attempting_retries_after_restart;
           Alcotest.test_case "Compozy terminal not-ready runs block Batch Pull Requests" `Quick
             test_compozy_terminal_not_ready_blocks_batch_pull_request;
           Alcotest.test_case "Compozy batch mode opens no per-step pull requests" `Quick

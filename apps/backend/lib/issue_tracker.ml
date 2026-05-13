@@ -220,8 +220,16 @@ let compozy_issue_of_prd_run run (lifecycle : Compozy_lifecycle.t) =
   { issue with Issue.state = lifecycle.dispatch_state }
 
 let compozy_load_lifecycle config run =
-  Compozy_lifecycle.load_or_backfill_reconciled config run
-  |> Result.map (fun lifecycle -> (run, lifecycle))
+  let lifecycle =
+    match Compozy_lifecycle.load_or_backfill_reconciled config run with
+    | Ok lifecycle -> Some lifecycle
+    | Error _ -> (
+        (* Lifecycle metadata is Runtime Home cache derived from Compozy Task Steps. If one
+           JSON file is corrupt or partially written, repair that run from task files instead
+           of failing every tracker poll. *)
+        match Compozy_lifecycle.backfill config run with Ok lifecycle -> Some lifecycle | Error _ -> None)
+  in
+  Option.map (fun lifecycle -> (run, lifecycle)) lifecycle
 
 let compozy_lookup_result runs raw =
   let identifier = match compozy_identifier raw with Ok identifier -> identifier | Error _ -> raw in
@@ -237,8 +245,8 @@ let compozy config =
           | [] -> Ok (List.rev acc)
           | run :: rest -> (
               match compozy_load_lifecycle config run with
-              | Ok run -> load (run :: acc) rest
-              | Error _ as error -> error)
+              | Some run -> load (run :: acc) rest
+              | None -> load acc rest)
         in
         load [] runs
     | Error message -> Error message

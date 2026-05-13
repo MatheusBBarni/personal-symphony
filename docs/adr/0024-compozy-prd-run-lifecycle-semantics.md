@@ -16,7 +16,9 @@ Personal Symphony persists Compozy PRD Run lifecycle metadata under Runtime Home
 
 The lifecycle states are `pending`, `in_planning`, `in_execution`, `in_review`, `blocked`, `completed`, `failed`, `skipped`, `not_pr_ready`, and `pr_handoff`. Pull-request eligibility is represented separately as Compozy PR Readiness: `disabled`, `not_ready`, `ready`, `handoff_attempting`, `handoff_completed`, or `handoff_failed`.
 
-Batch Pull Request readiness requires successful Compozy PRD Run completion plus safe final integration and an enabling Pull Request Policy. Failed, skipped, blocked, or terminal Compozy Task Step progress does not imply Batch Pull Request readiness. In `batch` Pull Request Mode, Symphony may open or reuse at most one aggregate Batch Pull Request for the Compozy PRD Run and must not open per-step pull requests for Compozy Task Steps.
+Lifecycle metadata is persisted Runtime Home cache derived from Compozy Task Step files. Tracker polling repairs corrupt or partially written per-run lifecycle JSON by backfilling that Compozy PRD Run from task files. If repair fails, only that run is skipped; one bad lifecycle file must not abort discovery or dispatch for every Compozy PRD Run.
+
+Batch Pull Request readiness requires successful Compozy PRD Run completion plus safe final integration and an enabling Pull Request Policy. Failed, skipped, blocked, or terminal Compozy Task Step progress does not imply Batch Pull Request readiness. In `batch` Pull Request Mode, Symphony may open or reuse at most one aggregate Batch Pull Request for the Compozy PRD Run and must not open per-step pull requests for Compozy Task Steps. `handoff_attempting` remains eligible for a later attempt so a restart after recording the attempt but before completing handoff can recover without manual lifecycle-file edits; `handoff_completed` remains terminal for aggregate handoff.
 
 ## Consequences
 

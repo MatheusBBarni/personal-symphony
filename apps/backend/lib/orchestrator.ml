@@ -1973,10 +1973,12 @@ let note_current_compozy_batch_handoff orchestrator status reason =
         (Compozy_lifecycle.mark_pr_handoff orchestrator.config run ~status ~reason)
 
 let compozy_pr_readiness_allows_batch_handoff = function
-  | Compozy_lifecycle.Ready | Compozy_lifecycle.Handoff_failed -> true
+  | Compozy_lifecycle.Ready
+  | Compozy_lifecycle.Handoff_attempting
+  | Compozy_lifecycle.Handoff_failed ->
+      true
   | Compozy_lifecycle.Disabled
   | Compozy_lifecycle.Not_ready
-  | Compozy_lifecycle.Handoff_attempting
   | Compozy_lifecycle.Handoff_completed ->
       false
 
