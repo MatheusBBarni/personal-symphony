@@ -215,16 +215,32 @@ let compozy_status_is_active config status =
 let compozy_status_is_terminal config status =
   status_in [ "completed"; "failed"; "skipped" ] status || status_in config.Config.tracker.terminal_states status
 
+let compozy_issue_of_prd_run run (lifecycle : Compozy_lifecycle.t) =
+  let issue = Compozy_tasks_tracker.issue_of_prd_run run in
+  { issue with Issue.state = lifecycle.dispatch_state }
+
+let compozy_load_lifecycle config run =
+  Compozy_lifecycle.load_or_backfill_reconciled config run
+  |> Result.map (fun lifecycle -> (run, lifecycle))
+
 let compozy_lookup_result runs raw =
   let identifier = match compozy_identifier raw with Ok identifier -> identifier | Error _ -> raw in
-  match List.find_opt (fun (run : Compozy_tasks_tracker.prd_run) -> run.id = identifier) runs with
-  | Some run -> { identifier; issue = Some (Compozy_tasks_tracker.issue_of_prd_run run); diagnostics = [] }
+  match List.find_opt (fun ((run : Compozy_tasks_tracker.prd_run), _) -> run.id = identifier) runs with
+  | Some (run, lifecycle) -> { identifier; issue = Some (compozy_issue_of_prd_run run lifecycle); diagnostics = [] }
   | None -> { identifier; issue = None; diagnostics = [ Missing_issue ] }
 
 let compozy config =
   let fetch_runs () =
     match Compozy_tasks_tracker.discover_prd_runs ~compozy_root:config.Config.tracker.compozy_root with
-    | Ok runs -> Ok runs
+    | Ok runs ->
+        let rec load acc = function
+          | [] -> Ok (List.rev acc)
+          | run :: rest -> (
+              match compozy_load_lifecycle config run with
+              | Ok run -> load (run :: acc) rest
+              | Error _ as error -> error)
+        in
+        load [] runs
     | Error message -> Error message
   in
   let fetch_candidates () =
@@ -233,8 +249,8 @@ let compozy config =
     | Ok runs ->
         Ok
           (runs
-          |> List.filter Compozy_tasks_tracker.runnable_prd_run
-          |> List.map Compozy_tasks_tracker.issue_of_prd_run)
+          |> List.filter (fun (run, _) -> Compozy_tasks_tracker.runnable_prd_run run)
+          |> List.map (fun (run, lifecycle) -> compozy_issue_of_prd_run run lifecycle))
   in
   let fetch_by_identifiers_detailed identifiers =
     let rec normalize acc = function
@@ -257,12 +273,28 @@ let compozy config =
          (List.map (fun result ->
               match result.diagnostics with [] -> result.issue | _ -> None))
   in
+  let update_status issue status =
+    let raw_identifier =
+      match Util.trim issue.Issue.identifier with "" -> issue.Issue.id | identifier -> identifier
+    in
+    match compozy_identifier raw_identifier with
+    | Error _ as error -> error
+    | Ok identifier -> (
+        match fetch_runs () with
+        | Error _ as error -> error
+        | Ok runs -> (
+            match List.find_opt (fun ((run : Compozy_tasks_tracker.prd_run), _) -> run.id = identifier) runs with
+            | None -> Error (Printf.sprintf "Compozy PRD run not found for %s" identifier)
+            | Some (run, _) ->
+                Compozy_lifecycle.update_dispatch_state config run ~dispatch_state:status
+                |> Result.map (fun _ -> ())))
+  in
   {
     kind = "compozy_tasks";
     fetch_candidates;
     fetch_by_identifiers;
     fetch_by_identifiers_detailed;
-    update_status = (fun _ _ -> Ok ());
+    update_status;
     readiness_gaps =
       (fun () ->
         Compozy_tasks_tracker.readiness_gaps config

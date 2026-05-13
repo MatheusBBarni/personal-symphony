@@ -3712,7 +3712,13 @@ let test_ordered_queue_validation_resolves_compozy_prd_run_without_github_projec
       in
       let tracker = Issue_tracker.compozy config in
       let gaps = Ordered_queue.validation_gaps tracker queue in
-      Alcotest.(check (list string)) "no validation gaps" [] (List.map (fun gap -> gap.Ordered_queue.requirement) gaps))
+      Alcotest.(check (list string)) "no validation gaps" [] (List.map (fun gap -> gap.Ordered_queue.requirement) gaps);
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      Alcotest.(check bool) "queue lookup backfilled lifecycle" true
+        (Sys.file_exists (Compozy_lifecycle.path_for_run config run)))
 
 let test_runtime_state_exposes_ordered_queue () =
   let queue =
@@ -7322,6 +7328,163 @@ let test_compozy_lifecycle_transition_helpers_persist () =
       check_lifecycle_state "handoff lifecycle" "pr_handoff" handoff;
       check_pr_readiness "handoff readiness" "handoff_completed" handoff)
 
+let require_poll_ok label = function
+  | Ok value -> value
+  | Error (Issue_tracker.Failed error) -> Alcotest.fail (label ^ ": " ^ error)
+  | Error (Issue_tracker.Rate_limited (error, _)) -> Alcotest.fail (label ^ ": rate limited: " ^ error)
+
+let only_issue label = function
+  | [ issue ] -> issue
+  | issues -> Alcotest.fail (Printf.sprintf "%s: expected one issue, got %d" label (List.length issues))
+
+let test_compozy_tracker_fetch_backfills_lifecycle_candidate () =
+  with_temp_dir "symphony-compozy-tracker-backfill-" (fun root ->
+      let config = write_compozy_settings root in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "example-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" (Filename.concat prd_dir "task_01.md");
+      let tracker = Issue_tracker.compozy config in
+      let issue = tracker.fetch_candidates () |> require_poll_ok "fetch candidates" |> only_issue "candidate" in
+      Alcotest.(check string) "candidate identifier" "compozy:example-feature" issue.identifier;
+      Alcotest.(check string) "candidate dispatch state" "pending" issue.state;
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      Alcotest.(check bool) "lifecycle file created" true
+        (Sys.file_exists (Compozy_lifecycle.path_for_run config run));
+      let lifecycle =
+        match Compozy_lifecycle.load config run |> require_ok "load lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected lifecycle metadata"
+      in
+      check_lifecycle_state "backfilled lifecycle" "in_execution" lifecycle;
+      Alcotest.(check string) "backfilled dispatch" "pending" lifecycle.dispatch_state)
+
+let test_compozy_tracker_fetch_uses_lifecycle_dispatch_state () =
+  with_temp_dir "symphony-compozy-tracker-dispatch-state-" (fun root ->
+      let config = write_compozy_settings root in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "example-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" (Filename.concat prd_dir "task_01.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      let lifecycle : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_review;
+          dispatch_state = "In review";
+          stage_agent = Some "reviewer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-12T21:00:00Z";
+        }
+      in
+      Compozy_lifecycle.save config lifecycle |> require_ok "save lifecycle";
+      let tracker = Issue_tracker.compozy config in
+      let issue = tracker.fetch_candidates () |> require_poll_ok "fetch candidates" |> only_issue "candidate" in
+      Alcotest.(check string) "issue state from lifecycle" "In review" issue.state)
+
+let test_compozy_tracker_update_status_persists_lifecycle_dispatch_state () =
+  with_temp_dir "symphony-compozy-tracker-update-status-" (fun root ->
+      let config = write_compozy_settings root in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "example-feature" in
+      let task_path = Filename.concat prd_dir "task_01.md" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" task_path;
+      let tracker = Issue_tracker.compozy config in
+      let issue =
+        Issue.empty ~id:"compozy:example-feature" ~identifier:"compozy:example-feature" ~title:"Example" ~state:"pending"
+      in
+      tracker.update_status issue "In review" |> require_ok "update Compozy status";
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      let lifecycle =
+        match Compozy_lifecycle.load config run |> require_ok "load lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected lifecycle metadata"
+      in
+      Alcotest.(check string) "persisted dispatch" "In review" lifecycle.dispatch_state;
+      let task = Compozy_tasks_tracker.parse_task_file ~compozy_root:config.tracker.compozy_root task_path |> require_ok "parse task" in
+      Alcotest.(check string) "task-step frontmatter unchanged" "pending" task.status)
+
+let test_compozy_tracker_lookup_stays_at_prd_run_boundary () =
+  with_temp_dir "symphony-compozy-tracker-lookup-boundary-" (fun root ->
+      let config = write_compozy_settings root in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "example-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"First" (Filename.concat prd_dir "task_01.md");
+      write_compozy_task ~title:"Second" ~dependencies:[ "task_01" ] (Filename.concat prd_dir "task_02.md");
+      let tracker = Issue_tracker.compozy config in
+      let results =
+        tracker.fetch_by_identifiers_detailed [ "compozy:example-feature"; "compozy:task_01" ]
+        |> require_ok "lookup Compozy identifiers"
+      in
+      Alcotest.(check int) "two lookup rows" 2 (List.length results);
+      let first = List.hd results in
+      let second = List.nth results 1 in
+      Alcotest.(check string) "canonical PRD run identifier" "compozy:example-feature" first.identifier;
+      Alcotest.(check bool) "PRD run issue present" true (Option.is_some first.issue);
+      Alcotest.(check string) "task-step-like selector remains missing" "compozy:task_01" second.identifier;
+      Alcotest.(check bool) "task step not exposed" true (Option.is_none second.issue);
+      Alcotest.(check bool) "missing diagnostic" true (List.mem Issue_tracker.Missing_issue second.diagnostics))
+
+let test_compozy_tracker_active_terminal_use_lifecycle_dispatch_state () =
+  with_temp_dir "symphony-compozy-tracker-active-terminal-" (fun root ->
+      let base_config = write_compozy_settings root in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.Config.tracker with
+              active_states = [ "Ready" ];
+              terminal_states = [ "Released" ];
+            };
+        }
+      in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "example-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" (Filename.concat prd_dir "task_01.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      let lifecycle : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_execution;
+          dispatch_state = "Ready";
+          stage_agent = None;
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-12T21:00:00Z";
+        }
+      in
+      Compozy_lifecycle.save config lifecycle |> require_ok "save lifecycle";
+      let tracker = Issue_tracker.compozy config in
+      let issue = tracker.fetch_candidates () |> require_poll_ok "fetch candidates" |> only_issue "candidate" in
+      Alcotest.(check string) "state from lifecycle" "Ready" issue.state;
+      Alcotest.(check bool) "configured active state" true (tracker.is_active issue.state);
+      Alcotest.(check bool) "built-in active state" true (tracker.is_active "in_progress");
+      tracker.update_status issue "Released" |> require_ok "release status";
+      let looked_up =
+        match tracker.fetch_by_identifiers [ "compozy:example-feature" ] |> require_ok "lookup released" with
+        | [ Some issue ] -> issue
+        | _ -> Alcotest.fail "expected released issue"
+      in
+      Alcotest.(check string) "released dispatch state" "Released" looked_up.state;
+      Alcotest.(check bool) "configured terminal state" true (tracker.is_terminal looked_up.state);
+      Alcotest.(check bool) "built-in terminal state" true (tracker.is_terminal "completed"))
+
 let test_compozy_completion_relaunches_next_step_in_same_worktree () =
   with_temp_dir "symphony-compozy-sequential-" (fun root ->
       init_repo root "feature/start";
@@ -7333,6 +7496,7 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
       write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst step sentinel.\n" task_01;
       write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond step sentinel.\n" task_02;
       ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
+      ignore_runtime_home root;
       let config = compozy_test_config root compozy_root in
       let launches = ref [] in
       let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
@@ -7432,6 +7596,7 @@ let test_compozy_failed_step_retries_then_advances_to_next_step () =
       write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst retry sentinel.\n" task_01;
       write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond advance sentinel.\n" task_02;
       ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
+      ignore_runtime_home root;
       let base_config = compozy_test_config root compozy_root in
       let config = { base_config with Config.agent = { base_config.agent with max_retry_backoff_ms = 0 } } in
       let launches = ref [] in
@@ -7514,6 +7679,7 @@ let test_compozy_dispatch_preserves_external_root_path () =
           Util.mkdir_p prd_dir;
           let task_01 = Filename.concat prd_dir "task_01.md" in
           write_compozy_task ~title:"External step" ~body:"\n# External\n\nExternal root sentinel.\n" task_01;
+          ignore_runtime_home root;
           let config = compozy_test_config root compozy_root in
           let launches = ref [] in
           let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
@@ -7550,6 +7716,7 @@ let test_compozy_final_step_commit_failure_keeps_step_runnable () =
       let task_01 = Filename.concat prd_dir "task_01.md" in
       write_compozy_task ~title:"Final step" ~body:"\n# Final\n\nFinal retry sentinel.\n" task_01;
       ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
+      ignore_runtime_home root;
       let base_config = compozy_test_config root compozy_root in
       let config = { base_config with Config.agent = { base_config.agent with max_retry_backoff_ms = 0 } } in
       let launches = ref [] in
@@ -10878,7 +11045,7 @@ let test_manual_merge_minibeads_fast_forward_updates_selected_tracker () =
         [ (root, show_command); (root, update_command) ]
         (List.rev !calls))
 
-let test_manual_merge_accepts_completed_compozy_prd_run () =
+let test_manual_merge_accepts_completed_compozy_prd_run_after_lifecycle_metadata () =
   with_temp_dir "symphony-manual-merge-compozy-" (fun root ->
       init_repo root "feature/start";
       let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
@@ -10891,6 +11058,7 @@ let test_manual_merge_accepts_completed_compozy_prd_run () =
       let run =
         Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir |> require_ok "build Compozy PRD run"
       in
+      ignore (Compozy_lifecycle.backfill config run |> require_ok "backfill completed lifecycle");
       let issue = Compozy_tasks_tracker.issue_of_prd_run run in
       let workspace =
         match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
@@ -11156,6 +11324,16 @@ let () =
             test_compozy_lifecycle_persists_under_runtime_home;
           Alcotest.test_case "persists Compozy lifecycle transition helpers" `Quick
             test_compozy_lifecycle_transition_helpers_persist;
+          Alcotest.test_case "Compozy tracker backfills lifecycle on fetch" `Quick
+            test_compozy_tracker_fetch_backfills_lifecycle_candidate;
+          Alcotest.test_case "Compozy tracker uses lifecycle dispatch state" `Quick
+            test_compozy_tracker_fetch_uses_lifecycle_dispatch_state;
+          Alcotest.test_case "Compozy tracker persists status updates to lifecycle" `Quick
+            test_compozy_tracker_update_status_persists_lifecycle_dispatch_state;
+          Alcotest.test_case "Compozy tracker lookup stays at PRD-run boundary" `Quick
+            test_compozy_tracker_lookup_stays_at_prd_run_boundary;
+          Alcotest.test_case "Compozy tracker active and terminal checks use dispatch state" `Quick
+            test_compozy_tracker_active_terminal_use_lifecycle_dispatch_state;
           Alcotest.test_case "discovers distinct Compozy PRD directories" `Quick
             test_compozy_two_workflow_directories_have_distinct_ids;
           Alcotest.test_case "reports duplicate Compozy task indexes as not runnable" `Quick
@@ -11569,7 +11747,7 @@ let () =
           Alcotest.test_case "fast-forwards minibeads task and updates selected tracker" `Quick
             test_manual_merge_minibeads_fast_forward_updates_selected_tracker;
           Alcotest.test_case "fast-forwards completed Compozy PRD-run task" `Quick
-            test_manual_merge_accepts_completed_compozy_prd_run;
+            test_manual_merge_accepts_completed_compozy_prd_run_after_lifecycle_metadata;
           Alcotest.test_case "blocks unauthorized protected paths" `Quick
             test_manual_merge_blocks_unauthorized_protected_path_change;
           Alcotest.test_case "preflight is all or nothing" `Quick test_manual_merge_preflight_is_all_or_nothing;

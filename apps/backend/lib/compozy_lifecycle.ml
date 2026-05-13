@@ -256,11 +256,13 @@ let reconcile config run lifecycle =
       (match save config reconciled with Ok () -> Ok reconciled | Error _ as error -> error)
   | _ -> Ok lifecycle
 
-let for_runtime config _state run =
+let load_or_backfill_reconciled config run =
   match load config run with
   | Error _ as error -> error
   | Ok None -> backfill config run
   | Ok (Some lifecycle) -> reconcile config run lifecycle
+
+let for_runtime config _state run = load_or_backfill_reconciled config run
 
 let load_or_backfill config run =
   match load config run with
@@ -292,6 +294,19 @@ let mark_stage_started config run ~stage_agent ~dispatch_state =
           stage_agent;
           pr_readiness = Not_ready;
           reason = None;
+          updated_at = Util.now_iso8601 ();
+        }
+      in
+      (match save config updated with Ok () -> Ok updated | Error _ as error -> error)
+
+let update_dispatch_state config run ~dispatch_state =
+  match load_or_backfill config run with
+  | Error _ as error -> error
+  | Ok lifecycle ->
+      let updated =
+        {
+          lifecycle with
+          dispatch_state;
           updated_at = Util.now_iso8601 ();
         }
       in
