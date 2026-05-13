@@ -57,6 +57,24 @@ let contains_substring text substring =
   in
   loop 0
 
+let assert_secret_free_doc label text =
+  [
+    "github_pat_";
+    "ghp_";
+    "gho_";
+    "ghu_";
+    "ghs_";
+    "ghr_";
+    "hooks.slack.com/services";
+    "discord.com/api/webhooks";
+    "discordapp.com/api/webhooks";
+    "GITHUB_TOKEN=";
+    "GH_TOKEN=";
+    "NPM_TOKEN=";
+  ]
+  |> List.iter (fun forbidden ->
+         Alcotest.(check bool) (label ^ " omits " ^ forbidden) false (contains_substring text forbidden))
+
 let ends_with ~suffix text =
   let text_len = String.length text in
   let suffix_len = String.length suffix in
@@ -3214,6 +3232,63 @@ let test_cli_help_documents_runtime_invocation_overrides () =
       "--agent.maxConcurrentAgents";
       "--agent.maxTurns";
       "--agent.maxRetryBackoffMs";
+    ]
+
+let test_cli_help_documents_ordered_queue_compozy_shortcut () =
+  let code, stdout, stderr =
+    capture_process_output (fun () ->
+        Cli_command.eval ~version:"test-version" (cli_test_callbacks ()) ~argv:[| "symphony"; "--help=plain" |])
+  in
+  Alcotest.(check int) "help exit code" 0 code;
+  Alcotest.(check string) "help stderr" "" stderr;
+  List.iter
+    (fun expected -> Alcotest.(check bool) expected true (contains_substring stdout expected))
+    [
+      "--queue";
+      "Workspace Repository";
+      "issue identifiers";
+      "tracker.kind = \"compozy_tasks\"";
+      "bare Compozy PRD Run slugs";
+      "queue-only shortcut";
+      "listed first-admission order";
+    ]
+
+let test_docs_document_compozy_queue_shortcut_boundaries () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  let ordered_queue_adr = read "docs/adr/0010-ordered-queue-runtime-state.md" in
+  List.iter
+    (fun (label, text) ->
+      assert_secret_free_doc label text)
+    [ ("README.md", readme); ("CONTEXT.md", context); ("ordered queue ADR", ordered_queue_adr) ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
+    [
+      "Bare Compozy PRD Run slugs are accepted by `--queue` only when Runtime Settings select";
+      "tracker.kind = \"compozy_tasks\"";
+      "symphony --queue compozy-tasks-run-integration,queue-flag-compozy-tasks";
+      "Manual Task Merge flows still require the canonical";
+      "`compozy:<task_name>` selector form";
+      "blocking Readiness Gap after Runtime Settings load";
+      "resumes the queue stored for `example-feature`";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (contains_substring context expected))
+    [
+      "One operator-facing queue identifier";
+      "bare **Compozy PRD Run** slugs as queue identifiers only for `--queue`";
+      "Bare Compozy PRD Run slugs used under a non-Compozy **Issue Tracker**";
+      "operator-facing queue identifiers stored in **Runtime State**";
+      "equivalent canonical `compozy:<task_name>` sequence are different **Ordered Queue** runs";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring ordered_queue_adr expected))
+    [
+      "Runtime State preserves the operator-facing queue identifiers";
+      "`example-feature` and `compozy:example-feature` are different resume keys";
+      "surfaces as a Readiness Gap instead of a parse-time error";
     ]
 
 let test_cli_rejects_invalid_runtime_invocation_override_values () =
@@ -13606,6 +13681,10 @@ let () =
           Alcotest.test_case "normalizes short help and version flags" `Quick test_cli_help_argv_normalization;
           Alcotest.test_case "documents runtime invocation override help" `Quick
             test_cli_help_documents_runtime_invocation_overrides;
+          Alcotest.test_case "documents queue Compozy shortcut help" `Quick
+            test_cli_help_documents_ordered_queue_compozy_shortcut;
+          Alcotest.test_case "documents Compozy queue shortcut boundaries" `Quick
+            test_docs_document_compozy_queue_shortcut_boundaries;
           Alcotest.test_case "rejects invalid runtime invocation override values" `Quick
             test_cli_rejects_invalid_runtime_invocation_override_values;
           Alcotest.test_case "documents duplicate runtime invocation override behavior" `Quick

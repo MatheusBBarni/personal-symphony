@@ -196,8 +196,46 @@ eligible for the completed Compozy PRD Run, using the Loop-Start Branch as the p
 
 Where selector-based flows support Compozy tracking, use the stable identifier form
 `compozy:<task_name>`. For example, `.compozy/tasks/compozy-tasks-run-integration/` is selected as
-`compozy:compozy-tasks-run-integration` in Ordered Queue and Manual Task Merge flows. GitHub numeric
-selectors such as `20` or `#20` remain GitHub Tracker identifiers.
+`compozy:compozy-tasks-run-integration`. Manual Task Merge flows still require the canonical
+`compozy:<task_name>` selector form. GitHub numeric selectors such as `20` or `#20` remain GitHub
+Tracker identifiers.
+
+### Ordered Queue
+
+Use `--queue` to launch an Ordered Queue from comma-separated Workspace Repository issue
+identifiers. GitHub Tracker queues use numeric issue identifiers, and minibeads Local Issue Tracker
+queues use minibeads identifiers:
+
+```sh
+symphony --queue 20,#21
+symphony --queue mb-20,mb-21
+```
+
+Bare Compozy PRD Run slugs are accepted by `--queue` only when Runtime Settings select
+`tracker.kind = "compozy_tasks"`. In that mode, the queue can name direct children of
+`.compozy/tasks/` without adding the canonical selector prefix:
+
+```sh
+symphony --queue compozy-tasks-run-integration,queue-flag-compozy-tasks
+```
+
+Canonical Compozy selectors remain valid for a Compozy-backed Ordered Queue when the whole queue uses
+that style:
+
+```sh
+symphony --queue compozy:compozy-tasks-run-integration,compozy:queue-flag-compozy-tasks
+```
+
+Do not mix bare Compozy slugs and canonical `compozy:<task_name>` selectors in the same queue. A
+bare Compozy slug used while the GitHub Tracker or minibeads Local Issue Tracker is selected becomes
+a blocking Readiness Gap after Runtime Settings load. The remediation points to the selected tracker
+identifier style, such as GitHub issue numbers or minibeads `mb-20` identifiers, or to switching the
+Workspace Repository to `tracker.kind = "compozy_tasks"`.
+
+Runtime State stores the operator-facing queue identifiers used at launch. Restarting with
+`example-feature` resumes the queue stored for `example-feature`, while restarting with
+`compozy:example-feature` starts a different Ordered Queue run after readiness validation, even
+though both forms resolve to the same Compozy PRD Run in Compozy tracker mode.
 
 Define execution backends under `harnesses` and logical agent roles under `agents`. Harnesses own
 provider commands and loop capability. Logical agents select a Harness and may override model,

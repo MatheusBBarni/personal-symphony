@@ -173,6 +173,25 @@ function assertCompozyGuidance(readme) {
   }
 }
 
+function assertCompozyQueueShortcutGuidance(readme) {
+  const required = [
+    "Bare Compozy PRD Run slugs are accepted by `--queue` only when Runtime Settings select",
+    'tracker.kind = "compozy_tasks"',
+    "symphony --queue compozy-tasks-run-integration,queue-flag-compozy-tasks",
+    "Canonical Compozy selectors remain valid for a Compozy-backed Ordered Queue",
+    "Manual Task Merge flows still require the canonical",
+    "`compozy:<task_name>` selector form",
+    "blocking Readiness Gap after Runtime Settings load",
+    "resumes the queue stored for `example-feature`",
+  ];
+
+  for (const phrase of required) {
+    if (!readme.includes(phrase)) {
+      fail(`README.md is missing Compozy queue shortcut guidance for ${phrase}`);
+    }
+  }
+}
+
 function assertTerminalConsoleGuidance(readme) {
   const requiredReadme = [
     "default read-first Terminal Console",
@@ -318,6 +337,7 @@ assertTrackerExamples(jsonBlocks);
 assertGlossaryTerms();
 assertReadinessGuidance(markdownByPath.get("README.md"));
 assertCompozyGuidance(markdownByPath.get("README.md"));
+assertCompozyQueueShortcutGuidance(markdownByPath.get("README.md"));
 assertTerminalConsoleGuidance(markdownByPath.get("README.md"));
 assertGitHubScope(markdownByPath.get(".github/project-tracking.md"));
 assertLegacyWorkflowReferencesAreScoped();
