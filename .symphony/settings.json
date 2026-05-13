@@ -1,18 +1,18 @@
 {
   "tracker": {
-    "kind": "github",
-    "owner": "MatheusBBarni",
-    "repo": "symphony-orchestrator",
-    "projectNumber": 3,
-    "apiKeyEnv": "GITHUB_TOKEN"
+    "kind": "compozy_tasks",
+    "compozy": {
+      "root": ".compozy/tasks",
+      "maxTaskStepRetries": 2
+    }
   },
   "project": {
     "statusField": "Status",
-    "activeStates": ["Backlog", "Todo", "In Progress", "In Review"],
-    "terminalStates": ["Human attention", "Done", "Closed", "Cancelled"],
-    "startStatus": "In Progress",
-    "reviewStatus": "In Review",
-    "retryStatus": "Todo",
+    "activeStates": ["pending", "in_planning", "in_progress", "in_execution", "in_review"],
+    "terminalStates": ["human_attention", "completed", "failed", "skipped"],
+    "startStatus": "in_progress",
+    "reviewStatus": "in_review",
+    "retryStatus": "pending",
     "ensureStatuses": true
   },
   "polling": {
@@ -21,11 +21,59 @@
   "workspace": {
     "root": ".symphony/workspaces"
   },
+  "harnesses": {
+    "codex": {
+      "kind": "codex",
+      "command": "codex exec",
+      "model": "gpt-5.5",
+      "reasoningEffort": "medium",
+      "loop": {
+        "enabled": true,
+        "command": "/goal"
+      }
+    },
+    "pi": {
+      "kind": "pi",
+      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
+      "model": "openai-codex/gpt-5.5",
+      "reasoningEffort": "xhigh",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    }
+  },
+  "agents": {
+    "planner": {
+      "harness": "codex",
+      "model": "gpt-5.4",
+      "reasoningEffort": "high",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "engineer": {
+      "harness": "codex",
+      "model": "gpt-5.5",
+      "reasoningEffort": "xhigh",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    },
+    "reviewer": {
+      "harness": "codex",
+      "model": "gpt-5.4",
+      "reasoningEffort": "xhigh",
+      "turnTimeoutMs": 3600000,
+      "readTimeoutMs": 5000,
+      "stallTimeoutMs": 300000
+    }
+  },
   "git": {
     "taskBranchPrefix": "symphony/task-",
     "protectedTrunkBranches": ["main"],
     "autoMerge": false,
-    "mergeAttentionStatus": "Human attention",
+    "mergeAttentionStatus": "human_attention",
     "cleanup": {
       "removeWorktreeAfterMerge": true,
       "keepTaskBranch": false
@@ -94,12 +142,12 @@
     "defaultAgent": "engineer",
     "stages": [
       {
-        "states": ["Backlog"],
+        "states": ["pending", "in_planning"],
         "agent": "planner",
-        "harness": "codex",
         "skills": [],
-        "successStatus": "Todo",
-        "retryStatus": "Backlog",
+        "startStatus": "in_planning",
+        "successStatus": "in_progress",
+        "retryStatus": "pending",
         "goal": {
           "enabled": true
         },
@@ -111,13 +159,12 @@
         }
       },
       {
-        "states": ["Todo", "In Progress"],
+        "states": ["in_progress", "in_execution"],
         "agent": "engineer",
-        "harness": "pi",
         "skills": [],
-        "startStatus": "In Progress",
-        "successStatus": "In Review",
-        "retryStatus": "Todo",
+        "startStatus": "in_execution",
+        "successStatus": "in_review",
+        "retryStatus": "pending",
         "goal": {
           "enabled": false
         },
@@ -129,12 +176,12 @@
         }
       },
       {
-        "states": ["In Review"],
+        "states": ["in_review"],
         "agent": "reviewer",
-        "harness": "codex",
         "skills": [],
-        "successStatus": "Done",
-        "retryStatus": "Human attention",
+        "startStatus": "in_review",
+        "successStatus": "completed",
+        "retryStatus": "human_attention",
         "goal": {
           "enabled": true
         },
@@ -148,64 +195,9 @@
     ]
   },
   "agent": {
-    "maxConcurrentAgents": 1,
+    "maxConcurrentAgents": 2,
     "maxTurns": 10,
     "maxRetryBackoffMs": 300000
-  },
-  "codex": {
-    "command": "codex exec",
-    "model": "gpt-5.5",
-    "reasoningEffort": "medium",
-    "turnTimeoutMs": 3600000,
-    "readTimeoutMs": 5000,
-    "stallTimeoutMs": 300000
-  },
-  "agents": {
-    "codex": {
-      "kind": "codex",
-      "command": "codex exec",
-      "model": "gpt-5.5",
-      "reasoningEffort": "high",
-      "turnTimeoutMs": 3600000,
-      "readTimeoutMs": 5000,
-      "stallTimeoutMs": 300000
-    },
-    "pi": {
-      "kind": "pi",
-      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
-      "model": "openai-codex/gpt-5.5",
-      "reasoningEffort": "xhigh",
-      "turnTimeoutMs": 3600000,
-      "readTimeoutMs": 5000,
-      "stallTimeoutMs": 300000
-    },
-    "planner": {
-      "kind": "codex",
-      "command": "codex exec",
-      "model": "gpt-5.5",
-      "reasoningEffort": "medium",
-      "turnTimeoutMs": 3600000,
-      "readTimeoutMs": 5000,
-      "stallTimeoutMs": 300000
-    },
-    "engineer": {
-      "kind": "pi",
-      "command": "pi --model <model> --thinking <reasoning> --print --no-session",
-      "model": "openai-codex/gpt-5.5",
-      "reasoningEffort": "xhigh",
-      "turnTimeoutMs": 3600000,
-      "readTimeoutMs": 5000,
-      "stallTimeoutMs": 300000
-    },
-    "reviewer": {
-      "kind": "codex",
-      "command": "codex exec",
-      "model": "gpt-5.5",
-      "reasoningEffort": "high",
-      "turnTimeoutMs": 3600000,
-      "readTimeoutMs": 5000,
-      "stallTimeoutMs": 300000
-    }
   },
   "server": {
     "port": 8080

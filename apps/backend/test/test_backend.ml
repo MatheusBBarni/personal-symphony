@@ -12238,6 +12238,38 @@ let test_orchestrator_requires_clean_loop_start_for_new_worktree () =
       Alcotest.(check bool) "no placeholder worktree left" false
         (Sys.file_exists (Filename.concat config.workspace.root "_4")))
 
+let test_orchestrator_requires_clean_loop_start_for_new_compozy_worktree_reports_current_task () =
+  with_temp_dir "symphony-dirty-compozy-loop-" (fun root ->
+      let compozy_root, prd_dir, _task_01 = setup_compozy_repo root "terminal-console-elegance" in
+      Util.write_file (Filename.concat root "dirty.txt") "dirty\n";
+      let config =
+        { (compozy_test_config root compozy_root) with Config.git = git_policy ~merge_attention_status:"human_attention" () }
+      in
+      let run = Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir |> require_ok "build PRD run" in
+      let issue = Compozy_tasks_tracker.issue_of_prd_run run in
+      let launches = ref 0 in
+      let statuses = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        incr launches;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      let (), _stdout, stderr = capture_process_output (fun () -> Orchestrator.poll_once orchestrator) in
+      Alcotest.(check int) "not launched" 0 !launches;
+      Alcotest.(check (list string)) "moves to attention without in-progress" [ "human_attention" ] (List.rev !statuses);
+      Alcotest.(check bool) "retry log includes issue" true
+        (contains_substring stderr "dispatch retrying compozy:terminal-console-elegance");
+      Alcotest.(check bool) "retry log includes current task file" true (contains_substring stderr "task_01.md");
+      Alcotest.(check (option string)) "last error"
+        (Some "loop-start worktree must be clean before creating task worktrees")
+        (Orchestrator.get_state orchestrator).last_error)
+
 let test_orchestrator_blocks_disallowed_loop_start_before_side_effects () =
   with_temp_dir "symphony-disallowed-loop-start-" (fun root ->
       init_repo root "main";
@@ -13592,6 +13624,8 @@ let () =
           Alcotest.test_case "uses current remote for minibeads pull request handoff" `Quick
             test_minibeads_pull_request_handoff_uses_current_remote_without_tracker_repo;
           Alcotest.test_case "requires clean loop-start worktree" `Quick test_orchestrator_requires_clean_loop_start_for_new_worktree;
+          Alcotest.test_case "reports current Compozy task on clean loop-start retry" `Quick
+            test_orchestrator_requires_clean_loop_start_for_new_compozy_worktree_reports_current_task;
           Alcotest.test_case "blocks disallowed loop-start before side effects" `Quick
             test_orchestrator_blocks_disallowed_loop_start_before_side_effects;
           Alcotest.test_case "moves conflicting stage commit classification to attention" `Quick

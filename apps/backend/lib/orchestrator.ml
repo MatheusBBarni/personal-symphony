@@ -114,9 +114,14 @@ let render_dispatch_started issue =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "started")
     issue.Issue.identifier issue.title
 
-let render_dispatch_retrying issue_identifier attempt error =
-  Printf.eprintf "%s%s %s %s %s %s %d %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (yellow "retrying")
-    issue_identifier (dim "attempt") attempt error
+let render_dispatch_retrying ?task_file issue_identifier attempt error =
+  match task_file with
+  | Some task_file ->
+      Printf.eprintf "%s%s %s %s %s %s %s %s %d %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch")
+        (yellow "retrying") issue_identifier (dim "task") task_file (dim "attempt") attempt error
+  | None ->
+      Printf.eprintf "%s%s %s %s %s %s %d %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch")
+        (yellow "retrying") issue_identifier (dim "attempt") attempt error
 
 let render_dispatch_completed issue_identifier issue_title =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "completed")
@@ -1826,14 +1831,33 @@ let compozy_workspace_root config (workspace : Workspace.t) =
     | Some relative -> Filename.concat workspace.path relative
     | None -> compozy_root
 
-let compozy_prd_run_for_workspace_issue config workspace issue =
-  let compozy_root = compozy_workspace_root config workspace in
+let compozy_prd_run_for_issue_identifier ~compozy_root issue_identifier =
   match Compozy_tasks_tracker.discover_prd_runs ~compozy_root with
   | Error error -> Error error
   | Ok runs -> (
-      match List.find_opt (fun (run : Compozy_tasks_tracker.prd_run) -> run.id = issue.Issue.identifier) runs with
+      match List.find_opt (fun (run : Compozy_tasks_tracker.prd_run) -> run.id = issue_identifier) runs with
       | Some run -> Ok run
-      | None -> Error (Printf.sprintf "Compozy PRD run not found for %s" issue.Issue.identifier))
+      | None -> Error (Printf.sprintf "Compozy PRD run not found for %s" issue_identifier))
+
+let compozy_prd_run_for_root_issue config issue =
+  compozy_prd_run_for_issue_identifier ~compozy_root:config.Config.tracker.compozy_root issue.Issue.identifier
+
+let compozy_prd_run_for_workspace_issue config workspace issue =
+  let compozy_root = compozy_workspace_root config workspace in
+  compozy_prd_run_for_issue_identifier ~compozy_root issue.Issue.identifier
+
+let dispatch_retry_task_file ?workspace config issue =
+  if config.Config.tracker.kind <> "compozy_tasks" then None
+  else if not (Util.starts_with ~prefix:"compozy:" issue.Issue.identifier) then None
+  else
+    let run_result =
+      match workspace with
+      | Some workspace -> compozy_prd_run_for_workspace_issue config workspace issue
+      | None -> compozy_prd_run_for_root_issue config issue
+    in
+    match run_result with
+    | Ok run -> Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) run.current_step
+    | Error _ -> None
 
 let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_tracker.prd_run)
     (step : Compozy_tasks_tracker.task_step) status =
@@ -2802,7 +2826,7 @@ let dispatch_issue orchestrator issue =
   match shell_prepare_workspace orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch issue with
   | Error error ->
       set_error orchestrator error;
-      render_dispatch_retrying issue.identifier 0 error;
+      render_dispatch_retrying ?task_file:(dispatch_retry_task_file orchestrator.config issue) issue.identifier 0 error;
       ignore (move_issue_status orchestrator issue orchestrator.config.git.merge_attention_status)
   | Ok workspace ->
       let can_dispatch =
@@ -2848,7 +2872,8 @@ let dispatch_issue orchestrator issue =
         match composition_result with
         | Error error ->
             set_error orchestrator error;
-            render_dispatch_retrying issue.identifier 0 error;
+            render_dispatch_retrying ?task_file:(dispatch_retry_task_file ~workspace orchestrator.config issue) issue.identifier
+              0 error;
             ignore (move_issue_status orchestrator issue orchestrator.config.git.merge_attention_status)
         | Ok composition ->
             let context_diagnostic_result =
@@ -2939,8 +2964,9 @@ let mark_retrying orchestrator issue_id error =
   | Some row ->
       let next_attempt = Option.value (Hashtbl.find_opt orchestrator.attempts issue_id) ~default:0 + 1 in
       Hashtbl.replace orchestrator.attempts issue_id next_attempt;
+      let retry_child = List.find_opt (fun child -> child.issue_id = issue_id) orchestrator.children in
       let previous_attempt_output =
-        match List.find_opt (fun child -> child.issue_id = issue_id) orchestrator.children with
+        match retry_child with
         | None -> { attempt = next_attempt; stdout_path = None; stderr_path = None }
         | Some child -> { attempt = next_attempt; stdout_path = child.stdout_path; stderr_path = child.stderr_path }
       in
@@ -2977,7 +3003,12 @@ let mark_retrying orchestrator issue_id error =
       (match retry_status ?stage orchestrator row.issue with
       | None -> ()
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
-      render_dispatch_retrying row.issue.identifier next_attempt error;
+      render_dispatch_retrying
+        ?task_file:
+          (dispatch_retry_task_file
+             ?workspace:(Option.map (fun (child : child) -> child.workspace) retry_child)
+             orchestrator.config row.issue)
+        row.issue.identifier next_attempt error;
       update_ordered_queue_entries orchestrator ~candidates:[ row.issue ] ()
 
 type compozy_failure =
