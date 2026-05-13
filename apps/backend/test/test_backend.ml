@@ -3765,6 +3765,149 @@ let test_ordered_queue_parses_cli_identifiers () =
             [ "owner/repo#20"; "https://github.com/acme/widgets/issues/20"; ""; "mb-"; "mb-zero"; "MB-20" ]
             (List.map (fun (problem : Ordered_queue.parse_problem) -> problem.value) problems))
 
+let ordered_queue_or_fail raw =
+  match Ordered_queue.parse raw with
+  | Ok queue -> queue
+  | Error problems ->
+      Alcotest.fail
+        (Printf.sprintf "queue parse failed for %S: %s" raw
+           (String.concat "; " (List.map (fun (problem : Ordered_queue.parse_problem) -> problem.reason) problems)))
+
+let write_ready_compozy_run config slug =
+  let prd_dir = Filename.concat config.Config.tracker.compozy_root slug in
+  Util.mkdir_p prd_dir;
+  write_compozy_task ~title:("Queued " ^ slug) (Filename.concat prd_dir "task_01.md")
+
+let write_ready_minibeads_settings root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  Util.mkdir_p (Filename.concat root ".beads");
+  let fake_mb = Filename.concat root "fake-mb" in
+  Util.write_file fake_mb "#!/bin/sh\nexit 0\n";
+  Unix.chmod fake_mb 0o755;
+  let settings = Filename.concat root ".symphony/settings.json" in
+  Util.write_file settings
+    (Printf.sprintf
+       {|{
+  "tracker": {"kind": "minibeads", "root": ".beads", "command": %S},
+  "stageAgents": {"enabled": false}
+}|}
+       fake_mb);
+  Config.from_settings_file ~workspace_root:root settings
+
+let expect_single_ordered_queue_gap label (gaps : Ordered_queue.validation_gap list) =
+  match gaps with
+  | [ gap ] -> gap
+  | gaps -> Alcotest.fail (Printf.sprintf "%s: expected one queue gap, got %d" label (List.length gaps))
+
+let expect_single_runtime_readiness_gap label (gaps : Runtime_state.readiness_gap list) =
+  match gaps with
+  | [ gap ] -> gap
+  | gaps -> Alcotest.fail (Printf.sprintf "%s: expected one readiness gap, got %d" label (List.length gaps))
+
+let check_bare_slug_tracker_mismatch label tracker =
+  let gaps = Ordered_queue.validation_gaps tracker (ordered_queue_or_fail "example-feature") in
+  let gap = expect_single_ordered_queue_gap label gaps in
+  Alcotest.(check string) (label ^ " requirement") "orderedQueue.example-feature" gap.requirement;
+  Alcotest.(check bool) (label ^ " names bare Compozy slugs") true
+    (contains_substring gap.remediation "bare Compozy PRD-run slugs");
+  Alcotest.(check bool) (label ^ " names required tracker") true
+    (contains_substring gap.remediation "tracker.kind = \"compozy_tasks\"");
+  Alcotest.(check bool) (label ^ " names selected tracker") true
+    (contains_substring gap.remediation ("tracker.kind = \"" ^ tracker.Issue_tracker.kind ^ "\""))
+
+let test_ordered_queue_readiness_guides_bare_slug_tracker_mismatch () =
+  let tracker kind normalize_identifier =
+    {
+      Issue_tracker.kind;
+      fetch_candidates = (fun () -> Ok []);
+      fetch_by_identifiers = (fun _ -> Alcotest.fail (kind ^ " lookup should not run"));
+      fetch_by_identifiers_detailed = (fun _ -> Alcotest.fail (kind ^ " detailed lookup should not run"));
+      update_status = (fun _ _ -> Ok ());
+      readiness_gaps = (fun () -> []);
+      normalize_identifier;
+      is_active = (fun _ -> true);
+      is_terminal = (fun _ -> false);
+    }
+  in
+  let minibeads_normalize raw =
+    let identifier = Util.trim raw |> String.lowercase_ascii in
+    match Util.drop_prefix ~prefix:"mb-" identifier with
+    | Some number when Ordered_queue.digits_only number -> (
+        match int_of_string_opt number with
+        | Some parsed when parsed > 0 -> Ok ("mb-" ^ string_of_int parsed)
+        | _ -> Error (Printf.sprintf "invalid minibeads issue identifier %S" raw))
+    | _ ->
+        Error
+          (Printf.sprintf
+             "invalid minibeads issue identifier %S; expected an issue identifier like mb-20"
+             raw)
+  in
+  check_bare_slug_tracker_mismatch "GitHub" (tracker "github" Issue_tracker.github_normalize_identifier);
+  check_bare_slug_tracker_mismatch "minibeads" (tracker "minibeads" minibeads_normalize)
+
+let test_runtime_readiness_rejects_mixed_compozy_queue_styles () =
+  with_temp_dir "symphony-compozy-queue-mixed-readiness-" (fun root ->
+      let config = write_compozy_settings root in
+      write_ready_compozy_run config "example-feature";
+      let ordered_queue = ordered_queue_or_fail "example-feature,compozy:example-feature" in
+      let state = Runtime_readiness.state ~ordered_queue config in
+      match state.Runtime_state.readiness_gaps with
+      | [ gap ] ->
+          Alcotest.(check string) "mixed requirement" "orderedQueue.example-feature" gap.requirement;
+          Alcotest.(check bool) "mixed style remediation" true
+            (contains_substring gap.remediation "mixed bare and canonical Compozy queue entries")
+      | gaps -> Alcotest.fail (Printf.sprintf "expected one mixed-style gap, got %d" (List.length gaps)))
+
+let test_runtime_readiness_preserves_structural_queue_parse_gaps () =
+  with_temp_dir "symphony-queue-parse-stage-readiness-" (fun root ->
+      let config = write_compozy_settings root in
+      match Ordered_queue.parse "example-feature,,compozy:valid-run" with
+      | Ok _ -> Alcotest.fail "expected empty queue entry parse problem"
+      | Error problems ->
+          let state = Runtime_readiness.state ~queue_parse_problems:problems config in
+          match state.Runtime_state.readiness_gaps with
+          | [ gap ] ->
+              Alcotest.(check string) "parse requirement" "orderedQueue.<empty>" gap.requirement;
+              Alcotest.(check string) "parse remediation" "empty queue entry" gap.remediation;
+              Alcotest.(check bool) "no tracker mismatch text" false
+                (contains_substring gap.remediation "tracker.kind")
+          | gaps -> Alcotest.fail (Printf.sprintf "expected one parse gap, got %d" (List.length gaps)))
+
+let test_runtime_readiness_reports_resolved_duplicate_queue_identifiers () =
+  with_temp_dir "symphony-compozy-queue-duplicate-readiness-" (fun root ->
+      let config = write_compozy_settings root in
+      write_ready_compozy_run config "example-feature";
+      let ordered_queue = ordered_queue_or_fail "example-feature,example-feature" in
+      let state = Runtime_readiness.state ~ordered_queue config in
+      match state.Runtime_state.readiness_gaps with
+      | [ gap ] ->
+          Alcotest.(check string) "duplicate requirement" "orderedQueue.example-feature" gap.requirement;
+          Alcotest.(check string) "duplicate remediation"
+            "Duplicate queue entry resolves to compozy:example-feature." gap.remediation
+      | gaps -> Alcotest.fail (Printf.sprintf "expected one duplicate gap, got %d" (List.length gaps)))
+
+let test_startup_readiness_blocks_bare_slug_for_non_compozy_tracker () =
+  with_temp_dir "symphony-minibeads-queue-startup-readiness-" (fun root ->
+      let config = write_ready_minibeads_settings root in
+      let ordered_queue = ordered_queue_or_fail "example-feature" in
+      let state = Runtime_readiness.state ~ordered_queue config in
+      let gap = expect_single_runtime_readiness_gap "startup mismatch" state.Runtime_state.readiness_gaps in
+      Alcotest.(check bool) "startup readiness gap mentions mismatch" true
+        (contains_substring gap.Runtime_state.remediation "tracker.kind = \"minibeads\"");
+      let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
+      match Runtime.select_branch ~once:false ~mode:Cli_mode.Terminal_console ~merge_args:[] ~readiness_gaps:state.readiness_gaps with
+      | Runtime.Terminal_console_readiness -> ()
+      | _ -> Alcotest.fail "readiness gap should keep normal startup out of orchestration")
+
+let test_runtime_readiness_allows_canonical_compozy_ordered_queue () =
+  with_temp_dir "symphony-compozy-canonical-queue-readiness-" (fun root ->
+      let config = write_compozy_settings root in
+      write_ready_compozy_run config "example-feature";
+      let ordered_queue = ordered_queue_or_fail "compozy:example-feature" in
+      let state = Runtime_readiness.state ~ordered_queue config in
+      Alcotest.(check (list string)) "canonical queue readiness gaps" []
+        (runtime_requirements state.Runtime_state.readiness_gaps))
+
 let test_ordered_queue_resolves_identifiers_through_selected_tracker () =
   with_temp_dir "symphony-compozy-queue-resolve-" (fun root ->
       let config = write_compozy_settings root in
@@ -13218,6 +13361,18 @@ let () =
           Alcotest.test_case "merges Compozy lifecycle metadata into progress" `Quick
             test_runtime_state_compozy_progress_merges_lifecycle_metadata;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
+          Alcotest.test_case "guides bare slug tracker mismatch readiness" `Quick
+            test_ordered_queue_readiness_guides_bare_slug_tracker_mismatch;
+          Alcotest.test_case "rejects mixed Compozy queue styles in readiness" `Quick
+            test_runtime_readiness_rejects_mixed_compozy_queue_styles;
+          Alcotest.test_case "preserves structural queue parse readiness gaps" `Quick
+            test_runtime_readiness_preserves_structural_queue_parse_gaps;
+          Alcotest.test_case "reports resolved duplicate queue identifiers in readiness" `Quick
+            test_runtime_readiness_reports_resolved_duplicate_queue_identifiers;
+          Alcotest.test_case "blocks bare slug queue startup for non-Compozy tracker" `Quick
+            test_startup_readiness_blocks_bare_slug_for_non_compozy_tracker;
+          Alcotest.test_case "allows canonical Compozy ordered queue readiness" `Quick
+            test_runtime_readiness_allows_canonical_compozy_ordered_queue;
           Alcotest.test_case "resolves ordered queue identifiers through selected tracker" `Quick
             test_ordered_queue_resolves_identifiers_through_selected_tracker;
           Alcotest.test_case "detects resolved ordered queue selector collisions" `Quick

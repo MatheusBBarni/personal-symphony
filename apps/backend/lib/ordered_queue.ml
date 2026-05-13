@@ -154,6 +154,23 @@ let compozy_style_resolution_problems (tracker : Issue_tracker.t) entries =
           ]
     else []
 
+let tracker_queue_identifier_style = function
+  | "github" -> "GitHub issue numbers like 20 or #20"
+  | "minibeads" -> "minibeads identifiers like mb-20"
+  | kind -> Printf.sprintf "identifiers supported by the %s Issue Tracker" kind
+
+let bare_compozy_tracker_mismatch_reason tracker_kind =
+  Printf.sprintf
+    "bare Compozy PRD-run slugs require tracker.kind = \"compozy_tasks\", but Runtime Settings select \
+     tracker.kind = %S. Use %s for this Issue Tracker or switch .symphony/settings.json to tracker.kind = \
+     \"compozy_tasks\"."
+    tracker_kind (tracker_queue_identifier_style tracker_kind)
+
+let resolution_reason (tracker : Issue_tracker.t) queue_identifier reason =
+  if tracker.kind <> "compozy_tasks" && opaque_bare_queue_token (Util.trim queue_identifier) then
+    bare_compozy_tracker_mismatch_reason tracker.kind
+  else reason
+
 let resolve (tracker : Issue_tracker.t) (queue : t) : (resolved, resolution_problem list) result =
   let entries, problems =
     queue.entries
@@ -164,6 +181,7 @@ let resolve (tracker : Issue_tracker.t) (queue : t) : (resolved, resolution_prob
            | Ok canonical_identifier ->
                ({ queue_identifier; canonical_identifier } :: entries, problems)
            | Error reason ->
+               let reason = resolution_reason tracker queue_identifier reason in
                ( entries,
                  {
                    queue_identifier;
@@ -178,10 +196,10 @@ let resolve (tracker : Issue_tracker.t) (queue : t) : (resolved, resolution_prob
   match problems with
   | _ :: _ -> Error problems
   | [] -> (
-      match duplicate_resolution_problems entries with
+      match compozy_style_resolution_problems tracker entries with
       | _ :: _ as problems -> Error problems
       | [] -> (
-          match compozy_style_resolution_problems tracker entries with
+          match duplicate_resolution_problems entries with
           | _ :: _ as problems -> Error problems
           | [] -> Ok { resolved_entries = entries } ))
 
