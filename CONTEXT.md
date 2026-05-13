@@ -278,6 +278,9 @@ _Avoid_: merge worktrees, copy workspace, finish branch
 
 **Terminal Console**:
 The default terminal interface for operating Personal Symphony in a Workspace Repository.
+Normal `symphony` runs open the read-first Terminal Console unless the operator selects Web Dashboard mode, one-shot output, or another explicit CLI action.
+The Terminal Console renders Runtime State snapshots for active work, retrying work, task attention, Readiness Gaps, Ordered Queue progress, Compozy PRD Run progress, Agent Worktree details, and Task Branch context.
+Its MVP aids are limited to local reading, refresh, navigation, filtering, Web Dashboard handoff guidance, and validated local path inspection; they must not mutate task lifecycle state.
 _Avoid_: TUI, terminal UI
 
 **Web Dashboard**:
@@ -368,6 +371,14 @@ _Avoid_: reinitialize, reset
 - The **Runtime Contract** contains an **Agent Prompt**.
 - A **Runtime Home** contains one **Environment Template** and may contain one **Local Environment**.
 - A **Runtime Home** may contain **Runtime State**.
+- A normal `symphony` run opens the read-first **Terminal Console** as the default Runtime State surface.
+- `symphony --web` opens the **Web Dashboard** instead of the foreground **Terminal Console**.
+- `symphony --once` prints non-interactive terminal output and exits without starting the foreground **Terminal Console** loop.
+- The **Terminal Console** uses in-process **Runtime State** snapshots for display.
+- The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream, not a command channel.
+- A readiness-blocked **Terminal Console** renders **Readiness Gaps** and remediation text without starting orchestration.
+- **Terminal Console** local aids may refresh the latest in-memory **Runtime State** snapshot, navigate, filter, show **Web Dashboard** handoff guidance, or inspect validated local paths.
+- **Terminal Console** local aids must not retry tasks, pause or resume dispatch, update tracker status, merge or push **Task Branches**, open pull requests, change the **Runtime Contract**, or otherwise mutate task lifecycle state.
 - A **Runtime Home** may contain many **Agent Workspaces**.
 - An **Agent Worktree** is an **Agent Workspace**.
 - The **Runtime Settings** may define many named **Agent Harnesses** under `harnesses`.
@@ -572,7 +583,7 @@ _Avoid_: reinitialize, reset
 - A failed **Batch Branch Push** is retryable.
 - Runtime State records Batch Pull Request handoff attempts, completions, and retryable failures.
 - The **Runtime Contract** is version-controlled with the Workspace Repository.
-- A **Readiness Gap** prevents dispatch but does not prevent the TUI from starting.
+- A **Readiness Gap** prevents dispatch but does not prevent the **Terminal Console** from starting.
 - Personal Symphony starts the **Terminal Console** by default.
 - Personal Symphony starts the **Web Dashboard** when requested with `--web`.
 - A **Web Dashboard Refactor** may change how Runtime State is presented in the **Web Dashboard**.
@@ -636,7 +647,7 @@ _Avoid_: reinitialize, reset
 
 > **Dev:** "When the user runs the CLI, should we write files into the **Product Repository**?"
 > **Domain expert:** "No, runtime files belong in the **Workspace Repository** where the user invoked Personal Symphony."
-> **Dev:** "Should the user have to run an init command before the first TUI launch?"
+> **Dev:** "Should the user have to run an init command before the first **Terminal Console** launch?"
 > **Domain expert:** "No, the default command should perform a **Bootstrap** when required."
 > **Dev:** "Where do agent working directories live?"
 > **Domain expert:** "Inside the **Runtime Home** as **Agent Workspaces**, and the bootstrap should add them to the Runtime Home gitignore."
@@ -644,8 +655,8 @@ _Avoid_: reinitialize, reset
 > **Domain expert:** "No, commit the **Environment Template** and ignore the **Local Environment**."
 > **Dev:** "Does the workflow contract stay at the repository root?"
 > **Domain expert:** "No, the **Runtime Contract** lives inside the **Runtime Home**."
-> **Dev:** "Should missing token values prevent the TUI from opening?"
-> **Domain expert:** "No, show each **Readiness Gap** in the TUI with the action needed to resolve it."
+> **Dev:** "Should missing token values prevent the **Terminal Console** from opening?"
+> **Domain expert:** "No, show each **Readiness Gap** in the **Terminal Console** with the action needed to resolve it."
 > **Dev:** "Should Symphony push after every stage even when that stage did not create a commit?"
 > **Domain expert:** "No, a **Stage Push** only follows a successful **Stage Commit**."
 > **Dev:** "Should a **Stage Push** target a configured branch?"

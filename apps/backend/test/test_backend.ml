@@ -2863,6 +2863,54 @@ let test_runtime_contract_docs_are_secret_free () =
         (contains_substring combined secret_marker))
     [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ]
 
+let test_terminal_console_docs_document_default_runtime_semantics () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  let adr = read "docs/adr/0024-default-rich-terminal-console.md" in
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
+    [
+      "default read-first Terminal Console";
+      "Run `symphony` from the Workspace Repository root";
+      "Runtime State snapshots";
+      "Readiness Gaps";
+      "Ordered Queue progress";
+      "Compozy PRD Run progress";
+      "Agent Worktree details";
+      "Task Branch context";
+      "Web Dashboard handoff command";
+      "do not retry tasks, pause or resume dispatch, update tracker status";
+      "symphony --web --port 8080";
+      "Live Dashboard Connection as a Runtime State stream";
+      "`symphony --once`";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (contains_substring context expected))
+    [
+      "Normal `symphony` runs open the read-first Terminal Console";
+      "`symphony --web` opens the **Web Dashboard**";
+      "`symphony --once` prints non-interactive terminal output";
+      "The **Terminal Console** uses in-process **Runtime State** snapshots";
+      "The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream";
+      "**Terminal Console** local aids must not retry tasks";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
+    [
+      "Accepted";
+      "Normal `symphony` runs open the read-first Terminal Console by default";
+      "`symphony --web` keeps Web Dashboard mode separate";
+      "The `symphony --once` command keeps";
+      "non-interactive terminal output";
+      "Runtime State snapshots";
+      "must not retry tasks, pause or resume dispatch";
+    ];
+  Alcotest.(check bool) "README avoids TUI product wording" false (contains_substring readme "TUI");
+  Alcotest.(check bool) "ADR avoids TUI product wording" false (contains_substring adr "TUI")
+
 let test_project_adr_documents_migration_and_loop_semantics () =
   let adr = Util.read_file (repository_file "docs/adr/0021-agent-harness-runtime-settings.md") in
   List.iter
@@ -11606,6 +11654,8 @@ let () =
           Alcotest.test_case "Runtime Contract examples use Harnesses and logical agents" `Quick
             test_runtime_contract_docs_use_current_harness_examples;
           Alcotest.test_case "Runtime Contract docs are secret-free" `Quick test_runtime_contract_docs_are_secret_free;
+          Alcotest.test_case "Terminal Console docs cover default runtime semantics" `Quick
+            test_terminal_console_docs_document_default_runtime_semantics;
           Alcotest.test_case "project ADR documents migration and loop semantics" `Quick
             test_project_adr_documents_migration_and_loop_semantics;
         ] );

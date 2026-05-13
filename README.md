@@ -56,6 +56,33 @@ Edit `.symphony/settings.json` to choose an Issue Tracker, set tracker-specific 
 status states, and set runtime commands. Runtime Settings reference secrets by environment variable
 name; secret values belong only in the Local Environment.
 
+### Default Terminal Console
+
+Run `symphony` from the Workspace Repository root to start the default read-first Terminal Console.
+It is the foreground surface for normal local orchestration and renders Runtime State snapshots for
+active work, retrying work, task attention, Readiness Gaps, Ordered Queue progress, Compozy PRD Run
+progress, Agent Worktree details, and Task Branch context.
+Compozy PRD Run progress appears when Compozy tracking is selected.
+
+The Terminal Console is safe to keep open while Symphony runs. Its MVP safe local aids are limited to
+refreshing the latest in-memory Runtime State snapshot, navigating and filtering panels, showing the
+Web Dashboard handoff command, and inspecting validated local paths such as the Workspace Repository
+or Runtime Home. These aids do not retry tasks, pause or resume dispatch, update tracker status, merge
+or push Task Branches, open pull requests, change Runtime Contract files, or otherwise mutate task
+lifecycle state.
+
+Use Web Dashboard mode when browser-level inspection is more useful:
+
+```sh
+symphony --web --port 8080
+```
+
+The Web Dashboard keeps using the Live Dashboard Connection as a Runtime State stream. It is not a
+Terminal Console command channel.
+
+For a non-interactive check, use `symphony --once`; it prints terminal output and exits without
+starting the foreground Terminal Console loop.
+
 ### Issue Tracker Selection
 
 GitHub is the default Issue Tracker. It uses GitHub Issues as issue records and GitHub Projects
@@ -563,7 +590,7 @@ pnpm backend:dev
 
 The backend serves:
 
-- Terminal Console/API root: `http://127.0.0.1:8080/`
+- Backend/API root: `http://127.0.0.1:8080/`
 - Runtime state JSON: `http://127.0.0.1:8080/api/v1/state`
 - Tailscale/LAN access: `http://<machine-ip>:8080/` because the backend binds to `0.0.0.0`.
 
