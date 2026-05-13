@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Render MVP Active-Run Panels"
 type: backend
 complexity: high
@@ -31,12 +31,12 @@ Implement the Mosaic panels that make the default Terminal Console useful for ac
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add the Active Work Home View layout.
-- [ ] 4.2 Add Readiness and Attention panels.
-- [ ] 4.3 Add Ordered Queue and Compozy PRD Run progress panels.
-- [ ] 4.4 Add task detail summary panels for selected active work.
-- [ ] 4.5 Add responsive behavior for minimum terminal dimensions and narrow widths.
-- [ ] 4.6 Add rendering tests or projection-backed snapshot tests for MVP panel states.
+- [x] 4.1 Add the Active Work Home View layout.
+- [x] 4.2 Add Readiness and Attention panels.
+- [x] 4.3 Add Ordered Queue and Compozy PRD Run progress panels.
+- [x] 4.4 Add task detail summary panels for selected active work.
+- [x] 4.5 Add responsive behavior for minimum terminal dimensions and narrow widths.
+- [x] 4.6 Add rendering tests or projection-backed snapshot tests for MVP panel states.
 
 ## Implementation Details
 Modify `apps/backend/bin/terminal_console_mosaic.ml` and supporting executable-side modules. Render from `Terminal_console_model.t` only. Reference the TechSpec "Component Overview", "Terminal Environment", and "Testing Approach" sections for panel boundaries and validation expectations.
@@ -71,15 +71,15 @@ Use TUI design principles: fixed panel positions where possible, contextual foot
 
 ## Tests
 - Unit tests:
-  - [ ] Active Work Home View chooses running/retrying/attention/next-work rows from the projection.
-  - [ ] Readiness panel formats multiple requirement/remediation pairs without dropping remediation text.
-  - [ ] Ordered Queue panel distinguishes pending, running, retrying, completed, and skipped entries.
-  - [ ] Compozy panel formats current step plus completed/failed/skipped/total counts.
-  - [ ] Task detail panel includes Goal Usage and context status when present and omits absent optional fields cleanly.
-  - [ ] No-color formatting keeps text labels or symbols that distinguish running, retrying, attention, readiness, and idle states.
+  - [x] Active Work Home View chooses running/retrying/attention/next-work rows from the projection.
+  - [x] Readiness panel formats multiple requirement/remediation pairs without dropping remediation text.
+  - [x] Ordered Queue panel distinguishes pending, running, retrying, completed, and skipped entries.
+  - [x] Compozy panel formats current step plus completed/failed/skipped/total counts.
+  - [x] Task detail panel includes Goal Usage and context status when present and omits absent optional fields cleanly.
+  - [x] No-color formatting keeps text labels or symbols that distinguish running, retrying, attention, readiness, and idle states.
 - Integration tests:
-  - [ ] Rendering from representative Runtime State fixtures succeeds for idle, readiness-blocked, running, retrying, and Compozy scenarios.
-  - [ ] Minimum-size terminal scenario produces a resize/help message instead of crashing.
+  - [x] Rendering from representative Runtime State fixtures succeeds for idle, readiness-blocked, running, retrying, and Compozy scenarios.
+  - [x] Minimum-size terminal scenario produces a resize/help message instead of crashing.
 - Test coverage target: >=80%
 - All tests must pass
 
