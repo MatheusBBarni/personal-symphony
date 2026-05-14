@@ -3439,17 +3439,37 @@ let test_update_discovery_failure_does_not_install () =
         [ "npm view symphony-orchestrator version --json" ]
         (List.rev !commands))
 
+let test_update_rejects_invalid_latest_version_before_install () =
+  with_temp_dir "symphony-update-invalid-version-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then
+          { Update_cli.code = 0; output = {|"0.2.0;touch /tmp/symphony-owned"|} }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
 let test_update_installs_and_validates_with_yes () =
   with_temp_dir "symphony-update-yes-" (fun root ->
       let prefix, launcher, launcher_target = make_fake_npm_install root in
       let launcher_real = Unix.realpath launcher_target in
+      let package_spec = Util.shell_quote "symphony-orchestrator@0.2.0" in
       let commands = ref [] in
       let runner command =
         commands := command :: !commands;
         if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
         else if
           command
-          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+          = Printf.sprintf "npm install -g %s --prefix %s" package_spec (Util.shell_quote prefix)
         then { Update_cli.code = 0; output = "installed" }
         else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
         else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
@@ -3466,13 +3486,14 @@ let test_update_installs_and_validates_with_yes () =
 let test_update_install_failure_does_not_validate () =
   with_temp_dir "symphony-update-install-failure-" (fun root ->
       let prefix, launcher, _ = make_fake_npm_install root in
+      let package_spec = Util.shell_quote "symphony-orchestrator@0.2.0" in
       let commands = ref [] in
       let runner command =
         commands := command :: !commands;
         if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
         else if
           command
-          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+          = Printf.sprintf "npm install -g %s --prefix %s" package_spec (Util.shell_quote prefix)
         then { Update_cli.code = 1; output = "EACCES" }
         else Alcotest.fail ("unexpected command: " ^ command)
       in
@@ -3487,11 +3508,12 @@ let test_update_validation_failure_is_not_success () =
   with_temp_dir "symphony-update-validation-" (fun root ->
       let prefix, launcher, launcher_target = make_fake_npm_install root in
       let launcher_real = Unix.realpath launcher_target in
+      let package_spec = Util.shell_quote "symphony-orchestrator@0.2.0" in
       let runner command =
         if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
         else if
           command
-          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+          = Printf.sprintf "npm install -g %s --prefix %s" package_spec (Util.shell_quote prefix)
         then { Update_cli.code = 0; output = "installed" }
         else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
         else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
@@ -13444,6 +13466,7 @@ let () =
           Alcotest.test_case "requires --yes when non-interactive" `Quick test_update_noninteractive_requires_yes_before_install;
           Alcotest.test_case "already current skips confirmation" `Quick test_update_already_current_does_not_require_yes;
           Alcotest.test_case "discovery failure does not install" `Quick test_update_discovery_failure_does_not_install;
+          Alcotest.test_case "rejects invalid latest version" `Quick test_update_rejects_invalid_latest_version_before_install;
           Alcotest.test_case "installs and validates update" `Quick test_update_installs_and_validates_with_yes;
           Alcotest.test_case "install failure does not validate" `Quick test_update_install_failure_does_not_validate;
           Alcotest.test_case "fails validation mismatch" `Quick test_update_validation_failure_is_not_success;
