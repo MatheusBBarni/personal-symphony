@@ -1027,6 +1027,23 @@ let nonempty_lines fallback = function [] -> [ fallback ] | lines -> lines
 let span ?(attrs = []) slot text =
   Span.make ~style:Style.(make ~fg:(Theme.dark slot) ~attrs ()) text
 
+let theme_slot_of_tone = function
+  | Components.Neutral -> Theme.Fg_muted
+  | Components.Accent -> Theme.Accent_primary
+  | Components.Info -> Theme.Status_info
+  | Components.Success -> Theme.Status_success
+  | Components.Warning -> Theme.Status_warning
+  | Components.Error -> Theme.Status_error
+
+let toned_span ?(attrs = [ Attr.Bold ]) tone text = span ~attrs (theme_slot_of_tone tone) text
+
+let tab_tone = function
+  | Queue -> Components.Accent
+  | Logs -> Components.Info
+  | Tasks -> Components.Success
+  | Readiness -> Components.Warning
+  | Attention -> Components.Error
+
 let log_default text = span Theme.Fg_default text
 let log_muted ?(attrs = [ Attr.Dim ]) text = span ~attrs Theme.Fg_muted text
 let log_emphasis text = span ~attrs:[ Attr.Bold ] Theme.Fg_emphasis text
@@ -1043,12 +1060,54 @@ let lowercase_token token =
   |> String.map (function ',' | ';' -> ' ' | c -> c)
   |> Util.trim
 
+let tone_of_keyword = function
+  | "running" | "ready" | "completed" | "ok" | "success" | "succeeded" | "active"
+  | "merged" ->
+      Some Components.Success
+  | "retrying" | "pending" | "warning" | "skipped" | "draft" | "not-ready"
+  | "not_ready" | "kept" ->
+      Some Components.Warning
+  | "attention" | "blocked" | "failed" | "failure" | "error" | "readiness_blocked" ->
+      Some Components.Error
+  | "checking" | "generated" | "created" | "present" | "in_progress" | "in_execution"
+  | "in_review" | "in_planning" | "handoff_completed" | "handoff_attempting"
+  | "handoff_failed" ->
+      Some Components.Info
+  | _ -> None
+
+let split_first_word text =
+  match String.index_opt text ' ' with
+  | Some index ->
+      let first = String.sub text 0 index in
+      let rest = String.sub text (index + 1) (String.length text - index - 1) in
+      Some (first, rest)
+  | None when text <> "" -> Some (text, "")
+  | None -> None
+
 let is_timestamp_token token =
   let token = lowercase_token token in
   let len = String.length token in
   len >= 5
   && String.contains token ':'
   && String.for_all (function '0' .. '9' | ':' -> true | _ -> false) token
+
+let is_issue_token token =
+  let token = Projection.sanitize token in
+  token <> ""
+  &&
+  match token.[0] with
+  | '#' -> true
+  | _ -> starts_with token "ISSUE-" || starts_with token "MB-"
+
+let is_number_like token =
+  let token = lowercase_token token in
+  token <> ""
+  &&
+  String.for_all
+    (function
+      | '0' .. '9' | '.' | '%' | '/' -> true
+      | _ -> false)
+    token
 
 let value_span value =
   let display = if is_path_token value then compact_path_token value else value in
@@ -1092,6 +1151,121 @@ let log_line_spans line =
          prefix @ token_spans token)
   |> List.concat
 
+let content_label_tone label =
+  let label = String.lowercase_ascii label in
+  if contains_substring label "error" || contains_substring label "attention" then Components.Error
+  else if contains_substring label "readiness" || contains_substring label "remediation" then Components.Warning
+  else if contains_substring label "status" || contains_substring label "active" then Components.Success
+  else if contains_substring label "updated" || contains_substring label "progress" then Components.Info
+  else Components.Accent
+
+let content_prefix_spans line =
+  if starts_with line "> " then ([ toned_span Components.Accent ">"; log_muted ~attrs:[] " " ], String.sub line 2 (String.length line - 2))
+  else
+    let rec take_spaces index =
+      if index < String.length line && line.[index] = ' ' then take_spaces (index + 1) else index
+    in
+    let prefix_len = take_spaces 0 in
+    if prefix_len = 0 then ([], line)
+    else ([ log_muted ~attrs:[] (String.sub line 0 prefix_len) ], String.sub line prefix_len (String.length line - prefix_len))
+
+let clause_prefixes =
+  [
+    ("issue state ", Components.Info);
+    ("stage agent ", Components.Accent);
+    ("stage states ", Components.Success);
+    ("last event ", Components.Info);
+    ("last message ", Components.Info);
+    ("harness ", Components.Accent);
+    ("harness kind ", Components.Accent);
+    ("branch ", Components.Info);
+    ("attempt ", Components.Warning);
+    ("due ", Components.Info);
+    ("status ", Components.Info);
+    ("time ", Components.Info);
+    ("tokens ", Components.Accent);
+    ("reason ", Components.Warning);
+    ("lifecycle ", Components.Success);
+    ("dispatch state ", Components.Info);
+    ("pr readiness ", Components.Warning);
+    ("handoff ", Components.Accent);
+    ("current step ", Components.Info);
+    ("run id ", Components.Info);
+    ("task ", Components.Accent);
+    ("stage ", Components.Accent);
+  ]
+
+let rec value_token_spans token =
+  let normalized = lowercase_token token in
+  match tone_of_keyword normalized with
+  | Some tone -> [ toned_span tone token ]
+  | None when normalized = "|" || normalized = "-" -> [ log_muted ~attrs:[] token ]
+  | None when is_issue_token token -> [ log_secondary token ]
+  | None when starts_with token "symphony/" || starts_with token "codex/" -> [ log_secondary token ]
+  | None when is_timestamp_token token || (String.contains token 'T' && String.contains token ':') ->
+      [ log_info token ]
+  | None when is_number_like token -> [ log_emphasis token ]
+  | None when is_path_token token -> [ log_muted (compact_path_token token) ]
+  | None when String.length token > 1 && token = String.uppercase_ascii token -> [ log_emphasis token ]
+  | None -> [ log_default token ]
+
+and tokenized_value_spans text =
+  text |> String.split_on_char ' '
+  |> List.filter (fun token -> token <> "")
+  |> List.mapi (fun index token ->
+         let prefix = if index = 0 then [] else [ log_muted ~attrs:[] " " ] in
+         prefix @ value_token_spans token)
+  |> List.concat
+
+and clause_spans clause =
+  let lowered = String.lowercase_ascii clause in
+  match List.find_opt (fun (prefix, _) -> starts_with lowered prefix) clause_prefixes with
+  | Some (prefix, tone) ->
+      let prefix_len = String.length prefix in
+      let label = String.sub clause 0 prefix_len |> Util.trim in
+      let value = String.sub clause prefix_len (String.length clause - prefix_len) |> Util.trim in
+      [ toned_span tone label; log_muted ~attrs:[] " " ] @ tokenized_value_spans value
+  | None -> (
+      match split_first_word clause with
+      | Some (first, rest) -> (
+          match tone_of_keyword (lowercase_token first) with
+          | Some tone ->
+              [ toned_span tone first ]
+              @ if rest = "" then [] else [ log_muted ~attrs:[] " " ] @ tokenized_value_spans rest
+          | None -> tokenized_value_spans clause)
+      | None -> [])
+
+let value_spans text =
+  text |> String.split_on_char '|'
+  |> List.map Util.trim
+  |> List.filter (fun clause -> clause <> "")
+  |> List.mapi (fun index clause ->
+         let prefix = if index = 0 then [] else [ log_muted ~attrs:[] " | " ] in
+         prefix @ clause_spans clause)
+  |> List.concat
+
+let content_line_spans line =
+  let prefix_spans, body = content_prefix_spans line in
+  let body = Projection.sanitize body in
+  let body_spans =
+    if body = "" then []
+    else if String.for_all (fun c -> c = '-') body then [ log_muted body ]
+    else
+      match String.index_opt body ':' with
+      | Some index when index > 0 ->
+          let label = String.sub body 0 index |> Util.trim in
+          let value = String.sub body (index + 1) (String.length body - index - 1) |> Util.trim in
+          [ toned_span (content_label_tone label) (label ^ ":") ]
+          @ if value = "" then []
+            else [ log_muted ~attrs:[] " " ] @ value_spans value
+      | _ -> (
+          match split_first_word body with
+          | Some ("No", rest) -> [ log_muted ("No" ^ if rest = "" then "" else " " ^ rest) ]
+          | Some ("Resize", rest) -> [ log_muted ("Resize" ^ if rest = "" then "" else " " ^ rest) ]
+          | _ -> value_spans body)
+  in
+  prefix_spans @ body_spans
+
 let line_nodes ?(spaced = false) lines =
   lines |> nonempty_lines "None"
   |> List.map (fun line ->
@@ -1101,6 +1275,16 @@ let line_nodes ?(spaced = false) lines =
                make ~fg:(Theme.dark Theme.Fg_default) ~height:(Cells 1)
                  ~margin:(spacing ~bottom:(if spaced then 1 else 0) ()) ())
            line)
+
+let content_line_nodes lines =
+  lines |> nonempty_lines "None"
+  |> List.map (fun line ->
+         Components.rich_text
+           ~style:
+             Style.(
+               make ~height:(Cells 1) ~fg:(Theme.dark Theme.Fg_default)
+                 ~margin:(spacing ~bottom:1 ()) ())
+           (content_line_spans line))
 
 let log_line_nodes lines =
   lines |> nonempty_lines "No background logs captured yet."
@@ -1135,38 +1319,71 @@ let active_panel rendered interaction =
   | Some panel -> panel
   | None -> { title = tab_title interaction.active_tab; lines = [ "No content available." ] }
 
+let footer_segment_spans text =
+  let text = Util.trim text in
+  match String.index_opt text ']' with
+  | Some index when starts_with text "[" ->
+      let key = String.sub text 1 (index - 1) in
+      let label = String.sub text (index + 1) (String.length text - index - 1) in
+      [ toned_span Components.Accent ("[" ^ key ^ "]"); span Theme.Fg_muted label ]
+  | _ -> content_line_spans text
+
+let footer_spans text =
+  text |> String.split_on_char '|'
+  |> List.mapi (fun index segment ->
+         let prefix = if index = 0 then [] else [ span Theme.Fg_muted " | " ] in
+         prefix @ footer_segment_spans segment)
+  |> List.concat
+
 let footer_node rendered =
-  Components.text
+  Components.rich_text
     ~style:
       Style.(
-        make ~height:(Cells 1) ~width:(Percent 1.) ~bg:(Color.indexed 237)
-          ~fg:(Color.indexed 250) ~attrs:[ Attr.Dim ] ())
-    rendered.footer
+        make ~height:(Cells 1) ~width:(Percent 1.) ~bg:(Theme.dark Theme.Bg_surface)
+          ~fg:(Theme.dark Theme.Fg_default) ())
+    (footer_spans rendered.footer)
+
+let tab_node active tab =
+  let tone = tab_tone tab in
+  let attrs = if active then [ Attr.Bold; Attr.Underline ] else [ Attr.Dim ] in
+  Components.rich_text
+    ~style:Style.(make ~height:(Cells 1) ())
+    [
+      toned_span ~attrs tone (tab_title tab);
+    ]
 
 let view model =
   let rendered = render_model model in
   let panel = active_panel rendered model.interaction in
+  let active_tab = model.interaction.active_tab in
   let children =
     [
       Components.header ~subtitle:rendered.subheading
-        ~badges:[ (status_badge_tone model.snapshot.mode, rendered.status_label) ]
+        ~badges:
+          [ (tab_tone active_tab, tab_title active_tab); (status_badge_tone model.snapshot.mode, rendered.status_label) ]
         rendered.heading;
       Components.row
-        ~style:Style.(make ~height:(Cells 1) ~align_items:Align_center ~padding:(spacing_xy ~x:2 ~y:0) ())
+        ~style:
+          Style.(
+            make ~height:(Cells 1) ~align_items:Align_center
+              ~padding:(spacing_xy ~x:2 ~y:0) ~bg:(Theme.dark Theme.Bg_surface) ())
         [
-          Components.tab_bar
-            (List.map (fun tab -> (tab_title tab, tab = model.interaction.active_tab)) tab_order);
+          Components.row ~gap:2
+            (List.map (fun tab -> tab_node (tab = active_tab) tab) tab_order);
         ];
-      Components.panel panel.title
-        ~style:Style.(make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0) ())
+      Components.panel panel.title ~tone:(tab_tone active_tab)
+        ~style:
+          Style.(
+            make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0)
+              ~bg:(Theme.dark Theme.Bg_surface) ())
         [
           Components.scroll_box
             ~style:
               Style.(
                 make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0)
-                  ~flex_direction:Column ())
+                  ~flex_direction:Column ~bg:(Theme.dark Theme.Bg_surface) ())
             (if model.interaction.active_tab = Logs then log_line_nodes panel.lines
-             else line_nodes ~spaced:true panel.lines);
+             else content_line_nodes panel.lines);
         ];
       footer_node rendered;
     ]
