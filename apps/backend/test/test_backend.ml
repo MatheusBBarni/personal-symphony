@@ -4581,6 +4581,34 @@ let test_terminal_console_tui_ordered_queue_panel_states () =
   check_line_contains "skipped state" lines "SKIPPED #5 Five";
   check_line_contains "skip reason" lines "skip reason: Issue skipped"
 
+let test_terminal_console_tui_queue_space_expands_selected_stage () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  (match Shell.ui_key_of_tui_key (Tui.Key.of_sequence " ") with
+  | Some Shell.Space_key -> ()
+  | _ -> Alcotest.fail "expected terminal space key to map to Queue expansion key");
+  let running_issue, running = terminal_console_running_row ~identifier:"#2" ~title:"Two" "I2" in
+  let queue =
+    { Runtime_state.entries = [ { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "running"; skip_reason = None } ] }
+  in
+  let state =
+    {
+      (Runtime_state.empty ~ordered_queue:queue ()) with
+      issues = [ running_issue ];
+      running = [ running ];
+    }
+  in
+  let model = Shell.initial_model state in
+  let expanded = Shell.apply_key Shell.Space_key model in
+  Alcotest.(check (option string)) "expanded queue row" (Some "#2")
+    expanded.model.Shell.interaction.Shell.expanded_queue_id;
+  let lines = Shell.render_model expanded.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_contains "expanded task line" lines "Task: #2 Two";
+  check_line_contains "expanded stage agent" lines "Stage: stage agent engineer";
+  check_wrapped_text_contains "expanded stage states" lines "stage states Todo, In progress";
+  let collapsed = Shell.apply_key Shell.Space_key expanded.model in
+  Alcotest.(check (option string)) "collapsed queue row" None
+    collapsed.model.Shell.interaction.Shell.expanded_queue_id
+
 let test_terminal_console_tui_logs_panel_uses_background_logs () =
   let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:terminal_console_compozy_fixture () in
   let logs =
@@ -4595,6 +4623,34 @@ let test_terminal_console_tui_logs_panel_uses_background_logs () =
   check_line_contains "startup log" lines "startup ready terminal_console tracker compozy_tasks";
   check_line_contains "poll log" lines "poll checking compozy_tasks tracker";
   check_line_absent "logs tab is not summary panel" lines "Compozy PRD Run: tui-rewrite"
+
+let test_terminal_console_tui_logs_panel_newest_first_and_scrolls () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let size : Shell.terminal_size = { columns = 80; rows = 24 } in
+  let logs = List.init 18 (fun index -> Printf.sprintf "log-%02d" (index + 1)) in
+  let snapshot = terminal_console_snapshot (Runtime_state.empty ()) in
+  let interaction = Shell.{ default_interaction with active_tab = Logs } in
+  let newest_lines =
+    Shell.render_snapshot ~terminal_size:size ~interaction ~logs snapshot |> fun rendered ->
+    Shell.panel_lines rendered "Logs"
+  in
+  (match newest_lines with
+  | first :: _ -> check_line_contains "newest log first" [ first ] "log-18"
+  | [] -> Alcotest.fail "expected log lines");
+  check_line_absent "oldest log outside first page" newest_lines "log-01";
+  let scrolled_lines =
+    Shell.render_snapshot ~terminal_size:size ~interaction:Shell.{ interaction with logs_scroll = 2 } ~logs snapshot
+    |> fun rendered -> Shell.panel_lines rendered "Logs"
+  in
+  (match scrolled_lines with
+  | first :: _ -> check_line_contains "scroll moves toward older logs" [ first ] "log-16"
+  | [] -> Alcotest.fail "expected scrolled log lines");
+  let model = Shell.initial_model ~terminal_size:size ~logs (Runtime_state.empty ()) in
+  let model = Shell.{ model with interaction } in
+  let moved_down = Shell.apply_key Shell.Down_key model in
+  Alcotest.(check int) "down scrolls logs" 1 moved_down.model.Shell.interaction.Shell.logs_scroll;
+  let moved_up = Shell.apply_key Shell.Up_key moved_down.model in
+  Alcotest.(check int) "up scrolls logs" 0 moved_up.model.Shell.interaction.Shell.logs_scroll
 
 let test_terminal_console_tui_log_paths_are_compact () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -4647,6 +4703,37 @@ let test_terminal_console_tui_task_detail_omits_absent_optional_fields () =
   check_line_contains "detail error" lines "Current error: needs user";
   check_line_absent "goal omitted" lines "Goal Usage:";
   check_line_absent "context omitted" lines "Context Status:"
+
+let test_terminal_console_tui_tasks_panel_separates_task_rows () =
+  let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
+  let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ running_issue; retry_issue; attention_issue ];
+      running = [ running ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 1;
+            due_at = "2026-05-04T00:02:00Z";
+            error = None;
+            goal_usage = None;
+          };
+        ];
+      issue_errors = [ { Runtime_state.issue_id = "I3"; issue_identifier = "#3"; error = "blocked"; goal_usage = None } ];
+    }
+  in
+  let lines = terminal_console_panel state "Tasks" in
+  let separator_count =
+    List.fold_left
+      (fun count line -> if contains_substring line "------------" then count + 1 else count)
+      0 lines
+  in
+  Alcotest.(check int) "task separators" 2 separator_count
 
 let test_terminal_console_tui_no_color_labels_remain_distinct () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -13565,14 +13652,20 @@ let () =
             test_terminal_console_tui_readiness_attention_panel_wraps_remediation;
           Alcotest.test_case "renders Queue panel states" `Quick
             test_terminal_console_tui_ordered_queue_panel_states;
+          Alcotest.test_case "expands Queue stage details with Space" `Quick
+            test_terminal_console_tui_queue_space_expands_selected_stage;
           Alcotest.test_case "renders Logs panel background output" `Quick
             test_terminal_console_tui_logs_panel_uses_background_logs;
+          Alcotest.test_case "renders Logs newest first with scroll" `Quick
+            test_terminal_console_tui_logs_panel_newest_first_and_scrolls;
           Alcotest.test_case "compacts Terminal Console log paths" `Quick
             test_terminal_console_tui_log_paths_are_compact;
           Alcotest.test_case "renders task detail context" `Quick
             test_terminal_console_tui_task_detail_panel_includes_context;
           Alcotest.test_case "omits absent task detail fields" `Quick
             test_terminal_console_tui_task_detail_omits_absent_optional_fields;
+          Alcotest.test_case "separates Tasks panel rows" `Quick
+            test_terminal_console_tui_tasks_panel_separates_task_rows;
           Alcotest.test_case "keeps no-color status labels distinct" `Quick
             test_terminal_console_tui_no_color_labels_remain_distinct;
           Alcotest.test_case "renders Terminal Console fixture snapshots" `Quick

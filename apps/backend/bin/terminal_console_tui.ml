@@ -30,6 +30,8 @@ type interaction = {
   filter_text : string;
   filter_active : bool;
   help_visible : bool;
+  logs_scroll : int;
+  expanded_queue_id : string option;
 }
 
 type model = {
@@ -64,6 +66,9 @@ type ui_key =
   | Left_key
   | Right_key
   | Tab_key
+  | Space_key
+  | Page_up_key
+  | Page_down_key
 
 type transition = {
   model : model;
@@ -89,6 +94,8 @@ let default_interaction =
     filter_text = "";
     filter_active = false;
     help_visible = false;
+    logs_scroll = 0;
+    expanded_queue_id = None;
   }
 
 let status_label = function
@@ -129,9 +136,23 @@ let keep_recent_logs logs =
     let rec drop n lines = if n <= 0 then lines else match lines with [] -> [] | _ :: rest -> drop (n - 1) rest in
     drop (count - max_log_lines) logs
 
+let rec drop_count count lines =
+  if count <= 0 then lines else match lines with [] -> [] | _ :: rest -> drop_count (count - 1) rest
+
+let rec take_count count lines =
+  if count <= 0 then []
+  else match lines with [] -> [] | line :: rest -> line :: take_count (count - 1) rest
+
 let append_log_line model line =
-  let logs = keep_recent_logs (model.logs @ sanitize_logs [ line ]) in
-  { model with logs }
+  let new_logs = sanitize_logs [ line ] in
+  let previous_count = List.length model.logs in
+  let logs = keep_recent_logs (model.logs @ new_logs) in
+  let dropped = max 0 ((previous_count + List.length new_logs) - List.length logs) in
+  let logs_scroll =
+    if model.interaction.logs_scroll = 0 then 0
+    else max 0 (model.interaction.logs_scroll + List.length new_logs - dropped)
+  in
+  { model with logs; interaction = { model.interaction with logs_scroll } }
 
 let initial_model ?terminal_size ?(logs = []) state =
   let snapshot = Projection.of_runtime_state state in
@@ -253,13 +274,32 @@ let visible_safe_aids snapshot interaction = List.filter (safe_aid_matches inter
 
 let clamp_index count index = if count <= 0 then 0 else max 0 (min (count - 1) index)
 
+let list_nth_opt list index =
+  let rec loop current = function
+    | [] -> None
+    | value :: _ when current = index -> Some value
+    | _ :: rest -> loop (current + 1) rest
+  in
+  if index < 0 then None else loop 0 list
+
 let clamp_interaction snapshot interaction =
   let active = clamp_index (List.length (visible_active_rows snapshot interaction)) interaction.selected_rows.active in
   let readiness = clamp_index (List.length (visible_readiness_rows snapshot interaction)) interaction.selected_rows.readiness in
-  let queue = clamp_index (List.length (visible_queue_rows snapshot interaction)) interaction.selected_rows.queue in
+  let queue_rows = visible_queue_rows snapshot interaction in
+  let queue = clamp_index (List.length queue_rows) interaction.selected_rows.queue in
   let attention = clamp_index (List.length (visible_attention_rows snapshot interaction)) interaction.selected_rows.attention in
   let safe_aid = clamp_index (List.length (visible_safe_aids snapshot interaction)) interaction.selected_rows.safe_aid in
-  { interaction with selected_rows = { active; readiness; queue; attention; safe_aid } }
+  let expanded_queue_id =
+    match interaction.expanded_queue_id with
+    | Some id when List.exists (fun (row : Projection.task_row) -> row.id = id) queue_rows -> Some id
+    | _ -> None
+  in
+  {
+    interaction with
+    selected_rows = { active; readiness; queue; attention; safe_aid };
+    logs_scroll = max 0 interaction.logs_scroll;
+    expanded_queue_id;
+  }
 
 let row_count_for_tab snapshot interaction = function
   | Queue -> List.length (visible_queue_rows snapshot interaction)
@@ -398,6 +438,13 @@ let filter_line interaction =
   let query = filter_query interaction in
   if query = "" then [] else [ "Filter: " ^ query ]
 
+let task_separator_line width = "  " ^ String.make (min 72 (max 12 (width - 2))) '-'
+
+let rec intersperse separator = function
+  | [] -> []
+  | [ line ] -> [ line ]
+  | line :: rest -> line :: separator :: intersperse separator rest
+
 let tasks_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
   let width = content_width terminal_size in
   let active_rows = visible_active_rows snapshot interaction in
@@ -405,7 +452,10 @@ let tasks_panel ?terminal_size ?(interaction = default_interaction) (snapshot : 
     match active_rows with
     | [] when filter_query interaction <> "" -> [ "No active rows match the current filter." ]
     | [] -> [ idle_home_line snapshot.mode ]
-    | rows -> List.mapi (fun index row -> task_row_line ~prefix:(row_marker interaction.selected_rows.active index) row) rows
+    | rows ->
+        rows
+        |> List.mapi (fun index row -> task_row_line ~prefix:(row_marker interaction.selected_rows.active index) row)
+        |> intersperse (task_separator_line width)
   in
   let next_lines =
     match next_queue_row snapshot with Some row -> [ "Next work: " ^ queue_row_line ~next:true row ] | None -> []
@@ -474,6 +524,39 @@ let attention_panel ?terminal_size ?(interaction = default_interaction) (snapsho
   in
   { title = "Needs attention"; lines }
 
+let split_detail detail =
+  detail |> String.split_on_char '|' |> List.map Util.trim |> List.filter (fun item -> item <> "")
+
+let detail_items row = match row.Projection.detail with None -> [] | Some detail -> split_detail detail
+
+let detail_group prefixes items =
+  List.filter (fun item -> List.exists (fun prefix -> starts_with item prefix) prefixes) items
+
+let optional_join label items = match items with [] -> [] | items -> [ label ^ String.concat " | " items ]
+
+let matching_active_task snapshot (row : Projection.task_row) =
+  List.find_opt (fun (active : Projection.task_row) -> active.id = row.id) snapshot.Projection.active
+
+let queue_expansion_lines snapshot (row : Projection.task_row) =
+  let task_line = Printf.sprintf "    Task: %s %s" row.id row.title in
+  match matching_active_task snapshot row with
+  | Some active ->
+      let items = detail_items active in
+      let stage_items = detail_group [ "stage agent "; "stage states "; "last event "; "last message " ] items in
+      let stage_line =
+        match stage_items with
+        | [] -> "    Stage: " ^ state_token active.state
+        | stage_items -> "    Stage: " ^ String.concat " | " stage_items
+      in
+      [ task_line; stage_line ]
+  | None -> [ task_line; "    Stage: " ^ state_token row.state ]
+
+let queue_row_lines snapshot interaction index row =
+  let line = queue_row_line row |> fun line -> row_marker interaction.selected_rows.queue index ^ line in
+  match interaction.expanded_queue_id with
+  | Some id when id = row.Projection.id -> line :: queue_expansion_lines snapshot row
+  | _ -> [ line ]
+
 let queue_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
   let width = content_width terminal_size in
   let lines =
@@ -484,10 +567,7 @@ let queue_panel ?terminal_size ?(interaction = default_interaction) (snapshot : 
         let next =
           match next_queue_row snapshot with Some row -> [ "Next work: " ^ queue_row_line ~next:true row ] | None -> []
         in
-        next
-        @ List.mapi
-            (fun index row -> queue_row_line row |> fun line -> row_marker interaction.selected_rows.queue index ^ line)
-            queue
+        next @ (List.mapi (queue_row_lines snapshot interaction) queue |> List.concat)
   in
   { title = "Queue"; lines = wrap_lines ~width lines }
 
@@ -507,16 +587,6 @@ let compozy_panel ?terminal_size (snapshot : Projection.t) =
   in
   { title = "Compozy PRD Run"; lines = wrap_lines ~width lines }
 
-let split_detail detail =
-  detail |> String.split_on_char '|' |> List.map Util.trim |> List.filter (fun item -> item <> "")
-
-let detail_items row = match row.Projection.detail with None -> [] | Some detail -> split_detail detail
-
-let detail_group prefixes items =
-  List.filter (fun item -> List.exists (fun prefix -> starts_with item prefix) prefixes) items
-
-let optional_join label items = match items with [] -> [] | items -> [ label ^ String.concat " | " items ]
-
 let goal_usage_line (usage : Projection.goal_usage) =
   match usage.text with
   | Some text -> Some ("Goal Usage: " ^ text)
@@ -531,14 +601,6 @@ let goal_usage_line (usage : Projection.goal_usage) =
         |> fun parts -> match usage.tokens_used with Some tokens -> Printf.sprintf "tokens %d" tokens :: parts | None -> parts
       in
       if parts = [] then None else Some ("Goal Usage: " ^ String.concat " | " (List.rev parts))
-
-let list_nth_opt list index =
-  let rec loop current = function
-    | [] -> None
-    | value :: _ when current = index -> Some value
-    | _ :: rest -> loop (current + 1) rest
-  in
-  if index < 0 then None else loop 0 list
 
 let selected_task ?(interaction = default_interaction) (snapshot : Projection.t) =
   let rows, selected =
@@ -576,6 +638,7 @@ let help_commands =
     ("q", "quit Terminal Console");
     ("Tab / h/l / Left/Right", "switch tabs");
     ("Up/Down / j/k", "move selectable rows");
+    ("Space", "expand selected Queue task stage");
     ("/", "search visible rows");
     ("r", "refresh latest in-memory Runtime State snapshot");
     ("w", "show Web Dashboard handoff");
@@ -674,12 +737,21 @@ let compact_log_line line =
   |> List.filter (fun token -> token <> "")
   |> List.map compact_log_token |> String.concat " "
 
-let logs_panel ?terminal_size logs =
+let logs_window_size = function None -> None | Some size -> Some (max 1 (size.rows - 10))
+
+let logs_panel ?terminal_size ?(interaction = default_interaction) logs =
   let width = content_width terminal_size in
   let lines =
     match sanitize_logs logs with
     | [] -> [ "No background logs captured yet." ]
-    | logs -> List.map compact_log_line logs
+    | logs ->
+        let logs = List.rev logs |> List.map compact_log_line in
+        let offset = min (max 0 interaction.logs_scroll) (max 0 (List.length logs - 1)) in
+        let logs = drop_count offset logs in
+        let logs =
+          match logs_window_size terminal_size with None -> logs | Some limit -> take_count limit logs
+        in
+        logs
   in
   { title = "Logs"; lines = wrap_lines ~width lines }
 
@@ -689,12 +761,18 @@ let contextual_footer ?(interaction = default_interaction) handoff_available =
       (if interaction.filter_text = "" then "<empty>" else interaction.filter_text)
  else
     let handoff = if handoff_available then "[w]web" else "[w]unavailable" in
+    let movement =
+      match interaction.active_tab with
+      | Logs -> "[j/k]scroll"
+      | Queue -> "[j/k]rows [Space]expand"
+      | _ -> "[j/k]rows"
+    in
     String.concat " | "
       [
         "[q]quit";
         "[Tab]tabs";
         "[h/l]tabs";
-        "[j/k]rows";
+        movement;
         "[/]search";
         "[r]refresh";
         handoff;
@@ -725,7 +803,7 @@ let render_snapshot ?terminal_size ?(interaction = default_interaction) ?(logs =
         panels =
           [
             queue_panel ?terminal_size ~interaction snapshot;
-            logs_panel ?terminal_size logs;
+            logs_panel ?terminal_size ~interaction logs;
             tasks_panel ?terminal_size ~interaction snapshot;
             readiness_panel ?terminal_size ~interaction snapshot;
             attention_panel ?terminal_size ~interaction snapshot;
@@ -838,6 +916,39 @@ let inspect_selected_path ~local_surfaces model =
             { model with status_message = Some ("Inspect path read-only: " ^ path) }
             ~safe_aids:[ Projection.Show_path path ])
 
+let logs_scroll_step model =
+  match logs_window_size model.terminal_size with Some step -> step | None -> 10
+
+let move_log_scroll delta model =
+  let log_count = List.length (sanitize_logs model.logs) in
+  let max_scroll = max 0 (log_count - 1) in
+  let logs_scroll = max 0 (min max_scroll (model.interaction.logs_scroll + delta)) in
+  let interaction = { model.interaction with logs_scroll } in
+  let status_message =
+    if log_count = 0 then "Logs: no captured lines"
+    else Printf.sprintf "Logs line %d of %d" (logs_scroll + 1) log_count
+  in
+  transition (update_interaction ~status_message model interaction)
+
+let selected_queue_row model =
+  visible_queue_rows model.snapshot model.interaction
+  |> fun rows -> list_nth_opt rows model.interaction.selected_rows.queue
+
+let toggle_queue_expansion model =
+  match selected_queue_row model with
+  | None -> transition { model with status_message = Some "Queue: no row selected" }
+  | Some row ->
+      let expanded_queue_id =
+        match model.interaction.expanded_queue_id with Some id when id = row.id -> None | _ -> Some row.id
+      in
+      let status_message =
+        match expanded_queue_id with
+        | Some _ -> Printf.sprintf "Queue details: %s %s" row.id row.title
+        | None -> "Queue details hidden"
+      in
+      let interaction = { model.interaction with expanded_queue_id } in
+      transition (update_interaction ~status_message model interaction)
+
 let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key model =
   if model.interaction.filter_active then
     match key with
@@ -848,6 +959,7 @@ let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key
         let interaction = { model.interaction with filter_active = false } in
         transition (update_interaction ~status_message:"Search applied" model interaction)
     | Backspace_key -> remove_filter_char model
+    | Space_key -> append_filter_char model ' '
     | Character c -> append_filter_char model c
     | _ -> transition model
   else if model.interaction.help_visible then
@@ -883,12 +995,22 @@ let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key
         let interaction = move_tab 1 model.interaction in
         transition
           (update_interaction ~status_message:("Tab: " ^ focused_tab_title interaction.active_tab) model interaction)
-    | Character 'k' | Up_key ->
-        let interaction = move_row (-1) model.snapshot model.interaction in
-        transition (update_interaction ~status_message:(selection_status model.snapshot interaction) model interaction)
     | Character 'j' | Down_key ->
-        let interaction = move_row 1 model.snapshot model.interaction in
-        transition (update_interaction ~status_message:(selection_status model.snapshot interaction) model interaction)
+        if model.interaction.active_tab = Logs then move_log_scroll 1 model
+        else
+          let interaction = move_row 1 model.snapshot model.interaction in
+          transition (update_interaction ~status_message:(selection_status model.snapshot interaction) model interaction)
+    | Character 'k' | Up_key ->
+        if model.interaction.active_tab = Logs then move_log_scroll (-1) model
+        else
+          let interaction = move_row (-1) model.snapshot model.interaction in
+          transition (update_interaction ~status_message:(selection_status model.snapshot interaction) model interaction)
+    | Page_down_key ->
+        if model.interaction.active_tab = Logs then move_log_scroll (logs_scroll_step model) model else transition model
+    | Page_up_key ->
+        if model.interaction.active_tab = Logs then move_log_scroll (-(logs_scroll_step model)) model else transition model
+    | Space_key | Character ' ' ->
+        if model.interaction.active_tab = Queue then toggle_queue_expansion model else transition model
     | Character _ | Enter_key | Backspace_key -> transition model
 
 let render_model model =
@@ -1090,6 +1212,9 @@ let ui_key_of_tui_key (key : Key.event) =
   | "left" -> Some Left_key
   | "right" -> Some Right_key
   | "tab" -> Some Tab_key
+  | "space" -> Some Space_key
+  | "pageup" -> Some Page_up_key
+  | "pagedown" -> Some Page_down_key
   | name when (not key.ctrl) && (not key.alt) && String.length name = 1 -> Some (Character name.[0])
   | _ -> None
 
