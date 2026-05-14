@@ -1,4 +1,4 @@
-open Mosaic
+open Tui
 
 module Projection = Terminal_console_model
 
@@ -7,23 +7,25 @@ type local_surface = { label : string; root : string }
 
 type runtime = {
   initial_state : Runtime_state.t;
+  initial_logs : string list;
   subscribe : (Runtime_state.t -> unit) -> unit;
   safe_aid : Projection.safe_aid -> unit;
   web_handoff : web_handoff;
   local_surfaces : local_surface list;
 }
 
-type focused_panel = Active_work | Readiness_attention | Ordered_queue | Compozy_run | Task_detail | Safe_aids
+type active_tab = Queue | Logs | Tasks | Readiness | Attention
 
 type row_selection = {
   active : int;
   readiness : int;
   queue : int;
+  attention : int;
   safe_aid : int;
 }
 
 type interaction = {
-  focused_panel : focused_panel;
+  active_tab : active_tab;
   selected_rows : row_selection;
   filter_text : string;
   filter_active : bool;
@@ -34,6 +36,7 @@ type model = {
   snapshot : Projection.t;
   status_label : string;
   status_message : string option;
+  logs : string list;
   terminal_size : terminal_size option;
   interaction : interaction;
 }
@@ -44,6 +47,8 @@ type panel = { title : string; lines : string list }
 
 type rendered_snapshot = {
   heading : string;
+  status_label : string;
+  tabs : string;
   subheading : string;
   panels : panel list;
   footer : string;
@@ -68,18 +73,18 @@ type transition = {
 
 type msg = Snapshot_received of Runtime_state.t | Key_press of ui_key | Resize of terminal_size
 
-let compile_anchor = "terminal-console-mosaic"
+let compile_anchor = "terminal-console-tui"
 let minimum_terminal_size = { columns = 80; rows = 24 }
 let default_web_handoff ?(host = "127.0.0.1") ?(port = 8080) () =
   { command = Printf.sprintf "symphony --web --port %d" port; url = Printf.sprintf "http://%s:%d/" host port }
 
 let local_surface ~label ~root = { label = Projection.sanitize label; root }
 
-let default_row_selection = { active = 0; readiness = 0; queue = 0; safe_aid = 0 }
+let default_row_selection = { active = 0; readiness = 0; queue = 0; attention = 0; safe_aid = 0 }
 
 let default_interaction =
   {
-    focused_panel = Active_work;
+    active_tab = Queue;
     selected_rows = default_row_selection;
     filter_text = "";
     filter_active = false;
@@ -97,12 +102,44 @@ let status_label = function
       let sanitized = Projection.sanitize mode in
       if sanitized = "" then "Unknown" else "Unknown: " ^ sanitized
 
-let initial_model ?terminal_size state =
+let status_badge_label = function
+  | "idle" -> "STOPPED"
+  | "readiness_blocked" -> "BLOCKED"
+  | mode ->
+      let mode = Projection.sanitize mode |> String.uppercase_ascii in
+      if mode = "" then "UNKNOWN" else mode
+
+let status_badge_tone = function
+  | "idle" -> Components.Neutral
+  | "ready" | "running" -> Components.Success
+  | "retrying" | "attention" | "readiness_blocked" -> Components.Warning
+  | _ -> Components.Info
+
+let sanitize_logs logs =
+  logs
+  |> List.map Projection.sanitize
+  |> List.filter (fun line -> line <> "")
+
+let max_log_lines = 500
+
+let keep_recent_logs logs =
+  let count = List.length logs in
+  if count <= max_log_lines then logs
+  else
+    let rec drop n lines = if n <= 0 then lines else match lines with [] -> [] | _ :: rest -> drop (n - 1) rest in
+    drop (count - max_log_lines) logs
+
+let append_log_line model line =
+  let logs = keep_recent_logs (model.logs @ sanitize_logs [ line ]) in
+  { model with logs }
+
+let initial_model ?terminal_size ?(logs = []) state =
   let snapshot = Projection.of_runtime_state state in
   {
     snapshot;
     status_label = status_label snapshot.mode;
     status_message = None;
+    logs = keep_recent_logs (sanitize_logs logs);
     terminal_size;
     interaction = default_interaction;
   }
@@ -130,31 +167,32 @@ let ordered_rows rows =
     (fun (left : Projection.task_row) (right : Projection.task_row) -> compare (state_rank left.state) (state_rank right.state))
     rows
 
-let focused_panel_title = function
-  | Active_work -> "Active Work"
-  | Readiness_attention -> "Readiness and Attention"
-  | Ordered_queue -> "Ordered Queue"
-  | Compozy_run -> "Compozy PRD Run"
-  | Task_detail -> "Task Detail"
-  | Safe_aids -> "Safe Aids"
+let tab_title = function
+  | Queue -> "Queue"
+  | Logs -> "Logs"
+  | Tasks -> "Tasks"
+  | Readiness -> "Readiness"
+  | Attention -> "Needs attention"
 
-let panel_order = [ Active_work; Readiness_attention; Ordered_queue; Compozy_run; Task_detail; Safe_aids ]
+let focused_tab_title = tab_title
 
-let panel_index panel =
+let tab_order = [ Queue; Logs; Tasks; Readiness; Attention ]
+
+let tab_index tab =
   let rec loop index = function
     | [] -> 0
-    | current :: rest -> if current = panel then index else loop (index + 1) rest
+    | current :: rest -> if current = tab then index else loop (index + 1) rest
   in
-  loop 0 panel_order
+  loop 0 tab_order
 
-let panel_at index =
-  let count = List.length panel_order in
+let tab_at index =
+  let count = List.length tab_order in
   let normalized = (index mod count + count) mod count in
-  List.nth panel_order normalized
+  List.nth tab_order normalized
 
-let move_panel delta interaction =
-  let focused_panel = panel_at (panel_index interaction.focused_panel + delta) in
-  { interaction with focused_panel; filter_active = false }
+let move_tab delta interaction =
+  let active_tab = tab_at (tab_index interaction.active_tab + delta) in
+  { interaction with active_tab; filter_active = false }
 
 let contains_substring text needle =
   let text_len = String.length text in
@@ -188,6 +226,8 @@ let task_row_matches interaction row =
 let visible_task_rows interaction rows = rows |> List.filter (task_row_matches interaction) |> ordered_rows
 let visible_active_rows snapshot interaction = visible_task_rows interaction snapshot.Projection.active
 let visible_queue_rows snapshot interaction = visible_task_rows interaction snapshot.Projection.queue
+let visible_attention_rows snapshot interaction =
+  visible_active_rows snapshot interaction |> List.filter (is_state "attention")
 
 let readiness_search_text (row : Projection.readiness_row) =
   String.lowercase_ascii (row.requirement ^ " " ^ row.remediation)
@@ -217,40 +257,41 @@ let clamp_interaction snapshot interaction =
   let active = clamp_index (List.length (visible_active_rows snapshot interaction)) interaction.selected_rows.active in
   let readiness = clamp_index (List.length (visible_readiness_rows snapshot interaction)) interaction.selected_rows.readiness in
   let queue = clamp_index (List.length (visible_queue_rows snapshot interaction)) interaction.selected_rows.queue in
+  let attention = clamp_index (List.length (visible_attention_rows snapshot interaction)) interaction.selected_rows.attention in
   let safe_aid = clamp_index (List.length (visible_safe_aids snapshot interaction)) interaction.selected_rows.safe_aid in
-  { interaction with selected_rows = { active; readiness; queue; safe_aid } }
+  { interaction with selected_rows = { active; readiness; queue; attention; safe_aid } }
 
-let row_count_for_panel snapshot interaction = function
-  | Active_work | Task_detail -> List.length (visible_active_rows snapshot interaction)
-  | Readiness_attention -> List.length (visible_readiness_rows snapshot interaction)
-  | Ordered_queue -> List.length (visible_queue_rows snapshot interaction)
-  | Compozy_run -> Option.fold ~none:0 ~some:(fun _ -> 1) snapshot.Projection.compozy
-  | Safe_aids -> List.length (visible_safe_aids snapshot interaction)
+let row_count_for_tab snapshot interaction = function
+  | Queue -> List.length (visible_queue_rows snapshot interaction)
+  | Logs -> 0
+  | Tasks -> List.length (visible_active_rows snapshot interaction)
+  | Readiness -> List.length (visible_readiness_rows snapshot interaction)
+  | Attention -> List.length (visible_attention_rows snapshot interaction)
 
-let selected_row_for_panel interaction = function
-  | Active_work | Task_detail -> interaction.selected_rows.active
-  | Readiness_attention -> interaction.selected_rows.readiness
-  | Ordered_queue -> interaction.selected_rows.queue
-  | Compozy_run -> 0
-  | Safe_aids -> interaction.selected_rows.safe_aid
+let selected_row_for_tab interaction = function
+  | Queue -> interaction.selected_rows.queue
+  | Logs -> 0
+  | Tasks -> interaction.selected_rows.active
+  | Readiness -> interaction.selected_rows.readiness
+  | Attention -> interaction.selected_rows.attention
 
-let set_selected_row_for_panel interaction panel selected =
+let set_selected_row_for_tab interaction tab selected =
   let selected_rows =
-    match panel with
-    | Active_work | Task_detail -> { interaction.selected_rows with active = selected }
-    | Readiness_attention -> { interaction.selected_rows with readiness = selected }
-    | Ordered_queue -> { interaction.selected_rows with queue = selected }
-    | Compozy_run -> interaction.selected_rows
-    | Safe_aids -> { interaction.selected_rows with safe_aid = selected }
+    match tab with
+    | Queue -> { interaction.selected_rows with queue = selected }
+    | Logs -> interaction.selected_rows
+    | Tasks -> { interaction.selected_rows with active = selected }
+    | Readiness -> { interaction.selected_rows with readiness = selected }
+    | Attention -> { interaction.selected_rows with attention = selected }
   in
   { interaction with selected_rows }
 
 let move_row delta snapshot interaction =
-  let panel = interaction.focused_panel in
-  let count = row_count_for_panel snapshot interaction panel in
-  let current = selected_row_for_panel interaction panel in
+  let tab = interaction.active_tab in
+  let count = row_count_for_tab snapshot interaction tab in
+  let current = selected_row_for_tab interaction tab in
   let selected = clamp_index count (current + delta) in
-  set_selected_row_for_panel interaction panel selected
+  set_selected_row_for_tab interaction tab selected
 
 let state_token state =
   match String.lowercase_ascii state with
@@ -313,6 +354,18 @@ let minimum_size_lines size =
 
 let summary_line snapshot prefix = List.find_opt (fun line -> starts_with line prefix) snapshot.Projection.summary
 
+let summary_value snapshot prefix =
+  match summary_line snapshot prefix with
+  | None -> None
+  | Some line ->
+      let prefix_len = String.length prefix in
+      Some (String.sub line prefix_len (String.length line - prefix_len) |> Util.trim)
+
+let project_title snapshot =
+  match summary_value snapshot "Workspace Repository:" with
+  | Some title when title <> "" -> title
+  | _ -> "Symphony"
+
 let total_tokens_line snapshot =
   option_value ~default:"Total tokens: unavailable" (summary_line snapshot "Total tokens:")
 
@@ -345,7 +398,7 @@ let filter_line interaction =
   let query = filter_query interaction in
   if query = "" then [] else [ "Filter: " ^ query ]
 
-let home_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
+let tasks_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
   let width = content_width terminal_size in
   let active_rows = visible_active_rows snapshot interaction in
   let active_lines =
@@ -372,7 +425,7 @@ let home_panel ?terminal_size ?(interaction = default_interaction) (snapshot : P
     ]
     @ filter_line interaction @ active_lines @ next_lines @ error_lines
   in
-  { title = "Active Work"; lines = wrap_lines ~width lines }
+  { title = "Tasks"; lines = wrap_lines ~width lines }
 
 let readiness_lines ~width ~selected readiness =
   readiness
@@ -385,34 +438,43 @@ let readiness_lines ~width ~selected readiness =
            ])
   |> List.concat
 
-let attention_lines ~width active =
+let attention_lines ~width ~selected active =
   active
-  |> List.filter (is_state "attention")
-  |> ordered_rows
-  |> List.map (fun row ->
+  |> List.mapi (fun index row ->
          let lines =
-           task_row_line row
+           task_row_line ~prefix:(row_marker selected index) row
            ::
            (match row.error with Some error -> [ "Current error: " ^ shorten error ] | None -> [])
          in
          wrap_lines ~width lines)
   |> List.concat
 
-let readiness_attention_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
+let readiness_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
   let width = content_width terminal_size in
   let readiness = readiness_lines ~width ~selected:interaction.selected_rows.readiness (visible_readiness_rows snapshot interaction) in
-  let attention = attention_lines ~width (visible_active_rows snapshot interaction) in
   let lines =
-    match (readiness, attention) with
-    | [], [] when filter_query interaction <> "" -> [ "No Readiness Gaps or task attention rows match the filter." ]
-    | [], [] -> [ "No Readiness Gaps or task attention conditions." ]
-    | readiness, [] -> readiness
-    | [], attention -> attention
-    | readiness, attention -> readiness @ [ "" ] @ attention
+    match readiness with
+    | [] when filter_query interaction <> "" -> [ "No Readiness Gaps match the current filter." ]
+    | [] -> [ "No Readiness Gaps." ]
+    | readiness -> readiness
   in
-  { title = "Readiness and Attention"; lines }
+  { title = "Readiness"; lines }
 
-let ordered_queue_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
+let attention_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
+  let width = content_width terminal_size in
+  let attention =
+    attention_lines ~width ~selected:interaction.selected_rows.attention
+      (visible_attention_rows snapshot interaction)
+  in
+  let lines =
+    match attention with
+    | [] when filter_query interaction <> "" -> [ "No task attention rows match the current filter." ]
+    | [] -> [ "No task attention conditions." ]
+    | attention -> attention
+  in
+  { title = "Needs attention"; lines }
+
+let queue_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
   let width = content_width terminal_size in
   let lines =
     match visible_queue_rows snapshot interaction with
@@ -427,7 +489,7 @@ let ordered_queue_panel ?terminal_size ?(interaction = default_interaction) (sna
             (fun index row -> queue_row_line row |> fun line -> row_marker interaction.selected_rows.queue index ^ line)
             queue
   in
-  { title = "Ordered Queue"; lines = wrap_lines ~width lines }
+  { title = "Queue"; lines = wrap_lines ~width lines }
 
 let compozy_panel ?terminal_size (snapshot : Projection.t) =
   let width = content_width terminal_size in
@@ -479,8 +541,12 @@ let list_nth_opt list index =
   if index < 0 then None else loop 0 list
 
 let selected_task ?(interaction = default_interaction) (snapshot : Projection.t) =
-  let rows = visible_active_rows snapshot interaction in
-  list_nth_opt rows interaction.selected_rows.active
+  let rows, selected =
+    match interaction.active_tab with
+    | Attention -> (visible_attention_rows snapshot interaction, interaction.selected_rows.attention)
+    | _ -> (visible_active_rows snapshot interaction, interaction.selected_rows.active)
+  in
+  list_nth_opt rows selected
 
 let task_detail_panel ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
   let width = content_width terminal_size in
@@ -505,74 +571,170 @@ let task_detail_panel ?terminal_size ?(interaction = default_interaction) (snaps
   in
   { title = "Task Detail"; lines = wrap_lines ~width lines }
 
-let help_lines =
+let help_commands =
   [
-    "q quit";
-    "Tab/Left/Right switch panels";
-    "Up/Down or k/j move rows";
-    "/ search visible rows";
-    "r refresh latest in-memory snapshot";
-    "w show Web Dashboard handoff";
-    "o inspect selected local path";
-    "? toggle help";
+    ("q", "quit Terminal Console");
+    ("Tab / h/l / Left/Right", "switch tabs");
+    ("Up/Down / j/k", "move selectable rows");
+    ("/", "search visible rows");
+    ("r", "refresh latest in-memory Runtime State snapshot");
+    ("w", "show Web Dashboard handoff");
+    ("o", "inspect selected local path");
+    ("Esc / ?", "close this modal");
   ]
+
+let help_lines = List.map (fun (key, label) -> key ^ " " ^ label) help_commands
 
 let safe_aids_panel ?(interaction = default_interaction) (snapshot : Projection.t) =
   let aids =
     visible_safe_aids snapshot interaction
     |> List.mapi (fun index aid -> row_marker interaction.selected_rows.safe_aid index ^ safe_aid_label aid)
   in
-  let lines = if interaction.help_visible then aids @ [ ""; "Help" ] @ help_lines else aids in
+  let lines = aids in
   { title = "Safe Aids"; lines }
+
+let ends_with ~suffix text =
+  let suffix_len = String.length suffix in
+  let text_len = String.length text in
+  suffix_len <= text_len && String.sub text (text_len - suffix_len) suffix_len = suffix
+
+let is_path_token token =
+  let is_url = starts_with token "http://" || starts_with token "https://" in
+  (not is_url)
+  && (starts_with token "/" || starts_with token "./" || starts_with token "../"
+     || starts_with token ".symphony/" || starts_with token "apps/" || starts_with token "docs/"
+     || String.contains token '/' || ends_with ~suffix:"/..." token)
+
+let split_trailing_log_punctuation token =
+  let len = String.length token in
+  if len = 0 then (token, "")
+  else
+    match token.[len - 1] with
+    | ',' | ';' -> (String.sub token 0 (len - 1), String.make 1 token.[len - 1])
+    | _ -> (token, "")
+
+let join_path_components components = String.concat "/" components
+
+let rec suffix_from_component marker = function
+  | component :: _ as suffix when component = marker -> Some suffix
+  | _ :: rest -> suffix_from_component marker rest
+  | [] -> None
+
+let last_path_components count components =
+  let rec drop count items =
+    if count <= 0 then items
+    else match items with [] -> [] | _ :: rest -> drop (count - 1) rest
+  in
+  let extra = List.length components - count in
+  drop extra components
+
+let compact_absolute_path components =
+  let rec from_runtime_dir = function
+    | root :: ((".symphony" | ".compozy") as runtime_dir) :: rest ->
+        Some (root :: runtime_dir :: rest)
+    | _ :: rest -> from_runtime_dir rest
+    | [] -> None
+  in
+  match from_runtime_dir components with
+  | Some suffix -> join_path_components suffix
+  | None -> (
+      let cwd_root = Filename.basename (Sys.getcwd ()) in
+      match suffix_from_component cwd_root components with
+      | Some suffix -> join_path_components suffix
+      | None -> (
+          match last_path_components 3 components with
+          | [] -> "/"
+          | suffix -> join_path_components suffix))
+
+let compact_relative_path components =
+  match components with
+  | _ :: _ -> join_path_components components
+  | [] -> "."
+
+let compact_path_token token =
+  let body, punctuation = split_trailing_log_punctuation token in
+  if not (is_path_token body) then token
+  else
+    let components = body |> String.split_on_char '/' |> List.filter (fun part -> part <> "") in
+    let compact =
+      if starts_with body "/" then compact_absolute_path components else compact_relative_path components
+    in
+    compact ^ punctuation
+
+let compact_log_token token =
+  match String.index_opt token '=' with
+  | Some index when index > 0 ->
+      let key = String.sub token 0 index in
+      let value = String.sub token (index + 1) (String.length token - index - 1) in
+      key ^ "=" ^ if is_path_token value then compact_path_token value else value
+  | _ -> if is_path_token token then compact_path_token token else token
+
+let compact_log_line line =
+  line |> String.split_on_char ' '
+  |> List.filter (fun token -> token <> "")
+  |> List.map compact_log_token |> String.concat " "
+
+let logs_panel ?terminal_size logs =
+  let width = content_width terminal_size in
+  let lines =
+    match sanitize_logs logs with
+    | [] -> [ "No background logs captured yet." ]
+    | logs -> List.map compact_log_line logs
+  in
+  { title = "Logs"; lines = wrap_lines ~width lines }
 
 let contextual_footer ?(interaction = default_interaction) handoff_available =
   if interaction.filter_active then
     Printf.sprintf "search: %s | type to filter, Backspace edit, Enter apply, Esc cancel"
       (if interaction.filter_text = "" then "<empty>" else interaction.filter_text)
-  else
-    let handoff = if handoff_available then "w Web Dashboard" else "w handoff unavailable" in
+ else
+    let handoff = if handoff_available then "[w]web" else "[w]unavailable" in
     String.concat " | "
       [
-        "q quit";
-        "Tab/Left/Right panels";
-        "Up/Down rows";
-        "/ search";
-        "r refresh";
+        "[q]quit";
+        "[Tab]tabs";
+        "[h/l]tabs";
+        "[j/k]rows";
+        "[/]search";
+        "[r]refresh";
         handoff;
-        "o inspect path";
-        "? help";
+        "[o]path";
+        "[?]help";
       ]
 
-let render_snapshot ?terminal_size ?(interaction = default_interaction) (snapshot : Projection.t) =
+let render_snapshot ?terminal_size ?(interaction = default_interaction) ?(logs = []) (snapshot : Projection.t) =
   let interaction = clamp_interaction snapshot interaction in
+  let tabs = tab_order |> List.map tab_title |> String.concat " | " in
+  let status = status_badge_label snapshot.mode in
   match terminal_size with
   | Some size when terminal_too_small size ->
       {
-        heading = "Terminal Console";
+        heading = project_title snapshot;
+        status_label = status;
+        tabs;
         subheading = "Resize required";
         panels = [ { title = "Minimum Size"; lines = minimum_size_lines size } ];
         footer = "q quit | resize terminal";
       }
   | _ ->
       {
-        heading = "Terminal Console";
-        subheading =
-          Printf.sprintf "%s | focus %s | generated %s" (status_label snapshot.mode)
-            (focused_panel_title interaction.focused_panel) snapshot.generated_at;
+        heading = project_title snapshot;
+        status_label = status;
+        tabs;
+        subheading = Printf.sprintf "generated %s" snapshot.generated_at;
         panels =
           [
-            home_panel ?terminal_size ~interaction snapshot;
-            readiness_attention_panel ?terminal_size ~interaction snapshot;
-            ordered_queue_panel ?terminal_size ~interaction snapshot;
-            compozy_panel ?terminal_size snapshot;
-            task_detail_panel ?terminal_size ~interaction snapshot;
-            safe_aids_panel ~interaction snapshot;
+            queue_panel ?terminal_size ~interaction snapshot;
+            logs_panel ?terminal_size logs;
+            tasks_panel ?terminal_size ~interaction snapshot;
+            readiness_panel ?terminal_size ~interaction snapshot;
+            attention_panel ?terminal_size ~interaction snapshot;
           ];
         footer = contextual_footer ~interaction true;
       }
 
 let rendered_lines rendered =
-  rendered.heading :: rendered.subheading
+  rendered.heading :: rendered.status_label :: rendered.tabs :: rendered.subheading
   :: (List.concat_map (fun panel -> panel.title :: panel.lines) rendered.panels @ [ rendered.footer ])
 
 let panel_lines rendered title =
@@ -583,10 +745,10 @@ let panel_lines rendered title =
 let transition ?(safe_aids = []) ?(quit = false) model = { model; safe_aids; quit }
 
 let selection_status snapshot interaction =
-  let count = row_count_for_panel snapshot interaction interaction.focused_panel in
-  let title = focused_panel_title interaction.focused_panel in
+  let count = row_count_for_tab snapshot interaction interaction.active_tab in
+  let title = focused_tab_title interaction.active_tab in
   if count = 0 then title ^ ": no selectable rows"
-  else Printf.sprintf "%s row %d of %d" title (selected_row_for_panel interaction interaction.focused_panel + 1) count
+  else Printf.sprintf "%s row %d of %d" title (selected_row_for_tab interaction interaction.active_tab + 1) count
 
 let update_interaction ?status_message model interaction =
   let interaction = clamp_interaction model.snapshot interaction in
@@ -688,15 +850,20 @@ let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key
     | Backspace_key -> remove_filter_char model
     | Character c -> append_filter_char model c
     | _ -> transition model
+  else if model.interaction.help_visible then
+    match key with
+    | Character 'q' -> transition ~quit:true model
+    | Character '?' | Escape_key ->
+        let interaction = { model.interaction with help_visible = false } in
+        transition (update_interaction ~status_message:"Commands hidden" model interaction)
+    | _ -> transition model
   else
     match key with
     | Character 'q' -> transition ~quit:true model
     | Escape_key -> transition ~quit:true model
     | Character '?' ->
-        let help_visible = not model.interaction.help_visible in
-        let interaction = { model.interaction with help_visible } in
-        let message = if help_visible then "Help shown" else "Help hidden" in
-        transition (update_interaction ~status_message:message model interaction)
+        let interaction = { model.interaction with help_visible = true } in
+        transition (update_interaction ~status_message:"Commands shown" model interaction)
     | Character '/' ->
         let interaction = { model.interaction with filter_active = true } in
         transition (update_interaction ~status_message:"Search visible rows" model interaction)
@@ -709,15 +876,13 @@ let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key
           ~safe_aids:[ Projection.Show_web_handoff ]
     | Character 'o' -> inspect_selected_path ~local_surfaces model
     | Character 'h' | Left_key ->
-        let interaction = move_panel (-1) model.interaction in
+        let interaction = move_tab (-1) model.interaction in
         transition
-          (update_interaction ~status_message:("Focus: " ^ focused_panel_title interaction.focused_panel) model
-             interaction)
+          (update_interaction ~status_message:("Tab: " ^ focused_tab_title interaction.active_tab) model interaction)
     | Character 'l' | Right_key | Tab_key ->
-        let interaction = move_panel 1 model.interaction in
+        let interaction = move_tab 1 model.interaction in
         transition
-          (update_interaction ~status_message:("Focus: " ^ focused_panel_title interaction.focused_panel) model
-             interaction)
+          (update_interaction ~status_message:("Tab: " ^ focused_tab_title interaction.active_tab) model interaction)
     | Character 'k' | Up_key ->
         let interaction = move_row (-1) model.snapshot model.interaction in
         transition (update_interaction ~status_message:(selection_status model.snapshot interaction) model interaction)
@@ -727,7 +892,9 @@ let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key
     | Character _ | Enter_key | Backspace_key -> transition model
 
 let render_model model =
-  let rendered = render_snapshot ?terminal_size:model.terminal_size ~interaction:model.interaction model.snapshot in
+  let rendered =
+    render_snapshot ?terminal_size:model.terminal_size ~interaction:model.interaction ~logs:model.logs model.snapshot
+  in
   let footer =
     match model.status_message with None -> rendered.footer | Some message -> message ^ " | " ^ rendered.footer
   in
@@ -735,48 +902,163 @@ let render_model model =
 
 let nonempty_lines fallback = function [] -> [ fallback ] | lines -> lines
 
-let text_lines lines = List.map (fun line -> text ~wrap:`Word line) lines
+let span ?(attrs = []) slot text =
+  Span.make ~style:Style.(make ~fg:(Theme.dark slot) ~attrs ()) text
 
-let section ?flex_grow title lines =
-  box ?flex_grow ~flex_direction:Column ~border:true ~border_style:Border.ascii ~title ~padding:(padding 1)
-    (lines |> nonempty_lines "None" |> text_lines)
+let log_default text = span Theme.Fg_default text
+let log_muted ?(attrs = [ Attr.Dim ]) text = span ~attrs Theme.Fg_muted text
+let log_emphasis text = span ~attrs:[ Attr.Bold ] Theme.Fg_emphasis text
+let log_info text = span ~attrs:[ Attr.Bold ] Theme.Status_info text
+let log_success text = span ~attrs:[ Attr.Bold ] Theme.Status_success text
+let log_warning text = span ~attrs:[ Attr.Bold ] Theme.Status_warning text
+let log_error text = span ~attrs:[ Attr.Bold ] Theme.Status_error text
+let log_accent text = span ~attrs:[ Attr.Bold ] Theme.Accent_primary text
+let log_secondary text = span ~attrs:[ Attr.Bold ] Theme.Accent_secondary text
+
+let lowercase_token token =
+  token
+  |> String.lowercase_ascii
+  |> String.map (function ',' | ';' -> ' ' | c -> c)
+  |> Util.trim
+
+let is_timestamp_token token =
+  let token = lowercase_token token in
+  let len = String.length token in
+  len >= 5
+  && String.contains token ':'
+  && String.for_all (function '0' .. '9' | ':' -> true | _ -> false) token
+
+let value_span value =
+  let display = if is_path_token value then compact_path_token value else value in
+  match lowercase_token value with
+  | "completed" | "created" | "ready" | "running" | "success" | "ok" -> log_success display
+  | "failed" | "failure" | "error" | "blocked" -> log_error display
+  | "retrying" | "checking" | "attention" | "skipped" | "kept" -> log_warning display
+  | "terminal_console" | "compozy_tasks" | "github" | "minibeads" -> log_secondary display
+  | _ when is_path_token value -> log_muted display
+  | _ -> log_default display
+
+let key_value_spans token =
+  match String.index_opt token '=' with
+  | Some index when index > 0 ->
+      let key = String.sub token 0 index in
+      let value = String.sub token (index + 1) (String.length token - index - 1) in
+      Some [ log_muted ~attrs:[] key; log_muted ~attrs:[] "="; value_span value ]
+  | _ -> None
+
+let token_spans token =
+  match key_value_spans token with
+  | Some spans -> spans
+  | None -> (
+      match lowercase_token token with
+      | token when token = "" -> [ log_default token ]
+      | "bootstrap" | "startup" | "poll" | "event" -> [ log_accent token ]
+      | "created" | "ready" | "running" | "completed" | "success" | "ok" -> [ log_success token ]
+      | "present" | "checking" -> [ log_info token ]
+      | "kept" | "retrying" | "skipped" | "attention" | "blocked" -> [ log_warning token ]
+      | "failed" | "error" | "reason" -> [ log_error token ]
+      | "tracker" | "mode" | "runtime_home" | "workspace_root" | "project_number" -> [ log_secondary token ]
+      | _ when is_timestamp_token token -> [ log_info token ]
+      | _ when is_path_token token -> [ log_muted (compact_path_token token) ]
+      | _ -> [ log_default token ])
+
+let log_line_spans line =
+  line |> String.split_on_char ' '
+  |> List.filter (fun token -> token <> "")
+  |> List.mapi (fun index token ->
+         let prefix = if index = 0 then [] else [ log_muted ~attrs:[] " " ] in
+         prefix @ token_spans token)
+  |> List.concat
+
+let line_nodes ?(spaced = false) lines =
+  lines |> nonempty_lines "None"
+  |> List.map (fun line ->
+         Components.text
+           ~style:
+             Style.(
+               make ~fg:(Theme.dark Theme.Fg_default) ~height:(Cells 1)
+                 ~margin:(spacing ~bottom:(if spaced then 1 else 0) ()) ())
+           line)
+
+let log_line_nodes lines =
+  lines |> nonempty_lines "No background logs captured yet."
+  |> List.map (fun line ->
+         Components.rich_text
+           ~style:Style.(make ~height:(Cells 1) ~fg:(Theme.dark Theme.Fg_default) ())
+           (log_line_spans line))
+
+let command_help_row (key, label) =
+  Components.rich_text
+    ~style:Style.(make ~height:(Cells 1) ())
+    [
+      span ~attrs:[ Attr.Bold ] Theme.Accent_primary key;
+      span ~attrs:[] Theme.Fg_muted "  ";
+      span ~attrs:[] Theme.Fg_default label;
+    ]
+
+let help_modal_node () =
+  Components.modal ~id:"terminal-console-command-modal" ~tone:Components.Info
+    ~style:Style.(make ~width:(Cells 72) ~height:(Cells 14) ())
+    "Commands"
+    [
+      Components.column
+        ~style:Style.(make ~flex_grow:1. ())
+        (List.map command_help_row help_commands);
+    ]
 
 let find_panel rendered title = List.find_opt (fun panel -> panel.title = title) rendered.panels
 
-let section_for_panel ?flex_grow rendered title =
-  match find_panel rendered title with
-  | Some panel -> section ?flex_grow panel.title panel.lines
-  | None -> empty
+let active_panel rendered interaction =
+  match find_panel rendered (tab_title interaction.active_tab) with
+  | Some panel -> panel
+  | None -> { title = tab_title interaction.active_tab; lines = [ "No content available." ] }
 
-let narrow_layout = function None -> false | Some size -> size.columns < 100
+let footer_node rendered =
+  Components.text
+    ~style:
+      Style.(
+        make ~height:(Cells 1) ~width:(Percent 1.) ~bg:(Color.indexed 237)
+          ~fg:(Color.indexed 250) ~attrs:[ Attr.Dim ] ())
+    rendered.footer
 
 let view model =
   let rendered = render_model model in
-  let panel_views =
-    if narrow_layout model.terminal_size then List.map (fun panel -> section panel.title panel.lines) rendered.panels
-    else
-      [
-        section_for_panel rendered "Active Work";
-        box ~flex_direction:Row ~gap:(gap 1)
-          [
-            section_for_panel ~flex_grow:1. rendered "Readiness and Attention";
-            section_for_panel ~flex_grow:1. rendered "Ordered Queue";
-            section_for_panel ~flex_grow:1. rendered "Compozy PRD Run";
-          ];
-        section_for_panel rendered "Task Detail";
-        section_for_panel rendered "Safe Aids";
-      ]
+  let panel = active_panel rendered model.interaction in
+  let children =
+    [
+      Components.header ~subtitle:rendered.subheading
+        ~badges:[ (status_badge_tone model.snapshot.mode, rendered.status_label) ]
+        rendered.heading;
+      Components.row
+        ~style:Style.(make ~height:(Cells 1) ~align_items:Align_center ~padding:(spacing_xy ~x:2 ~y:0) ())
+        [
+          Components.tab_bar
+            (List.map (fun tab -> (tab_title tab, tab = model.interaction.active_tab)) tab_order);
+        ];
+      Components.panel panel.title
+        ~style:Style.(make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0) ())
+        [
+          Components.scroll_box
+            ~style:
+              Style.(
+                make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0)
+                  ~flex_direction:Column ())
+            (if model.interaction.active_tab = Logs then log_line_nodes panel.lines
+             else line_nodes ~spaced:true panel.lines);
+        ];
+      footer_node rendered;
+    ]
   in
-  box ~flex_direction:Column ~size:{ width = pct 100; height = pct 100 } ~padding:(padding 1) ~gap:(gap 1)
-    ([ text ~style:(Ansi.Style.make ~bold:true ()) rendered.heading; text rendered.subheading ]
-    @ panel_views @ [ text rendered.footer ])
+  let children = if model.interaction.help_visible then children @ [ help_modal_node () ] else children in
+  Components.box
+    ~style:
+      Style.(
+        make ~width:(Percent 1.) ~height:(Percent 1.) ~flex_direction:Column
+          ~padding:(spacing_xy ~x:1 ~y:0) ~gap:1 ~bg:(Theme.dark Theme.Bg_base)
+          ~fg:(Theme.dark Theme.Fg_default) ())
+    children
 
-let init runtime () =
-  let model = initial_model runtime.initial_state in
-  let subscribe =
-    Cmd.perform (fun dispatch -> runtime.subscribe (fun state -> dispatch (Snapshot_received state)))
-  in
-  (model, subscribe)
+let init runtime () = (initial_model ~logs:runtime.initial_logs runtime.initial_state, ())
 
 let update runtime msg model =
   match msg with
@@ -789,46 +1071,147 @@ let update runtime msg model =
           status_message = None;
           interaction;
         },
-        Cmd.none )
+        false )
   | Key_press key ->
       let transition =
         apply_key ~web_handoff:runtime.web_handoff ~local_surfaces:runtime.local_surfaces key model
       in
       List.iter runtime.safe_aid transition.safe_aids;
-      if transition.quit then (transition.model, Cmd.quit) else (transition.model, Cmd.none)
-  | Resize { columns; rows } -> ({ model with terminal_size = Some { columns; rows } }, Cmd.none)
+      (transition.model, transition.quit)
+  | Resize { columns; rows } -> ({ model with terminal_size = Some { columns; rows } }, false)
 
-let printable_ascii_char uchar =
-  let code = Uchar.to_int uchar in
-  if code >= 0x20 && code <= 0x7e then Some (Char.chr code) else None
-
-let ui_key_of_event ev =
-  let data = Event.Key.data ev in
-  match data.key with
-  | Char c -> Option.map (fun c -> Character c) (printable_ascii_char c)
-  | Enter | KP_enter | Line_feed -> Some Enter_key
-  | Backspace | Delete -> Some Backspace_key
-  | Escape -> Some Escape_key
-  | Up | KP_up -> Some Up_key
-  | Down | KP_down -> Some Down_key
-  | Left | KP_left -> Some Left_key
-  | Right | KP_right -> Some Right_key
-  | Tab -> Some Tab_key
+let ui_key_of_tui_key (key : Key.event) =
+  match key.name with
+  | "return" -> Some Enter_key
+  | "backspace" | "delete" -> Some Backspace_key
+  | "escape" -> Some Escape_key
+  | "up" -> Some Up_key
+  | "down" -> Some Down_key
+  | "left" -> Some Left_key
+  | "right" -> Some Right_key
+  | "tab" -> Some Tab_key
+  | name when (not key.ctrl) && (not key.alt) && String.length name = 1 -> Some (Character name.[0])
   | _ -> None
 
-let subscriptions _model =
-  Sub.batch
-    [
-      Sub.on_key_all (fun ev -> Option.map (fun key -> Key_press key) (ui_key_of_event ev));
-      Sub.on_resize (fun ~width ~height -> Resize { columns = width; rows = height });
-    ]
+type live_state = {
+  mutex : Mutex.t;
+  mutable model : model;
+  mutable quit : bool;
+}
 
-let app runtime =
-  {
-    init = init runtime;
-    update = update runtime;
-    view;
-    subscriptions;
-  }
+let create_live_state model = { mutex = Mutex.create (); model; quit = false }
 
-let run runtime = Mosaic.run (app runtime)
+let with_live_state live f =
+  Mutex.lock live.mutex;
+  Fun.protect ~finally:(fun () -> Mutex.unlock live.mutex) (fun () -> f live)
+
+let update_live runtime live msg =
+  with_live_state live (fun live ->
+      let model, quit = update runtime msg live.model in
+      live.model <- model;
+      live.quit <- live.quit || quit)
+
+let append_log_live live line =
+  with_live_state live (fun live -> live.model <- append_log_line live.model line)
+
+let close_noerr fd = try Unix.close fd with _ -> ()
+
+let emit_log_line append line =
+  let line = Projection.sanitize line in
+  if line <> "" then append line
+
+let read_fd_lines fd append =
+  let bytes = Bytes.create 4096 in
+  let pending = Buffer.create 4096 in
+  let flush_pending () =
+    if Buffer.length pending > 0 then (
+      emit_log_line append (Buffer.contents pending);
+      Buffer.clear pending)
+  in
+  let rec read_loop () =
+    match Unix.read fd bytes 0 (Bytes.length bytes) with
+    | 0 -> flush_pending ()
+    | count ->
+        for index = 0 to count - 1 do
+          match Bytes.get bytes index with
+          | '\n' ->
+              emit_log_line append (Buffer.contents pending);
+              Buffer.clear pending
+          | '\r' ->
+              if Buffer.length pending > 0 then Buffer.add_char pending ' '
+          | c -> Buffer.add_char pending c
+        done;
+        read_loop ()
+    | exception Unix.Unix_error ((Unix.EBADF | Unix.EINVAL), _, _) -> flush_pending ()
+    | exception _ -> flush_pending ()
+  in
+  Fun.protect ~finally:(fun () -> close_noerr fd) read_loop
+
+let with_stderr_capture append f =
+  let original = Unix.dup Unix.stderr in
+  let read_fd, write_fd = Unix.pipe () in
+  let _reader =
+    Thread.create
+      (fun () -> read_fd_lines read_fd append)
+      ()
+  in
+  let capture_active = ref false in
+  Fun.protect
+    ~finally:(fun () ->
+      if !capture_active then (try Unix.dup2 original Unix.stderr with _ -> ());
+      close_noerr original;
+      close_noerr write_fd;
+      close_noerr read_fd)
+    (fun () ->
+      Unix.dup2 write_fd Unix.stderr;
+      capture_active := true;
+      close_noerr write_fd;
+      f ())
+
+let current_terminal_size () =
+  let viewport = Terminal.viewport () in
+  { columns = viewport.Viewport.width; rows = viewport.height }
+
+let render_once runtime live renderer =
+  let size = current_terminal_size () in
+  update_live runtime live (Resize size);
+  let model = with_live_state live (fun live -> live.model) in
+  Renderer.resize renderer ~width:size.columns ~height:size.rows;
+  Renderer.set_root renderer (view model);
+  Renderer.render renderer
+
+let print_non_interactive model =
+  render_model model |> rendered_lines |> List.iter print_endline
+
+let run runtime =
+  let initial_model, _ = init runtime () in
+  if not (Terminal.is_interactive ()) then print_non_interactive initial_model
+  else
+    let live = create_live_state initial_model in
+    let renderer = Renderer.create (view initial_model) in
+    let fd = Unix.descr_of_in_channel stdin in
+    Fun.protect
+      ~finally:Terminal.leave_alternate
+      (fun () ->
+        Terminal.enter_alternate ();
+        with_stderr_capture
+          (fun line -> append_log_live live line)
+          (fun () ->
+            ignore
+              (Thread.create
+                 (fun () -> runtime.subscribe (fun state -> update_live runtime live (Snapshot_received state)))
+                 ());
+            Terminal.with_raw fd (fun () ->
+                while not (with_live_state live (fun live -> live.quit)) do
+                  render_once runtime live renderer;
+                  match Unix.select [ fd ] [] [] 0.1 with
+                  | [], _, _ -> ()
+                  | _ -> (
+                      match Key.read fd with
+                      | Some key when key.ctrl && key.name = "c" ->
+                          with_live_state live (fun live -> live.quit <- true)
+                      | Some key ->
+                          Option.iter (fun ui_key -> update_live runtime live (Key_press ui_key))
+                            (ui_key_of_tui_key key)
+                      | None -> ())
+                done)))

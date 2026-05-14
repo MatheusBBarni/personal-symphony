@@ -2876,8 +2876,8 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
       "Run `symphony` from the Workspace Repository root";
       "Runtime State snapshots";
       "Readiness Gaps";
-      "Ordered Queue progress";
-      "Compozy PRD Run progress";
+      "Queue progress";
+      "Logs progress";
       "Agent Worktree details";
       "Task Branch context";
       "Web Dashboard handoff command";
@@ -4349,7 +4349,7 @@ let test_terminal_console_model_projects_compozy_progress () =
   let progress =
     {
       Runtime_state.run_id = "compozy:\027[31mrun\027[0m";
-      slug = "mosaic-tui";
+      slug = "tui-rewrite";
       current_step = Some "task_02.md";
       completed = 1;
       failed = 2;
@@ -4375,7 +4375,7 @@ let test_terminal_console_model_projects_compozy_progress () =
       Alcotest.(check int) "failed" 2 projected.failed;
       Alcotest.(check int) "skipped" 3 projected.skipped;
       Alcotest.(check int) "total" 9 projected.total;
-      Alcotest.(check string) "summary" "mosaic-tui: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
+      Alcotest.(check string) "summary" "tui-rewrite: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
         projected.summary
   | None -> Alcotest.fail "expected Compozy progress"
 
@@ -4389,20 +4389,20 @@ let test_terminal_console_model_sanitizes_untrusted_text () =
   Alcotest.(check string) "secret assignment redacted" "GITHUB_TOKEN=[redacted]"
     (Terminal_console_model.sanitize "GITHUB_TOKEN=super-secret")
 
-let test_terminal_console_mosaic_status_labels () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_status_labels () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   Alcotest.(check string) "idle" "Idle" (Shell.status_label "idle");
   Alcotest.(check string) "running" "Running" (Shell.status_label "running");
   Alcotest.(check string) "retrying" "Retrying" (Shell.status_label "retrying");
   Alcotest.(check string) "attention" "Needs attention" (Shell.status_label "attention");
   Alcotest.(check string) "readiness blocked" "Readiness blocked" (Shell.status_label "readiness_blocked")
 
-let test_terminal_console_mosaic_initial_model_uses_projection () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_initial_model_uses_projection () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let issue, running =
     terminal_console_running_row ~identifier:"\027[32m#9\027[0m"
-      ~title:"Render\027]0;spoof\007 Mosaic\000 shell"
-      ~branch_name:"feature/\027[31mmosaic\027[0m" "I9"
+      ~title:"Render\027]0;spoof\007 Tui\000 shell"
+      ~branch_name:"feature/\027[31mtui\027[0m" "I9"
   in
   let state =
     {
@@ -4416,10 +4416,10 @@ let test_terminal_console_mosaic_initial_model_uses_projection () =
   match model.snapshot.Terminal_console_model.active with
   | [ row ] ->
       Alcotest.(check string) "identifier sanitized" "#9" row.Terminal_console_model.id;
-      Alcotest.(check string) "title sanitized" "Render Mosaic shell" row.title;
+      Alcotest.(check string) "title sanitized" "Render Tui shell" row.title;
       (match row.detail with
       | Some detail ->
-          Alcotest.(check bool) "branch sanitized" true (contains_substring detail "branch feature/mosaic");
+          Alcotest.(check bool) "branch sanitized" true (contains_substring detail "branch feature/tui");
           check_no_terminal_control "detail has no terminal controls" detail
       | None -> Alcotest.fail "expected detail")
   | _ -> Alcotest.fail "expected one active shell row"
@@ -4435,13 +4435,26 @@ let check_wrapped_text_contains label lines expected =
 
 let terminal_console_snapshot state = Terminal_console_model.of_runtime_state state
 
-let terminal_console_rendered ?terminal_size state =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
-  Shell.render_snapshot ?terminal_size (terminal_console_snapshot state)
+let terminal_console_rendered ?terminal_size ?logs state =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  Shell.render_snapshot ?terminal_size ?logs (terminal_console_snapshot state)
 
-let terminal_console_panel ?terminal_size state title =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
-  Shell.panel_lines (terminal_console_rendered ?terminal_size state) title
+let terminal_console_panel ?terminal_size ?logs state title =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let snapshot = terminal_console_snapshot state in
+  if title = "Task Detail" then
+    let panel = Shell.task_detail_panel ?terminal_size snapshot in
+    panel.Shell.lines
+  else Shell.panel_lines (Shell.render_snapshot ?terminal_size ?logs snapshot) title
+
+let test_terminal_console_tui_project_title_and_tabs () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let state = Runtime_state.empty ~workspace_repository_name:"workspace-one" () in
+  let rendered = Shell.render_snapshot (terminal_console_snapshot state) in
+  Alcotest.(check string) "project title" "workspace-one" rendered.Shell.heading;
+  Alcotest.(check string) "status" "STOPPED" rendered.Shell.status_label;
+  Alcotest.(check string) "tabs" "Queue | Logs | Tasks | Readiness | Needs attention" rendered.Shell.tabs;
+  check_line_absent "subheading does not repeat active tab" [ rendered.Shell.subheading ] "tab "
 
 let terminal_console_queue_fixture () =
   {
@@ -4458,7 +4471,7 @@ let terminal_console_queue_fixture () =
 let terminal_console_compozy_fixture =
   {
     Runtime_state.run_id = "compozy:run";
-    slug = "mosaic-tui";
+    slug = "tui-rewrite";
     current_step = Some "task_04.md";
     completed = 2;
     failed = 1;
@@ -4472,7 +4485,7 @@ let terminal_console_compozy_fixture =
     handoff_status = None;
   }
 
-let test_terminal_console_mosaic_active_home_panel () =
+let test_terminal_console_tui_active_home_panel () =
   let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
   let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
   let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
@@ -4496,16 +4509,19 @@ let test_terminal_console_mosaic_active_home_panel () =
       usage_totals = { Runtime_state.input_tokens = 40; output_tokens = 60; total_tokens = 100 };
     }
   in
-  let lines = terminal_console_panel state "Active Work" in
+  let lines = terminal_console_panel state "Tasks" in
   check_line_contains "home includes running row" lines "RUNNING #1 Running task";
   check_line_contains "home includes retrying row" lines "RETRYING #2 Retry task";
   check_line_contains "home includes attention row" lines "ATTENTION #3 Attention task";
   check_line_contains "home includes next queued work" lines "Next work: NEXT PENDING #1 One";
   check_line_contains "home includes token total" lines "Total tokens: 100";
-  check_line_contains "home includes update context" lines "Updated:"
+  check_line_contains "home includes update context" lines "Updated:";
+  let attention_lines = terminal_console_panel state "Needs attention" in
+  check_line_contains "attention tab includes attention row" attention_lines "ATTENTION #3 Attention task";
+  check_line_contains "attention tab includes error" attention_lines "Current error: needs merge"
 
-let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_readiness_attention_panel_wraps_remediation () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let size : Shell.terminal_size = { columns = 80; rows = 24 } in
   let state =
     Runtime_state.empty
@@ -4524,7 +4540,7 @@ let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () 
         ]
       ()
   in
-  let lines = terminal_console_panel ~terminal_size:size state "Readiness and Attention" in
+  let lines = terminal_console_panel ~terminal_size:size state "Readiness" in
   check_line_contains "first requirement" lines "READINESS GAP 1 requirement: tracker.owner";
   check_wrapped_text_contains "first remediation retained" lines
     "Set tracker.owner in Runtime Settings so dispatch can discover Workspace Repository issues.";
@@ -4532,9 +4548,9 @@ let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () 
   check_wrapped_text_contains "second remediation retained" lines
     "Use stageAgents.stages[].context.command with an argv array and a Workspace Repository safe cwd"
 
-let test_terminal_console_mosaic_ordered_queue_panel_states () =
+let test_terminal_console_tui_ordered_queue_panel_states () =
   let state = Runtime_state.empty ~ordered_queue:(terminal_console_queue_fixture ()) () in
-  let lines = terminal_console_panel state "Ordered Queue" in
+  let lines = terminal_console_panel state "Queue" in
   check_line_contains "queue next work" lines "Next work: NEXT PENDING #1 One";
   check_line_contains "pending state" lines "PENDING #1 One";
   check_line_contains "running state" lines "RUNNING #2 Two";
@@ -4543,14 +4559,37 @@ let test_terminal_console_mosaic_ordered_queue_panel_states () =
   check_line_contains "skipped state" lines "SKIPPED #5 Five";
   check_line_contains "skip reason" lines "skip reason: Issue skipped"
 
-let test_terminal_console_mosaic_compozy_panel_counts () =
+let test_terminal_console_tui_logs_panel_uses_background_logs () =
   let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:terminal_console_compozy_fixture () in
-  let lines = terminal_console_panel state "Compozy PRD Run" in
-  check_line_contains "compozy slug" lines "Compozy PRD Run: mosaic-tui";
-  check_line_contains "compozy current step" lines "Current step: task_04.md";
-  check_line_contains "compozy counts" lines "Progress: completed 2 | failed 1 | skipped 3 | total 8"
+  let logs =
+    [
+      "bootstrap 0 created 12 already configured";
+      "startup ready terminal_console tracker compozy_tasks /tmp/tasks event=startup outcome=completed";
+      "18:09:52 poll checking compozy_tasks tracker, 0 running, 0 retrying";
+    ]
+  in
+  let lines = terminal_console_panel ~logs state "Logs" in
+  check_line_contains "bootstrap log" lines "bootstrap 0 created 12 already configured";
+  check_line_contains "startup log" lines "startup ready terminal_console tracker compozy_tasks";
+  check_line_contains "poll log" lines "poll checking compozy_tasks tracker";
+  check_line_absent "logs tab is not summary panel" lines "Compozy PRD Run: tui-rewrite"
 
-let test_terminal_console_mosaic_task_detail_panel_includes_context () =
+let test_terminal_console_tui_log_paths_are_compact () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  Alcotest.(check string) "runtime file path" "symphony-orchestrator/.symphony/settings.json"
+    (Shell.compact_path_token
+       "/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/settings.json");
+  Alcotest.(check string) "compozy root path" "symphony-orchestrator/.compozy/tasks"
+    (Shell.compact_path_token
+       "/Users/matheusbbarni/projects/symphony-orchestrator/.compozy/tasks");
+  Alcotest.(check string) "relative path" ".symphony/settings.json"
+    (Shell.compact_path_token ".symphony/settings.json");
+  Alcotest.(check string) "log line path"
+    "kept settings.json symphony-orchestrator/.symphony/settings.json"
+    (Shell.compact_log_line
+       "kept settings.json /Users/matheusbbarni/projects/symphony-orchestrator/.symphony/settings.json")
+
+let test_terminal_console_tui_task_detail_panel_includes_context () =
   let usage = { Runtime_state.status = Some "active"; time_used_seconds = Some 12.; tokens_used = Some 77 } in
   let issue, running =
     terminal_console_running_row ~identifier:"#10" ~title:"Detailed task" ~branch_name:"feature/detail"
@@ -4573,7 +4612,7 @@ let test_terminal_console_mosaic_task_detail_panel_includes_context () =
   check_line_contains "detail goal usage" lines "Goal Usage: status active | time 12s | tokens 77";
   check_line_contains "detail context" lines "Context Status: warning: Context needs review"
 
-let test_terminal_console_mosaic_task_detail_omits_absent_optional_fields () =
+let test_terminal_console_tui_task_detail_omits_absent_optional_fields () =
   let issue = Issue.empty ~id:"I11" ~identifier:"#11" ~title:"Attention without extras" ~state:"In progress" in
   let state =
     {
@@ -4587,8 +4626,8 @@ let test_terminal_console_mosaic_task_detail_omits_absent_optional_fields () =
   check_line_absent "goal omitted" lines "Goal Usage:";
   check_line_absent "context omitted" lines "Context Status:"
 
-let test_terminal_console_mosaic_no_color_labels_remain_distinct () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_no_color_labels_remain_distinct () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
   let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
   let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
@@ -4625,8 +4664,8 @@ let test_terminal_console_mosaic_no_color_labels_remain_distinct () =
   let idle_lines = Runtime_state.empty () |> terminal_console_rendered |> Shell.rendered_lines in
   check_line_contains "idle text label" idle_lines "IDLE No active work"
 
-let test_terminal_console_mosaic_renders_runtime_state_fixtures () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_renders_runtime_state_fixtures () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let running_issue, running = terminal_console_running_row ~identifier:"#20" ~title:"Running fixture" "I20" in
   let retry_issue = Issue.empty ~id:"I21" ~identifier:"#21" ~title:"Retry fixture" ~state:"Todo" in
   let states =
@@ -4666,8 +4705,8 @@ let test_terminal_console_mosaic_renders_runtime_state_fixtures () =
       Alcotest.(check bool) (name ^ " rendered lines") true (Shell.rendered_lines rendered <> []))
     states
 
-let test_terminal_console_mosaic_minimum_size_message () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_minimum_size_message () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let small : Shell.terminal_size = { columns = 72; rows = 20 } in
   let rendered = Shell.render_snapshot ~terminal_size:small (terminal_console_snapshot (Runtime_state.empty ())) in
   let lines = Shell.rendered_lines rendered in
@@ -4696,21 +4735,23 @@ let terminal_console_interaction_state () =
       ];
   }
 
-let test_terminal_console_mosaic_navigation_is_ui_only () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_navigation_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (terminal_console_interaction_state ()) in
   let snapshot = model.Shell.snapshot in
-  let moved_row = Shell.apply_key Shell.Down_key model in
+  let moved_to_logs = Shell.apply_key Shell.Right_key model in
+  let moved_to_tasks = Shell.apply_key Shell.Right_key moved_to_logs.model in
+  let moved_row = Shell.apply_key Shell.Down_key moved_to_tasks.model in
   Alcotest.(check bool) "row navigation keeps snapshot" true (moved_row.Shell.model.Shell.snapshot == snapshot);
   Alcotest.(check int) "selected active row" 1
     moved_row.model.Shell.interaction.Shell.selected_rows.Shell.active;
-  let moved_panel = Shell.apply_key Shell.Right_key moved_row.model in
-  Alcotest.(check bool) "panel navigation keeps snapshot" true (moved_panel.model.Shell.snapshot == snapshot);
-  Alcotest.(check string) "focused panel" "Readiness and Attention"
-    (Shell.focused_panel_title moved_panel.model.Shell.interaction.Shell.focused_panel)
+  let moved_tab = Shell.apply_key Shell.Right_key moved_row.model in
+  Alcotest.(check bool) "tab navigation keeps snapshot" true (moved_tab.model.Shell.snapshot == snapshot);
+  Alcotest.(check string) "active tab" "Readiness"
+    (Shell.focused_tab_title moved_tab.model.Shell.interaction.Shell.active_tab)
 
-let test_terminal_console_mosaic_filtering_is_ui_only () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_filtering_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (terminal_console_interaction_state ()) in
   let snapshot = model.Shell.snapshot in
   let opened = Shell.apply_key (Shell.Character '/') model in
@@ -4723,13 +4764,14 @@ let test_terminal_console_mosaic_filtering_is_ui_only () =
     (List.length (Shell.visible_active_rows applied.model.Shell.snapshot applied.model.Shell.interaction));
   Alcotest.(check int) "projected rows unchanged" 2 (List.length snapshot.Terminal_console_model.active)
 
-let test_terminal_console_mosaic_refresh_invokes_only_refresh_aid () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_refresh_invokes_only_refresh_aid () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (terminal_console_interaction_state ()) in
   let calls = ref [] in
   let runtime : Shell.runtime =
     {
       initial_state = Runtime_state.empty ();
+      initial_logs = [];
       subscribe = (fun _ -> ());
       safe_aid = (fun aid -> calls := aid :: !calls);
       web_handoff = Shell.default_web_handoff ();
@@ -4749,8 +4791,8 @@ let test_terminal_console_mosaic_refresh_invokes_only_refresh_aid () =
     (Some "Refreshed latest in-memory Runtime State snapshot")
     updated.status_message
 
-let test_terminal_console_mosaic_web_handoff_guidance_only () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_web_handoff_guidance_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (Runtime_state.empty ()) in
   let handoff = Shell.default_web_handoff ~port:7777 () in
   let transition = Shell.apply_key ~web_handoff:handoff (Shell.Character 'w') model in
@@ -4767,8 +4809,8 @@ let test_terminal_console_mosaic_web_handoff_guidance_only () =
       check_line_contains "handoff url" [ message ] "http://127.0.0.1:7777/"
   | None -> Alcotest.fail "expected Web Dashboard handoff guidance"
 
-let test_terminal_console_mosaic_invalid_path_is_ui_local () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_invalid_path_is_ui_local () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   with_temp_dir "symphony-terminal-path-root-" (fun root ->
       with_temp_dir "symphony-terminal-path-outside-" (fun outside_root ->
           let outside_file = Filename.concat outside_root "outside.txt" in
@@ -4797,21 +4839,28 @@ let test_terminal_console_mosaic_invalid_path_is_ui_local () =
           | None -> Alcotest.fail "expected invalid path status");
           Alcotest.(check string) "outside file unchanged" "unchanged\n" (Util.read_file outside_file)))
 
-let test_terminal_console_mosaic_footer_help_content () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_footer_help_content () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (Runtime_state.empty ()) in
   let footer = Shell.render_model model |> fun rendered -> rendered.Shell.footer in
   List.iter
     (fun expected -> check_line_contains ("footer has " ^ expected) [ footer ] expected)
-    [ "q quit"; "Tab/Left/Right panels"; "/ search"; "r refresh"; "w Web Dashboard"; "o inspect path" ];
+    [ "[q]quit"; "[Tab]tabs"; "[/]search"; "[r]refresh"; "[w]web"; "[o]path"; "[?]help" ];
   let help = Shell.apply_key (Shell.Character '?') model in
-  let safe_aids = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Safe Aids" in
-  check_line_contains "help includes navigation" safe_aids "Up/Down or k/j move rows";
-  check_line_contains "help includes handoff" safe_aids "w show Web Dashboard handoff"
+  Alcotest.(check bool) "question mark opens command modal" true
+    help.model.Shell.interaction.Shell.help_visible;
+  Alcotest.(check (option string)) "modal status" (Some "Commands shown") help.model.Shell.status_message;
+  let queue = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_absent "modal help is not appended to active panel" queue "Help";
+  check_line_absent "commands stay out of active panel" queue "switch tabs";
+  let closed = Shell.apply_key Shell.Escape_key help.model in
+  Alcotest.(check bool) "escape closes command modal" false
+    closed.model.Shell.interaction.Shell.help_visible;
+  Alcotest.(check (option string)) "closed status" (Some "Commands hidden") closed.model.Shell.status_message
 
 let test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   with_temp_dir "symphony-terminal-runtime-path-" (fun root ->
       let diagnostic = Filename.concat root "diagnostic.txt" in
       Util.write_file diagnostic "diagnostic\n";
@@ -4861,7 +4910,7 @@ let terminal_console_runtime_branch_name = function
   | Symphony_terminal_console_shell.Terminal_console_runtime.Terminal_console_orchestrator ->
       "terminal_console_orchestrator"
 
-let test_terminal_console_runtime_selects_non_mosaic_paths () =
+let test_terminal_console_runtime_selects_non_tui_paths () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
   let readiness_gaps = [ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ] in
   let select ?(once = false) ?(mode = Cli_mode.Terminal_console) ?(merge_args = []) ?(readiness_gaps = [])
@@ -4903,7 +4952,7 @@ let test_terminal_console_runtime_handoff_subscribes_latest_snapshot () =
 
 let test_terminal_console_runtime_readiness_runs_ui_without_orchestration () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let readiness_state =
     Runtime_state.empty
       ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
@@ -4920,7 +4969,7 @@ let test_terminal_console_runtime_readiness_runs_ui_without_orchestration () =
 
 let test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let start_called = ref false in
   let ui_initial = ref None in
   Runtime.run ~initial_state:(Runtime_state.empty ~last_error:"readiness" ())
@@ -13302,40 +13351,44 @@ let () =
             test_terminal_console_model_projects_compozy_progress;
           Alcotest.test_case "sanitizes Terminal Console display text" `Quick
             test_terminal_console_model_sanitizes_untrusted_text;
-          Alcotest.test_case "labels Mosaic Terminal Console modes" `Quick
-            test_terminal_console_mosaic_status_labels;
-          Alcotest.test_case "builds Mosaic shell model from sanitized projection" `Quick
-            test_terminal_console_mosaic_initial_model_uses_projection;
-          Alcotest.test_case "renders Active Work Home panel" `Quick
-            test_terminal_console_mosaic_active_home_panel;
+          Alcotest.test_case "labels Tui Terminal Console modes" `Quick
+            test_terminal_console_tui_status_labels;
+          Alcotest.test_case "builds Tui shell model from sanitized projection" `Quick
+            test_terminal_console_tui_initial_model_uses_projection;
+          Alcotest.test_case "renders project title and primary tabs" `Quick
+            test_terminal_console_tui_project_title_and_tabs;
+          Alcotest.test_case "renders Tasks Home panel" `Quick
+            test_terminal_console_tui_active_home_panel;
           Alcotest.test_case "renders readiness remediation panel" `Quick
-            test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation;
-          Alcotest.test_case "renders Ordered Queue panel states" `Quick
-            test_terminal_console_mosaic_ordered_queue_panel_states;
-          Alcotest.test_case "renders Compozy PRD Run panel counts" `Quick
-            test_terminal_console_mosaic_compozy_panel_counts;
+            test_terminal_console_tui_readiness_attention_panel_wraps_remediation;
+          Alcotest.test_case "renders Queue panel states" `Quick
+            test_terminal_console_tui_ordered_queue_panel_states;
+          Alcotest.test_case "renders Logs panel background output" `Quick
+            test_terminal_console_tui_logs_panel_uses_background_logs;
+          Alcotest.test_case "compacts Terminal Console log paths" `Quick
+            test_terminal_console_tui_log_paths_are_compact;
           Alcotest.test_case "renders task detail context" `Quick
-            test_terminal_console_mosaic_task_detail_panel_includes_context;
+            test_terminal_console_tui_task_detail_panel_includes_context;
           Alcotest.test_case "omits absent task detail fields" `Quick
-            test_terminal_console_mosaic_task_detail_omits_absent_optional_fields;
+            test_terminal_console_tui_task_detail_omits_absent_optional_fields;
           Alcotest.test_case "keeps no-color status labels distinct" `Quick
-            test_terminal_console_mosaic_no_color_labels_remain_distinct;
+            test_terminal_console_tui_no_color_labels_remain_distinct;
           Alcotest.test_case "renders Terminal Console fixture snapshots" `Quick
-            test_terminal_console_mosaic_renders_runtime_state_fixtures;
+            test_terminal_console_tui_renders_runtime_state_fixtures;
           Alcotest.test_case "renders Terminal Console minimum-size message" `Quick
-            test_terminal_console_mosaic_minimum_size_message;
+            test_terminal_console_tui_minimum_size_message;
           Alcotest.test_case "keeps Terminal Console navigation UI-only" `Quick
-            test_terminal_console_mosaic_navigation_is_ui_only;
+            test_terminal_console_tui_navigation_is_ui_only;
           Alcotest.test_case "keeps Terminal Console filtering UI-only" `Quick
-            test_terminal_console_mosaic_filtering_is_ui_only;
+            test_terminal_console_tui_filtering_is_ui_only;
           Alcotest.test_case "refresh invokes only non-mutating aid" `Quick
-            test_terminal_console_mosaic_refresh_invokes_only_refresh_aid;
+            test_terminal_console_tui_refresh_invokes_only_refresh_aid;
           Alcotest.test_case "shows Web Dashboard handoff guidance only" `Quick
-            test_terminal_console_mosaic_web_handoff_guidance_only;
+            test_terminal_console_tui_web_handoff_guidance_only;
           Alcotest.test_case "keeps invalid local path inspection UI-local" `Quick
-            test_terminal_console_mosaic_invalid_path_is_ui_local;
+            test_terminal_console_tui_invalid_path_is_ui_local;
           Alcotest.test_case "renders Terminal Console contextual help/footer" `Quick
-            test_terminal_console_mosaic_footer_help_content;
+            test_terminal_console_tui_footer_help_content;
           Alcotest.test_case "records only non-mutating Terminal Console safe aids" `Quick
             test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids;
           Alcotest.test_case "stores latest Terminal Console runtime state" `Quick
@@ -13366,7 +13419,7 @@ let () =
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
           Alcotest.test_case "selects Terminal Console runtime branches" `Quick
-            test_terminal_console_runtime_selects_non_mosaic_paths;
+            test_terminal_console_runtime_selects_non_tui_paths;
           Alcotest.test_case "evaluates runtime command from backend library" `Quick
             test_cli_command_evaluates_runtime_from_library;
           Alcotest.test_case "parses runtime invocation override flags" `Quick

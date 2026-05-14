@@ -333,6 +333,12 @@ _Avoid_: retrying error, global error, any error
 The npm-distributed Personal Symphony package that provides the `symphony` command and carries platform binaries for supported operating systems.
 _Avoid_: npm wrapper, global install
 
+**TUI Toolkit Package**:
+The opam/Dune package at `apps/tui` that contains reusable OCaml terminal UI toolkit source.
+Its private pnpm workspace label is `@symphony-orchestrator/tui`, but opam publishing uses the `tui` package metadata.
+It is separate from **Terminal Console** runtime semantics.
+_Avoid_: Terminal Console, CLI Package, npm package
+
 **Update Source**:
 The npm registry package metadata that `symphony update` uses to discover the latest released CLI Package version.
 _Avoid_: latest build, GitHub release lookup
