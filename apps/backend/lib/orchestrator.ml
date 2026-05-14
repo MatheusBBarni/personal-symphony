@@ -801,6 +801,7 @@ let runtime_state_dir config = Filename.concat (Filename.concat config.Config.re
 
 let context_command_temp_dir config = Filename.concat (runtime_state_dir config) "context-command"
 let context_diagnostics_dir config = Filename.concat (runtime_state_dir config) "context-diagnostics"
+let task_prompt_archive_dir config = Filename.concat (runtime_state_dir config) "task-prompts"
 
 let remove_if_exists path = try if Sys.file_exists path then Sys.remove path with Sys_error _ | Unix.Unix_error _ -> ()
 
@@ -1411,12 +1412,12 @@ let compose_prompt_result ?stage ?previous_attempt_output config issue attempt b
 let compose_prompt ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch =
   (compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch).prompt
 
-let compose_compozy_task_step_prompt_result ?stage ?previous_attempt_output config run attempt ~workspace
+let compose_compozy_task_step_prompt_result ?stage ?issue ?previous_attempt_output config run attempt ~workspace
     ~loop_start_branch =
   match Compozy_tasks_tracker.current_prompt run with
   | Error _ as error -> error
   | Ok base_prompt ->
-      let issue = Compozy_tasks_tracker.issue_of_prd_run run in
+      let issue = Option.value issue ~default:(Compozy_tasks_tracker.issue_of_prd_run run) in
       Ok (compose_prompt_result ?stage ?previous_attempt_output config issue attempt base_prompt ~workspace ~loop_start_branch)
 
 let compose_compozy_task_step_prompt ?stage ?previous_attempt_output config run attempt ~workspace ~loop_start_branch =
@@ -1462,6 +1463,42 @@ let context_generation_diagnostics_to_yojson issue attempt (stage : Config.stage
 let context_diagnostic_id issue attempt =
   Printf.sprintf "%s-attempt-%d-%d" (Workspace.sanitize issue.Issue.identifier) (launch_attempt_number attempt)
     (int_of_float (Unix.gettimeofday () *. 1000000.))
+
+let task_prompt_archive_id issue attempt =
+  Printf.sprintf "%s-attempt-%d-%d" (Workspace.sanitize issue.Issue.identifier) (launch_attempt_number attempt)
+    (int_of_float (Unix.gettimeofday () *. 1000000.))
+
+let task_prompt_archive_metadata_to_yojson issue attempt stage (harness : Config.agent_harness) (workspace : Workspace.t)
+    archive_id prompt_path =
+  let stage_agent, stage_states = selected_stage_fields stage in
+  `Assoc
+    [
+      ("kind", `String "Agent Prompt Archive");
+      ("archiveId", `String archive_id);
+      ("createdAt", `String (Util.now_iso8601 ()));
+      ("issueId", `String issue.Issue.id);
+      ("issueIdentifier", `String issue.identifier);
+      ("issueTitle", `String issue.title);
+      ("issueState", `String issue.state);
+      ("attempt", `Int (launch_attempt_number attempt));
+      ("stageAgent", json_option_string stage_agent);
+      ("stageStates", `List (List.map (fun state -> `String state) stage_states));
+      ("harnessName", `String harness.name);
+      ("harnessKind", `String harness.kind);
+      ("workspacePath", `String workspace.Workspace.path);
+      ("promptPath", `String prompt_path);
+    ]
+
+let persist_task_prompt_archive config issue stage harness attempt workspace prompt =
+  let dir = task_prompt_archive_dir config in
+  ensure_private_runtime_dir dir;
+  let archive_id = task_prompt_archive_id issue attempt in
+  let prompt_path = Filename.concat dir (archive_id ^ ".md") in
+  let metadata_path = Filename.concat dir (archive_id ^ ".json") in
+  write_private_file prompt_path prompt;
+  let metadata = task_prompt_archive_metadata_to_yojson issue attempt stage harness workspace archive_id prompt_path in
+  write_private_file metadata_path (Yojson.Safe.pretty_to_string metadata ^ "\n");
+  prompt_path
 
 let max_context_diagnostic_summaries = 100
 
@@ -1976,6 +2013,12 @@ let mark_compozy_child_blocked orchestrator child reason =
 
 let mark_compozy_run_completed orchestrator run =
   note_compozy_lifecycle_update orchestrator run (Compozy_lifecycle.mark_completed orchestrator.config run)
+
+let compozy_issue_with_lifecycle_dispatch_state config run =
+  let issue = Compozy_tasks_tracker.issue_of_prd_run run in
+  match Compozy_lifecycle.load_or_backfill_reconciled config run with
+  | Ok lifecycle -> { issue with Issue.state = lifecycle.dispatch_state }
+  | Error _ -> issue
 
 let current_compozy_prd_run_for_progress orchestrator =
   if orchestrator.tracker.kind <> "compozy_tasks" then Ok None
@@ -2861,7 +2904,7 @@ let dispatch_issue orchestrator issue =
                             (match apply_compozy_lifecycle_update orchestrator run lifecycle_result with
                             | Error _ as error -> error
                             | Ok () ->
-                                compose_compozy_task_step_prompt_result ?stage ?previous_attempt_output
+                                compose_compozy_task_step_prompt_result ?stage ~issue ?previous_attempt_output
                                   orchestrator.config run attempt ~workspace
                                   ~loop_start_branch:(Some orchestrator.loop_start_branch))))))
           else
@@ -2895,6 +2938,12 @@ let dispatch_issue orchestrator issue =
             let harness =
               Option.value (Config.selected_agent_harness orchestrator.config stage)
                 ~default:(Config.default_agent_harness orchestrator.config)
+            in
+            let prompt_archive_error =
+              try
+                ignore (persist_task_prompt_archive orchestrator.config issue stage harness attempt workspace prompt);
+                None
+              with exn -> Some ("Agent Prompt Archive persistence failed: " ^ Printexc.to_string exn)
             in
             let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
             let now = Util.now_iso8601 () in
@@ -2930,7 +2979,11 @@ let dispatch_issue orchestrator issue =
                   (match context_diagnostic_summary with
                   | Some summary -> append_context_diagnostic_summary state.context_diagnostics summary
                   | None -> state.context_diagnostics);
-                last_error = context_diagnostic_error;
+                last_error =
+                  (match (context_diagnostic_error, prompt_archive_error) with
+                  | None, None -> None
+                  | Some error, None | None, Some error -> Some error
+                  | Some left, Some right -> Some (left ^ "; " ^ right));
               }
               |> Runtime_state.set_context_status issue.id context_status);
             update_ordered_queue_entries orchestrator ~candidates:[ issue ] ();
@@ -3143,8 +3196,8 @@ let mark_child_failed orchestrator child error =
       mark_retrying orchestrator child.issue_id error;
       refresh_compozy_child_progress orchestrator child
   | Ok (Compozy_next_after_failure run) ->
-      let next_issue = Compozy_tasks_tracker.issue_of_prd_run run in
-      complete_child ~next_status:run.state orchestrator child;
+      let next_issue = compozy_issue_with_lifecycle_dispatch_state orchestrator.config run in
+      complete_child ~next_status:next_issue.state orchestrator child;
       dispatch_issue orchestrator next_issue
   | Ok (Compozy_finished_after_failure run) -> complete_child ~next_status:run.state orchestrator child
 
@@ -3257,8 +3310,8 @@ let mark_completed orchestrator child =
       render_commit_failed child.issue_identifier error;
       mark_retrying orchestrator issue_id error
   | Ok (Compozy_next_step run) ->
-      let next_issue = Compozy_tasks_tracker.issue_of_prd_run run in
-      complete_child ~next_status:run.state orchestrator child;
+      let next_issue = compozy_issue_with_lifecycle_dispatch_state orchestrator.config run in
+      complete_child ~next_status:next_issue.state orchestrator child;
       dispatch_issue orchestrator next_issue
   | Ok (Not_compozy_child | Compozy_final_step _) as completion -> (
       match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with

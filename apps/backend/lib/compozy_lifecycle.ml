@@ -208,6 +208,11 @@ let active_current_step = function
       match String.lowercase_ascii step.status with "pending" | "in_progress" -> true | _ -> false)
   | None -> false
 
+let active_dispatch_state config (run : Compozy_tasks_tracker.prd_run) =
+  match config.Config.tracker.project_status_on_dispatch with
+  | Some status when Util.trim status <> "" -> status
+  | _ -> run.state
+
 let derive config (run : Compozy_tasks_tracker.prd_run) =
   let counts = run.counts in
   let lifecycle_state, pr_readiness, reason =
@@ -225,7 +230,8 @@ let derive config (run : Compozy_tasks_tracker.prd_run) =
     run_id = run.id;
     slug = run.slug;
     lifecycle_state;
-    dispatch_state = run.state;
+    dispatch_state =
+      (match lifecycle_state with In_execution -> active_dispatch_state config run | _ -> run.state);
     stage_agent = None;
     pr_readiness;
     reason;
