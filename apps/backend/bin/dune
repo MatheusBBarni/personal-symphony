@@ -1,10 +1,15 @@
 (library
  (name symphony_terminal_console_shell)
- (modules terminal_console_mosaic terminal_console_runtime)
- (libraries symphony_backend mosaic))
+ (modules terminal_console_tui terminal_console_runtime)
+ (libraries symphony_backend tui unix threads))
 
 (executable
  (public_name symphony)
  (name main)
  (modules main)
  (libraries symphony_backend symphony_terminal_console_shell cmdliner unix yojson))
+
+(executable
+ (name terminal_console_preview)
+ (modules terminal_console_preview)
+ (libraries symphony_backend symphony_terminal_console_shell unix threads))

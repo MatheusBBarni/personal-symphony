@@ -95,21 +95,22 @@ let subscribe_state handoff dispatch =
     in
     loop initial_version
 
-let runtime_of_handoff ?(safe_aid = fun _ -> ()) ?(web_handoff = Terminal_console_mosaic.default_web_handoff ())
-    ?(local_surfaces = []) handoff : Terminal_console_mosaic.runtime =
+let runtime_of_handoff ?(safe_aid = fun _ -> ()) ?(web_handoff = Terminal_console_tui.default_web_handoff ())
+    ?(local_surfaces = []) ?(initial_logs = []) handoff : Terminal_console_tui.runtime =
   {
     initial_state = latest_state handoff;
+    initial_logs;
     subscribe = (fun dispatch -> subscribe_state handoff dispatch);
     safe_aid;
     web_handoff;
     local_surfaces;
   }
 
-let run ?(run_ui = Terminal_console_mosaic.run) ?start_orchestration ?safe_aid ?web_handoff ?local_surfaces
+let run ?(run_ui = Terminal_console_tui.run) ?start_orchestration ?safe_aid ?web_handoff ?local_surfaces ?initial_logs
     ~initial_state () =
   let handoff = create_state_handoff initial_state in
   Fun.protect
     ~finally:(fun () -> close_state_handoff handoff)
     (fun () ->
       Option.iter (fun start -> start ~notify_state:(publish_state handoff)) start_orchestration;
-      run_ui (runtime_of_handoff ?safe_aid ?web_handoff ?local_surfaces handoff))
+      run_ui (runtime_of_handoff ?safe_aid ?web_handoff ?local_surfaces ?initial_logs handoff))

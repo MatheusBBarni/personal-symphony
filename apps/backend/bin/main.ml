@@ -40,10 +40,10 @@ let package_json_candidates () =
 let version =
   package_json_candidates () |> List.find_map version_from_package_json |> Option.value ~default:"unknown"
 
-let _terminal_console_mosaic_link_anchor =
-  Symphony_terminal_console_shell.Terminal_console_mosaic.compile_anchor
+let _terminal_console_tui_link_anchor =
+  Symphony_terminal_console_shell.Terminal_console_tui.compile_anchor
 
-module Terminal_console_mosaic = Symphony_terminal_console_shell.Terminal_console_mosaic
+module Terminal_console_tui = Symphony_terminal_console_shell.Terminal_console_tui
 module Terminal_console_runtime = Symphony_terminal_console_shell.Terminal_console_runtime
 
 let ansi code = if colors_enabled () then "\027[" ^ code ^ "m" else ""
@@ -60,7 +60,23 @@ let status_badge = function
   | Runtime_home.Already_present -> cyan "present"
   | Runtime_home.Skipped_existing -> yellow "kept"
 
+let status_text = function
+  | Runtime_home.Created -> "created"
+  | Runtime_home.Already_present -> "present"
+  | Runtime_home.Skipped_existing -> "kept"
+
 let basename path = Filename.basename path
+
+let bootstrap_report_log_lines report =
+  let created =
+    List.filter (fun (item : Runtime_home.bootstrap_item) -> item.status = Runtime_home.Created) report |> List.length
+  in
+  let existing = List.length report - created in
+  Printf.sprintf "bootstrap %d created %d already configured" created existing
+  :: List.map
+       (fun (item : Runtime_home.bootstrap_item) ->
+         Printf.sprintf "%s %s %s" (status_text item.status) (basename item.path) item.path)
+       report
 
 let render_bootstrap_report report =
   let created =
@@ -93,6 +109,11 @@ let render_startup_completed ~mode ~config ~runtime_home =
   Printf.eprintf "%s %s %s %s %s %s %s\n%!" (blue "startup") (green "ready") (dim mode) (dim "tracker")
     (cyan config.Config.tracker.kind) (tracker_issue_source config)
     (dim event)
+
+let startup_completed_log_line ~mode ~config ~runtime_home =
+  let event = Runtime_startup.startup_completed_event ~mode ~config ~runtime_home in
+  Printf.sprintf "startup ready %s tracker %s %s %s" mode config.Config.tracker.kind
+    (tracker_issue_source config) event
 
 let dashboard_url ?auth_token ~host ~port () =
   let base = Printf.sprintf "http://%s:%d/" host port in
@@ -243,24 +264,28 @@ let run_runtime port once web queue_arg merge_args overrides =
         1
     | Ok prepared ->
         let home = prepared.Runtime_startup.home in
+        let terminal_console_initial_logs = ref (bootstrap_report_log_lines prepared.bootstrap_report) in
         render_bootstrap_report prepared.bootstrap_report;
         let config = prepared.loaded.config in
         let prompt_template = prepared.loaded.prompt_template in
         let ordered_queue, queue_parse_problems = parse_ordered_queue_arg queue_arg in
         let mode = Cli_mode.select ~web in
-        render_startup_completed ~mode:(Cli_mode.to_string mode) ~config ~runtime_home:home.runtime_dir;
+        let mode_text = Cli_mode.to_string mode in
+        terminal_console_initial_logs :=
+          !terminal_console_initial_logs @ [ startup_completed_log_line ~mode:mode_text ~config ~runtime_home:home.runtime_dir ];
+        render_startup_completed ~mode:mode_text ~config ~runtime_home:home.runtime_dir;
         if merge_args <> [] then run_manual_merge config merge_args
         else (
           let state = Runtime_readiness.state ?ordered_queue ~queue_parse_problems config in
           let terminal_console_host = config.server.host in
           let terminal_console_port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
           let terminal_console_web_handoff =
-            Terminal_console_mosaic.default_web_handoff ~host:terminal_console_host ~port:terminal_console_port ()
+            Terminal_console_tui.default_web_handoff ~host:terminal_console_host ~port:terminal_console_port ()
           in
           let terminal_console_local_surfaces =
             [
-              Terminal_console_mosaic.local_surface ~label:"Workspace Repository" ~root:config.repository_root;
-              Terminal_console_mosaic.local_surface ~label:"Runtime Home" ~root:home.runtime_dir;
+              Terminal_console_tui.local_surface ~label:"Workspace Repository" ~root:config.repository_root;
+              Terminal_console_tui.local_surface ~label:"Runtime Home" ~root:home.runtime_dir;
             ]
           in
           if mode = Cli_mode.Web_dashboard then render_banner ();
@@ -302,11 +327,13 @@ let run_runtime port once web queue_arg merge_args overrides =
                   Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
           | Terminal_console_readiness ->
               Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
-                ~local_surfaces:terminal_console_local_surfaces ~initial_state:state ();
+                ~local_surfaces:terminal_console_local_surfaces ~initial_logs:!terminal_console_initial_logs
+                ~initial_state:state ();
               0
           | Terminal_console_orchestrator ->
               Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
-                ~local_surfaces:terminal_console_local_surfaces ~initial_state:state
+                ~local_surfaces:terminal_console_local_surfaces ~initial_logs:!terminal_console_initial_logs
+                ~initial_state:state
                 ~start_orchestration:(fun ~notify_state ->
                   let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template ~notify_state () in
                   notify_state (Orchestrator.get_state orchestrator);

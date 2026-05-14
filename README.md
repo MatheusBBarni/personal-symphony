@@ -60,12 +60,12 @@ name; secret values belong only in the Local Environment.
 
 Run `symphony` from the Workspace Repository root to start the default read-first Terminal Console.
 It is the foreground surface for normal local orchestration and renders Runtime State snapshots for
-active work, retrying work, task attention, Readiness Gaps, Ordered Queue progress, Compozy PRD Run
-progress, Agent Worktree details, and Task Branch context.
+active work, retrying work, task attention, Readiness Gaps, Queue progress, Logs progress, Agent Worktree details,
+and Task Branch context.
 Compozy PRD Run progress appears when Compozy tracking is selected.
 
 The Terminal Console is safe to keep open while Symphony runs. Its MVP safe local aids are limited to
-refreshing the latest in-memory Runtime State snapshot, navigating and filtering panels, showing the
+refreshing the latest in-memory Runtime State snapshot, navigating and filtering tabs, showing the
 Web Dashboard handoff command, and inspecting validated local paths such as the Workspace Repository
 or Runtime Home. These aids do not retry tasks, pause or resume dispatch, update tracker status, merge
 or push Task Branches, open pull requests, change Runtime Contract files, or otherwise mutate task
@@ -559,6 +559,9 @@ Symphony still reports Workspace Repository or GitHub Project access gaps, remov
 - `apps/backend`: OCaml service, workflow loader, GitHub tracker boundary, workspace manager, HTTP
   state API, CLI, and tests.
 - `apps/frontend`: ReScript React/Vite dashboard that consumes the backend state API.
+- `apps/tui`: reusable OCaml terminal UI toolkit packaged with Dune/opam as `tui`. Its
+  `@symphony-orchestrator/tui` package.json is a private pnpm workspace label, not the publishing
+  target.
 - `.github/ISSUE_TEMPLATE`: issue template for work items Symphony can dispatch.
 - `.github/project-tracking.md`: GitHub Tracker setup and workflow notes.
 - `WORKFLOW.example.md`: legacy/developer fixture for the earlier root workflow format.
@@ -572,9 +575,9 @@ actual orchestration belong in the Workspace Repository where `symphony init` is
 repository keeps code, tests, packaging scripts, fixtures, and documentation.
 
 Product Repository development requires `pnpm` 10.x and an OCaml toolchain with `opam`, OCaml
-`>= 5.1`, Dune `>= 3.19`, `cmdliner`, `yojson`, `alcotest`, and `mosaic`. The local scripts run
-OCaml commands through `opam exec`, so make sure the active opam switch has the required packages
-installed.
+`>= 5.1`, Dune `>= 3.19`, `cmdliner`, `yojson`, `alcotest`, the local `apps/tui` package, `uutf`,
+and `toffee`. The local scripts run OCaml commands through `opam exec`, so make sure the active opam
+switch has the required packages installed.
 
 Install dependencies:
 

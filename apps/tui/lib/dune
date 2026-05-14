@@ -1,0 +1,4 @@
+(library
+ (name tui)
+ (public_name tui)
+ (libraries unix uutf toffee))
