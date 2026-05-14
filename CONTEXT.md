@@ -386,6 +386,7 @@ _Avoid_: reinitialize, reset
 - A **Compozy PRD Run Lifecycle** belongs to the **Compozy PRD Run**, not to an individual **Compozy Task Step**.
 - **Compozy Task Step** progress remains the source for current step and completed, failed, skipped, and total counts.
 - **Compozy PR Readiness** is separate from **Compozy Task Step** progress; failed, skipped, blocked, or terminal task-step progress does not by itself make a **Batch Pull Request** ready.
+- When all **Compozy Task Steps** are completed and the **Compozy PRD Run Lifecycle** dispatch state selects another configured **Stage Agent**, the **Compozy PRD Run** remains dispatchable for that next stage before pull-request handoff.
 - A Compozy-backed **Local Issue Tracker** in `batch` **Pull Request Mode** may become eligible for one aggregate **Batch Pull Request** for the completed **Compozy PRD Run** and must not open per-step pull requests for **Compozy Task Steps**.
 - A **Local Issue Tracker** must preserve Stage Agent dispatch, tracker status transitions, Agent Prompt rendering, Task Branch naming, retry, Stage Commit, Stage Push, and Task Branch Integration behavior.
 - A **Local Issue Tracker** must not require GitHub API access for issue fetches or tracker status updates.

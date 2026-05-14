@@ -60,7 +60,7 @@ name; secret values belong only in the Local Environment.
 
 Run `symphony` from the Workspace Repository root to start the default read-first Terminal Console.
 It is the foreground surface for normal local orchestration and renders Runtime State snapshots for
-active work, retrying work, task attention, Readiness Gaps, Queue progress, Logs progress, Agent Worktree details,
+active work, retrying work, task attention, Readiness Gaps, Ordered Queue progress, Logs progress, Agent Worktree details,
 and Task Branch context.
 Compozy PRD Run progress appears when Compozy tracking is selected.
 
@@ -193,6 +193,9 @@ completed successfully, final integration is safe, and the Pull Request Policy a
 In `batch` Pull Request Mode, Compozy tracking preserves aggregate Batch Pull Request behavior:
 Symphony never opens one pull request per Compozy Task Step. At most one Batch Pull Request is
 eligible for the completed Compozy PRD Run, using the Loop-Start Branch as the pull-request head.
+If the completed Compozy Task Steps move the run into another configured Stage Agent state, Symphony
+dispatches that next Stage Agent with completed-run context first. Pull request handoff happens only
+after there is no configured next Stage Agent.
 
 Where selector-based flows support Compozy tracking, use the stable identifier form
 `compozy:<task_name>`. For example, `.compozy/tasks/compozy-tasks-run-integration/` is selected as

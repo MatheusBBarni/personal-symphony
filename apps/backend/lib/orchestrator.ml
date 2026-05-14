@@ -443,6 +443,14 @@ let stage_for_issue config issue =
     |> List.find_opt (fun (stage : Config.stage_agent) ->
            List.exists (fun state -> string_equal_ci state issue.Issue.state) stage.states)
 
+let stage_for_status config status =
+  if not config.Config.stage_agents.enabled then None
+  else
+    config.stage_agents.stages
+    |> List.find_opt (fun (stage : Config.stage_agent) -> List.exists (string_equal_ci status) stage.states)
+
+let status_selects_stage config status = Option.is_some (stage_for_status config status)
+
 let stage_key (stage : Config.stage_agent) = stage.agent ^ "\000" ^ String.concat "\000" stage.states
 
 let running_stage_key config (row : Runtime_state.running) =
@@ -2888,6 +2896,21 @@ let dispatch_issue orchestrator issue =
             | Error _ as error -> error
             | Ok run -> (
                 match run.current_step with
+                | None when Compozy_tasks_tracker.completed_prd_run run ->
+                    let stage_agent = Option.map (fun (stage : Config.stage_agent) -> stage.agent) stage in
+                    let lifecycle_result =
+                      Compozy_lifecycle.mark_stage_started orchestrator.config run ~stage_agent
+                        ~dispatch_state:issue.Issue.state
+                    in
+                    (match apply_compozy_lifecycle_update orchestrator run lifecycle_result with
+                    | Error _ as error -> error
+                    | Ok () ->
+                        (match Compozy_tasks_tracker.stage_prompt run with
+                        | Error _ as error -> error
+                        | Ok base_prompt ->
+                            Ok
+                              (compose_prompt_result ?stage ?previous_attempt_output orchestrator.config issue attempt
+                                 base_prompt ~workspace ~loop_start_branch:(Some orchestrator.loop_start_branch))))
                 | None -> Error (Printf.sprintf "no runnable Compozy task step for %s" run.id)
                 | Some step -> (
                     match update_compozy_workspace_step_status orchestrator.config workspace run step "in_progress" with
@@ -3267,6 +3290,7 @@ let mark_merge_attention orchestrator child error =
 
 type compozy_completion =
   | Not_compozy_child
+  | Compozy_stage_only_completed_run of Compozy_tasks_tracker.prd_run
   | Compozy_final_step of Compozy_tasks_tracker.prd_run * Compozy_tasks_tracker.task_step
   | Compozy_next_step of Compozy_tasks_tracker.prd_run
 
@@ -3277,6 +3301,7 @@ let complete_compozy_task_step orchestrator child =
     | Error _ as error -> error
     | Ok run -> (
         match run.current_step with
+        | None when Compozy_tasks_tracker.completed_prd_run run -> Ok (Compozy_stage_only_completed_run run)
         | None -> Error (Printf.sprintf "no runnable Compozy task step for %s" run.id)
         | Some step -> (
             match update_compozy_workspace_step_status orchestrator.config child.workspace run step "completed" with
@@ -3313,7 +3338,7 @@ let mark_completed orchestrator child =
       let next_issue = compozy_issue_with_lifecycle_dispatch_state orchestrator.config run in
       complete_child ~next_status:next_issue.state orchestrator child;
       dispatch_issue orchestrator next_issue
-  | Ok (Not_compozy_child | Compozy_final_step _) as completion -> (
+  | Ok (Not_compozy_child | Compozy_stage_only_completed_run _ | Compozy_final_step _) as completion -> (
       match orchestrator.commit_stage orchestrator.config child.workspace child.issue stage next_status with
       | Error error ->
           let error =
@@ -3332,14 +3357,40 @@ let mark_completed orchestrator child =
             mark_blocked ~child orchestrator issue_id error)
           else mark_retrying orchestrator issue_id error
       | Ok () ->
-          let mark_final_compozy_completion () =
+          let final_compozy_run =
             match completion with
-            | Ok (Compozy_final_step (run, _step)) -> mark_compozy_run_completed orchestrator run
-            | _ -> ()
+            | Ok (Compozy_final_step (run, _step)) -> Some run
+            | Ok (Compozy_stage_only_completed_run run) -> Some run
+            | _ -> None
+          in
+          let final_compozy_has_next_stage status = Option.is_some final_compozy_run && status_selects_stage orchestrator.config status in
+          let should_open_task_pull_request_before_auto_merge status =
+            if final_compozy_has_next_stage status then false
+            else
+              task_pull_request_before_auto_merge orchestrator status
+              ||
+              match final_compozy_run with
+              | Some _ ->
+                  let policy = orchestrator.config.Config.pull_request in
+                  policy.enabled && policy.mode = "task"
+              | None -> false
+          in
+          let mark_final_compozy_completion () =
+            match final_compozy_run with
+            | None -> ()
+            | Some run -> (
+                match next_status with
+                | Some status when status_selects_stage orchestrator.config status ->
+                    let next_stage = stage_for_status orchestrator.config status in
+                    let stage_agent = Option.map (fun (stage : Config.stage_agent) -> stage.agent) next_stage in
+                    note_compozy_lifecycle_update orchestrator run
+                      (Compozy_lifecycle.mark_stage_started orchestrator.config run ~stage_agent
+                         ~dispatch_state:status)
+                | _ -> mark_compozy_run_completed orchestrator run)
           in
           let status_moved_before_merge =
             match next_status with
-            | Some status when task_pull_request_before_auto_merge orchestrator status ->
+            | Some status when should_open_task_pull_request_before_auto_merge status ->
                 if move_issue_status orchestrator child.issue status then (
                   attempt_task_pull_request orchestrator child.issue;
                   Some true)
@@ -3357,6 +3408,11 @@ let mark_completed orchestrator child =
                   match next_status with
                   | None ->
                       mark_final_compozy_completion ();
+                      (match final_compozy_run with
+                      | Some _ ->
+                          let policy = orchestrator.config.Config.pull_request in
+                          if policy.enabled && policy.mode = "task" then attempt_task_pull_request orchestrator child.issue
+                      | None -> ());
                       complete_child orchestrator child
                   | Some status ->
                       if status_moved_before_merge then (
@@ -3366,7 +3422,8 @@ let mark_completed orchestrator child =
                         mark_retrying orchestrator issue_id (Printf.sprintf "could not move issue to %s" status)
                       else (
                         mark_final_compozy_completion ();
-                        maybe_open_review_pull_request orchestrator child.issue status;
+                        if not (final_compozy_has_next_stage status) then
+                          maybe_open_review_pull_request orchestrator child.issue status;
                         complete_child ~next_status:status orchestrator child))))
 
 let signal_child child signal =

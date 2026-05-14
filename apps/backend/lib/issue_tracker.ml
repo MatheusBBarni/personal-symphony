@@ -215,6 +215,16 @@ let compozy_status_is_active config status =
 let compozy_status_is_terminal config status =
   status_in [ "completed"; "failed"; "skipped" ] status || status_in config.Config.tracker.terminal_states status
 
+let compozy_status_selects_stage config status =
+  config.Config.stage_agents.enabled
+  && List.exists
+       (fun (stage : Config.stage_agent) -> List.exists (string_equal_ci status) stage.states)
+       config.stage_agents.stages
+
+let compozy_run_is_candidate config (run : Compozy_tasks_tracker.prd_run) (lifecycle : Compozy_lifecycle.t) =
+  Compozy_tasks_tracker.runnable_prd_run run
+  || (Compozy_tasks_tracker.completed_prd_run run && compozy_status_selects_stage config lifecycle.dispatch_state)
+
 let compozy_issue_of_prd_run run (lifecycle : Compozy_lifecycle.t) =
   let issue = Compozy_tasks_tracker.issue_of_prd_run run in
   { issue with Issue.state = lifecycle.dispatch_state }
@@ -257,7 +267,7 @@ let compozy config =
     | Ok runs ->
         Ok
           (runs
-          |> List.filter (fun (run, _) -> Compozy_tasks_tracker.runnable_prd_run run)
+          |> List.filter (fun (run, lifecycle) -> compozy_run_is_candidate config run lifecycle)
           |> List.map (fun (run, lifecycle) -> compozy_issue_of_prd_run run lifecycle))
   in
   let fetch_by_identifiers_detailed identifiers =
