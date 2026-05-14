@@ -8,8 +8,10 @@ The library is intentionally framework-free. The layout engine uses `toffee`, an
 
 - Buffered cell surface with plain snapshots, ANSI rendering, and diff rendering.
 - Semantic styling primitives: colors, attributes, themes, borders, padding, margins, and flex properties.
-- Components: `Text`, `Box`, `Input`, `Select`, `Scroll_box`, `Progress_bar`, `Sparkline`, and footer helper.
-- Dashboard/workspace helpers: `Components.app_shell`, `header`, `panel`, `rule_panel`, `wordmark`, `badge`, `tab_bar`, `metric_card`, `key_value`, `table`, `log_feed`, `message`, `timeline`, `composer`, `command_block`, `model_status`, `hint_bar`, `tip`, `split`, `row`, and `column`.
+- Components: `text`, `box`, `input`, `select`, `scroll_box`, `progress_bar`, `sparkline`, `panel`, `badge`, `tab_bar`, `key_value`, `table`, `split`, `row`, and `column`.
+- Themed component design contexts with `Components.make_design` and `?design` arguments for reusable widgets and patterns.
+- Application patterns: `Patterns.app_shell`, `header`, `rule_panel`, `metric_card`, `log_feed`, `message`, `timeline`, `composer`, `command_bar`, `footer`, and `modal`.
+- Example presets: `Presets.Open_code.wordmark`, `model_status`, `command_block`, `hint_bar`, and `tip`.
 - Keyboard parsing for common terminal sequences plus focus routing and basic widget key handling.
 - Keymap engine with single-key and multi-stroke bindings.
 - Terminal helpers for alternate screen, raw mode, viewport detection, color capability, and a small render loop.

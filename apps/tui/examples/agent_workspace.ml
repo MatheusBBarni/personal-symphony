@@ -1,5 +1,6 @@
 open Tui
 open Tui.Components
+open Tui.Patterns
 
 let sessions =
   [

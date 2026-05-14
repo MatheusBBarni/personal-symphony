@@ -39,7 +39,7 @@ let () =
                 input ~style:Style.(make ~width:(Cells 24) ()) ~placeholder:"type here" ();
               ];
           ];
-        Components.footer [ ("q", "uit"); ("/", "search"); ("?", "help"); ("Tab", "focus") ];
+        Patterns.footer [ ("q", "uit"); ("/", "search"); ("?", "help"); ("Tab", "focus") ];
       ]
   in
   let renderer = Renderer.create ~width:96 ~height:24 root in

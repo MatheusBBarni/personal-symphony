@@ -89,13 +89,13 @@ let table_component_fits_unicode () =
 
 let dashboard_components_render () =
   let root =
-    Components.app_shell ~title:"Ops" ~badges:[ (Components.Success, "live") ]
+    Patterns.app_shell ~title:"Ops" ~badges:[ (Components.Success, "live") ]
       [
         Components.row
           [
-            Components.metric_card ~label:"CPU" ~value:"67%" ~progress:0.67 ();
+            Patterns.metric_card ~label:"CPU" ~value:"67%" ~progress:0.67 ();
             Components.panel "Events"
-              [ Components.log_feed [ ("12:00", "INFO", "started"); ("12:01", "OK", "ready") ] ];
+              [ Patterns.log_feed [ ("12:00", "INFO", "started"); ("12:01", "OK", "ready") ] ];
           ];
       ]
   in
@@ -112,11 +112,11 @@ let opencode_helpers_render () =
   let root =
     box
       [
-        Components.wordmark "opencode";
-        Components.rule_panel
+        Presets.Open_code.wordmark "opencode";
+        Patterns.rule_panel
           [
-            Components.model_status ();
-            Components.hint_bar [ ("tab", "agents"); ("ctrl+p", "commands") ];
+            Presets.Open_code.model_status ();
+            Presets.Open_code.hint_bar [ ("tab", "agents"); ("ctrl+p", "commands") ];
           ];
       ]
   in
@@ -130,7 +130,7 @@ let modal_component_renders_overlay () =
       ~style:Style.(make ~width:(Cells 40) ~height:(Cells 12) ())
       [
         text "background";
-        Components.modal ~id:"help-modal" ~style:Style.(make ~width:(Cells 24) ~height:(Cells 7) ())
+        Patterns.modal ~id:"help-modal" ~style:Style.(make ~width:(Cells 24) ~height:(Cells 7) ())
           "Commands"
           [ text "q quit"; text "? close" ];
       ]
@@ -177,6 +177,46 @@ let renderer_viewport_and_resize () =
   Renderer.resize renderer ~width:0 ~height:0;
   Alcotest.(check (pair int int)) "resize clamps" (1, 1) (Renderer.size renderer)
 
+let component_design_injects_theme () =
+  let theme = function
+    | Theme.Fg_default -> Color.ansi 1
+    | Theme.Fg_muted -> Color.ansi 2
+    | Theme.Fg_emphasis -> Color.ansi 3
+    | Theme.Bg_base -> Color.ansi 4
+    | Theme.Bg_surface -> Color.ansi 5
+    | Theme.Bg_overlay -> Color.ansi 6
+    | Theme.Bg_selection -> Color.ansi 7
+    | Theme.Accent_primary -> Color.ansi 8
+    | Theme.Accent_secondary -> Color.ansi 9
+    | Theme.Status_error -> Color.ansi 10
+    | Theme.Status_warning -> Color.ansi 11
+    | Theme.Status_success -> Color.ansi 12
+    | Theme.Status_info -> Color.ansi 13
+  in
+  let design = Components.make_design ~theme () in
+  let root = Components.badge ~id:"badge" ~tone:Components.Success ~design "ok" in
+  (match Node.find_by_id "badge" root with
+  | Some node -> Alcotest.(check bool) "uses custom success color" true (node.style.fg = Some (Color.ansi 12))
+  | None -> Alcotest.fail "badge not found");
+  let light_design = Components.make_design ~theme:Theme.light () in
+  let light = Components.badge ~id:"light-badge" ~tone:Components.Success ~design:light_design "ok" in
+  match Node.find_by_id "light-badge" light with
+  | Some node ->
+      Alcotest.(check bool)
+        "uses light success color" true
+        (node.style.fg = Some (Theme.light Theme.Status_success))
+  | None -> Alcotest.fail "light badge not found"
+
+let app_shell_default_is_neutral () =
+  let output = Renderer.render_to_string (Renderer.create ~width:32 ~height:6 (Patterns.app_shell [])) in
+  Alcotest.(check bool) "default app title" true (contains_sub output "App");
+  Alcotest.(check bool) "no product title" false (contains_sub output "Symphony TUI")
+
+let opencode_preset_has_moved_helper () =
+  let root = Presets.Open_code.model_status () in
+  let output = Renderer.render_to_string (Renderer.create ~width:80 ~height:1 root) in
+  Alcotest.(check bool) "preset renders default model" true (contains_sub output "DeepSeek V4 Pro")
+
 let () =
   Alcotest.run "tui"
     [
@@ -196,6 +236,9 @@ let () =
           Alcotest.test_case "vertical rule" `Quick vertical_rule_fills_height;
           Alcotest.test_case "opencode helpers" `Quick opencode_helpers_render;
           Alcotest.test_case "modal overlay" `Quick modal_component_renders_overlay;
+          Alcotest.test_case "design injection" `Quick component_design_injects_theme;
+          Alcotest.test_case "neutral app shell default" `Quick app_shell_default_is_neutral;
+          Alcotest.test_case "opencode preset helper" `Quick opencode_preset_has_moved_helper;
         ] );
       ( "viewport",
         [
