@@ -1381,7 +1381,7 @@ module Renderer = struct
             done))
 end
 
-module Components = struct
+module Components_core = struct
   type tone =
     | Neutral
     | Accent
@@ -1389,6 +1389,40 @@ module Components = struct
     | Success
     | Warning
     | Error
+
+  type design = { theme : Theme.t; tone_color : tone -> Color.t }
+
+  let default_tone_color theme = function
+    | Neutral -> theme Theme.Fg_muted
+    | Accent -> theme Theme.Accent_primary
+    | Info -> theme Theme.Status_info
+    | Success -> theme Theme.Status_success
+    | Warning -> theme Theme.Status_warning
+    | Error -> theme Theme.Status_error
+
+  let make_design ?(theme = Theme.dark) ?tone_color () =
+    let tone_color =
+      match tone_color with
+      | Some tone_color -> tone_color
+      | None -> default_tone_color theme
+    in
+    { theme; tone_color }
+
+  let default_design = make_design ()
+  let resolve_design = function None -> default_design | Some design -> design
+  let theme_color design slot = design.theme slot
+  let color_of_tone ?design tone = (resolve_design design).tone_color tone
+  let surface_of design = theme_color design Theme.Bg_surface
+  let overlay_of design = theme_color design Theme.Bg_overlay
+  let default_fg_of design = theme_color design Theme.Fg_default
+  let muted_fg_of design = theme_color design Theme.Fg_muted
+  let emphasis_fg_of design = theme_color design Theme.Fg_emphasis
+
+  let surface = surface_of default_design
+  let overlay = overlay_of default_design
+  let default_fg = default_fg_of default_design
+  let muted_fg = muted_fg_of default_design
+  let emphasis_fg = emphasis_fg_of default_design
 
   let text = Node.text
   let rich_text = Node.rich_text
@@ -1402,53 +1436,8 @@ module Components = struct
   let sparkline = Node.sparkline
   let spacer = Node.spacer
 
-  let color_of_tone = function
-    | Neutral -> Theme.dark Theme.Fg_muted
-    | Accent -> Theme.dark Theme.Accent_primary
-    | Info -> Theme.dark Theme.Status_info
-    | Success -> Theme.dark Theme.Status_success
-    | Warning -> Theme.dark Theme.Status_warning
-    | Error -> Theme.dark Theme.Status_error
-
-  let surface = Theme.dark Theme.Bg_surface
-  let overlay = Theme.dark Theme.Bg_overlay
-  let default_fg = Theme.dark Theme.Fg_default
-  let muted_fg = Theme.dark Theme.Fg_muted
-  let emphasis_fg = Theme.dark Theme.Fg_emphasis
-
   let repeat s n =
     if n <= 0 then "" else String.concat "" (List.init n (fun _ -> s))
-
-  let glyph = function
-    | 'o' -> [ "████"; "█  █"; "█  █"; "█  █"; "████" ]
-    | 'p' -> [ "███ "; "█  █"; "███ "; "█   "; "█   " ]
-    | 'e' -> [ "████"; "█   "; "███ "; "█   "; "████" ]
-    | 'n' -> [ "█  █"; "██ █"; "█ ██"; "█  █"; "█  █" ]
-    | 'c' -> [ "████"; "█   "; "█   "; "█   "; "████" ]
-    | 'd' -> [ "███ "; "█  █"; "█  █"; "█  █"; "███ " ]
-    | 'a' -> [ " ██ "; "█  █"; "████"; "█  █"; "█  █" ]
-    | 'g' -> [ "████"; "█   "; "█ ██"; "█  █"; "████" ]
-    | 't' -> [ "████"; " ██ "; " ██ "; " ██ "; " ██ " ]
-    | 'w' -> [ "█  █"; "█  █"; "█  █"; "████"; "█  █" ]
-    | 'r' -> [ "███ "; "█  █"; "███ "; "█ █ "; "█  █" ]
-    | 'k' -> [ "█  █"; "█ █ "; "██  "; "█ █ "; "█  █" ]
-    | 's' -> [ "████"; "█   "; "████"; "   █"; "████" ]
-    | 'i' -> [ "███"; " █ "; " █ "; " █ "; "███" ]
-    | ' ' -> [ "  "; "  "; "  "; "  "; "  " ]
-    | _ -> [ "██"; "██"; "██"; "██"; "██" ]
-
-  let wordmark ?id ?(style = Style.default) label =
-    let rows = Array.make 5 "" in
-    label
-    |> String.lowercase_ascii
-    |> String.iter (fun ch ->
-           glyph ch
-           |> List.iteri (fun i part ->
-                  rows.(i) <- rows.(i) ^ part ^ " "));
-    box ?id ~style:Style.{ style with flex_direction = Column }
-      (Array.to_list rows
-      |> List.map (fun line ->
-             text ~style:Style.(make ~fg:(Theme.dark Theme.Fg_emphasis) ~attrs:[ Attr.Bold ] ()) line))
 
   let row ?id ?(style = Style.default) ?(gap = 1) children =
     box ?id ~style:Style.{ style with flex_direction = Row; gap } children
@@ -1457,13 +1446,14 @@ module Components = struct
     box ?id ~style:Style.{ style with flex_direction = Column; gap } children
 
   let panel ?id ?(tone = Accent) ?(title_align = Style.Title_left) ?bottom_title
-      ?(style = Style.default) title children =
+      ?(style = Style.default) ?design title children =
+    let design = resolve_design design in
     box ?id
       ~style:
         Style.
           {
             (make ~border:Rounded ~title ~title_align ?bottom_title
-               ~border_fg:(color_of_tone tone) ~padding:(spacing_all 1) ())
+               ~border_fg:(color_of_tone ~design tone) ~padding:(spacing_all 1) ())
             with
             width = style.width;
             height = style.height;
@@ -1481,45 +1471,15 @@ module Components = struct
             bottom = style.bottom;
             margin = style.margin;
             gap = style.gap;
-            fg = (match style.fg with Some _ -> style.fg | None -> Some default_fg);
+            fg = (match style.fg with Some _ -> style.fg | None -> Some (default_fg_of design));
             bg = style.bg;
             attrs = style.attrs;
           }
       children
 
-  let rule_panel ?id ?(tone = Accent) ?(style = Style.default) children =
-    box ?id
-      ~style:Style.{ style with flex_direction = Row; gap = 1 }
-      [
-        vertical_rule ~style:Style.(make ~width:(Cells 1) ~height:(Percent 1.) ~fg:(color_of_tone tone) ~attrs:[ Attr.Bold ] ()) ();
-        box ~style:Style.(make ~flex_grow:1. ~height:(Percent 1.) ~padding:(spacing_xy ~x:1 ~y:0) ~bg:(Color.indexed 235) ())
-          children;
-      ]
-
-  let modal ?id ?(tone = Accent) ?(style = Style.default) ?(bottom_title = "Esc/? close")
-      title children =
-    let modal_width = match style.width with Style.Auto -> Style.Cells 64 | width -> width in
-    let modal_height = match style.height with Style.Auto -> Style.Cells 16 | height -> height in
-    let content_style =
-      Style.
-        {
-          style with
-          width = modal_width;
-          height = modal_height;
-          flex_direction = Column;
-          bg = Some surface;
-        }
-    in
-    box ?id
-      ~style:
-        Style.(
-          make ~position:Absolute ~left:0 ~right:0 ~top:0 ~bottom:0
-            ~width:(Percent 1.) ~height:(Percent 1.) ~justify_content:Justify_center
-            ~align_items:Align_center ())
-      [ panel ~tone ~bottom_title ~style:content_style title children ]
-
-  let badge ?id ?(tone = Neutral) ?(style = Style.default) label =
-    let fg = color_of_tone tone in
+  let badge ?id ?(tone = Neutral) ?(style = Style.default) ?design label =
+    let design = resolve_design design in
+    let fg = color_of_tone ~design tone in
     box ?id
       ~style:
         Style.
@@ -1532,9 +1492,10 @@ module Components = struct
           }
       [ text ~style:Style.(make ~fg ~attrs:[ Attr.Bold ] ()) label ]
 
-  let tab_bar ?id ?(style = Style.default) tabs =
+  let tab_bar ?id ?(style = Style.default) ?design tabs =
+    let design = resolve_design design in
     let tab (label, active) =
-      let fg = if active then emphasis_fg else muted_fg in
+      let fg = if active then emphasis_fg_of design else muted_fg_of design in
       let attrs = if active then [ Attr.Bold; Attr.Underline ] else [ Attr.Dim ] in
       text ~style:Style.(make ~fg ~attrs ()) label
     in
@@ -1549,57 +1510,16 @@ module Components = struct
           }
       (List.map tab tabs)
 
-  let header ?id ?subtitle ?(badges = []) title =
-    let title_line =
-      text ~style:Style.(make ~fg:emphasis_fg ~attrs:[ Attr.Bold ] ()) title
-    in
-    let subtitle_line =
-      match subtitle with
-      | None -> []
-      | Some copy -> [ text ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ()) copy ]
-    in
-    let badge_nodes = badges |> List.map (fun (tone, label) -> badge ~tone label) in
-    box ?id
-      ~style:Style.(make ~height:(Cells 3) ~flex_direction:Row ~justify_content:Space_between ~align_items:Align_center ~padding:(spacing_xy ~x:2 ~y:0) ())
-      [
-        box ~style:Style.(make ~flex_direction:Column ()) (title_line :: subtitle_line);
-        box ~style:Style.(make ~flex_direction:Row ~gap:1 ()) badge_nodes;
-      ]
-
-  let metric_card ?id ?(tone = Info) ?detail ?progress ?sparkline:series
-      ?(style = Style.default) ~label ~value () =
-    let accent = color_of_tone tone in
-    let children =
-      [
-        text ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ()) label;
-        text ~style:Style.(make ~fg:emphasis_fg ~attrs:[ Attr.Bold ] ()) value;
-      ]
-      @ (match detail with None -> [] | Some d -> [ text ~style:Style.(make ~fg:accent ()) d ])
-      @ (match progress with None -> [] | Some p -> [ progress_bar ~style:Style.(make ~height:(Cells 1) ()) p ])
-      @
-      match series with
-      | None -> []
-      | Some values -> [ sparkline ~style:Style.(make ~fg:accent ~height:(Cells 1) ()) values ]
-    in
-    panel ?id ~tone
-      ~style:
-        Style.
-          {
-            style with
-            height =
-              (match style.height with Auto -> Cells (List.length children + 4) | other -> other);
-          }
-      label children
-
-  let key_value ?id ?(label_width = 12) ?(style = Style.default) pairs =
+  let key_value ?id ?(label_width = 12) ?(style = Style.default) ?design pairs =
+    let design = resolve_design design in
     let rows =
       pairs
       |> List.map (fun (key, value) ->
              let key_text = if String.length key >= label_width then key else key ^ String.make (label_width - String.length key) ' ' in
              rich_text
                [
-                 Span.make ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ()) key_text;
-                 Span.make ~style:Style.(make ~fg:default_fg ()) value;
+                 Span.make ~style:Style.(make ~fg:(muted_fg_of design) ~attrs:[ Attr.Dim ] ()) key_text;
+                 Span.make ~style:Style.(make ~fg:(default_fg_of design) ()) value;
                ])
     in
     box ?id ~style:Style.{ style with flex_direction = Column } rows
@@ -1628,45 +1548,167 @@ module Components = struct
         let clipped = Stdlib.Buffer.contents out ^ "…" in
         clipped ^ String.make (max 0 (width - Utf.string_width clipped)) ' '
 
-  let table ?id ?(style = Style.default) ?(header_tone = Accent) columns rows =
+  let table ?id ?(style = Style.default) ?(header_tone = Accent) ?design columns rows =
+    let design = resolve_design design in
     let widths = List.map snd columns in
     let line cells =
       List.map2 (fun width cell -> fit width cell) widths cells |> String.concat "  "
     in
-    let header_style = Style.(make ~fg:(color_of_tone header_tone) ~attrs:[ Attr.Bold ] ()) in
-    let row_style = Style.(make ~fg:default_fg ()) in
+    let header_style = Style.(make ~fg:(color_of_tone ~design header_tone) ~attrs:[ Attr.Bold ] ()) in
+    let row_style = Style.(make ~fg:(default_fg_of design) ()) in
     let header = text ~style:header_style (line (List.map fst columns)) in
     let divider =
-      text ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ())
+      text ~style:Style.(make ~fg:(muted_fg_of design) ~attrs:[ Attr.Dim ] ())
         (line (List.map (fun (_, width) -> repeat "─" width) columns))
     in
     let body = rows |> List.map (fun cells -> text ~style:row_style (line cells)) in
     box ?id ~style:Style.{ style with flex_direction = Column } (header :: divider :: body)
 
-  let log_feed ?id ?(style = Style.default) entries =
+  let split ?id ?(style = Style.default) ?(left_width = 32) left right =
+    box ?id
+      ~style:Style.{ style with flex_direction = Row; gap = 1 }
+      [
+        box ~style:Style.(make ~width:(Cells left_width) ~height:(Percent 1.) ()) left;
+        box ~style:Style.(make ~flex_grow:1. ~height:(Percent 1.) ()) right;
+      ]
+end
+
+module Patterns = struct
+  let rule_panel ?id ?(tone = Components_core.Accent) ?(style = Style.default) ?design children =
+    let design = Components_core.resolve_design design in
+    Components_core.box ?id
+      ~style:Style.{ style with flex_direction = Row; gap = 1 }
+      [
+        Components_core.vertical_rule
+          ~style:
+            Style.(
+              make ~width:(Cells 1) ~height:(Percent 1.)
+                ~fg:(Components_core.color_of_tone ~design tone)
+                ~attrs:[ Attr.Bold ] ())
+          ();
+        Components_core.box
+          ~style:
+            Style.(
+              make ~flex_grow:1. ~height:(Percent 1.)
+                ~padding:(spacing_xy ~x:1 ~y:0) ~bg:(Components_core.surface_of design)
+                ())
+          children;
+      ]
+
+  let modal ?id ?(tone = Components_core.Accent) ?(style = Style.default)
+      ?(bottom_title = "Esc/? close") ?design title children =
+    let design_value = Components_core.resolve_design design in
+    let modal_width = match style.width with Style.Auto -> Style.Cells 64 | width -> width in
+    let modal_height = match style.height with Style.Auto -> Style.Cells 16 | height -> height in
+    let content_style =
+      Style.
+        {
+          style with
+          width = modal_width;
+          height = modal_height;
+          flex_direction = Column;
+          bg = Some (Components_core.surface_of design_value);
+        }
+    in
+    Components_core.box ?id
+      ~style:
+        Style.(
+          make ~position:Absolute ~left:0 ~right:0 ~top:0 ~bottom:0
+            ~width:(Percent 1.) ~height:(Percent 1.) ~justify_content:Justify_center
+            ~align_items:Align_center ())
+      [ Components_core.panel ~tone ~bottom_title ~style:content_style ?design title children ]
+
+  let header ?id ?subtitle ?(badges = []) ?design title =
+    let design_value = Components_core.resolve_design design in
+    let title_line =
+      Components_core.text
+        ~style:Style.(make ~fg:(Components_core.emphasis_fg_of design_value) ~attrs:[ Attr.Bold ] ())
+        title
+    in
+    let subtitle_line =
+      match subtitle with
+      | None -> []
+      | Some copy ->
+          [
+            Components_core.text
+              ~style:Style.(make ~fg:(Components_core.muted_fg_of design_value) ~attrs:[ Attr.Dim ] ())
+              copy;
+          ]
+    in
+    let badge_nodes =
+      badges |> List.map (fun (tone, label) -> Components_core.badge ~tone ?design label)
+    in
+    Components_core.box ?id
+      ~style:Style.(make ~height:(Cells 3) ~flex_direction:Row ~justify_content:Space_between ~align_items:Align_center ~padding:(spacing_xy ~x:2 ~y:0) ())
+      [
+        Components_core.box ~style:Style.(make ~flex_direction:Column ()) (title_line :: subtitle_line);
+        Components_core.box ~style:Style.(make ~flex_direction:Row ~gap:1 ()) badge_nodes;
+      ]
+
+  let metric_card ?id ?(tone = Components_core.Info) ?detail ?progress ?sparkline:series
+      ?(style = Style.default) ?design ~label ~value () =
+    let design_value = Components_core.resolve_design design in
+    let accent = Components_core.color_of_tone ~design:design_value tone in
+    let children =
+      [
+        Components_core.text
+          ~style:Style.(make ~fg:(Components_core.muted_fg_of design_value) ~attrs:[ Attr.Dim ] ())
+          label;
+        Components_core.text
+          ~style:Style.(make ~fg:(Components_core.emphasis_fg_of design_value) ~attrs:[ Attr.Bold ] ())
+          value;
+      ]
+      @ (match detail with None -> [] | Some d -> [ Components_core.text ~style:Style.(make ~fg:accent ()) d ])
+      @ (match progress with None -> [] | Some p -> [ Components_core.progress_bar ~style:Style.(make ~height:(Cells 1) ()) p ])
+      @
+      match series with
+      | None -> []
+      | Some values -> [ Components_core.sparkline ~style:Style.(make ~fg:accent ~height:(Cells 1) ()) values ]
+    in
+    Components_core.panel ?id ~tone ?design
+      ~style:
+        Style.
+          {
+            style with
+            height =
+              (match style.height with Auto -> Cells (List.length children + 4) | other -> other);
+          }
+      label children
+
+  let log_feed ?id ?(style = Style.default) ?design entries =
+    let design_value = Components_core.resolve_design design in
     let tone_of_level = function
-      | "ERR" | "ERROR" | "FAIL" -> Error
-      | "WARN" | "WARNING" -> Warning
-      | "OK" | "DONE" -> Success
-      | "INFO" -> Info
-      | _ -> Neutral
+      | "ERR" | "ERROR" | "FAIL" -> Components_core.Error
+      | "WARN" | "WARNING" -> Components_core.Warning
+      | "OK" | "DONE" -> Components_core.Success
+      | "INFO" -> Components_core.Info
+      | _ -> Components_core.Neutral
     in
     let row (time, level, message) =
-      rich_text
+      Components_core.rich_text
         [
-          Span.make ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ()) (time ^ " ");
-          Span.make ~style:Style.(make ~fg:(color_of_tone (tone_of_level level)) ~attrs:[ Attr.Bold ] ()) (fit 5 level);
-          Span.make ~style:Style.(make ~fg:default_fg ()) (" " ^ message);
+          Span.make
+            ~style:Style.(make ~fg:(Components_core.muted_fg_of design_value) ~attrs:[ Attr.Dim ] ())
+            (time ^ " ");
+          Span.make
+            ~style:
+              Style.(
+                make
+                  ~fg:(Components_core.color_of_tone ~design:design_value (tone_of_level level))
+                  ~attrs:[ Attr.Bold ] ())
+            (Components_core.fit 5 level);
+          Span.make ~style:Style.(make ~fg:(Components_core.default_fg_of design_value) ()) (" " ^ message);
         ]
     in
-    scroll_box ?id ~style:Style.{ style with flex_direction = Column } (List.map row entries)
+    Components_core.scroll_box ?id ~style:Style.{ style with flex_direction = Column } (List.map row entries)
 
-  let section_title ?id ?(tone = Accent) ?(style = Style.default) title =
+  let section_title ?id ?(tone = Components_core.Accent) ?(style = Style.default) ?design title =
+    let design = Components_core.resolve_design design in
     Node.text ?id
       ~style:
         Style.
           {
-            (make ~height:(Cells 1) ~fg:(color_of_tone tone)
+            (make ~height:(Cells 1) ~fg:(Components_core.color_of_tone ~design tone)
                ~attrs:[ Attr.Bold ] ())
             with
             width = style.width;
@@ -1674,10 +1716,11 @@ module Components = struct
           }
       title
 
-  let nav_item ?id ?(active = false) ?meta ?(tone = Accent)
-      ?(style = Style.default) label =
+  let nav_item ?id ?(active = false) ?meta ?(tone = Components_core.Accent)
+      ?(style = Style.default) ?design label =
+    let design = Components_core.resolve_design design in
     let marker = if active then "› " else "  " in
-    let fg = if active then color_of_tone tone else default_fg in
+    let fg = if active then Components_core.color_of_tone ~design tone else Components_core.default_fg_of design in
     let attrs = if active then [ Attr.Bold ] else [] in
     let content =
       [
@@ -1688,28 +1731,32 @@ module Components = struct
       | None -> []
       | Some meta ->
           [
-            Span.make ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ())
+            Span.make
+              ~style:Style.(make ~fg:(Components_core.muted_fg_of design) ~attrs:[ Attr.Dim ] ())
               ("  " ^ meta);
           ]
     in
-    rich_text ?id ~style:Style.{ style with height = Cells 1 } content
+    Components_core.rich_text ?id ~style:Style.{ style with height = Cells 1 } content
 
-  let message ?id ?(tone = Neutral) ?time ?(style = Style.default) ~author body =
-    let accent = color_of_tone tone in
+  let message ?id ?(tone = Components_core.Neutral) ?time ?(style = Style.default) ?design ~author body =
+    let design = Components_core.resolve_design design in
+    let accent = Components_core.color_of_tone ~design tone in
     let header =
-      rich_text
+      Components_core.rich_text
         [
           Span.make ~style:Style.(make ~fg:accent ~attrs:[ Attr.Bold ] ()) author;
-          Span.make ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ())
+          Span.make
+            ~style:Style.(make ~fg:(Components_core.muted_fg_of design) ~attrs:[ Attr.Dim ] ())
             (match time with None -> "" | Some value -> "  " ^ value);
         ]
     in
     let lines =
       body
       |> String.split_on_char '\n'
-      |> List.map (fun line -> text ~style:Style.(make ~fg:default_fg ()) line)
+      |> List.map (fun line ->
+             Components_core.text ~style:Style.(make ~fg:(Components_core.default_fg_of design) ()) line)
     in
-    box ?id
+    Components_core.box ?id
       ~style:
         Style.
           {
@@ -1722,106 +1769,206 @@ module Components = struct
           }
       (header :: lines)
 
-  let model_status ?id ?(style = Style.default) ?(mode = "Build")
-      ?(model = "DeepSeek V4 Pro") ?(provider = "OpenCode Go")
-      ?(effort = "high") () =
-    rich_text ?id ~style
-      [
-        Span.make ~style:Style.(make ~fg:(Theme.dark Theme.Accent_secondary) ~attrs:[ Attr.Bold ] ()) mode;
-        Span.make ~style:Style.(make ~fg:muted_fg ()) " · ";
-        Span.make ~style:Style.(make ~fg:default_fg ~attrs:[ Attr.Bold ] ()) model;
-        Span.make ~style:Style.(make ~fg:muted_fg ()) (" " ^ provider ^ " · ");
-        Span.make ~style:Style.(make ~fg:(Theme.dark Theme.Status_warning) ~attrs:[ Attr.Bold ] ()) effort;
-      ]
-
-  let command_block ?id ?(tone = Accent) ?(style = Style.default) command =
-    rule_panel ?id ~tone
-      ~style:Style.{ style with height = (match style.height with Auto -> Cells 4 | h -> h) }
-      [ text ~style:Style.(make ~fg:default_fg ()) command ]
-
-  let hint_bar ?id ?(style = Style.default) items =
-    let spans =
-      items
-      |> List.concat_map (fun (key, label) ->
-             [
-               Span.make ~style:Style.(make ~fg:default_fg ~attrs:[ Attr.Bold ] ()) key;
-               Span.make ~style:Style.(make ~fg:muted_fg ()) (" " ^ label ^ "   ");
-             ])
-    in
-    rich_text ?id ~style spans
-
-  let tip ?id ?(style = Style.default) message =
-    rich_text ?id ~style
-      [
-        Span.make ~style:Style.(make ~fg:(Theme.dark Theme.Status_warning) ~attrs:[ Attr.Bold ] ()) "● Tip ";
-        Span.make ~style:Style.(make ~fg:muted_fg ()) message;
-      ]
-
-  let timeline ?id ?(style = Style.default) entries =
+  let timeline ?id ?(style = Style.default) ?design entries =
+    let design = Components_core.resolve_design design in
     let row (tone, label, detail) =
-      rich_text
+      Components_core.rich_text
         [
-          Span.make ~style:Style.(make ~fg:(color_of_tone tone) ~attrs:[ Attr.Bold ] ()) "● ";
-          Span.make ~style:Style.(make ~fg:emphasis_fg ~attrs:[ Attr.Bold ] ()) label;
-          Span.make ~style:Style.(make ~fg:muted_fg ~attrs:[ Attr.Dim ] ())
+          Span.make
+            ~style:
+              Style.(
+                make ~fg:(Components_core.color_of_tone ~design tone) ~attrs:[ Attr.Bold ] ())
+            "● ";
+          Span.make
+            ~style:Style.(make ~fg:(Components_core.emphasis_fg_of design) ~attrs:[ Attr.Bold ] ())
+            label;
+          Span.make
+            ~style:Style.(make ~fg:(Components_core.muted_fg_of design) ~attrs:[ Attr.Dim ] ())
             ("  " ^ detail);
         ]
     in
-    box ?id ~style:Style.{ style with flex_direction = Column } (List.map row entries)
+    Components_core.box ?id ~style:Style.{ style with flex_direction = Column } (List.map row entries)
 
-  let composer ?id ?(style = Style.default) ?(prompt = ">") ?(placeholder = "Type a message") () =
-    box ?id
+  let composer ?id ?(style = Style.default) ?design ?(prompt = ">")
+      ?(placeholder = "Type a message") () =
+    let design = Components_core.resolve_design design in
+    let accent = Components_core.color_of_tone ~design Components_core.Accent in
+    Components_core.box ?id
       ~style:
         Style.
           {
-            (make ~border:Rounded ~border_fg:(Theme.dark Theme.Accent_primary)
-               ~height:(Cells 3) ~padding:(spacing_xy ~x:1 ~y:0) ())
+            (make ~border:Rounded ~border_fg:accent ~height:(Cells 3)
+               ~padding:(spacing_xy ~x:1 ~y:0) ())
             with
             width = style.width;
             margin = style.margin;
           }
       [
-        box ~style:Style.(make ~flex_direction:Row ~gap:1 ())
+        Components_core.box ~style:Style.(make ~flex_direction:Row ~gap:1 ())
           [
-            text ~style:Style.(make ~fg:(Theme.dark Theme.Accent_primary) ~attrs:[ Attr.Bold ] ()) prompt;
-            input ~style:Style.(make ~flex_grow:1. ()) ~placeholder ();
+            Components_core.text ~style:Style.(make ~fg:accent ~attrs:[ Attr.Bold ] ()) prompt;
+            Components_core.input ~style:Style.(make ~flex_grow:1. ()) ~placeholder ();
           ];
       ]
 
-  let split ?id ?(style = Style.default) ?(left_width = 32) left right =
-    box ?id
-      ~style:Style.{ style with flex_direction = Row; gap = 1 }
-      [
-        box ~style:Style.(make ~width:(Cells left_width) ~height:(Percent 1.) ()) left;
-        box ~style:Style.(make ~flex_grow:1. ~height:(Percent 1.) ()) right;
-      ]
-
-  let command_bar ?id ?(style = Style.default) items =
+  let command_bar ?id ?(style = Style.default) ?design items =
+    let design = Components_core.resolve_design design in
     let content = items |> List.map (fun (key, label) -> "[" ^ key ^ "]" ^ label) |> String.concat " " in
     Node.text ?id
       ~style:
         Style.
           {
-            (make ~height:(Cells 1) ~width:(Percent 1.) ~bg:(Color.indexed 237)
-               ~fg:(Color.indexed 250) ~attrs:[ Attr.Dim ] ())
+            (make ~height:(Cells 1) ~width:(Percent 1.)
+               ~bg:(Components_core.overlay_of design) ~fg:(Components_core.default_fg_of design)
+               ~attrs:[ Attr.Dim ] ())
             with
             margin = style.margin;
           }
       content
 
-  let footer shortcuts =
-    command_bar shortcuts
+  let footer ?design shortcuts =
+    command_bar ?design shortcuts
 
-  let app_shell ?id ?(title = "Symphony TUI") ?subtitle ?(badges = [])
+  let app_shell ?id ?(title = "App") ?subtitle ?(badges = [])
       ?(footer_items = [ ("q", "uit"); ("?", "help"); ("Tab", "focus") ])
-      body =
-    box ?id
+      ?design body =
+    Components_core.box ?id
       ~style:Style.(make ~width:(Percent 1.) ~height:(Percent 1.) ~flex_direction:Column ())
       [
-        header ?subtitle ~badges title;
-        box ~style:Style.(make ~flex_grow:1. ~flex_direction:Column ~padding:(spacing_xy ~x:1 ~y:0) ()) body;
-        command_bar footer_items;
+        header ?subtitle ~badges ?design title;
+        Components_core.box
+          ~style:Style.(make ~flex_grow:1. ~flex_direction:Column ~padding:(spacing_xy ~x:1 ~y:0) ())
+          body;
+        command_bar ?design footer_items;
       ]
+end
+
+module Presets = struct
+  module Open_code = struct
+    let glyph = function
+      | 'o' -> [ "████"; "█  █"; "█  █"; "█  █"; "████" ]
+      | 'p' -> [ "███ "; "█  █"; "███ "; "█   "; "█   " ]
+      | 'e' -> [ "████"; "█   "; "███ "; "█   "; "████" ]
+      | 'n' -> [ "█  █"; "██ █"; "█ ██"; "█  █"; "█  █" ]
+      | 'c' -> [ "████"; "█   "; "█   "; "█   "; "████" ]
+      | 'd' -> [ "███ "; "█  █"; "█  █"; "█  █"; "███ " ]
+      | 'a' -> [ " ██ "; "█  █"; "████"; "█  █"; "█  █" ]
+      | 'g' -> [ "████"; "█   "; "█ ██"; "█  █"; "████" ]
+      | 't' -> [ "████"; " ██ "; " ██ "; " ██ "; " ██ " ]
+      | 'w' -> [ "█  █"; "█  █"; "█  █"; "████"; "█  █" ]
+      | 'r' -> [ "███ "; "█  █"; "███ "; "█ █ "; "█  █" ]
+      | 'k' -> [ "█  █"; "█ █ "; "██  "; "█ █ "; "█  █" ]
+      | 's' -> [ "████"; "█   "; "████"; "   █"; "████" ]
+      | 'i' -> [ "███"; " █ "; " █ "; " █ "; "███" ]
+      | ' ' -> [ "  "; "  "; "  "; "  "; "  " ]
+      | _ -> [ "██"; "██"; "██"; "██"; "██" ]
+
+    let wordmark ?id ?(style = Style.default) ?design label =
+      let design = Components_core.resolve_design design in
+      let rows = Array.make 5 "" in
+      label
+      |> String.lowercase_ascii
+      |> String.iter (fun ch ->
+             glyph ch
+             |> List.iteri (fun i part ->
+                    rows.(i) <- rows.(i) ^ part ^ " "));
+      Components_core.box ?id ~style:Style.{ style with flex_direction = Column }
+        (Array.to_list rows
+        |> List.map (fun line ->
+               Components_core.text
+                 ~style:Style.(make ~fg:(Components_core.emphasis_fg_of design) ~attrs:[ Attr.Bold ] ())
+                 line))
+
+    let model_status ?id ?(style = Style.default) ?design ?(mode = "Build")
+        ?(model = "DeepSeek V4 Pro") ?(provider = "OpenCode Go")
+        ?(effort = "high") () =
+      let design = Components_core.resolve_design design in
+      Components_core.rich_text ?id ~style
+        [
+          Span.make
+            ~style:
+              Style.(
+                make ~fg:(Components_core.theme_color design Theme.Accent_secondary)
+                  ~attrs:[ Attr.Bold ] ())
+            mode;
+          Span.make ~style:Style.(make ~fg:(Components_core.muted_fg_of design) ()) " · ";
+          Span.make
+            ~style:Style.(make ~fg:(Components_core.default_fg_of design) ~attrs:[ Attr.Bold ] ())
+            model;
+          Span.make ~style:Style.(make ~fg:(Components_core.muted_fg_of design) ())
+            (" " ^ provider ^ " · ");
+          Span.make
+            ~style:
+              Style.(
+                make ~fg:(Components_core.theme_color design Theme.Status_warning)
+                  ~attrs:[ Attr.Bold ] ())
+            effort;
+        ]
+
+    let command_block ?id ?(tone = Components_core.Accent) ?(style = Style.default)
+        ?design command =
+      let design_value = Components_core.resolve_design design in
+      Patterns.rule_panel ?id ~tone ?design
+        ~style:Style.{ style with height = (match style.height with Auto -> Cells 4 | h -> h) }
+        [
+          Components_core.text
+            ~style:Style.(make ~fg:(Components_core.default_fg_of design_value) ())
+            command;
+        ]
+
+    let hint_bar ?id ?(style = Style.default) ?design items =
+      let design = Components_core.resolve_design design in
+      let spans =
+        items
+        |> List.concat_map (fun (key, label) ->
+               [
+                 Span.make
+                   ~style:
+                     Style.(
+                       make ~fg:(Components_core.default_fg_of design) ~attrs:[ Attr.Bold ] ())
+                   key;
+                 Span.make ~style:Style.(make ~fg:(Components_core.muted_fg_of design) ())
+                   (" " ^ label ^ "   ");
+               ])
+      in
+      Components_core.rich_text ?id ~style spans
+
+    let tip ?id ?(style = Style.default) ?design message =
+      let design = Components_core.resolve_design design in
+      Components_core.rich_text ?id ~style
+        [
+          Span.make
+            ~style:
+              Style.(
+                make ~fg:(Components_core.theme_color design Theme.Status_warning)
+                  ~attrs:[ Attr.Bold ] ())
+            "● Tip ";
+          Span.make ~style:Style.(make ~fg:(Components_core.muted_fg_of design) ()) message;
+        ]
+  end
+end
+
+module Components = struct
+  include Components_core
+
+  let rule_panel = Patterns.rule_panel
+  let modal = Patterns.modal
+  let header = Patterns.header
+  let metric_card = Patterns.metric_card
+  let log_feed = Patterns.log_feed
+  let section_title = Patterns.section_title
+  let nav_item = Patterns.nav_item
+  let message = Patterns.message
+  let timeline = Patterns.timeline
+  let composer = Patterns.composer
+  let command_bar = Patterns.command_bar
+  let footer = Patterns.footer
+  let app_shell = Patterns.app_shell
+  let wordmark = Presets.Open_code.wordmark
+  let model_status = Presets.Open_code.model_status
+  let command_block = Presets.Open_code.command_block
+  let hint_bar = Presets.Open_code.hint_bar
+  let tip = Presets.Open_code.tip
 end
 
 let text = Components.text
@@ -1834,6 +1981,6 @@ let select = Components.select
 let scroll_box = Components.scroll_box
 let progress_bar = Components.progress_bar
 let sparkline = Components.sparkline
-let modal = Components.modal
+let modal = Patterns.modal
 let terminal_viewport = Terminal.viewport
 let terminal_size = Terminal.size

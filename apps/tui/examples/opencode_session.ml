@@ -1,5 +1,7 @@
 open Tui
 open Tui.Components
+open Tui.Patterns
+open Tui.Presets.Open_code
 
 let clamp low high value = max low (min high value)
 

@@ -1,30 +1,32 @@
 # Symphony TUI
 
-Symphony TUI is a modern terminal UI library for OCaml. It follows the same core shape as OpenTUI: a renderer-owned root tree, composable components, a buffered cell surface, flexbox-style layout, structured keyboard events, and practical widgets.
+Symphony TUI is an OCaml terminal UI toolkit. It provides a renderer-owned component tree, buffered cell surfaces, ANSI and plain-text rendering, Toffee-backed flexbox layout, keyboard parsing, keymaps, viewport helpers, and reusable terminal UI widgets.
 
-The library is intentionally framework-free. The layout engine uses `toffee`, an OCaml port of Taffy, so panels, rows, columns, padding, borders, growth, and fixed sizes behave like a terminal-focused subset of CSS flexbox.
+The package is intentionally framework-free. You build a tree of `Tui.Node.t` values, render it with `Tui.Renderer`, and decide whether your program prints a static snapshot or runs an interactive terminal loop.
 
-## Current Features
+Unless noted otherwise, commands in this README run from `apps/tui`.
 
-- Buffered cell surface with plain snapshots, ANSI rendering, and diff rendering.
-- Semantic styling primitives: colors, attributes, themes, borders, padding, margins, and flex properties.
-- Components: `Text`, `Box`, `Input`, `Select`, `Scroll_box`, `Progress_bar`, `Sparkline`, and footer helper.
-- Dashboard/workspace helpers: `Components.app_shell`, `header`, `panel`, `rule_panel`, `wordmark`, `badge`, `tab_bar`, `metric_card`, `key_value`, `table`, `log_feed`, `message`, `timeline`, `composer`, `command_block`, `model_status`, `hint_bar`, `tip`, `split`, `row`, and `column`.
-- Keyboard parsing for common terminal sequences plus focus routing and basic widget key handling.
-- Keymap engine with single-key and multi-stroke bindings.
-- Terminal helpers for alternate screen, raw mode, viewport detection, color capability, and a small render loop.
+## Quick Start
 
-## Example
+Add the `tui` library to a Dune executable:
+
+```lisp
+(executable
+ (name my_console)
+ (libraries tui))
+```
+
+Create a root node and render it:
 
 ```ocaml
 open Tui
 
 let root =
   box
-    ~style:Style.(make ~border:Rounded ~title:"Demo" ~padding:(spacing_all 1) ())
+    ~style:Style.(make ~border:Rounded ~title:"Build" ~padding:(spacing_all 1) ())
     [
       text "Hello from OCaml";
-      progress_bar ~label:"build" 0.72;
+      progress_bar ~label:"compile" 0.72;
       input ~placeholder:"type here" ();
     ]
 
@@ -33,85 +35,159 @@ let () =
   print_endline (Renderer.render_to_string renderer)
 ```
 
-Run the included demo:
+Run one of the bundled examples:
 
 ```bash
-dune exec examples/demo.exe
+opam exec -- dune exec examples/demo.exe
 ```
 
-## Responsive Layouts
+## Public API Layers
 
-Consumers can read the terminal viewport and branch their layout without reaching into renderer internals:
+Use the lower layers when you need control, and the higher layers when you want common application shapes.
+
+- Core: `Geometry`, `Color`, `Theme`, `Style`, `Surface`, `Node`, `Layout`, `Renderer`, `Terminal`, `Viewport`, `Key`, and `Keymap`.
+- Components: `text`, `rich_text`, `box`, `input`, `select`, `scroll_box`, `progress_bar`, `sparkline`, `panel`, `badge`, `tab_bar`, `key_value`, `table`, `split`, `row`, and `column`.
+- Patterns: `Patterns.app_shell`, `header`, `rule_panel`, `metric_card`, `log_feed`, `message`, `timeline`, `composer`, `command_bar`, `footer`, and `modal`.
+- Presets: `Presets.Open_code.wordmark`, `model_status`, `command_block`, `hint_bar`, and `tip`.
+
+`Components` are the stable building blocks. `Patterns` are opinionated application layouts. `Presets` are example-shaped helpers and should not be treated as neutral primitives.
+Existing callers can still reach moved pattern and preset helpers through `Components`; prefer the canonical `Patterns` and `Presets` modules for new code.
+
+## Layout Usage
+
+Most layout is configured through `Style.make`. The toolkit supports terminal-focused flexbox concepts:
+
+- `width`, `height`, `min_width`, and `min_height`
+- `flex_direction`, `flex_grow`, and `flex_shrink`
+- `justify_content` and `align_items`
+- `padding`, `margin`, `gap`, and borders
+- absolute positioning for overlays such as modals
+
+Example:
 
 ```ocaml
 open Tui
 
-let root viewport =
-  match Viewport.breakpoint viewport with
-  | Tiny | Compact -> box [ text "Compact view" ]
-  | Regular | Wide -> box [ text "Full view" ]
+let root =
+  Components.row
+    ~style:Style.(make ~width:(Percent 1.) ~height:(Percent 1.) ~gap:1 ())
+    [
+      Components.panel
+        ~style:Style.(make ~width:(Cells 28) ())
+        "Navigator"
+        [ text "Queue"; text "Runs"; text "Logs" ];
+      Components.panel
+        ~style:Style.(make ~flex_grow:1. ())
+        "Detail"
+        [ text "Selected item" ];
+    ]
+```
+
+## Rendering Modes
+
+For a fixed snapshot, construct a renderer with an explicit size:
+
+```ocaml
+let renderer = Renderer.create ~width:96 ~height:24 root
+let plain = Renderer.render_to_string renderer
+let ansi = Renderer.render_to_string ~ansi:true renderer
+```
+
+For a terminal-sized view, read the current viewport:
+
+```ocaml
+let viewport = Terminal.viewport () in
+let renderer =
+  Renderer.create ~width:viewport.width ~height:viewport.height (root viewport)
+```
+
+For full-screen previews, enter the alternate screen, render, and restore the terminal when the program exits. The OpenCode-inspired examples show this pattern.
+
+## Theming
+
+Components and patterns accept an optional `?design` value. A design combines a theme with tone mapping:
+
+```ocaml
+open Tui
+
+let design = Components.make_design ~theme:Theme.light ()
+
+let root =
+  Components.panel ~design ~tone:Components.Success "Status"
+    [
+      Components.badge ~design ~tone:Components.Success "ready";
+      Patterns.log_feed ~design [ ("12:00", "OK", "started") ];
+    ]
+```
+
+`Theme.dark` is the default. Use `Theme.light` or a custom `Theme.t` when an application needs its own palette.
+
+## Keyboard Usage
+
+Inputs, selects, and scroll boxes handle common keys through `Renderer.dispatch_key`. For application-level shortcuts, use `Keymap`:
+
+```ocaml
+let keymap = Keymap.create ()
+let quit = ref false
 
 let () =
-  let viewport = Terminal.viewport () in
-  let renderer =
-    Renderer.create ~width:viewport.width ~height:viewport.height (root viewport)
-  in
-  print_string (Renderer.render_to_string ~ansi:true renderer)
+  Keymap.register keymap ~key:"q" ~name:"quit" ~run:(fun () -> quit := true)
 ```
 
-Useful public helpers:
+The renderer also supports focus routing for focusable nodes such as `input`, `select`, and `scroll_box`.
 
-- `Terminal.viewport ()`, `Terminal.size ()`, `Terminal.columns ()`, and `Terminal.rows ()`
-- `Viewport.breakpoint`, `Viewport.fits`, `Viewport.choose`, and `Viewport.orientation`
-- `Renderer.viewport`, `Renderer.size`, `Renderer.resize`, `Renderer.resize_to_viewport`, and `Renderer.resize_to_terminal`
+## Examples
 
-Run the screenshot-style operations console example:
+Example documentation lives in [examples/README.md](examples/README.md).
 
-```bash
-dune exec examples/operations_dashboard.exe
-```
+| Example | Purpose | Run |
+| --- | --- | --- |
+| `demo` | Minimal component composition and fixed snapshot rendering. | `opam exec -- dune exec examples/demo.exe` |
+| `operations_dashboard` | Wide dashboard using panels, metrics, tables, logs, and app shell patterns. | `opam exec -- dune exec examples/operations_dashboard.exe` |
+| `agent_workspace` | Message-first agent workspace with navigator, transcript, composer, and run state. | `opam exec -- dune exec examples/agent_workspace.exe` |
+| `opencode_splash` | Responsive full-screen splash using OpenCode-inspired presets. | `opam exec -- dune exec examples/opencode_splash.exe` |
+| `opencode_session` | Responsive session view with conversation, composer, footer, and optional right rail. | `opam exec -- dune exec examples/opencode_session.exe` |
 
-Run the OpenCode-inspired examples from the reference images:
-
-```bash
-opam exec -- dune exec examples/opencode_splash.exe
-opam exec -- dune exec examples/opencode_session.exe
-```
-
-The OpenCode examples open a full-screen preview and exit on any key. They size
-themselves from `COLUMNS`/`LINES` when exported, otherwise they query the active
-TTY. If your shell exports `NO_COLOR`, unset it for the preview:
+The OpenCode-inspired examples open a full-screen preview and exit on any key when run in an interactive terminal. They size themselves from `COLUMNS` and `LINES` when those variables are exported, otherwise they query the active TTY. If your shell exports `NO_COLOR`, unset it for the preview:
 
 ```bash
 env -u NO_COLOR opam exec -- dune exec examples/opencode_splash.exe
 ```
 
+## Development
+
 Run tests:
 
 ```bash
-dune runtest
+opam exec -- dune runtest
+```
+
+Build everything in the package:
+
+```bash
+opam exec -- dune build @all
+```
+
+Build the opam metadata:
+
+```bash
+opam exec -- dune build @opam
 ```
 
 ## Package Release
 
-The publishable OCaml package is `tui`. Package metadata lives in `dune-project`, and `tui.opam`
-is generated from it:
-
-```bash
-dune build @opam
-```
+The publishable OCaml package is `tui`. Package metadata lives in `dune-project`, and `tui.opam` is generated from it.
 
 Before publishing a tagged release, run the package checks from `apps/tui`:
 
 ```bash
 opam lint tui.opam
 opam install . --deps-only --with-test
-dune build
-dune runtest
+opam exec -- dune build @all
+opam exec -- dune runtest
 ```
 
-When the repository tag is pushed and a GitHub source archive is available, publish through the
-standard opam-repository PR flow:
+When the repository tag is pushed and a GitHub source archive is available, publish through the standard opam-repository PR flow:
 
 ```bash
 opam publish

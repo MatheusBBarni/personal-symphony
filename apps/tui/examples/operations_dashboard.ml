@@ -1,19 +1,20 @@
 open Tui
 open Tui.Components
+open Tui.Patterns
 
 let metric_row =
   Components.row
     ~style:Style.(make ~height:(Cells 9) ~gap:1 ())
     [
-      Components.metric_card ~tone:Success ~label:"Revenue" ~value:"$128.4k"
+      metric_card ~tone:Success ~label:"Revenue" ~value:"$128.4k"
         ~style:Style.(make ~width:(Cells 30) ())
         ~detail:"+12.8% vs last hour" ~progress:0.72
         ~sparkline:[ 4.; 6.; 5.; 8.; 9.; 11.; 10.; 14.; 13.; 16. ] ();
-      Components.metric_card ~tone:Info ~label:"Latency" ~value:"42ms"
+      metric_card ~tone:Info ~label:"Latency" ~value:"42ms"
         ~style:Style.(make ~width:(Cells 30) ())
         ~detail:"p95 edge response" ~progress:0.42
         ~sparkline:[ 7.; 6.; 6.; 5.; 4.; 4.; 5.; 3.; 3.; 2. ] ();
-      Components.metric_card ~tone:Warning ~label:"Queue" ~value:"1,204"
+      metric_card ~tone:Warning ~label:"Queue" ~value:"1,204"
         ~style:Style.(make ~width:(Cells 30) ())
         ~detail:"jobs waiting" ~progress:0.61
         ~sparkline:[ 2.; 3.; 4.; 8.; 5.; 7.; 9.; 11.; 10.; 12. ] ();
@@ -70,7 +71,7 @@ let main_grid =
           ~tone:Info
           ~style:Style.(make ~width:(Cells 44) ())
           [
-            Components.log_feed
+            log_feed
               ~style:Style.(make ~height:(Cells 13) ())
               [
                 ("14:05:02", "INFO", "checkout deploy reached 42%");
@@ -99,7 +100,7 @@ let main_grid =
 
 let () =
   let root =
-    Components.app_shell ~title:"Operations Console"
+    app_shell ~title:"Operations Console"
       ~subtitle:"global production control plane"
       ~badges:[ (Success, "live"); (Info, "iad"); (Warning, "queue") ]
       ~footer_items:[ ("q", "uit"); ("r", "efresh"); ("/", "filter"); ("?", "help"); ("Tab", "focus") ]
