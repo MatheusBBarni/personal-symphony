@@ -51,6 +51,7 @@ Use the lower layers when you need control, and the higher layers when you want 
 - Presets: `Presets.Open_code.wordmark`, `model_status`, `command_block`, `hint_bar`, and `tip`.
 
 `Components` are the stable building blocks. `Patterns` are opinionated application layouts. `Presets` are example-shaped helpers and should not be treated as neutral primitives.
+Existing callers can still reach moved pattern and preset helpers through `Components`; prefer the canonical `Patterns` and `Presets` modules for new code.
 
 ## Layout Usage
 

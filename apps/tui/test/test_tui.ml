@@ -217,6 +217,25 @@ let opencode_preset_has_moved_helper () =
   let output = Renderer.render_to_string (Renderer.create ~width:80 ~height:1 root) in
   Alcotest.(check bool) "preset renders default model" true (contains_sub output "DeepSeek V4 Pro")
 
+let component_compat_aliases_render () =
+  let root =
+    box
+      [
+        Components.header ~subtitle:"keeps old call sites working" "Compat";
+        Components.modal ~id:"compat-modal"
+          ~style:Style.(make ~width:(Cells 24) ~height:(Cells 7) ())
+          "Help"
+          [ text "q quit" ];
+        Components.model_status ();
+      ]
+  in
+  let renderer = Renderer.create ~width:48 ~height:12 root in
+  let output = Renderer.render_to_string renderer in
+  Alcotest.(check bool) "modal alias node exists" true
+    (Option.is_some (Node.find_by_id "compat-modal" renderer.root));
+  Alcotest.(check bool) "header alias renders" true (contains_sub output "Compat");
+  Alcotest.(check bool) "preset alias renders" true (contains_sub output "DeepSeek V4 Pro")
+
 let () =
   Alcotest.run "tui"
     [
@@ -239,6 +258,7 @@ let () =
           Alcotest.test_case "design injection" `Quick component_design_injects_theme;
           Alcotest.test_case "neutral app shell default" `Quick app_shell_default_is_neutral;
           Alcotest.test_case "opencode preset helper" `Quick opencode_preset_has_moved_helper;
+          Alcotest.test_case "compat aliases" `Quick component_compat_aliases_render;
         ] );
       ( "viewport",
         [
