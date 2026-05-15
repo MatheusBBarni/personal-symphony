@@ -100,4 +100,4 @@ The next pass should focus on API hardening rather than visual polish: add an in
 - Components can render with `Theme.dark`, `Theme.light`, or a caller-supplied theme. Done through `Components.make_design` and `?design`.
 - Example-specific helpers live outside the core `Components` namespace. Done through `Presets.Open_code`.
 - Existing dashboard and OpenCode-inspired examples still render after the move. Covered by `dune runtest` and updated examples.
-- Tests cover theme injection, neutral defaults, and at least one migrated example helper. Done in `apps/tui/test/test_tui.ml`.
+- Tests cover theme injection, neutral defaults, and at least one migrated example helper. Done in `apps/tui/test/test_tui.re`.

@@ -57,5 +57,5 @@ non-interactive terminal output and exits without starting the foreground Termin
 - `apps/backend/bin/main.ml`
 - `apps/backend/bin/terminal_console_runtime.ml`
 - `apps/backend/bin/terminal_console_tui.ml`
-- `apps/tui/lib/tui.ml`
+- `apps/tui/lib/tui.re`
 - `apps/backend/lib/terminal_console_model.ml`
