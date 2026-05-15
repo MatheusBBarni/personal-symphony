@@ -12,14 +12,14 @@ The value is simple: make a frequent operator command faster and more natural wi
 
 - Reduce the command length and cognitive overhead for queuing known **Compozy PRD Runs** from the terminal.
 - Preserve the current meaning of **Ordered Queue** and keep queue validation aligned with the selected **Issue Tracker**.
-- Make the Compozy-backed queue experience feel native to `.compozy/tasks/<slug>/` naming rather than requiring manual selector translation.
+- Make the Compozy-backed queue experience feel native to `.compozy/tasks/<task_name>/` naming rather than requiring manual selector translation.
 - Keep existing GitHub, minibeads, and canonical Compozy queue behavior stable.
 - Provide clear feedback when an operator tries to use bare Compozy slugs while another tracker mode is selected.
 
 ## User Stories
 
 - As a solo operator using a Compozy-backed **Workspace Repository**, I want to type known run slugs directly into `--queue` so that I can start an ad hoc run with less friction.
-- As a solo operator who already recognizes `.compozy/tasks/<slug>/` names, I want the queue command to match those names so that I do not need to mentally translate them into another format.
+- As a solo operator who already recognizes `.compozy/tasks/<task_name>/` names, I want the queue command to match those names so that I do not need to mentally translate them into another format.
 - As a solo operator working in the terminal, I want queue input errors to explain tracker mismatch clearly so that I can correct the command quickly.
 - As a maintainer of existing Symphony workflows, I want this improvement to leave other tracker modes and existing canonical selectors unchanged so that current usage does not regress.
 
@@ -48,7 +48,7 @@ The value is simple: make a frequent operator command faster and more natural wi
 The primary journey is an ad hoc local terminal flow.
 
 1. The operator works in a **Workspace Repository** that already uses the Compozy-backed **Issue Tracker**.
-2. They know the names of one or more **Compozy PRD Runs** from `.compozy/tasks/<slug>/`.
+2. They know the names of one or more **Compozy PRD Runs** from `.compozy/tasks/<task_name>/`.
 3. They run a short queue command using those slugs separated by commas.
 4. Symphony evaluates the request in the context of the active tracker mode.
 5. If the input is valid, the **Ordered Queue** starts with the same queue-order behavior operators already expect.

@@ -3071,6 +3071,54 @@ let test_project_adr_documents_migration_and_loop_semantics () =
       "Bootstrap defaults enable Codex loop with `/goal` and disable Claude and PI loops";
     ]
 
+let test_ordered_queue_docs_cover_compozy_shortcut () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  let adr = read "docs/adr/0010-ordered-queue-runtime-state.md" in
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
+    [
+      "When the selected Issue Tracker is `tracker.kind = \"compozy_tasks\"`, `--queue` accepts bare Compozy";
+      "symphony --queue compozy-tasks-run-integration,queue-docs-refresh";
+      "uses the same raw sequence when";
+      "Restarting with canonical selectors such as";
+      "is reported as a startup Readiness";
+      "Canonical Compozy queue selectors such as";
+      "must use either bare slugs or canonical selectors, not both";
+      "Where selector-based flows outside the `--queue` shortcut support Compozy tracking";
+      "Manual Task Merge flows";
+      "`compozy:<task_name>`";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (contains_substring context expected))
+    [
+      "**Ordered Queue Entry**:";
+      "operator-provided queue identifier";
+      "bare Compozy PRD Run slug preserved as typed";
+      "When Runtime Settings select the Compozy-backed **Issue Tracker**";
+      "Bare Compozy PRD Run slugs under a non-Compozy **Issue Tracker**";
+      "Duplicate issue identifiers after selected-tracker normalization";
+      "A bare-slug Compozy **Ordered Queue** and an equivalent canonical";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
+    [
+      "Amended 2026-05-14";
+      "operator-provided queue identifiers";
+      "canonical `compozy:docs-refresh` identifier";
+      "raw ordered queue identifier sequence remains the resume key";
+      "startup readiness reports the mismatch as a Readiness Gap";
+    ];
+  let combined = readme ^ context ^ adr in
+  List.iter
+    (fun secret_marker ->
+      Alcotest.(check bool) ("docs omit secret marker " ^ secret_marker) false
+        (contains_substring combined secret_marker))
+    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ]
+
 let test_root_validation () =
   with_temp_dir "symphony-nongit-" (fun nongit ->
       let original = Unix.getcwd () in
@@ -3384,6 +3432,25 @@ let test_cli_help_documents_runtime_invocation_overrides () =
       "--agent.maxConcurrentAgents";
       "--agent.maxTurns";
       "--agent.maxRetryBackoffMs";
+    ]
+
+let test_cli_help_documents_ordered_queue_compozy_shortcut () =
+  let code, stdout, stderr =
+    capture_process_output (fun () ->
+        Cli_command.eval ~version:"test-version" (cli_test_callbacks ()) ~argv:[| "symphony"; "--help=plain" |])
+  in
+  Alcotest.(check int) "help exit code" 0 code;
+  Alcotest.(check string) "help stderr" "" stderr;
+  List.iter
+    (fun expected -> Alcotest.(check bool) expected true (contains_substring stdout expected))
+    [
+      "Run an Ordered Queue from comma-separated Workspace Repository";
+      "issue identifiers. Optional # prefixes are allowed";
+      "tracker.kind = \"compozy_tasks\"";
+      "bare Compozy PRD Run slugs";
+      "docs-refresh";
+      "not a global selector form";
+      "agent.maxConcurrentAgents";
     ]
 
 let test_cli_rejects_invalid_runtime_invocation_override_values () =
@@ -3954,6 +4021,12 @@ let test_ordered_queue_parses_cli_identifiers () =
       Alcotest.(check (list string)) "identifiers"
         [ "#19"; "#22"; "#31"; "mb-20"; "compozy:example-feature" ]
         (Ordered_queue.identifiers queue);
+      (match Ordered_queue.parse "example-feature" with
+      | Error problems ->
+          Alcotest.fail
+            ("expected opaque bare queue token, got: "
+            ^ String.concat "; " (List.map (fun (problem : Ordered_queue.parse_problem) -> problem.reason) problems))
+      | Ok queue -> Alcotest.(check (list string)) "opaque bare token" [ "example-feature" ] (Ordered_queue.identifiers queue));
       (match Ordered_queue.parse "20,#20" with
       | Ok _ -> Alcotest.fail "expected duplicate canonical GitHub selector"
       | Error problems ->
@@ -3980,10 +4053,63 @@ let test_ordered_queue_parses_cli_identifiers () =
       (match Ordered_queue.parse "owner/repo#20,https://github.com/acme/widgets/issues/20,,mb-,mb-zero,MB-20" with
       | Ok _ -> Alcotest.fail "expected ordered queue parse problems"
       | Error problems ->
-          Alcotest.(check int) "problem count" 6 (List.length problems);
+          Alcotest.(check int) "problem count" 5 (List.length problems);
           Alcotest.(check (list string)) "rejected values"
-            [ "owner/repo#20"; "https://github.com/acme/widgets/issues/20"; ""; "mb-"; "mb-zero"; "MB-20" ]
+            [ "owner/repo#20"; "https://github.com/acme/widgets/issues/20"; ""; "mb-"; "mb-zero" ]
             (List.map (fun (problem : Ordered_queue.parse_problem) -> problem.value) problems))
+
+let test_ordered_queue_resolution_uses_selected_tracker () =
+  with_temp_dir "symphony-compozy-queue-resolution-" (fun root ->
+      let config = write_compozy_settings root in
+      let tracker = Issue_tracker.compozy config in
+      Alcotest.(check (result string string)) "bare normalization" (Ok "compozy:example-feature")
+        (tracker.normalize_identifier "example-feature");
+      Alcotest.(check (result string string)) "canonical normalization" (Ok "compozy:example-feature")
+        (tracker.normalize_identifier "compozy:example-feature");
+      let queue =
+        match Ordered_queue.parse "example-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let resolved =
+        match Ordered_queue.resolve tracker queue with
+        | Ok resolved -> resolved
+        | Error problems ->
+            Alcotest.fail
+              ("resolve bare Compozy queue: "
+              ^ String.concat "; " (List.map (fun (problem : Ordered_queue.resolution_problem) -> problem.reason) problems))
+      in
+      Alcotest.(check (list string)) "raw queue identifiers" [ "example-feature" ]
+        (List.map (fun (entry : Ordered_queue.resolved_entry) -> entry.queue_identifier) resolved);
+      Alcotest.(check (list string)) "canonical identifiers" [ "compozy:example-feature" ]
+        (List.map (fun (entry : Ordered_queue.resolved_entry) -> entry.canonical_identifier) resolved);
+      let repeated_bare_queue =
+        {
+          Ordered_queue.entries =
+            [ { Ordered_queue.issue_identifier = "example-feature" }; { Ordered_queue.issue_identifier = "example-feature" } ];
+        }
+      in
+      (match Ordered_queue.resolve tracker repeated_bare_queue with
+      | Ok _ -> Alcotest.fail "expected repeated bare slug duplicate collision"
+      | Error problems ->
+          Alcotest.(check bool) "repeated bare duplicate diagnostic" true
+            (List.exists
+               (fun (problem : Ordered_queue.resolution_problem) ->
+                 contains_substring problem.reason "duplicate issue identifier after tracker normalization")
+               problems));
+      let duplicate_queue =
+        match Ordered_queue.parse "example-feature,compozy:example-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "duplicate collision queue parse failed"
+      in
+      match Ordered_queue.resolve tracker duplicate_queue with
+      | Ok _ -> Alcotest.fail "expected resolved duplicate collision"
+      | Error problems ->
+          Alcotest.(check bool) "resolved duplicate diagnostic" true
+            (List.exists
+               (fun (problem : Ordered_queue.resolution_problem) ->
+                 contains_substring problem.reason "duplicate issue identifier after tracker normalization")
+               problems))
 
 let test_ordered_queue_validation_uses_selected_tracker () =
   let open Issue_tracker in
@@ -4034,12 +4160,49 @@ let test_ordered_queue_validation_resolves_compozy_prd_run_without_github_projec
       let tracker = Issue_tracker.compozy config in
       let gaps = Ordered_queue.validation_gaps tracker queue in
       Alcotest.(check (list string)) "no validation gaps" [] (List.map (fun gap -> gap.Ordered_queue.requirement) gaps);
+      let missing_queue =
+        match Ordered_queue.parse "missing-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "missing bare queue parse failed"
+      in
+      let missing_gaps = Ordered_queue.validation_gaps tracker missing_queue in
+      Alcotest.(check (list string)) "missing bare queue requirement uses raw identifier"
+        [ "orderedQueue.missing-feature" ]
+        (List.map (fun gap -> gap.Ordered_queue.requirement) missing_gaps);
       let run =
         Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
         |> require_ok "build PRD run"
       in
       Alcotest.(check bool) "queue lookup backfilled lifecycle" true
         (Sys.file_exists (Compozy_lifecycle.path_for_run config run)))
+
+let test_ordered_queue_bare_slug_under_non_compozy_tracker_is_readiness_gap () =
+  with_temp_dir "symphony-queue-non-compozy-readiness-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root ".symphony/settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"kind": "minibeads", "root": ".beads", "command": "true"},
+  "project": {"activeStates": ["open", "doing"], "terminalStates": ["done", "closed"]},
+  "stageAgents": {"enabled": false}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Util.mkdir_p config.Config.tracker.minibeads_root;
+      let ordered_queue =
+        match Ordered_queue.parse "queue-docs-refresh" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "bare queue parse failed"
+      in
+      let state = Runtime_readiness.state ~ordered_queue config in
+      Alcotest.(check (list string)) "readiness requirements" [ "orderedQueue.queue-docs-refresh" ]
+        (List.map (fun (gap : Runtime_state.readiness_gap) -> gap.requirement) state.readiness_gaps);
+      match state.readiness_gaps with
+      | [ gap ] ->
+          Alcotest.(check bool) "selected tracker owns mismatch remediation" true
+            (contains_substring gap.remediation "Ordered Queue validation failed"
+            && contains_substring gap.remediation "invalid minibeads issue identifier"
+            && contains_substring gap.remediation "mb-20")
+      | _ -> Alcotest.fail "expected one ordered queue readiness gap")
 
 let test_runtime_state_exposes_ordered_queue () =
   let queue =
@@ -4173,6 +4336,31 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           Alcotest.(check (list string)) "local queue resumes by canonical identifiers" [ "completed"; "pending" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
       | None -> Alcotest.fail "expected resumed local ordered queue"))
+
+let test_ordered_queue_state_matches_raw_resume_key () =
+  let persisted =
+    {
+      Runtime_state.entries =
+        [
+          { Runtime_state.issue_identifier = "first-feature"; title = None; state = "completed"; skip_reason = None };
+          { Runtime_state.issue_identifier = "second-feature"; title = None; state = "pending"; skip_reason = None };
+        ];
+    }
+  in
+  let bare_queue =
+    match Ordered_queue.parse "first-feature,second-feature" with
+    | Ok queue -> queue
+    | Error _ -> Alcotest.fail "bare Compozy queue parse failed"
+  in
+  let canonical_queue =
+    match Ordered_queue.parse "compozy:first-feature,compozy:second-feature" with
+    | Ok queue -> queue
+    | Error _ -> Alcotest.fail "canonical Compozy queue parse failed"
+  in
+  Alcotest.(check bool) "same bare sequence resumes" true
+    (Orchestrator.ordered_queue_state_matches bare_queue persisted);
+  Alcotest.(check bool) "canonical selector sequence resets" false
+    (Orchestrator.ordered_queue_state_matches canonical_queue persisted)
 
 let test_runtime_state_exposes_goal_usage_when_available () =
   let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Add goal usage" ~state:"In progress" in
@@ -6548,6 +6736,10 @@ let test_issue_tracker_selects_compozy_adapter () =
       write_compozy_task ~title:"Adapter run" (Filename.concat prd_dir "task_01.md");
       let tracker = Issue_tracker.make config in
       Alcotest.(check string) "kind" "compozy_tasks" tracker.kind;
+      Alcotest.(check (result string string)) "bare identifier" (Ok "compozy:adapter-run")
+        (tracker.normalize_identifier "adapter-run");
+      Alcotest.(check (result string string)) "canonical identifier" (Ok "compozy:adapter-run")
+        (tracker.normalize_identifier "compozy:adapter-run");
       Alcotest.(check bool) "pending active" true (tracker.is_active "pending");
       Alcotest.(check bool) "completed terminal" true (tracker.is_terminal "completed");
       Alcotest.(check (list string)) "requirements" [] (runtime_requirements (tracker.readiness_gaps ()));
@@ -6558,8 +6750,10 @@ let test_issue_tracker_selects_compozy_adapter () =
       | Ok issues -> Alcotest.fail (Printf.sprintf "expected one candidate, got %d" (List.length issues))
       | Error (Issue_tracker.Failed message) -> Alcotest.fail message
       | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "Compozy tracker should not rate-limit");
-      match tracker.fetch_by_identifiers [ "compozy:adapter-run" ] with
-      | Ok [ Some issue ] -> Alcotest.(check string) "lookup hit" "compozy:adapter-run" issue.Issue.identifier
+      match tracker.fetch_by_identifiers [ "adapter-run"; "compozy:adapter-run" ] with
+      | Ok [ Some bare_issue; Some canonical_issue ] ->
+          Alcotest.(check string) "bare lookup hit" "compozy:adapter-run" bare_issue.Issue.identifier;
+          Alcotest.(check string) "canonical lookup hit" bare_issue.Issue.identifier canonical_issue.Issue.identifier
       | Ok _ -> Alcotest.fail "expected lookup hit"
       | Error message -> Alcotest.fail message)
 
@@ -8576,6 +8770,159 @@ let setup_compozy_repo root slug =
   ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
   ignore_runtime_home root;
   (compozy_root, prd_dir, task_01)
+
+let write_compozy_prd_run compozy_root slug title =
+  let prd_dir = Filename.concat compozy_root slug in
+  Util.mkdir_p prd_dir;
+  write_compozy_task ~title (Filename.concat prd_dir "task_01.md");
+  prd_dir
+
+let test_orchestrator_dispatches_compozy_bare_ordered_queue_by_resolved_identity () =
+  with_temp_dir "symphony-compozy-bare-queue-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      ignore (write_compozy_prd_run compozy_root "first-feature" "First feature");
+      ignore (write_compozy_prd_run compozy_root "second-feature" "Second feature");
+      ignore (write_compozy_prd_run compozy_root "extra-feature" "Extra feature");
+      ignore (run_ok ~cwd:root "commit Compozy queue runs" "git add .compozy && git commit -q -m compozy-queue-runs");
+      ignore_runtime_home root;
+      let base_config = compozy_test_config root compozy_root in
+      let config = { base_config with Config.agent = { base_config.agent with max_concurrent_agents = 3 } } in
+      let ordered_queue =
+        match Ordered_queue.parse "second-feature,first-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "bare Compozy queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        {
+          Orchestrator.pid = None;
+          session_id = Some issue.Issue.id;
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "launches only queued Compozy runs in queue order"
+        [ "compozy:second-feature"; "compozy:first-feature" ]
+        (List.rev !launched);
+      let state = Orchestrator.get_state orchestrator in
+      (match state.Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected ordered queue state"
+      | Some queue ->
+          Alcotest.(check (list string)) "runtime state keeps raw queue identifiers"
+            [ "second-feature"; "first-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries);
+          Alcotest.(check (list string)) "raw queue entries are running" [ "running"; "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries));
+      let persisted =
+        Orchestrator.ordered_queue_state_path config
+        |> Yojson.Safe.from_file |> Runtime_state.ordered_queue_of_yojson
+      in
+      match persisted with
+      | None -> Alcotest.fail "expected persisted ordered queue state"
+      | Some queue ->
+          Alcotest.(check (list string)) "persisted queue keeps raw identifiers"
+            [ "second-feature"; "first-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries))
+
+let test_orchestrator_resumes_compozy_bare_ordered_queue_by_raw_sequence () =
+  with_temp_dir "symphony-compozy-bare-queue-resume-" (fun root ->
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      Util.mkdir_p compozy_root;
+      let config = compozy_test_config root compozy_root in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [
+              {
+                Runtime_state.issue_identifier = "first-feature";
+                title = Some "First feature";
+                state = "completed";
+                skip_reason = None;
+              };
+              {
+                Runtime_state.issue_identifier = "second-feature";
+                title = Some "Second feature";
+                state = "pending";
+                skip_reason = None;
+              };
+            ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let bare_queue =
+        match Ordered_queue.parse "first-feature,second-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "bare Compozy queue parse failed"
+      in
+      let same =
+        Orchestrator.make ~ordered_queue:bare_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      (match (Orchestrator.get_state same).Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected resumed bare ordered queue"
+      | Some queue ->
+          Alcotest.(check (list string)) "same bare sequence resumes states" [ "completed"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          Alcotest.(check (list string)) "same bare sequence keeps raw identifiers"
+            [ "first-feature"; "second-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries));
+      let canonical_queue =
+        match Ordered_queue.parse "compozy:first-feature,compozy:second-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "canonical Compozy queue parse failed"
+      in
+      let canonical =
+        Orchestrator.make ~ordered_queue:canonical_queue ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      match (Orchestrator.get_state canonical).Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected reset canonical ordered queue"
+      | Some queue ->
+          Alcotest.(check (list string)) "canonical restart resets states" [ "pending"; "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          Alcotest.(check (list string)) "canonical restart uses canonical queue identifiers"
+            [ "compozy:first-feature"; "compozy:second-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries))
+
+let test_ordered_queue_skipped_diagnostics_use_queue_identifier () =
+  with_temp_dir "symphony-compozy-bare-queue-skip-" (fun root ->
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      Util.mkdir_p compozy_root;
+      let base_config = compozy_test_config root compozy_root in
+      let config = { base_config with Config.agent = { base_config.agent with max_concurrent_agents = 0 } } in
+      let ordered_queue =
+        match Ordered_queue.parse "available-feature,missing-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "bare Compozy queue parse failed"
+      in
+      let available =
+        Issue.empty ~id:"compozy:available-feature" ~identifier:"compozy:available-feature" ~title:"Available feature"
+          ~state:"pending"
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~fetch:(fun _ -> Ok [ available ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      let _, _stdout, stderr = capture_process_output (fun () -> Orchestrator.poll_once orchestrator) in
+      let state = Orchestrator.get_state orchestrator in
+      (match state.Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected ordered queue state"
+      | Some queue ->
+          Alcotest.(check (list string)) "skip state uses raw queue identifiers"
+            [ "available-feature"; "missing-feature" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) queue.entries);
+          Alcotest.(check (list string)) "missing raw entry skipped" [ "pending"; "skipped" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries));
+      Alcotest.(check bool) "skip output names raw queue identifier" true (contains_substring stderr "missing-feature");
+      Alcotest.(check bool) "skip output omits canonicalized queue identifier" false
+        (contains_substring stderr "compozy:missing-feature"))
 
 let compozy_protected_path_policy =
   {
@@ -14145,6 +14492,8 @@ let () =
             test_compozy_lifecycle_docs_match_implementation;
           Alcotest.test_case "project ADR documents migration and loop semantics" `Quick
             test_project_adr_documents_migration_and_loop_semantics;
+          Alcotest.test_case "Ordered Queue docs cover Compozy shortcut" `Quick
+            test_ordered_queue_docs_cover_compozy_shortcut;
         ] );
       ( "config",
         [
@@ -14356,12 +14705,18 @@ let () =
           Alcotest.test_case "uses reconciled Compozy lifecycle metadata for progress" `Quick
             test_runtime_state_compozy_progress_uses_reconciled_lifecycle_metadata;
           Alcotest.test_case "parses ordered queue identifiers" `Quick test_ordered_queue_parses_cli_identifiers;
+          Alcotest.test_case "resolves ordered queue identifiers through selected tracker" `Quick
+            test_ordered_queue_resolution_uses_selected_tracker;
           Alcotest.test_case "validates ordered queue through selected tracker" `Quick
             test_ordered_queue_validation_uses_selected_tracker;
           Alcotest.test_case "validates Compozy ordered queue without GitHub Project membership" `Quick
             test_ordered_queue_validation_resolves_compozy_prd_run_without_github_project;
+          Alcotest.test_case "reports bare queue slugs under non-Compozy trackers as readiness gaps" `Quick
+            test_ordered_queue_bare_slug_under_non_compozy_tracker_is_readiness_gap;
           Alcotest.test_case "exposes ordered queue" `Quick test_runtime_state_exposes_ordered_queue;
           Alcotest.test_case "resumes same ordered queue state" `Quick test_orchestrator_resumes_same_ordered_queue_state;
+          Alcotest.test_case "matches ordered queue state by raw resume key" `Quick
+            test_ordered_queue_state_matches_raw_resume_key;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
           Alcotest.test_case "exposes context status" `Quick test_runtime_state_exposes_context_status;
           Alcotest.test_case "projects Terminal Console idle mode" `Quick test_terminal_console_model_projects_idle;
@@ -14466,6 +14821,8 @@ let () =
           Alcotest.test_case "normalizes short help and version flags" `Quick test_cli_help_argv_normalization;
           Alcotest.test_case "documents runtime invocation override help" `Quick
             test_cli_help_documents_runtime_invocation_overrides;
+          Alcotest.test_case "documents Ordered Queue Compozy shortcut help" `Quick
+            test_cli_help_documents_ordered_queue_compozy_shortcut;
           Alcotest.test_case "rejects invalid runtime invocation override values" `Quick
             test_cli_rejects_invalid_runtime_invocation_override_values;
           Alcotest.test_case "documents duplicate runtime invocation override behavior" `Quick
@@ -14552,6 +14909,12 @@ let () =
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
           Alcotest.test_case "dispatches minibeads ordered queue only when dispatchable" `Quick
             test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
+          Alcotest.test_case "dispatches Compozy bare ordered queue by resolved identity" `Quick
+            test_orchestrator_dispatches_compozy_bare_ordered_queue_by_resolved_identity;
+          Alcotest.test_case "resumes Compozy bare ordered queue by raw sequence" `Quick
+            test_orchestrator_resumes_compozy_bare_ordered_queue_by_raw_sequence;
+          Alcotest.test_case "uses raw queue identifiers in skipped diagnostics" `Quick
+            test_ordered_queue_skipped_diagnostics_use_queue_identifier;
           Alcotest.test_case "keeps ordered queue stage handoffs pending" `Quick
             test_ordered_queue_keeps_stage_handoffs_pending;
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick

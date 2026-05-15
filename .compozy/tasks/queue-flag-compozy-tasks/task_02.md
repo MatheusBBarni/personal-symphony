@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Wire readiness-first queue diagnostics for bare Compozy slugs"
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 02: Wire readiness-first queue diagnostics for bare Compozy slugs

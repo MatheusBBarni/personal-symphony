@@ -1,4 +1,4 @@
-/goal {"kind":"Stage Goal Context","issue_identifier":"compozy:improve-compozy-task-statuses","title":"Compozy PRD run: improve-compozy-task-statuses","description":null,"comments":[],"url":null,"current_project_status":"in_review","labels":[],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
+/goal {"kind":"Stage Goal Context","issue_identifier":"compozy:queue-flag-compozy-tasks","title":"Compozy PRD run: queue-flag-compozy-tasks","description":null,"comments":[],"url":null,"current_project_status":"in_review","labels":[],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
 
 ---
 
@@ -22,273 +22,177 @@ Stage agent: reviewer
 
 # Compozy PRD Run Stage
 
-Run: compozy:improve-compozy-task-statuses
-PRD directory: improve-compozy-task-statuses
+Run: compozy:queue-flag-compozy-tasks
+PRD directory: queue-flag-compozy-tasks
 Task step status: completed
-Completed task steps: 6/6
+Completed task steps: 4/4
 
 ## Completed Compozy Task Steps
 
-- task_01.md: Reconcile Compozy lifecycle metadata from task-step truth
-- task_02.md: Use reconciled lifecycle state in the Compozy tracker adapter
-- task_03.md: Complete orchestrator lifecycle transitions for dispatch, retry, blocked, completion, and handoff
-- task_04.md: Align Runtime State and Terminal Console with the shared Compozy status contract
-- task_05.md: Align Dashboard snapshot parsing and rendering with the shared Compozy status contract
-- task_06.md: Update operator documentation and examples for Compozy lifecycle semantics
+- task_01.md: Add tracker-aware Ordered Queue resolution primitives
+- task_02.md: Wire readiness-first queue diagnostics for bare Compozy slugs
+- task_03.md: Refactor Ordered Queue orchestration to use raw state and resolved identifiers
+- task_04.md: Update queue shortcut docs and CLI help
 
 ## PRD (`_prd.md`)
 
-# PRD: Improve Compozy Task Lifecycle Statuses
+# Queue Flag With Compozy Tasks
 
 ## Overview
 
-Compozy-backed Symphony workflows need a trustworthy status contract, not just more status labels. Operators can already see Compozy Task Step progress and parts of run-level lifecycle state, but they still have to reconcile multiple signals to understand what a Compozy PRD Run is actually doing. The current experience can make one surface feel active, another feel blocked, and another imply pull-request readiness without making the relationship between those states explicit.
+Personal Symphony should let a **Workspace Repository** operator queue known **Compozy PRD Runs** by passing bare slugs to `--queue` when `.symphony/settings.json` selects the Compozy-backed **Issue Tracker**.
 
-This PRD defines a full V1 operator-trust experience for Compozy PRD Runs. V1 will preserve existing Compozy Task Step progress behavior while making the relationship between task-step progress, run lifecycle state, dispatch state, and Pull Request readiness unmistakable across Runtime State, Terminal Console, and Web Dashboard. The product promise is simple: the same run should tell the same story everywhere, and that story should be accurate enough for an operator to act on without reading logs.
+Today, the operator must translate a known run name such as `queue-flag-with-compozy-tasks` into the stable selector form `compozy:queue-flag-with-compozy-tasks`. The proposed product change shortens that step for ad hoc local terminal use while preserving the current **Ordered Queue** contract, selected-tracker validation rules, and canonical internal identifiers.
 
-Primary users are workflow operators monitoring active Compozy PRD Runs. Secondary users are workflow maintainers debugging orchestration behavior and project owners checking progress without inspecting implementation details.
+The value is simple: make a frequent operator command faster and more natural without broadening the product into a general selector redesign.
 
 ## Goals
 
-- Give operators one trustworthy view of Compozy PRD Run state across Runtime State, Terminal Console, and Web Dashboard.
-- Make active-state distinctions clear: planning, executing, reviewing, retrying, stalled, blocked, completed, and handoff-related states must be understandable at a glance.
-- Ensure Pull Request readiness never contradicts the visible run state.
-- Preserve existing Compozy Task Step progress semantics, including current-step behavior and progress counts.
-- Preserve aggregate Batch Pull Request behavior: one Compozy PRD Run can become eligible for one aggregate Batch Pull Request in batch mode, not one PR per task step.
-- Reduce operator dependence on logs, task files, and branch inspection for ordinary status interpretation.
-
-Measurable targets:
-
-| Goal | Target |
-| --- | --- |
-| Cross-surface consistency | 100% of representative lifecycle transitions appear consistently across Runtime State, Terminal Console, and Web Dashboard within one poll cycle |
-| Readiness consistency | 0 cases where visible PR readiness contradicts visible run state in acceptance scenarios |
-| Active-state clarity | Operators can distinguish planning, execution, review, retrying, and blocked states in under 30 seconds during dogfood walkthroughs |
-| Task-step compatibility | 0 regressions in existing Compozy Task Step current-step behavior and counts |
-| Aggregate PR correctness | 0 per-step pull requests in batch mode |
+- Reduce the command length and cognitive overhead for queuing known **Compozy PRD Runs** from the terminal.
+- Preserve the current meaning of **Ordered Queue** and keep queue validation aligned with the selected **Issue Tracker**.
+- Make the Compozy-backed queue experience feel native to `.compozy/tasks/<task_name>/` naming rather than requiring manual selector translation.
+- Keep existing GitHub, minibeads, and canonical Compozy queue behavior stable.
+- Provide clear feedback when an operator tries to use bare Compozy slugs while another tracker mode is selected.
 
 ## User Stories
 
-### Workflow Operator
-
-1. As a workflow operator, I want the same Compozy PRD Run to present the same status story in Runtime State, Terminal Console, and Web Dashboard, so that I do not have to cross-check multiple surfaces to know what is happening.
-2. As a workflow operator, I want to distinguish planning, executing, reviewing, retrying, stalled, and blocked states at a glance, so that I know whether work is progressing normally or needs attention.
-3. As a workflow operator, I want Pull Request readiness to match the visible run state, so that I never assume blocked, failed, skipped, or handoff-failed work is ready for review.
-4. As a workflow operator, I want a concise reason when a run is blocked, not PR-ready, or stuck in handoff, so that I know what broad kind of action is needed next.
-5. As a workflow operator, I want one aggregate Batch Pull Request after a successful Compozy PRD Run, so that review happens on the combined outcome rather than on internal task-step boundaries.
-
-### Workflow Maintainer
-
-6. As a workflow maintainer, I want the product contract to distinguish task-step progress, run lifecycle, dispatch state, and PR readiness, so that status problems can be understood and debugged without guesswork.
-7. As a workflow maintainer, I want active-state and terminal-state examples documented consistently, so that operator language and expected system behavior stay aligned.
-8. As a workflow maintainer, I want V1 to preserve current Compozy Task Step semantics, so that lifecycle improvements do not break existing progress interpretation.
-
-### Project Owner
-
-9. As a project owner, I want the Web Dashboard to show a trustworthy high-level run state, so that I can follow progress without asking an operator to interpret logs.
-10. As a project owner, I want completed, blocked, failed, skipped, and handoff-related outcomes to be clearly distinct, so that I can tell the difference between progress, attention, and review readiness.
+- As a solo operator using a Compozy-backed **Workspace Repository**, I want to type known run slugs directly into `--queue` so that I can start an ad hoc run with less friction.
+- As a solo operator who already recognizes `.compozy/tasks/<task_name>/` names, I want the queue command to match those names so that I do not need to mentally translate them into another format.
+- As a solo operator working in the terminal, I want queue input errors to explain tracker mismatch clearly so that I can correct the command quickly.
+- As a maintainer of existing Symphony workflows, I want this improvement to leave other tracker modes and existing canonical selectors unchanged so that current usage does not regress.
 
 ## Core Features
 
-### F1. Cross-surface transition contract
+- **Compozy bare-slug queue entry**  
+  When the selected **Issue Tracker** is the Compozy-backed tracker, `--queue` accepts a comma-separated list of bare **Compozy PRD Run** slugs.
 
-V1 must define one operator-facing contract for Compozy PRD Run status. The contract must describe how four connected layers relate:
+- **Tracker-aware eligibility**  
+  The shorter queue format is only available when the active tracker mode is Compozy-backed, keeping the user-facing rule aligned with the selected **Issue Tracker**.
 
-- Compozy Task Step progress
-- Compozy PRD Run lifecycle state
-- Dispatch state
-- Pull Request readiness and handoff state
+- **Guided mismatch feedback**  
+  If an operator uses bare Compozy slugs while another tracker mode is selected, Symphony explains the mismatch and points the operator to the correct selector style.
 
-This contract must hold across Runtime State, Terminal Console, and Web Dashboard. Different surfaces may present different levels of detail, but they must not contradict each other about the state of the same run.
+- **Fail-fast queue acceptance**  
+  The queue is accepted only when every supplied slug is valid for the active Compozy-backed tracker context and each referenced run is eligible for dispatch.
 
-### F2. Active-state clarity
+- **Compatibility preservation**  
+  Existing canonical Compozy selectors and non-Compozy queue flows remain supported with their current behavior.
 
-V1 must make active states easy to distinguish. The operator should be able to tell whether a run is:
-
-- planning
-- executing
-- reviewing
-- retrying
-- stalled or blocked
-
-This feature matters most during live monitoring. It must reduce the need to inspect logs or task files just to understand whether the run is healthy and moving forward.
-
-### F3. Attention and failure clarity
-
-V1 must make attention-oriented outcomes unmistakable. Blocked, failed, skipped, merge-attention, protected-path-attention, and non-retryable completion outcomes must not look like normal progress or successful completion.
-
-These states must carry concise operator-facing reasons that explain why the run is no longer progressing normally or why it requires intervention.
-
-### F4. Pull Request readiness consistency
-
-V1 must keep Pull Request readiness aligned with visible run state. A run that is blocked, failed, skipped, not ready, or in a failed handoff state must never appear ready for an aggregate Batch Pull Request.
-
-When automatic Batch Pull Request creation is enabled, successful runs may become eligible for one aggregate Batch Pull Request only after the run is visibly complete and safe for handoff.
-
-### F5. Backward-compatible task-step progress
-
-V1 must preserve existing Compozy Task Step progress behavior. Operators must continue to see current step, completed count, failed count, skipped count, and total count in ways that remain understandable and stable.
-
-The PRD intentionally improves trust at the run level without redefining the product meaning of Compozy Task Step execution progress.
-
-### F6. Operator-facing documentation and examples
-
-V1 must update documentation and examples so operators can quickly understand:
-
-- the difference between task-step progress and run lifecycle
-- what active states mean
-- what attention-oriented states mean
-- why visible completion does or does not imply PR readiness
-- how aggregate Batch Pull Request behavior works for Compozy PRD Runs
-
-Documentation should include representative examples for retry, blocked, review, successful completion, and handoff failure scenarios.
+- **Documentation refresh**  
+  User-facing examples for `--queue` and Compozy-backed tracking explain the shorter input path and its boundaries.
 
 ## User Experience
 
-### Primary flow: active healthy run
+The primary journey is an ad hoc local terminal flow.
 
-1. The operator opens Runtime State, Terminal Console, or Web Dashboard.
-2. The run appears as one Compozy PRD Run with separate but non-conflicting signals for progress, lifecycle, and readiness.
-3. The operator can tell whether the run is planning, executing, or reviewing.
-4. If the run moves forward, the surfaces reflect the same transition within one poll cycle.
-5. The operator does not need to inspect logs to decide whether the run is actively progressing.
+1. The operator works in a **Workspace Repository** that already uses the Compozy-backed **Issue Tracker**.
+2. They know the names of one or more **Compozy PRD Runs** from `.compozy/tasks/<task_name>/`.
+3. They run a short queue command using those slugs separated by commas.
+4. Symphony evaluates the request in the context of the active tracker mode.
+5. If the input is valid, the **Ordered Queue** starts with the same queue-order behavior operators already expect.
+6. If the input is invalid, Symphony stops early and explains the issue in language that helps the operator recover quickly.
 
-### Primary flow: active run under stress
+The UX priority is speed and clarity for a known command, not discoverability through a new interface. Documentation and CLI messaging should make the boundary obvious: bare slugs are a Compozy-backed queue shortcut, not a universal selector format.
 
-1. The operator sees a run that is retrying, stalled, blocked, or otherwise not progressing normally.
-2. The surfaces make that state distinct from normal active execution.
-3. The operator sees a concise reason or category of attention.
-4. The operator can tell whether the issue affects run progress, PR readiness, or both.
+Accessibility and usability considerations:
 
-### Primary flow: completed or handoff-ready run
-
-1. The operator sees the run complete successfully.
-2. The surfaces make completion distinct from PR readiness and from PR handoff.
-3. If automatic Batch Pull Request creation is enabled, the run becomes eligible for one aggregate handoff.
-4. If handoff succeeds, the operator sees that outcome consistently.
-5. If handoff fails, the operator sees a handoff-related state instead of a misleading successful-ready state.
-
-### UX principles
-
-- The same run must not tell conflicting stories on different surfaces.
-- Active states should be faster to interpret than logs.
-- Attention-oriented states should be visually and semantically distinct from healthy progress.
-- Pull Request readiness should be explicit, not inferred from task-step counts alone.
-- Task-step progress remains useful context, not the sole explanation of run health.
-- Product terminology should stay consistent with Compozy PRD Run, Compozy Task Step, Runtime State, Terminal Console, Web Dashboard, and Batch Pull Request.
+- Error feedback should be short, explicit, and readable in a terminal context.
+- Queue input rules should be easy to understand from CLI help and README examples.
+- Operators should not need to inspect internals to understand why a bare slug was rejected.
 
 ## High-Level Technical Constraints
 
-- V1 must preserve the product boundary that one `.compozy/tasks/<slug>/` directory represents one Compozy PRD Run.
-- V1 must preserve current Compozy Task Step progress semantics from the operator’s perspective.
-- V1 must preserve aggregate Batch Pull Request behavior in batch mode.
-- V1 must not loosen Protected Trunk Branch safety behavior or auto-merge safeguards.
-- V1 must not require GitHub API access for Compozy-backed Local Issue Tracker visibility.
-- V1 must use the existing glossary and current product terminology consistently.
-- V1 documentation must remain secret-free and must not include token values or local environment contents.
+- The feature must remain rooted in the **Workspace Repository** runtime model and selected **Issue Tracker** semantics.
+- The product must preserve the existing **Ordered Queue** behavior around order, readiness validation, and queue resume expectations.
+- The change must not weaken existing compatibility for GitHub or minibeads tracker modes.
+- Queue validation must continue to protect operators from starting a run with invalid or ineligible queue entries.
+- User-facing documentation must avoid secret values and preserve existing Runtime Contract boundaries.
 
 ## Non-Goals (Out of Scope)
 
-- **Per-step Symphony issues** — Compozy Task Steps remain internal ordered progress within one Compozy PRD Run.
-- **Per-step pull requests** — Batch mode remains aggregate-only.
-- **Configurable lifecycle schemas** — V1 does not become a user-defined workflow platform.
-- **Lifecycle analytics dashboards** — historical trend analysis and bottleneck reporting are deferred.
-- **Guided repair controls** — V1 explains attention states but does not add repair actions.
-- **Changing Pull Request Policy defaults** — automatic PR behavior remains opt-in.
-- **Replacing current tracker models** — GitHub, minibeads, and Compozy-backed Local Issue Tracker boundaries remain intact.
+- Simplifying selector input for GitHub or minibeads tracker modes.
+- Redesigning selector behavior across all selector-based flows.
+- Changing **Task Branch**, retry, dispatch, completion, or **Runtime State** semantics.
+- Adding partial-success queue behavior for invalid mixed input.
+- Introducing a new UI surface for building queues.
+- Expanding MVP scope beyond `--queue` to other operator commands.
 
 ## Phased Rollout Plan
 
-### MVP (Phase 1): Cross-surface operator trust
+### MVP (Phase 1)
 
-Included:
-
-- One explicit transition contract across task-step progress, run lifecycle, dispatch state, and PR readiness
-- Active-state clarity for planning, execution, review, retrying, and blocked outcomes
-- Cross-surface consistency across Runtime State, Terminal Console, and Web Dashboard
-- Pull Request readiness that never contradicts visible run state
-- Backward-compatible Compozy Task Step progress behavior
-- Documentation and examples for representative status scenarios
+- Support bare Compozy slugs in `--queue` for the Compozy-backed **Issue Tracker**.
+- Keep the MVP focused on ad hoc local terminal use.
+- Provide guided mismatch feedback when the wrong tracker mode is active.
+- Preserve current behavior for all existing non-MVP queue inputs.
 
 Success criteria to proceed:
 
-- Operators can identify the active state and readiness state from any current surface
-- Representative transitions remain consistent across surfaces within one poll cycle
-- Blocked, failed, skipped, and handoff-failed outcomes do not appear review-ready
-- Existing task-step progress remains understandable and unchanged in meaning
+- Operators can queue known **Compozy PRD Runs** with shorter commands.
+- Existing queue behavior remains stable for current users.
+- Documentation clearly explains when the shortcut does and does not apply.
 
-### Phase 2: Richer reasons and transition history
+### Phase 2
 
-Potential additions:
-
-- More granular attention and not-ready reason categories
-- Human-readable transition history
-- Better comparison between current step, lifecycle phase, and readiness in the dashboard
+- Evaluate whether the same ergonomics should apply to other selector-based Compozy flows.
+- Refine error guidance based on real operator confusion patterns.
+- Improve documentation examples for mixed Symphony environments with different tracker kinds.
 
 Success criteria to proceed:
 
-- Operators still need historical context after V1
-- V1 status semantics remain stable enough to extend without changing the core contract
+- Real usage shows that operators want the same shorthand beyond `--queue`.
+- Support questions or dogfood feedback indicate recurring confusion worth smoothing.
 
-### Phase 3: Compozy run control plane
+### Phase 3
 
-Potential additions:
-
-- Bottleneck analytics
-- Guided operator repair suggestions
-- Higher-level run summaries for project owners
-- Expanded lifecycle views if repeated workflows justify them
+- Consider a broader product decision on whether selector ergonomics should become more uniform across Compozy-backed flows.
+- Reassess whether the product should offer saved or previewable queue inputs for repeat use.
 
 Long-term success criteria:
 
-- Operators use Symphony surfaces as the first source of truth for run health
-- Project owners can follow Compozy-backed work without operator translation
+- Selector ergonomics feel consistent where consistency adds value, without weakening tracker-specific clarity.
 
 ## Success Metrics
 
-| Metric | Target | Measurement |
-| --- | --- | --- |
-| Cross-surface consistency | 100% of representative lifecycle transitions align across Runtime State, Terminal Console, and Web Dashboard within 1 poll cycle | Acceptance scenarios and dogfood walkthroughs |
-| Readiness consistency | 0 contradictory states between visible run state and visible PR readiness | Acceptance scenarios for active, blocked, failed, skipped, completed, and handoff outcomes |
-| Active-state comprehension | < 30 seconds to identify whether a run is planning, executing, reviewing, retrying, or blocked | Timed operator walkthroughs |
-| Task-step compatibility | 0 regressions in current-step behavior and visible step counts | Existing Compozy progress checks plus regression acceptance scenarios |
-| Aggregate PR correctness | 0 per-step pull requests and no more than 1 aggregate Batch Pull Request per successful run | Pull-request handoff records and dogfood verification |
-| Attention clarity | 100% of blocked, failed, skipped, and handoff-failed scenarios show a concise reason | Acceptance scenarios across representative attention outcomes |
+- Queue command brevity for Compozy-backed ad hoc runs improves by at least 15% for multi-run commands.
+- Operators can successfully queue known **Compozy PRD Runs** using bare slugs in the primary local terminal flow.
+- Queue-entry attempts involving bare slugs fail with guided mismatch feedback when the wrong tracker mode is active.
+- Existing non-Compozy queue flows show no user-facing regression.
+- Documentation examples for Compozy-backed queue usage remain accurate and easy to follow.
 
 ## Risks and Mitigations
 
-| Risk | Impact | Mitigation |
-| --- | --- | --- |
-| Surface drift leaves one view behind the others | Operators lose trust and return to logs | Make cross-surface consistency a core success metric, not a polish task |
-| Status language blurs progress, lifecycle, and readiness | Operators misread the state of work | Define and document the boundary between each status layer with examples |
-| Broader scope creates regression pressure on step progress | Lifecycle improvements could break current progress interpretation | Keep no-regression task-step behavior as a hard V1 constraint |
-| Operators over-trust labels without reasons | Attention states may still be hard to act on | Require concise reasons for blocked, not-ready, failed, skipped, and handoff-failure scenarios |
-| Familiar users resist new distinctions | Adoption slows if the model feels more complex | Keep the vocabulary disciplined and show the same story everywhere |
+- **Risk: Users assume bare slugs should work everywhere.**  
+  Mitigation: Make the Compozy-only boundary explicit in CLI help, README examples, and error messages.
+
+- **Risk: The feature feels too small to justify product attention.**  
+  Mitigation: Keep the PRD tightly scoped and tie success directly to a high-frequency operator workflow.
+
+- **Risk: Operators remain unsure which queue syntax to use in multi-tracker contexts.**  
+  Mitigation: Use guided mismatch feedback that explains the active tracker context and the expected input style.
+
+- **Risk: Future requests expand scope prematurely into a larger selector redesign.**  
+  Mitigation: Preserve the MVP narrative as a focused queue shortcut and defer broader selector consistency work to later phases.
 
 ## Architecture Decision Records
 
-- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Lifecycle status belongs to the Compozy PRD Run, while Compozy Task Step statuses remain execution progress.
-- [ADR-002: Use full V1 operator trust as the PRD product approach](adrs/adr-002.md) — V1 must expose lifecycle and PR readiness across current operator surfaces.
-- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Runtime Home lifecycle metadata survives restarts while task-step frontmatter remains the progress source.
-- [ADR-004: Treat Compozy statuses as an explicit transition contract](adrs/adr-004.md) — V1 must define and validate the mapping between task-step status, run lifecycle state, dispatch state, and PR readiness.
-- [ADR-005: Use a cross-surface transition contract as the PRD approach](adrs/adr-005.md) — V1 prioritizes consistent status meaning across Runtime State, Terminal Console, and Web Dashboard without regressing task-step progress.
+- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving canonical internal identifiers.
+- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
 
 ## Open Questions
 
-- What exact operator-facing label should represent active execution on each surface: `in_execution`, `in progress`, `running`, or a mixed presentation with one canonical meaning?
-- Should `Human attention` remain a dispatch-facing label while lifecycle continues to present `blocked` as the operator-facing lifecycle category?
-- Should handoff failure appear primarily as a PR-readiness problem, a lifecycle phase, or both?
-- What minimum set of example scenarios should documentation include for retrying, blocked, review, successful completion, and handoff failure states?
+- Should bare Compozy slugs remain `--queue`-only after MVP, or later extend to other selector-based flows?
+- What documentation example set best prevents confusion for operators who switch between Compozy-backed and non-Compozy tracker modes?
 
 ## TechSpec (`_techspec.md`)
 
-# TechSpec: Improve Compozy Task Lifecycle Statuses
+# Queue Flag With Compozy Tasks TechSpec
 
 ## Executive Summary
 
-This implementation tightens the existing Compozy PRD Run lifecycle architecture instead of introducing a new status subsystem. The codebase already persists run-level lifecycle metadata in Runtime Home, already extends `Runtime_state.compozy_progress`, and already renders lifecycle fields in the Terminal Console and Web Dashboard. V1 should focus on making those existing pieces obey one explicit transition contract across Compozy Task Step progress, run lifecycle state, dispatch state, and Batch Pull Request readiness.
+Implement the PRD by keeping `Ordered_queue.parse` tracker-agnostic, then adding a shared post-settings queue-resolution step that interprets bare Compozy slugs only when `.symphony/settings.json` selects `tracker.kind = "compozy_tasks"`. The queue keeps the operator-facing identifier text for state and resume, while readiness, lookup, and dispatch operate on ephemeral canonical identifiers.
 
-The key technical trade-off is keeping two state sources while making only one of them authoritative for execution truth. Compozy Task Step files remain the source of truth for current-step selection and terminal counts. Runtime Home lifecycle metadata remains the persisted operator-facing summary for run phase, dispatch state, stage agent, readiness, and concise reasons, but it must reconcile to task-step progress whenever those disagree. This preserves backward-compatible Compozy Task Step behavior and keeps the current cross-surface payload shape, at the cost of stricter reconciliation logic and more focused regression coverage.
+The primary trade-off is deliberate: preserving raw bare slugs in queue state makes the shortcut feel native and keeps readiness messages close to what the operator typed, but it means queue resume stays input-style-sensitive. Restarting with `example-feature` is not the same queue run as restarting with `compozy:example-feature`.
 
 ## System Architecture
 
@@ -296,371 +200,201 @@ The key technical trade-off is keeping two state sources while making only one o
 
 | Component | Responsibility | Boundary |
 | --- | --- | --- |
-| `Compozy_tasks_tracker` | Parse Compozy Task Steps, select the current step, and derive completed, failed, skipped, and total counts for a Compozy PRD Run. | Remains the authoritative execution-progress source. |
-| `Compozy_lifecycle` | Persist Runtime Home lifecycle metadata, derive initial lifecycle state, reconcile stale metadata against Compozy Task Step truth, and provide transition helpers. | Owns run-level lifecycle summary, not task-step progress. |
-| `Issue_tracker.compozy` | Fetch Compozy PRD Run candidates, use lifecycle-backed dispatch state for tracker semantics, and persist dispatch-facing status updates. | Preserves the Compozy-backed Local Issue Tracker boundary and does not require GitHub API access. |
-| `Orchestrator` | Apply lifecycle transitions during dispatch, retry, failure, blocked attention, completion, and Batch Pull Request handoff. | Continues to own orchestration timing and Stage Agent routing. |
-| `Runtime_state` | Assemble one extended `compozy_progress` object from task-step truth plus reconciled lifecycle metadata. | Remains the shared payload for Runtime State, Terminal Console, and Web Dashboard. |
-| `Terminal_console` | Render Compozy PRD Run counts, lifecycle, readiness, handoff status, and reasons without contradicting Runtime State. | No new console mode or alternate payload. |
-| Frontend ReScript snapshot parser | Parse the existing extended `compozy_progress` payload from backend snapshots. | Must preserve compatibility with older snapshots missing lifecycle fields. |
-| Frontend Dashboard | Render the same run story the Terminal Console and Runtime State expose. | Must distinguish counts from lifecycle and readiness without inventing new backend semantics. |
-| Existing pull-request runtime records | Keep detailed Batch Pull Request attempt and failure evidence. | Remain the detailed handoff record; lifecycle only summarizes handoff phase and readiness. |
+| `Ordered_queue` | Parse structurally valid queue tokens and resolve them against the selected tracker after config load. | Must stay tracker-agnostic at parse time. |
+| `Issue_tracker` | Normalize tracker-specific identifiers and validate dispatchability. | Compozy adapter gains bare-slug normalization support; GitHub and minibeads behavior stays stable. |
+| `Runtime_readiness` | Surface queue mismatch and invalid-entry feedback as **Readiness Gaps** before orchestration starts. | Owns startup reporting, not dispatch-time recovery. |
+| `Orchestrator` | Use resolved canonical identifiers for queue ordering, matching, and dispatch while persisting raw queue identifiers in queue state. | Must preserve current **Ordered Queue** semantics and resume behavior. |
+| `Runtime_state` | Keep the existing queue JSON shape while allowing Compozy bare-slug queue entries to appear as typed by the operator. | No new queue fields in MVP. |
+| Docs / CLI help | Explain the Compozy-only shortcut and guided mismatch behavior. | Must not imply a global selector redesign. |
 
-### Data Flow
+Data flow:
 
-1. `Compozy_tasks_tracker.discover_prd_runs` loads Compozy PRD Runs from `.compozy/tasks/<slug>/`.
-2. `Compozy_lifecycle.load_or_backfill_reconciled` loads Runtime Home lifecycle metadata or derives it from Compozy Task Step progress when missing.
-3. `Issue_tracker.compozy` exposes the Compozy PRD Run as one tracker issue and uses lifecycle-backed `dispatch_state` for active and terminal checks.
-4. `Orchestrator.dispatch_issue` calls `Compozy_lifecycle.mark_stage_started` to map planner, engineer, or reviewer dispatch into run-level lifecycle.
-5. Retry, failure, blocked attention, completion, and Batch Pull Request handoff paths call the matching lifecycle transition helpers.
-6. `Runtime_state.compozy_progress_of_prd_run` merges Compozy Task Step counts with reconciled lifecycle metadata into one payload.
-7. Runtime State snapshots, the Terminal Console, and the Web Dashboard render that shared payload within one poll cycle.
+1. `parse_ordered_queue_arg` builds a queue from structurally valid raw tokens.
+2. Runtime startup loads `.symphony/settings.json` and selects the active tracker.
+3. A shared queue-resolution helper uses `tracker.normalize_identifier` to resolve each entry into a canonical identifier or a readiness error.
+4. `Runtime_readiness` reports tracker mismatch, mixed-style Compozy input, duplicate resolved identifiers, and undispatchable runs as **Readiness Gaps**.
+5. `Orchestrator` uses resolved canonical identifiers for lookup and ordering, while persisted queue state keeps raw queue identifiers.
+6. Queue resume compares the raw queue sequence, not the resolved canonical sequence.
 
 ## Implementation Design
 
 ### Core Interfaces
 
-The implementation stays in OCaml, but this Go struct documents the cross-surface payload contract that backend and frontend must keep aligned:
+Actual implementation is OCaml. The Go structs below are compact schema sketches for the key boundary.
 
 ```go
-type CompozyProgress struct {
-    RunID          string  `json:"run_id"`
-    Slug           string  `json:"slug"`
-    CurrentStep    *string `json:"current_step,omitempty"`
-    Completed      int     `json:"completed"`
-    Failed         int     `json:"failed"`
-    Skipped        int     `json:"skipped"`
-    Total          int     `json:"total"`
-    LifecycleState *string `json:"lifecycle_state,omitempty"`
-    DispatchState  *string `json:"dispatch_state,omitempty"`
-    StageAgent     *string `json:"stage_agent,omitempty"`
-    PRReadiness    *string `json:"pr_readiness,omitempty"`
-    Reason         *string `json:"reason,omitempty"`
-    HandoffStatus  *string `json:"handoff_status,omitempty"`
+type QueueEntry struct {
+    QueueIdentifier string
+}
+
+type ResolvedQueueEntry struct {
+    QueueIdentifier     string
+    CanonicalIdentifier string
 }
 ```
 
-Primary backend contracts:
-
-- `Compozy_lifecycle.load_or_backfill_reconciled : Config.t -> Compozy_tasks_tracker.prd_run -> (Compozy_lifecycle.t, string) result`
-- `Compozy_lifecycle.mark_stage_started : Config.t -> Compozy_tasks_tracker.prd_run -> stage_agent:string option -> dispatch_state:string -> (Compozy_lifecycle.t, string) result`
-- `Compozy_lifecycle.mark_retrying : Config.t -> Compozy_tasks_tracker.prd_run -> reason:string -> (Compozy_lifecycle.t, string) result`
-- `Compozy_lifecycle.mark_failed : Config.t -> Compozy_tasks_tracker.prd_run -> reason:string -> (Compozy_lifecycle.t, string) result`
-- `Compozy_lifecycle.mark_blocked : Config.t -> Compozy_tasks_tracker.prd_run -> reason:string -> (Compozy_lifecycle.t, string) result`
-- `Compozy_lifecycle.mark_completed : Config.t -> Compozy_tasks_tracker.prd_run -> (Compozy_lifecycle.t, string) result`
-- `Compozy_lifecycle.mark_pr_handoff : Config.t -> Compozy_tasks_tracker.prd_run -> status:string -> reason:string option -> (Compozy_lifecycle.t, string) result`
-- `Runtime_state.compozy_progress_of_prd_run : ?lifecycle:Compozy_lifecycle.t -> Compozy_tasks_tracker.prd_run -> Runtime_state.compozy_progress`
-
-All new or updated helper calls should continue returning `(value, string) result` to match existing backend error handling.
+```go
+type QueueResolver interface {
+    Resolve(queue []QueueEntry) ([]ResolvedQueueEntry, error)
+}
+```
 
 ### Data Models
 
-#### 1. Compozy Task Step truth
+#### Ordered Queue Entry
 
-Compozy Task Step frontmatter remains the source of truth for:
+Keep the existing queue-state shape conceptually centered on one identifier field, but change its meaning for the Compozy shortcut path:
 
-- `current_step`
-- `completed`
-- `failed`
-- `skipped`
-- `total`
+- For GitHub and minibeads inputs, the stored identifier remains the canonical queue identifier as today.
+- For bare Compozy slug input, the stored identifier remains the original slug text.
+- Downstream canonical issue identity is resolved separately and never inferred from persisted queue state alone.
 
-Allowed task-step statuses remain unchanged:
+#### Resolved Queue Entry
 
-- `pending`
-- `in_progress`
-- `completed`
-- `failed`
-- `skipped`
+Add an internal resolved queue representation used only after tracker selection:
 
-V1 must not add run-level meaning to task-step statuses.
-
-#### 2. Runtime Home lifecycle summary
-
-Runtime Home lifecycle metadata remains stored at:
-
-```text
-.symphony/state/compozy-lifecycle/<slug>.json
-```
-
-Persisted JSON shape remains:
-
-```json
-{
-  "version": 1,
-  "run_id": "compozy:improve-compozy-task-statuses",
-  "slug": "improve-compozy-task-statuses",
-  "lifecycle_state": "in_review",
-  "dispatch_state": "In review",
-  "stage_agent": "reviewer",
-  "pr_readiness": "not_ready",
-  "reason": "Reviewer found failing verification.",
-  "updated_at": "2026-05-13T20:00:00Z"
-}
-```
-
-Canonical persisted lifecycle states remain:
-
-| `lifecycle_state` | Meaning |
-| --- | --- |
-| `pending` | The Compozy PRD Run exists but has not entered active work. |
-| `in_planning` | Planner-stage work is active. |
-| `in_execution` | Engineer-stage work or active step execution is in progress. |
-| `in_review` | Reviewer-stage work is active. |
-| `blocked` | The run requires operator attention and is not progressing normally. |
-| `completed` | The run completed successfully from the lifecycle perspective. |
-| `failed` | The run ended with failed work and is not PR-ready. |
-| `skipped` | The run ended with skipped work and is not PR-ready. |
-| `not_pr_ready` | The run is terminal or stalled in a way that prevents Batch Pull Request readiness without being a normal success path. |
-| `pr_handoff` | The run is in Batch Pull Request handoff, including attempting, completed, or failed handoff outcomes. |
-
-Canonical persisted readiness states remain:
-
-| `pr_readiness` | Meaning |
-| --- | --- |
-| `disabled` | Pull Request Policy disables automatic Batch Pull Requests. |
-| `not_ready` | The run is not eligible for a Batch Pull Request. |
-| `ready` | The run is complete and eligible for one aggregate Batch Pull Request. |
-| `handoff_attempting` | Batch Pull Request handoff is in progress. |
-| `handoff_completed` | Batch Pull Request handoff succeeded or reused an existing pull request. |
-| `handoff_failed` | Batch Pull Request handoff failed. |
-
-#### 3. Operator-facing mapping rules
-
-V1 keeps lifecycle, dispatch, and readiness separate instead of flattening them into one label.
-
-| Source | Role | Example |
+| Field | Type | Purpose |
 | --- | --- | --- |
-| Task-step status | Execution progress | `task_02.md` is `in_progress` |
-| `lifecycle_state` | Operator-visible run phase | `in_review` |
-| `dispatch_state` | Config-driven routing/tracker status | `In review` or `Human attention` |
-| `pr_readiness` | Batch Pull Request eligibility | `not_ready` or `handoff_failed` |
+| `queue_identifier` | string | Raw or queue-state identifier shown to the operator |
+| `canonical_identifier` | string | Canonical tracker identifier used for lookup and dispatch |
 
-Approved mapping rules:
+#### Compozy Normalization Rules
 
-- planner dispatch maps to `lifecycle_state = in_planning`
-- reviewer dispatch maps to `lifecycle_state = in_review`
-- engineer dispatch and active task-step execution map to `lifecycle_state = in_execution`
-- retry does not add a new lifecycle value; it remains `in_execution` plus the existing retrying Runtime State context and a retry reason
-- attention-oriented dispatch states such as `Human attention` remain config-driven `dispatch_state` values while lifecycle shows `blocked`
-- failed Batch Pull Request handoff remains `lifecycle_state = pr_handoff` with `pr_readiness = handoff_failed` and `handoff_status = handoff_failed`
+When `tracker.kind = "compozy_tasks"`:
 
-#### 4. Reconciliation rules
+- `example-feature` resolves to `compozy:example-feature`
+- `compozy:example-feature` remains a valid legacy canonical selector
+- mixed bare and canonical Compozy selectors in the same queue are rejected in MVP
+- task-step-like selectors such as `compozy:task_01` remain invalid at the **Compozy PRD Run** boundary
 
-`Compozy_lifecycle.load_or_backfill_reconciled` becomes the required read path for Runtime State assembly and tracker candidate fetches.
+When `tracker.kind != "compozy_tasks"`:
 
-Reconciliation rules:
+- bare opaque tokens fail readiness with a guided tracker-mismatch message
+- existing GitHub and minibeads normalization rules remain unchanged
 
-- if lifecycle metadata is missing, derive it from current Compozy Task Step truth and persist it
-- if task-step progress shows a terminal failed, skipped, blocked, or otherwise non-ready outcome, stale lifecycle metadata must be downgraded to match that terminal outcome
-- task-step truth wins for `current_step` and terminal counts even when lifecycle metadata says `completed` or `ready`
-- lifecycle metadata may enrich the run with `stage_agent`, `dispatch_state`, `pr_readiness`, and `reason` only after reconciliation
-- handoff details stay summarized in lifecycle and fully detailed in existing pull-request runtime records
+#### Runtime State
 
-#### 5. Shared Runtime State payload
-
-V1 keeps the existing single `Runtime_state.compozy_progress` object. It must continue exposing:
-
-- `run_id`
-- `slug`
-- `current_step`
-- `completed`
-- `failed`
-- `skipped`
-- `total`
-- `lifecycle_state`
-- `dispatch_state`
-- `stage_agent`
-- `pr_readiness`
-- `reason`
-- `handoff_status`
-
-Older snapshots without lifecycle fields must continue parsing safely.
+No new queue JSON fields are required. Existing `ordered_queue.entries[].issue_identifier` remains the serialized field, but for Compozy bare-slug queues it now contains the raw slug text. This preserves the approved queue-state behavior and keeps existing frontend/backend parsing compatible.
 
 ### API Endpoints
 
-No new API endpoint is required.
+No new HTTP endpoint is required.
 
-Existing surfaces continue to use the shared Runtime State payload:
+Existing Runtime State endpoints continue to expose ordered queue state:
 
-| Surface | Entry point | Change |
+| Method | Path | Change |
 | --- | --- | --- |
-| HTTP | `GET /api/v1/state` | Must continue exposing reconciled `compozy_progress` values. |
-| Live snapshot stream | Existing Runtime State snapshot broadcast | Must broadcast the same reconciled payload as HTTP. |
-| Terminal Console | Existing Compozy PRD Run panel | Must render lifecycle, readiness, handoff, and reason from the same payload. |
-| Web Dashboard | Existing ReScript snapshot parser and dashboard panel | Must parse and render the same payload without inventing alternate state meaning. |
+| GET | `/api/v1/state` | Existing queue shape stays intact; Compozy bare-slug queues expose raw slug identifiers in queue entries. |
+| GET | `/api/v1/state/live` | Same shape as snapshot state. |
 
 ## Integration Points
 
-This feature does not add a new external integration.
-
-Existing system boundaries remain:
-
-- the Compozy-backed Local Issue Tracker remains local-file based
-- GitHub API access remains unnecessary for Compozy lifecycle visibility
-- existing Batch Pull Request creation continues to use current pull-request policy and handoff paths
-- existing pull-request runtime records remain the detailed handoff evidence source
-- Protected Trunk Branch, Task Branch Integration, and pull-request policy defaults remain unchanged
+| Integration Point | Design |
+| --- | --- |
+| `main.ml` startup path | Parse the queue before config load, then resolve it after tracker selection for readiness and orchestration. |
+| `Issue_tracker.normalize_identifier` | Reuse the selected tracker hook as the canonical normalization boundary. |
+| `README.md` and CLI help | Update queue examples and mismatch guidance without changing other tracker documentation. |
+| Existing queue resume state | Preserve raw sequence matching for bare-slug queue runs. |
+| Existing canonical Compozy tests | Keep canonical `compozy:<task_name>` flows valid to avoid regression. |
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
 | --- | --- | --- | --- |
-| `apps/backend/lib/compozy_lifecycle.ml` | Modified | Existing lifecycle helpers already exist but need to become the strict reconciliation path for runtime reads and transition writes. Risk: stale ready/completed metadata surviving task-step truth. | Tighten reconciliation rules, preserve schema, and keep handoff semantics separate from lifecycle phase. |
-| `apps/backend/lib/compozy_tasks_tracker.ml` | Modified | Must continue to define current-step and terminal counts without lifecycle drift. Risk: accidental semantic changes to task-step progress. | Keep task-step status model unchanged and add only helper usage needed for lifecycle reconciliation. |
-| `apps/backend/lib/issue_tracker.ml` | Modified | Must consistently use reconciled lifecycle metadata for dispatch-facing status behavior. Risk: dispatch active/terminal checks diverge from visible lifecycle state. | Route candidate fetches and status persistence through reconciled lifecycle helpers. |
-| `apps/backend/lib/orchestrator.ml` | Modified | Already records lifecycle transitions in many paths; V1 needs complete coverage and consistent reasons. Risk: missing transition writes on retry, blocked completion, or handoff paths. | Consolidate all Compozy transition writes through existing lifecycle helper calls. |
-| `apps/backend/lib/runtime_state.ml` | Modified | Already carries the extended payload; V1 must ensure task-step truth always wins on merge. Risk: Runtime State surfaces stale lifecycle data. | Keep one shared payload and assemble it from task-step truth plus reconciled lifecycle metadata. |
-| `apps/backend/lib/terminal_console.ml` | Modified | Already renders lifecycle fields. Risk: surface wording drifts from Runtime State semantics. | Keep labels aligned with payload semantics and always show readiness or handoff when present. |
-| `apps/frontend/src/RuntimeStateSnapshot.res` | Modified | Already parses lifecycle fields. Risk: parser and backend drift apart on optional fields. | Preserve backward compatibility for absent fields and keep field names unchanged. |
-| `apps/frontend/src/Pages/Dashboard.res` | Modified | Already renders Compozy lifecycle details. Risk: dashboard implies a different story than the Terminal Console. | Render lifecycle, dispatch, readiness, and reason from the shared payload with clear separation from counts. |
-| `apps/frontend/test/liveState.test.mjs` | Modified | Existing live-state tests already cover lifecycle-rich snapshots. Risk: new semantics land without UI regression protection. | Expand focused snapshot and render assertions for transition consistency and handoff failure semantics. |
-| `apps/backend/test/test_backend.ml` | Modified | Existing backend coverage is strong but must close remaining transition and reconciliation gaps. Risk: regressions hide inside the large integration suite. | Add targeted cases near current Compozy lifecycle tests; do not split the file. |
-| `CONTEXT.md` and operator docs | Modified if needed | Current glossary already defines Compozy lifecycle and readiness terms. Risk: operator-facing copy diverges from the glossary. | Update only if implementation introduces new operator wording that changes domain language. |
+| `apps/backend/lib/ordered_queue.ml` | Modified | Current parser assumes canonical identifiers and duplicates are resolved immediately. | Add opaque bare-token support, tracker-aware resolution helpers, and resolved-duplicate checks. |
+| `apps/backend/lib/issue_tracker.ml` | Modified | Compozy normalization currently accepts canonical selectors only. | Allow Compozy bare-slug normalization after tracker selection while keeping GitHub/minibeads unchanged. |
+| `apps/backend/lib/runtime_readiness.ml` | Modified | Queue validation currently assumes parsed identifiers are already canonical. | Validate through resolved queue entries and emit guided mismatch remediation. |
+| `apps/backend/lib/orchestrator.ml` | Modified | Queue ordering and resume currently compare canonical identifiers directly. | Use resolved canonical identifiers for dispatch matching while preserving raw queue state for resume. |
+| `apps/backend/bin/main.ml` | Modified | Startup currently separates parse problems from readiness validation. | Keep structural parse failures early and route tracker-aware queue problems into readiness. |
+| `apps/backend/lib/cli_command.ml` | Modified | `--queue` help still describes generic issue identifiers only. | Document Compozy bare-slug shortcut scope. |
+| `README.md` | Modified | Current docs require `compozy:<task_name>` in selector-based flows. | Add `--queue` MVP shortcut examples and tracker-mismatch guidance. |
+| `apps/backend/test/test_backend.ml` | Modified | Existing tests cover canonical queue parsing and canonical queue resume. | Add bare-slug parser, readiness, orchestration, and resume coverage near existing queue tests. |
 
 ## Testing Approach
 
 ### Unit Tests
 
-Backend-focused coverage should stay close to the existing lifecycle helper tests in `apps/backend/test/test_backend.ml`:
-
-- lifecycle JSON round-trip and optional-field compatibility
-- lifecycle backfill from active, completed, failed, skipped, and not-runnable Compozy PRD Runs
-- stale ready/completed lifecycle metadata downgraded by reconciliation when Compozy Task Step truth becomes failed, skipped, blocked, or otherwise non-ready
-- stage-agent mapping for planner, engineer, and reviewer dispatch
-- `mark_retrying`, `mark_failed`, `mark_blocked`, `mark_completed`, and `mark_pr_handoff` preserving the approved phase-versus-readiness split
-
-Frontend-focused coverage should stay in `apps/frontend/test/liveState.test.mjs`:
-
-- snapshot parsing with lifecycle-rich payloads
-- snapshot parsing when lifecycle fields are absent
-- dashboard rendering for blocked, review, and handoff-failed Compozy PRD Runs
-- dashboard rendering that keeps counts visible alongside lifecycle and readiness
+- `Ordered_queue.parse` accepts bare opaque tokens while still rejecting empty entries, URLs, and cross-repository references.
+- Resolved duplicate detection catches canonical collisions such as `20` and `#20`, `MB-020` and `mb-20`, and repeated bare Compozy slugs.
+- Compozy `normalize_identifier` accepts both `example-feature` and `compozy:example-feature`.
+- Mixed bare and canonical Compozy queue input is rejected in MVP.
+- Guided tracker-mismatch remediation is produced when bare Compozy slugs are used under GitHub or minibeads tracker modes.
+- Canonical Compozy queue validation remains unchanged.
 
 ### Integration Tests
 
-Backend integration coverage in `apps/backend/test/test_backend.ml` should verify:
-
-- candidate fetches and queue lookups use `load_or_backfill_reconciled`
-- dispatch to planner, engineer, and reviewer records `in_planning`, `in_execution`, and `in_review`
-- retry keeps the run in `in_execution` while exposing retry context and reason
-- non-retryable completion errors, merge attention, and protected-path attention record `blocked`
-- final failed and skipped Compozy PRD Runs record terminal non-ready lifecycle states
-- successful completion records `completed` plus `ready` or `disabled` based on Pull Request Policy
-- failed handoff records `lifecycle_state = pr_handoff` and `pr_readiness = handoff_failed`
-- terminal non-ready runs do not attempt or appear eligible for Batch Pull Request handoff
-- batch mode never opens per-step pull requests for Compozy Task Steps
-
-Cross-surface verification should use existing tests instead of a new harness:
-
-- Terminal Console line rendering for lifecycle, readiness, reason, and handoff fields
-- HTTP Runtime State payload assertions
-- live snapshot assertions
-- frontend snapshot-to-dashboard render assertions
-
-Verification commands:
-
-- `pnpm test`
-- `pnpm frontend:test`
-- `pnpm frontend:build`
-- `pnpm backend:build`
+- A Compozy bare-slug queue validates successfully without GitHub Project membership.
+- Orchestrator dispatches a Compozy bare-slug **Ordered Queue** only in the requested order.
+- Runtime State persists raw bare-slug queue identifiers during a Compozy queue run.
+- Restarting with the same bare-slug queue resumes queue progress.
+- Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run rather than resuming.
+- A bare-slug queue under a non-Compozy tracker reports a **Readiness Gap** and does not begin orchestration.
+- Existing canonical `compozy:<task_name>` queue tests continue to pass.
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Tighten `Compozy_lifecycle` reconciliation and transition helper semantics around the approved contract. This step has no dependencies.
-2. Update `Issue_tracker.compozy` to consistently read reconciled lifecycle metadata and persist dispatch-state changes through lifecycle helpers. This step depends on step 1.
-3. Update `Orchestrator` transition writes so planner, engineer, reviewer, retry, blocked, completion, and handoff paths all use the approved lifecycle and readiness semantics. This step depends on steps 1 and 2.
-4. Update `Runtime_state.compozy_progress_of_prd_run` so task-step truth always wins while lifecycle enrichments come from reconciled metadata. This step depends on step 1.
-5. Align Terminal Console rendering with the shared payload and approved lifecycle-versus-readiness split. This step depends on step 4.
-6. Align `apps/frontend/src/RuntimeStateSnapshot.res` and `apps/frontend/src/Pages/Dashboard.res` with the same payload semantics and backward-compatible parsing. This step depends on step 4.
-7. Expand focused backend lifecycle tests in `apps/backend/test/test_backend.ml`. This step depends on steps 1 through 4.
-8. Expand focused frontend snapshot and render checks in `apps/frontend/test/liveState.test.mjs`. This step depends on step 6.
-9. Update glossary or operator docs only if the final implementation changes domain wording. This step depends on steps 5 and 6.
-10. Run verification and fix root causes. This step depends on steps 7, 8, and 9.
+1. Add queue-resolution data types and helper functions in `Ordered_queue` - no dependencies.
+2. Update `Ordered_queue.parse` to accept opaque bare tokens while preserving current structural rejection rules - depends on step 1.
+3. Extend Compozy tracker normalization to accept bare slugs after tracker selection - depends on step 1.
+4. Route queue validation through resolved queue entries in `Runtime_readiness` - depends on steps 1 and 3.
+5. Update `main.ml` startup wiring so tracker-aware queue failures surface as readiness output - depends on steps 2 and 4.
+6. Refactor `Orchestrator` queue matching and ordering to use resolved canonical identifiers while persisting raw queue state - depends on steps 1, 3, and 4.
+7. Update CLI help and README examples for the Compozy shortcut - depends on steps 4 and 6.
+8. Add unit coverage for parse, resolution, and readiness cases - depends on steps 2 through 5.
+9. Add end-to-end orchestration and resume coverage for bare-slug queues - depends on steps 6 and 8.
+10. Run focused backend verification - depends on steps 1 through 9.
 
 ### Technical Dependencies
 
-- No new third-party packages are required.
-- Runtime Home `.symphony/state/` remains the persistence location for lifecycle metadata.
-- Existing `yojson`, Runtime State snapshot machinery, and ReScript frontend parsing are sufficient.
-- Existing pull-request runtime records remain the handoff detail source; no new storage file is required.
+- Existing `Issue_tracker.normalize_identifier` contract remains the selected-tracker normalization boundary.
+- Existing **Runtime State** queue schema remains in place; no frontend schema migration is required for MVP.
+- Existing queue resume behavior in `Orchestrator` must be updated carefully because it currently assumes canonical identifier sequences.
+- Work stays inside the current backend module layout; no new package or directory is required.
 
 ## Monitoring and Observability
 
-V1 should rely on existing observability surfaces instead of adding a new metrics system.
-
-Operational visibility should come from:
-
-- Runtime Home lifecycle JSON under `.symphony/state/compozy-lifecycle/`
-- Runtime State `compozy_progress` payload in HTTP and live snapshots
-- Terminal Console Compozy PRD Run lines for lifecycle, readiness, handoff, and reason
-- existing pull-request runtime records for handoff attempts, completions, and failures
-
-Important observable events:
-
-- lifecycle metadata backfilled for a run with no persisted record
-- stale lifecycle metadata reconciled downward to a failed, skipped, blocked, or not-ready outcome
-- stage dispatch mapped to planner, engineer, or reviewer lifecycle
-- Batch Pull Request handoff moved to attempting, completed, or failed
-- blocked attention reason recorded for protected-path or merge-attention outcomes
-
-Alerting is not a separate infrastructure task in V1. The practical guardrail is test-backed consistency across Runtime State, Terminal Console, and Web Dashboard.
+- Startup readiness output should distinguish structural parse errors from tracker-aware queue mismatch errors.
+- Queue-related logs should include both the queue-state identifier and the resolved canonical identifier when a Compozy bare slug is resolved.
+- Ordered queue skipped or invalid-entry output should continue to show the operator-facing queue identifier.
+- Existing Runtime State queue projections remain the primary operator-visible queue status surface.
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- **Decision:** Keep one extended `Runtime_state.compozy_progress` payload.
-  - **Rationale:** The backend, Terminal Console, and Web Dashboard already depend on this shared shape.
-  - **Trade-off:** Conceptual layers stay in one object, so field semantics must be explicit.
-  - **Alternatives rejected:** separate lifecycle and readiness payloads would add churn without improving operator trust in V1.
+- Decision: keep `Ordered_queue.parse` generic and move Compozy meaning behind post-settings queue resolution.  
+  Rationale: matches the selected tracker boundary and avoids Compozy-specific parser logic.  
+  Trade-off: queue validation becomes two-phase instead of parse-only.
 
-- **Decision:** Keep Compozy Task Step progress authoritative for current-step and terminal-count truth.
-  - **Rationale:** Task-step files are the closest execution record and must not regress.
-  - **Trade-off:** Runtime Home lifecycle metadata must reconcile instead of assuming it is correct.
-  - **Alternatives rejected:** making lifecycle metadata authoritative would allow stale operator state.
+- Decision: preserve raw bare-slug text in queue state and resume keys.  
+  Rationale: keeps state aligned with what the operator typed and with the approved terminal-first workflow.  
+  Trade-off: equivalent raw and canonical selector forms no longer resume the same queue run.
 
-- **Decision:** Keep `dispatch_state` config-driven and separate from operator-facing `lifecycle_state`.
-  - **Rationale:** Routing and tracker semantics already depend on configured tracker states such as `Human attention`.
-  - **Trade-off:** Operators may need both fields in some scenarios.
-  - **Alternatives rejected:** flattening dispatch into lifecycle would lose configured tracker behavior.
+- Decision: emit guided bare-slug tracker mismatch as a **Readiness Gap**.  
+  Rationale: readiness has the selected tracker context and already owns startup blocking feedback.  
+  Trade-off: some invalid inputs now fail at readiness rather than parse time.
 
-- **Decision:** Keep failed Batch Pull Request handoff as `pr_handoff` plus failed readiness.
-  - **Rationale:** Handoff failure is a readiness outcome within the handoff phase, not a new lifecycle phase.
-  - **Trade-off:** Some states require reading both `lifecycle_state` and `pr_readiness`.
-  - **Alternatives rejected:** adding a dedicated handoff-failed lifecycle state would create redundant vocabulary.
-
-- **Decision:** Expand focused regression coverage instead of introducing a new status test harness.
-  - **Rationale:** The repository already has strong backend Compozy lifecycle coverage and frontend live-state tests.
-  - **Trade-off:** The large backend test file remains large.
-  - **Alternatives rejected:** a new harness would increase maintenance cost without changing the core risk.
+- Decision: add end-to-end orchestration coverage, including resume behavior for bare-slug queues.  
+  Rationale: the change touches parser, readiness, runtime state, and dispatch matching in one flow.  
+  Trade-off: broader test setup than a parser-only change.
 
 ### Known Risks
 
-- **Risk:** Reconciliation misses a terminal downgrade path and leaves stale ready/completed metadata visible.
-  - **Likelihood:** Medium
-  - **Mitigation:** Add explicit backend cases for stale lifecycle repair across failed, skipped, blocked, and not-ready outcomes.
+- Raw queue state and resolved canonical identifiers may drift if resolution logic is duplicated.  
+  Mitigation: use one shared resolution helper from readiness and orchestration.
 
-- **Risk:** Surface wording diverges even when the payload is correct.
-  - **Likelihood:** Medium
-  - **Mitigation:** Use the shared payload as the single contract and extend Terminal Console plus frontend render assertions.
+- Mixed-style Compozy queue input could confuse operators and complicate duplicate rules.  
+  Mitigation: reject mixed bare and canonical Compozy input in MVP.
 
-- **Risk:** Retry and handoff semantics remain hard to read because they span more than one field.
-  - **Likelihood:** Medium
-  - **Mitigation:** Require reason and handoff-status visibility when those states are present; keep lifecycle labels canonical.
-
-- **Risk:** Implementation accidentally changes Compozy Task Step semantics while tightening lifecycle logic.
-  - **Likelihood:** Low to medium
-  - **Mitigation:** Keep no-regression assertions for current-step selection and visible counts in backend and frontend tests.
+- Preserving raw queue identifiers may surprise operators who expect bare and canonical restarts to resume the same queue.  
+  Mitigation: document the resume behavior explicitly and cover it with end-to-end tests.
 
 ## Architecture Decision Records
 
-- [ADR-001: Represent Compozy lifecycle at PRD Run level](adrs/adr-001.md) — Lifecycle belongs to the Compozy PRD Run, not to individual Compozy Task Steps.
-- [ADR-002: Use full V1 operator trust as the PRD product approach](adrs/adr-002.md) — V1 should make lifecycle and readiness visible across current operator surfaces.
-- [ADR-003: Persist dispatch-aware Compozy lifecycle in Runtime Home](adrs/adr-003.md) — Runtime Home stores the lifecycle summary while Compozy Task Step files keep execution progress.
-- [ADR-004: Treat Compozy statuses as an explicit transition contract](adrs/adr-004.md) — The problem is status mapping and transition coverage, not missing labels alone.
-- [ADR-005: Use a cross-surface transition contract as the PRD approach](adrs/adr-005.md) — Runtime State, Terminal Console, and Web Dashboard must tell the same run story.
-- [ADR-006: Reconcile Compozy lifecycle from task-step progress while keeping readiness separate](adrs/adr-006.md) — Task-step truth wins, lifecycle enriches, dispatch stays separate, and handoff failure remains a readiness outcome.
+- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving downstream canonical identifiers.
+- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
+- [ADR-003: Tracker-Aware Ordered Queue Resolution](adrs/adr-003.md) — Separates raw queue state from post-settings canonical resolution and preserves raw input for resume.
+- [ADR-004: Readiness-First Queue Diagnostics](adrs/adr-004.md) — Places guided tracker-mismatch feedback in startup readiness instead of parse-time or dispatch-time failures.
 

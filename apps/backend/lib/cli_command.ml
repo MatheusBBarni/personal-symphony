@@ -99,7 +99,7 @@ let queue_arg =
     & opt (some string) None
     & info [ "queue" ] ~docv:"ISSUES"
         ~doc:
-          "Run an Ordered Queue from comma-separated Workspace Repository issue identifiers. Optional # prefixes are allowed. Only listed issues dispatch, in listed first-admission order, while still respecting agent.maxConcurrentAgents.")
+          "Run an Ordered Queue from comma-separated Workspace Repository issue identifiers. Optional # prefixes are allowed. When Runtime Settings select tracker.kind = \"compozy_tasks\", --queue also accepts bare Compozy PRD Run slugs such as docs-refresh; this shortcut is not a global selector form. Only listed issues dispatch, in listed first-admission order, while still respecting agent.maxConcurrentAgents.")
 
 let merge_arg =
   Arg.(
