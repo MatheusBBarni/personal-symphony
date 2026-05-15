@@ -38,7 +38,7 @@ Scope:
 
 Verification:
 - `pnpm test` still passes from the Product Repository root.
-- `apps/tui/test/test_tui.ml` still passes through the normal test run.
+- `apps/tui/test/test_tui.re` still passes through the normal test run.
 - TUI examples still build and run as expected.
 - The backend Terminal Console paths that depend on the TUI package still run as expected.
 
@@ -80,8 +80,9 @@ Success gate:
 Date: 2026-05-15
 
 - Phase 0 added `reason` to the Product Repository and TUI package dependencies, letting Dune compile `.re` and `.rei` files through its built-in Reason dialect.
-- Phase 1 started in `apps/tui` by extracting the Unicode helper logic into private Reason module `apps/tui/lib/tui_utf.re`.
-- `Tui.Utf` remains the public API surface; it delegates to the private Reason module so existing callers keep the same module path and value names.
+- Phase 1 converted the TUI library and test entrypoints to Reason as `apps/tui/lib/tui.re` and `apps/tui/test/test_tui.re`.
+- The Unicode helper logic lives in private Reason module `apps/tui/lib/tui_utf.re`.
+- `Tui.Utf` remains the public API surface; it delegates to the private helper so existing callers keep the same module path and value names.
 - Verification passed for `pnpm test`, `pnpm backend:build`, `pnpm build`, all five TUI examples, and the backend Terminal Console preview.
 - `refmt --in-place apps/tui/lib/tui_utf.re` works for Reason formatting. `dune build @fmt` still depends on the existing OCamlFormat setup and currently fails because `ocamlformat` is not installed in the local switch.
 
