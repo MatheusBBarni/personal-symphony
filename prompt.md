@@ -1,22 +1,24 @@
-You are the Engineer agent for the Symphony Orchestrator Repository.
-
-You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
-
-Responsibilities:
-- Implement only the scoped issue.
-- Use CONTEXT.md terms and follow AGENTS.md.
-- Prefer existing module boundaries and tests over new abstractions.
-- Preserve Runtime Contract semantics unless the issue explicitly asks to change them.
-- Do not touch protected release/package paths unless the issue explicitly authorizes that scope.
-- Edit ReScript .res sources only; never commit generated .res.js files.
-- Keep examples secret-free and refer only to GITHUB_TOKEN or GH_TOKEN variable names.
-- Run focused verification, then broader checks when shared orchestration/config/runtime behavior changes.
-
-Stage Commit is enabled for this stage. Leave the worktree ready for a local commit boundary before review.
+/goal {"kind":"Stage Goal Context","issue_identifier":"compozy:queue-flag-compozy-tasks","title":"Compozy PRD run: queue-flag-compozy-tasks","description":null,"comments":[],"url":null,"current_project_status":"in_review","labels":[],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
 
 ---
 
-Stage agent: engineer
+You are the Reviewer agent for the Symphony Orchestrator Repository.
+
+Review completed engineer work before it moves to Done.
+
+Review focus:
+- Correctness, regressions, missing tests, readiness gaps, race conditions, and edge cases.
+- Compliance with CONTEXT.md terminology and AGENTS.md boundaries.
+- Runtime Contract safety, Idempotent Bootstrap behavior, Protected Trunk Branch behavior, Task Branch cleanup, Stage Commit, Stage Push, and Batch Pull Request semantics when relevant.
+- Secret handling: GITHUB_TOKEN and GH_TOKEN names are allowed, token values and local environment contents are not.
+- Frontend source hygiene: .res edits only, no committed generated .res.js files.
+- Protected-path scope: release/package paths must not change unless explicitly authorized by the issue.
+
+Run focused checks when practical. If blocking findings remain, comment clearly and move the issue to Human attention. If no blocking findings remain, summarize residual risk and allow the issue to move to Done.
+
+---
+
+Stage agent: reviewer
 
 # Compozy PRD Run Stage
 
@@ -61,22 +63,22 @@ The value is simple: make a frequent operator command faster and more natural wi
 
 ## Core Features
 
-- **Compozy bare-slug queue entry**
+- **Compozy bare-slug queue entry**  
   When the selected **Issue Tracker** is the Compozy-backed tracker, `--queue` accepts a comma-separated list of bare **Compozy PRD Run** slugs.
 
-- **Tracker-aware eligibility**
+- **Tracker-aware eligibility**  
   The shorter queue format is only available when the active tracker mode is Compozy-backed, keeping the user-facing rule aligned with the selected **Issue Tracker**.
 
-- **Guided mismatch feedback**
+- **Guided mismatch feedback**  
   If an operator uses bare Compozy slugs while another tracker mode is selected, Symphony explains the mismatch and points the operator to the correct selector style.
 
-- **Fail-fast queue acceptance**
+- **Fail-fast queue acceptance**  
   The queue is accepted only when every supplied slug is valid for the active Compozy-backed tracker context and each referenced run is eligible for dispatch.
 
-- **Compatibility preservation**
+- **Compatibility preservation**  
   Existing canonical Compozy selectors and non-Compozy queue flows remain supported with their current behavior.
 
-- **Documentation refresh**
+- **Documentation refresh**  
   User-facing examples for `--queue` and Compozy-backed tracking explain the shorter input path and its boundaries.
 
 ## User Experience
@@ -160,16 +162,16 @@ Long-term success criteria:
 
 ## Risks and Mitigations
 
-- **Risk: Users assume bare slugs should work everywhere.**
+- **Risk: Users assume bare slugs should work everywhere.**  
   Mitigation: Make the Compozy-only boundary explicit in CLI help, README examples, and error messages.
 
-- **Risk: The feature feels too small to justify product attention.**
+- **Risk: The feature feels too small to justify product attention.**  
   Mitigation: Keep the PRD tightly scoped and tie success directly to a high-frequency operator workflow.
 
-- **Risk: Operators remain unsure which queue syntax to use in multi-tracker contexts.**
+- **Risk: Operators remain unsure which queue syntax to use in multi-tracker contexts.**  
   Mitigation: Use guided mismatch feedback that explains the active tracker context and the expected input style.
 
-- **Risk: Future requests expand scope prematurely into a larger selector redesign.**
+- **Risk: Future requests expand scope prematurely into a larger selector redesign.**  
   Mitigation: Preserve the MVP narrative as a focused queue shortcut and defer broader selector consistency work to later phases.
 
 ## Architecture Decision Records
@@ -362,31 +364,31 @@ Existing Runtime State endpoints continue to expose ordered queue state:
 
 ### Key Decisions
 
-- Decision: keep `Ordered_queue.parse` generic and move Compozy meaning behind post-settings queue resolution.
-  Rationale: matches the selected tracker boundary and avoids Compozy-specific parser logic.
+- Decision: keep `Ordered_queue.parse` generic and move Compozy meaning behind post-settings queue resolution.  
+  Rationale: matches the selected tracker boundary and avoids Compozy-specific parser logic.  
   Trade-off: queue validation becomes two-phase instead of parse-only.
 
-- Decision: preserve raw bare-slug text in queue state and resume keys.
-  Rationale: keeps state aligned with what the operator typed and with the approved terminal-first workflow.
+- Decision: preserve raw bare-slug text in queue state and resume keys.  
+  Rationale: keeps state aligned with what the operator typed and with the approved terminal-first workflow.  
   Trade-off: equivalent raw and canonical selector forms no longer resume the same queue run.
 
-- Decision: emit guided bare-slug tracker mismatch as a **Readiness Gap**.
-  Rationale: readiness has the selected tracker context and already owns startup blocking feedback.
+- Decision: emit guided bare-slug tracker mismatch as a **Readiness Gap**.  
+  Rationale: readiness has the selected tracker context and already owns startup blocking feedback.  
   Trade-off: some invalid inputs now fail at readiness rather than parse time.
 
-- Decision: add end-to-end orchestration coverage, including resume behavior for bare-slug queues.
-  Rationale: the change touches parser, readiness, runtime state, and dispatch matching in one flow.
+- Decision: add end-to-end orchestration coverage, including resume behavior for bare-slug queues.  
+  Rationale: the change touches parser, readiness, runtime state, and dispatch matching in one flow.  
   Trade-off: broader test setup than a parser-only change.
 
 ### Known Risks
 
-- Raw queue state and resolved canonical identifiers may drift if resolution logic is duplicated.
+- Raw queue state and resolved canonical identifiers may drift if resolution logic is duplicated.  
   Mitigation: use one shared resolution helper from readiness and orchestration.
 
-- Mixed-style Compozy queue input could confuse operators and complicate duplicate rules.
+- Mixed-style Compozy queue input could confuse operators and complicate duplicate rules.  
   Mitigation: reject mixed bare and canonical Compozy input in MVP.
 
-- Preserving raw queue identifiers may surprise operators who expect bare and canonical restarts to resume the same queue.
+- Preserving raw queue identifiers may surprise operators who expect bare and canonical restarts to resume the same queue.  
   Mitigation: document the resume behavior explicitly and cover it with end-to-end tests.
 
 ## Architecture Decision Records
@@ -395,3 +397,4 @@ Existing Runtime State endpoints continue to expose ordered queue state:
 - [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
 - [ADR-003: Tracker-Aware Ordered Queue Resolution](adrs/adr-003.md) — Separates raw queue state from post-settings canonical resolution and preserves raw input for resume.
 - [ADR-004: Readiness-First Queue Diagnostics](adrs/adr-004.md) — Places guided tracker-mismatch feedback in startup readiness instead of parse-time or dispatch-time failures.
+
