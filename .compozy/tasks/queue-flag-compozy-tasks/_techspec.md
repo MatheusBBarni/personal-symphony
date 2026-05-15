@@ -107,7 +107,7 @@ Existing Runtime State endpoints continue to expose ordered queue state:
 | `Issue_tracker.normalize_identifier` | Reuse the selected tracker hook as the canonical normalization boundary. |
 | `README.md` and CLI help | Update queue examples and mismatch guidance without changing other tracker documentation. |
 | Existing queue resume state | Preserve raw sequence matching for bare-slug queue runs. |
-| Existing canonical Compozy tests | Keep canonical `compozy:<slug>` flows valid to avoid regression. |
+| Existing canonical Compozy tests | Keep canonical `compozy:<task_name>` flows valid to avoid regression. |
 
 ## Impact Analysis
 
@@ -141,7 +141,7 @@ Existing Runtime State endpoints continue to expose ordered queue state:
 - Restarting with the same bare-slug queue resumes queue progress.
 - Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run rather than resuming.
 - A bare-slug queue under a non-Compozy tracker reports a **Readiness Gap** and does not begin orchestration.
-- Existing canonical `compozy:<slug>` queue tests continue to pass.
+- Existing canonical `compozy:<task_name>` queue tests continue to pass.
 
 ## Development Sequencing
 

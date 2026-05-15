@@ -194,10 +194,28 @@ In `batch` Pull Request Mode, Compozy tracking preserves aggregate Batch Pull Re
 Symphony never opens one pull request per Compozy Task Step. At most one Batch Pull Request is
 eligible for the completed Compozy PRD Run, using the Loop-Start Branch as the pull-request head.
 
-Where selector-based flows support Compozy tracking, use the stable identifier form
-`compozy:<task_name>`. For example, `.compozy/tasks/compozy-tasks-run-integration/` is selected as
-`compozy:compozy-tasks-run-integration` in Ordered Queue and Manual Task Merge flows. GitHub numeric
-selectors such as `20` or `#20` remain GitHub Tracker identifiers.
+When the selected Issue Tracker is `tracker.kind = "compozy_tasks"`, `--queue` accepts bare Compozy
+PRD Run slugs from `.compozy/tasks/<task_name>/`:
+
+```sh
+symphony --queue compozy-tasks-run-integration,queue-docs-refresh
+```
+
+Symphony keeps those queue identifiers as typed in Runtime State and uses the same raw sequence when
+deciding whether a restart resumes an Ordered Queue. Restarting with canonical selectors such as
+`compozy:compozy-tasks-run-integration,compozy:queue-docs-refresh` starts a different queue run than
+the bare-slug command above, even though dispatch resolves both forms to the same Compozy PRD Runs.
+
+The bare-slug shortcut is only for `--queue` with the Compozy-backed Issue Tracker. If GitHub or
+minibeads tracking is selected, a bare Compozy slug in `--queue` is reported as a startup Readiness
+Gap; use GitHub identifiers such as `20` or `#20`, minibeads identifiers such as `mb-20`, or switch
+Runtime Settings to `tracker.kind = "compozy_tasks"`. Canonical Compozy queue selectors such as
+`--queue compozy:compozy-tasks-run-integration` remain accepted for compatibility, but a single
+Compozy queue must use either bare slugs or canonical selectors, not both.
+
+Where selector-based flows outside the `--queue` shortcut support Compozy tracking, use the stable
+identifier form `compozy:<task_name>`. For example, `.compozy/tasks/compozy-tasks-run-integration/`
+is selected as `compozy:compozy-tasks-run-integration` in Manual Task Merge flows.
 
 Define execution backends under `harnesses` and logical agent roles under `agents`. Harnesses own
 provider commands and loop capability. Logical agents select a Harness and may override model,

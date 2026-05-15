@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Refactor Ordered Queue orchestration to use raw state and resolved identifiers"
 type: backend
 complexity: high
 dependencies:
   - task_01
   - task_02
+
 ---
 
 # Task 03: Refactor Ordered Queue orchestration to use raw state and resolved identifiers
@@ -32,11 +33,11 @@ Refactor ordered-queue dispatch, persistence, and resume behavior so Compozy bar
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Update ordered queue state projection and persistence to preserve raw queue identifiers for Compozy shortcut runs.
-- [ ] 3.2 Refactor orchestrator queue matching and ordering to use resolved canonical identifiers instead of persisted raw queue text.
-- [ ] 3.3 Update queue resume matching so the raw queue sequence, not the canonicalized target set, determines resume continuity.
-- [ ] 3.4 Preserve operator-facing queue identifiers in queue diagnostics and skipped-entry reporting.
-- [ ] 3.5 Add end-to-end orchestration tests for bare-slug dispatch order, raw queue persistence, and restart behavior.
+- [x] 3.1 Update ordered queue state projection and persistence to preserve raw queue identifiers for Compozy shortcut runs.
+- [x] 3.2 Refactor orchestrator queue matching and ordering to use resolved canonical identifiers instead of persisted raw queue text.
+- [x] 3.3 Update queue resume matching so the raw queue sequence, not the canonicalized target set, determines resume continuity.
+- [x] 3.4 Preserve operator-facing queue identifiers in queue diagnostics and skipped-entry reporting.
+- [x] 3.5 Add end-to-end orchestration tests for bare-slug dispatch order, raw queue persistence, and restart behavior.
 
 ## Implementation Details
 Reference TechSpec "System Architecture", "Runtime State", and "Development Sequencing" steps 6 and 9. This task is the runtime slice that joins parsing, readiness, persistence, and dispatch together. Keep documentation wording changes out of scope here; they belong to task 04.
@@ -66,16 +67,16 @@ Reference TechSpec "System Architecture", "Runtime State", and "Development Sequ
 
 ## Tests
 - Unit tests:
-  - [ ] `ordered_queue_state_matches` resumes when the persisted raw queue sequence matches the requested bare-slug queue sequence.
-  - [ ] `ordered_queue_state_matches` resets when the persisted bare-slug sequence is restarted with canonical `compozy:<slug>` selectors.
-  - [ ] Queue ordering uses resolved canonical identifiers even when persisted queue state stores raw bare slugs.
-  - [ ] Queue diagnostics continue to show the operator-facing queue identifier for skipped entries.
+  - [x] `ordered_queue_state_matches` resumes when the persisted raw queue sequence matches the requested bare-slug queue sequence.
+  - [x] `ordered_queue_state_matches` resets when the persisted bare-slug sequence is restarted with canonical `compozy:<slug>` selectors.
+  - [x] Queue ordering uses resolved canonical identifiers even when persisted queue state stores raw bare slugs.
+  - [x] Queue diagnostics continue to show the operator-facing queue identifier for skipped entries.
 - Integration tests:
-  - [ ] A Compozy bare-slug queue dispatches only the requested PRD runs and in the requested order.
-  - [ ] Runtime State exposes raw bare-slug identifiers in `ordered_queue.entries` during a Compozy shortcut run.
-  - [ ] Restarting with the same bare-slug queue resumes queue progress from `.symphony/state/ordered_queue.json`.
-  - [ ] Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run instead of resuming.
-  - [ ] Existing GitHub and minibeads ordered-queue orchestration tests continue to pass unchanged.
+  - [x] A Compozy bare-slug queue dispatches only the requested PRD runs and in the requested order.
+  - [x] Runtime State exposes raw bare-slug identifiers in `ordered_queue.entries` during a Compozy shortcut run.
+  - [x] Restarting with the same bare-slug queue resumes queue progress from `.symphony/state/ordered_queue.json`.
+  - [x] Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run instead of resuming.
+  - [x] Existing GitHub and minibeads ordered-queue orchestration tests continue to pass unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

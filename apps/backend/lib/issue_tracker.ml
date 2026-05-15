@@ -199,10 +199,12 @@ let compozy_identifier raw =
   let identifier = Util.trim raw in
   match Util.drop_prefix ~prefix:"compozy:" identifier with
   | Some slug when Util.trim slug <> "" && not (String.contains slug '/') -> Ok ("compozy:" ^ Util.trim slug)
+  | None when identifier <> "" && not (String.contains identifier '/') && not (String.contains identifier ':') ->
+      Ok ("compozy:" ^ identifier)
   | _ ->
       Error
         (Printf.sprintf
-           "invalid Compozy PRD-run identifier %S; expected an identifier like compozy:task-name"
+           "invalid Compozy PRD-run identifier %S; expected an identifier like task-name or compozy:task-name"
            raw)
 
 let string_equal_ci left right = String.lowercase_ascii left = String.lowercase_ascii right

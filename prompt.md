@@ -1,50 +1,397 @@
-/goal {"kind":"Stage Goal Context","issue_identifier":"#70","title":"Pi configuration shouldn't be required","description":"## Problem\n\nPI support is currently behaving like a required environment dependency instead of an optional **Agent Harness**. A Workspace Repository should be able to run Personal Symphony with only a **Codex Harness**, only a **PI Harness**, or a mix of both. Defining or documenting PI support must not force every operator to install or authenticate PI when no enabled **Stage Agent** selects that harness.\n\nThe current implementation appears to validate every configured **PI Harness** for executable availability and authentication during readiness checks. That means an unused `agents.pi` definition can block a Codex-only run with PI install/auth **Readiness Gaps**.\n\n## Desired Behavior\n\nReadiness should be based on the **Agent Harnesses** that can actually be selected for dispatch, not every harness definition that happens to exist in Runtime Settings.\n\nA Workspace Repository is dispatch-ready when:\n\n- At least one usable **Agent Harness** is available for the enabled **Stage Agent** mappings that can dispatch work.\n- A Codex-only Runtime Contract can run without `pi` installed, without PI authentication, and without an `agents.pi` definition.\n- A PI-only Runtime Contract can run without requiring a configured Codex launch path for dispatch, as long as every enabled dispatching **Stage Agent** selects a valid **PI Harness**.\n- A mixed Runtime Contract can define both Codex and PI harnesses, and each enabled **Stage Agent** is validated against the harness it selects.\n- `Stage Goal Handoff` remains valid only for a **Codex Harness** until a non-Codex goal contract exists.\n\n## Acceptance Criteria\n\n- Given Runtime Settings with only the legacy `codex` block and enabled Codex-backed Stage Agents, readiness does not report any PI install/auth gaps.\n- Given Runtime Settings with `agents.codex` selected by all enabled Stage Agents and an unused `agents.pi`, missing PI executable/auth does not block dispatch.\n- Given an enabled Stage Agent selects `harness: \"pi\"`, readiness still reports missing PI executable/auth for that selected **PI Harness**.\n- Given a Stage Agent selects a missing harness, readiness reports the existing missing-harness gap.\n- Given Runtime Settings are PI-only for enabled Stage Agents, dispatch does not require Codex installation/auth or a usable legacy Codex command path.\n- Given a PI-backed Stage Agent enables Stage Goal Handoff, readiness reports the existing non-Codex goal handoff gap.\n- Tests cover Codex-only, PI-only, mixed selected, and mixed unused-PI configurations.\n\n## Likely Implementation Areas\n\n- `apps/backend/lib/config.ml`\n  - Determine which **Agent Harnesses** are selected by enabled **Stage Agent** mappings.\n  - Apply PI executable/auth readiness only to selected PI harnesses.\n  - Preserve structural validation for selected harnesses and missing harness references.\n- `apps/backend/test/test_backend.ml`\n  - Add focused readiness tests near the existing Agent Harness and PI readiness cases.\n- `README.md` and Runtime Settings examples if current wording implies PI is required.\n\n## Out of Scope\n\n- Changing Task Branch cleanup or auto-merge defaults.\n- Replacing the GitHub Tracker or GitHub Issues + Projects model.\n- Changing npm package files, `bin/symphony.js`, or packaged-binary behavior.\n- Adding cross-harness Stage Goal Handoff.\n- Adding PI RPC mode, PI session resume, or PI-specific usage accounting.\n\n## Notes\n\nUse the existing glossary terms from `CONTEXT.md`: **Workspace Repository**, **Runtime Contract**, **Runtime Settings**, **Stage Agent**, **Agent Harness**, **Codex Harness**, **PI Harness**, and **Readiness Gap**.\n\n\n\n\n---\n\n# SPEC\n\n---\ntitle: Selected Agent Harness Readiness\nversion: 1.0\ndate_created: 2026-05-07\nlast_updated: 2026-05-07\nowner: Product Repository maintainers\ntags: [process, runtime-contract, agent-harness, readiness, pi, issue-70]\n---\n\n# Introduction\n\nThis specification defines how Personal Symphony readiness validation must treat optional Agent Harness definitions. A Workspace Repository must be able to run with only a Codex Harness, only a PI Harness, or a mixed set of Agent Harnesses without unused harness definitions blocking dispatch.\n\nSource issue: [#70 Pi configuration shouldn't be required](https://github.com/MatheusBBarni/symphony-orchestrator/issues/70).\n\n## 1. Purpose & Scope\n\nThe purpose is to make readiness validation depend on Agent Harnesses that enabled Stage Agent mappings can actually select for dispatch.\n\nThis specification applies to Product Repository backend readiness validation, Runtime Settings parsing behavior needed to identify selected harnesses, and backend tests. It does not change Agent Harness launch behavior, Runtime Contract defaults, or Stage Agent dispatch semantics.\n\nIn scope:\n\n- Determine which Agent Harnesses are selected by enabled Stage Agent mappings.\n- Apply PI executable and PI authentication readiness checks only to selected PI Harnesses.\n- Preserve missing-harness readiness gaps for enabled Stage Agent mappings.\n- Preserve structural validation for selected Agent Harness definitions.\n- Support Codex-only, PI-only, and mixed Runtime Settings.\n\nOut of scope:\n\n- Changing Task Branch cleanup or auto-merge defaults.\n- Replacing the GitHub Tracker or GitHub Issues + Projects model.\n- Changing npm package files, `bin/symphony.js`, or packaged-binary behavior.\n- Changing Bootstrap defaults in `apps/backend/lib/runtime_home.ml`.\n- Adding cross-harness Stage Goal Handoff.\n- Adding PI RPC mode, PI session resume, or PI-specific usage accounting.\n\n## 2. Definitions\n\n- **Workspace Repository**: The repository where a user runs Personal Symphony and where runtime configuration and state are created.\n- **Product Repository**: The repository that contains the Personal Symphony source code.\n- **Runtime Home**: The `.symphony/` directory that contains Personal Symphony configuration and runtime-owned files for a Workspace Repository.\n- **Runtime Contract**: Repository-owned files inside the Runtime Home that define Personal Symphony behavior for a Workspace Repository.\n- **Runtime Settings**: The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, agent, server, and path configuration.\n- **Stage Agent**: A Runtime Settings mapping from project statuses to a named agent instruction file, Agent Harness selection, and optional stage behavior.\n- **Agent Harness**: A named Runtime Settings launch configuration that tells Symphony which non-interactive agent tool to run for a Stage Agent.\n- **Codex Harness**: An Agent Harness whose launch semantics target Codex non-interactive execution.\n- **PI Harness**: An Agent Harness whose launch semantics target PI non-interactive execution.\n- **Stage Goal Handoff**: A stage-specific Codex handoff that sets a Codex goal when Symphony launches an agent for that stage.\n- **Readiness Gap**: A configuration or environment problem that prevents dispatch while still allowing operator inspection.\n\n## 3. Requirements, Constraints & Guidelines\n\n- **REQ-001**: Readiness validation MUST identify Agent Harnesses selected by enabled Stage Agent mappings.\n- **REQ-002**: When `stageAgents.enabled` is `false`, readiness validation MUST NOT require PI installation or PI authentication for any PI Harness solely because it is defined in Runtime Settings.\n- **REQ-003**: When `stageAgents.enabled` is `true`, readiness validation MUST apply PI executable checks only to Agent Harnesses selected by enabled Stage Agent mappings whose `kind` is `pi`.\n- **REQ-004**: When `stageAgents.enabled` is `true`, readiness validation MUST apply PI authentication checks only to Agent Harnesses selected by enabled Stage Agent mappings whose `kind` is `pi`.\n- **REQ-005**: Readiness validation MUST preserve missing-harness gaps when an enabled Stage Agent mapping selects an Agent Harness that is not defined.\n- **REQ-006**: Readiness validation MUST preserve the Stage Goal Handoff gap when an enabled Stage Agent mapping enables Stage Goal Handoff and selects a non-Codex harness.\n- **REQ-007**: A Codex-only Runtime Contract MUST NOT require `pi` to be installed, PI authentication to exist, or `agents.pi` to be defined.\n- **REQ-008**: A PI-only Runtime Contract MUST NOT require Codex installation or Codex authentication for dispatch when every enabled Stage Agent mapping selects a valid PI Harness.\n- **REQ-009**: A mixed Runtime Contract MAY define both Codex and PI harnesses. Readiness validation MUST validate each enabled Stage Agent mapping against the Agent Harness it selects.\n- **REQ-010**: If an unused PI Harness is invalid only because its executable is missing or PI authentication is missing, readiness validation MUST NOT report `agents.<name>.install` or `agents.<name>.auth` gaps for that unused PI Harness.\n- **REQ-011**: If a selected PI Harness has missing executable or missing PI authentication, readiness validation MUST report the existing install or auth Readiness Gap for that selected PI Harness.\n- **REQ-012**: Runtime Settings parsing MUST continue to support the legacy `codex` block as a Codex Harness fallback when `agents.codex` is absent.\n- **CON-001**: The implementation MUST NOT change Runtime Contract defaults in `apps/backend/lib/runtime_home.ml`.\n- **CON-002**: The implementation MUST NOT change Task Branch cleanup or auto-merge defaults.\n- **CON-003**: The implementation MUST NOT replace the GitHub Tracker or GitHub Issues + Projects model.\n- **CON-004**: The implementation MUST NOT change npm package files, `bin/symphony.js`, or packaged-binary behavior.\n- **SEC-001**: Documentation, tests, and examples MUST NOT include secret values, token values, webhook URLs, or local `.env` contents.\n- **GUD-001**: Documentation and tests SHOULD use the glossary terms Agent Harness, Codex Harness, PI Harness, Stage Agent, Runtime Settings, Runtime Contract, and Readiness Gap.\n- **PAT-001**: Tests SHOULD exercise readiness behavior through public configuration parsing and readiness APIs rather than private helper behavior.\n\n## 4. Interfaces & Data Contracts\n\n### Runtime Settings Harness Selection\n\nAn enabled Stage Agent mapping selects its Agent Harness with this precedence:\n\n1. `stageAgents.stages[].harness`, when present and non-empty.\n2. `stageAgents.stages[].agent`, for legacy Runtime Settings compatibility.\n\n```json\n{\n  \"agents\": {\n    \"codex\": {\n      \"kind\": \"codex\",\n      \"command\": \"codex exec\",\n      \"model\": \"gpt-5.5\",\n      \"reasoningEffort\": \"medium\",\n      \"turnTimeoutMs\": 3600000,\n      \"readTimeoutMs\": 5000,\n      \"stallTimeoutMs\": 300000\n    },\n    \"pi\": {\n      \"kind\": \"pi\",\n      \"command\": \"pi --model <model> --thinking <reasoning> --print --no-session\",\n      \"model\": \"openai/gpt-5.5\",\n      \"reasoningEffort\": \"medium\",\n      \"turnTimeoutMs\": 3600000,\n      \"readTimeoutMs\": 5000,\n      \"stallTimeoutMs\": 300000\n    }\n  },\n  \"stageAgents\": {\n    \"enabled\": true,\n    \"stages\": [\n      {\n        \"states\": [\"Todo\"],\n        \"agent\": \"engineer\",\n        \"harness\": \"codex\"\n      }\n    ]\n  }\n}\n```\n\nIn this example, `agents.codex` is selected and `agents.pi` is unused. Missing PI installation or PI authentication must not block dispatch.\n\n### Readiness Gap Requirements\n\n| Scenario | Required readiness behavior |\n| --- | --- |\n| Codex-only Runtime Settings with legacy `codex` block | Do not report PI install/auth gaps. |\n| Codex-selected Stage Agents plus unused `agents.pi` | Do not report PI install/auth gaps for `agents.pi`. |\n| PI-selected Stage Agent with missing PI executable | Report the existing `agents.<name>.install` gap. |\n| PI-selected Stage Agent with missing PI authentication | Report the existing `agents.<name>.auth` gap. |\n| Stage Agent selects missing harness | Report the existing `stageAgents.<agent>.harness` gap. |\n| PI-selected Stage Agent enables Stage Goal Handoff | Report the existing `stageAgents.<agent>.goal` gap. |\n\n### Backend Implementation Boundary\n\nThe primary implementation boundary is `apps/backend/lib/config.ml`.\n\nExpected responsibilities:\n\n- Resolve selected Agent Harness names from enabled Stage Agent mappings.\n- Look up selected Agent Harness definitions.\n- Apply PI install/auth environment validation only for selected PI Harness definitions.\n- Keep existing readiness gap messages unless wording must be corrected for accuracy.\n\n## 5. Acceptance Criteria\n\n- **AC-001**: Given Runtime Settings with only the legacy `codex` block and enabled Codex-backed Stage Agents, When readiness is evaluated, Then no PI install or PI authentication Readiness Gap is reported.\n- **AC-002**: Given Runtime Settings with `agents.codex` selected by every enabled Stage Agent and an unused `agents.pi`, When `pi` is not installed, Then readiness does not report `agents.pi.install`.\n- **AC-003**: Given Runtime Settings with `agents.codex` selected by every enabled Stage Agent and an unused `agents.pi`, When PI authentication is missing, Then readiness does not report `agents.pi.auth`.\n- **AC-004**: Given an enabled Stage Agent selects `harness: \"pi\"`, When the PI executable is missing, Then readiness reports the existing PI install Readiness Gap for the selected PI Harness.\n- **AC-005**: Given an enabled Stage Agent selects `harness: \"pi\"`, When PI authentication is missing, Then readiness reports the existing PI authentication Readiness Gap for the selected PI Harness.\n- **AC-006**: Given an enabled Stage Agent selects a missing harness, When readiness is evaluated, Then readiness reports the existing missing-harness gap.\n- **AC-007**: Given Runtime Settings are PI-only for all enabled Stage Agents, When the selected PI Harness is valid, Then readiness does not require Codex installation, Codex authentication, or a usable legacy Codex command path.\n- **AC-008**: Given a PI-backed Stage Agent enables Stage Goal Handoff, When readiness is evaluated, Then readiness reports the existing non-Codex Stage Goal Handoff gap.\n- **AC-009**: Given `stageAgents.enabled` is `false`, When Runtime Settings define an unauthenticated PI Harness, Then readiness does not report PI install or PI authentication gaps for that harness.\n- **AC-010**: Given implementation is complete, When backend tests run, Then focused tests cover Codex-only, PI-only, mixed selected, and mixed unused-PI configurations.\n\n## 6. Test Automation Strategy\n\n- **Test Levels**: Backend unit and integration-style tests using temporary Workspace Repository fixtures.\n- **Frameworks**: OCaml Alcotest through `pnpm test`.\n- **Test Data Management**: Use temporary Runtime Home directories and synthetic `.symphony/settings.json` files. Use fake harness commands where command execution is not the behavior under test.\n- **CI/CD Integration**: Run targeted backend tests after touching `apps/backend/lib/config.ml`; run `pnpm test` before merging.\n- **Coverage Requirements**: Cover Codex-only readiness, PI-only readiness, selected PI readiness, unused PI readiness, disabled Stage Agent readiness, missing harness readiness, and PI Stage Goal Handoff readiness.\n- **Performance Testing**: Not required.\n\n## 7. Rationale & Context\n\nPI support is optional. Treating every configured PI Harness as an active dependency makes Runtime Settings examples and mixed-harness configurations fragile because an unused PI definition can block a Codex-only run.\n\nThe correct readiness boundary is the Stage Agent mapping because dispatch happens through a Stage Agent. Environment checks for a concrete launch tool are useful only when that launch tool can be selected for work. This keeps Codex-only, PI-only, and mixed Runtime Contracts valid without weakening validation for selected PI Harnesses.\n\n## 8. Dependencies & External Integrations\n\n### External Systems\n\n- **EXT-001**: GitHub Issues + Projects - Supplies issue records and project status transitions for the GitHub Tracker path.\n- **EXT-002**: Git - Supplies Workspace Repository branch state, Agent Worktrees, and Task Branches.\n\n### Third-Party Services\n\n- **SVC-001**: Codex CLI - Required only when a selected Codex Harness dispatches work.\n- **SVC-002**: PI CLI - Required only when a selected PI Harness dispatches work.\n\n### Infrastructure Dependencies\n\n- **INF-001**: Runtime Home - Stores Runtime Contract files, Runtime State, Agent Worktrees, and Runtime Diagnostics.\n\n### Technology Platform Dependencies\n\n- **PLT-001**: OCaml backend - Owns Runtime Settings parsing, readiness validation, and orchestration.\n- **PLT-002**: Shell-compatible command execution - Required for existing Agent Harness command templates.\n\n### Data Dependencies\n\n- **DAT-001**: `.symphony/settings.json` - Defines Agent Harnesses and Stage Agent mappings.\n- **DAT-002**: `.symphony/agents/*` - Defines Stage Agent prompt files referenced by Stage Agent mappings.\n\n### Compliance Dependencies\n\n- **COM-001**: Context glossary alignment - Use existing domain terms from `CONTEXT.md`.\n- **COM-002**: Secret handling - Do not commit token values, webhook URLs, or local `.env` contents.\n\n## 9. Examples & Edge Cases\n\n### Codex Selected, PI Unused\n\n```json\n{\n  \"agents\": {\n    \"codex\": {\n      \"kind\": \"codex\",\n      \"command\": \"codex exec\",\n      \"model\": \"gpt-5.5\",\n      \"reasoningEffort\": \"medium\",\n      \"turnTimeoutMs\": 3600000,\n      \"readTimeoutMs\": 5000,\n      \"stallTimeoutMs\": 300000\n    },\n    \"pi\": {\n      \"kind\": \"pi\",\n      \"command\": \"/missing/pi --print\",\n      \"model\": \"openai/gpt-5.5\",\n      \"reasoningEffort\": \"medium\",\n      \"turnTimeoutMs\": 3600000,\n      \"readTimeoutMs\": 5000,\n      \"stallTimeoutMs\": 300000\n    }\n  },\n  \"stageAgents\": {\n    \"enabled\": true,\n    \"stages\": [\n      {\n        \"states\": [\"Todo\"],\n        \"agent\": \"engineer\",\n        \"harness\": \"codex\"\n      }\n    ]\n  }\n}\n```\n\nExpected result: no `agents.pi.install` or `agents.pi.auth` readiness gap, because `agents.pi` is not selected by any enabled Stage Agent mapping.\n\n### PI Selected\n\n```json\n{\n  \"agents\": {\n    \"pi\": {\n      \"kind\": \"pi\",\n      \"command\": \"/missing/pi --print\",\n      \"model\": \"openai/gpt-5.5\",\n      \"reasoningEffort\": \"medium\",\n      \"turnTimeoutMs\": 3600000,\n      \"readTimeoutMs\": 5000,\n      \"stallTimeoutMs\": 300000\n    }\n  },\n  \"stageAgents\": {\n    \"enabled\": true,\n    \"stages\": [\n      {\n        \"states\": [\"Todo\"],\n        \"agent\": \"engineer\",\n        \"harness\": \"pi\"\n      }\n    ]\n  }\n}\n```\n\nExpected result: `agents.pi.install` readiness gap when `/missing/pi` is unavailable. If the executable is available but PI authentication is absent, report `agents.pi.auth`.\n\n### Edge Cases\n\n- A Stage Agent mapping omits `harness`: select the Agent Harness whose name matches `agent`.\n- A Stage Agent mapping selects an unknown harness: report the existing missing-harness gap.\n- A Stage Agent mapping selects a PI Harness and enables Stage Goal Handoff: report the existing non-Codex goal gap.\n- `stageAgents.enabled` is `false`: do not perform selected-harness environment checks because no Stage Agent mapping can dispatch.\n- An unused PI Harness has an unknown `kind` or blank required fields: implementation may keep structural validation if the Product Repository already treats all malformed harness definitions as invalid Runtime Settings.\n\n## 10. Validation Criteria\n\n- `spec/spec-process-selected-agent-harness-readiness.md` exists and follows the repository specification format.\n- The issue description for issue #70 contains the current PRD followed by this SPEC content.\n- Issue #70 no longer has the `Need SPEC` label.\n- Backend tests are added or updated during implementation to prove selected-harness readiness behavior.\n- `pnpm test` passes before implementation is merged.\n\n## 11. Related Specifications / Further Reading\n\n- [Agent Harness Runtime Settings](./spec-architecture-agent-harness-runtime-settings.md)\n- [Agent Harness Runtime Settings ADR](../docs/adr/0021-agent-harness-runtime-settings.md)\n- [Personal Symphony Context Glossary](../CONTEXT.md)\n","comments":[],"url":"https://github.com/MatheusBBarni/symphony-orchestrator/issues/70","current_project_status":"In Review","labels":["bug"],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
+You are the Engineer agent for the Symphony Orchestrator Repository.
+
+You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
+
+Responsibilities:
+- Implement only the scoped issue.
+- Use CONTEXT.md terms and follow AGENTS.md.
+- Prefer existing module boundaries and tests over new abstractions.
+- Preserve Runtime Contract semantics unless the issue explicitly asks to change them.
+- Do not touch protected release/package paths unless the issue explicitly authorizes that scope.
+- Edit ReScript .res sources only; never commit generated .res.js files.
+- Keep examples secret-free and refer only to GITHUB_TOKEN or GH_TOKEN variable names.
+- Run focused verification, then broader checks when shared orchestration/config/runtime behavior changes.
+
+Stage Commit is enabled for this stage. Leave the worktree ready for a local commit boundary before review.
 
 ---
 
-You are the Reviewer agent for the Personal Symphony Self-Dogfooding Workspace Repository.
+Stage agent: engineer
 
-Review completed engineer work before it moves to Done.
+# Compozy PRD Run Stage
 
-Review focus:
-- Correctness, regressions, missing tests, readiness gaps, race conditions, and edge cases.
-- Compliance with CONTEXT.md terminology and AGENTS.md boundaries.
-- Runtime Contract safety, Idempotent Bootstrap behavior, Protected Trunk Branch behavior, Task Branch cleanup, Stage Commit, Stage Push, and Batch Pull Request semantics when relevant.
-- Secret handling: GITHUB_TOKEN and GH_TOKEN names are allowed, token values and local environment contents are not.
-- Frontend source hygiene: .res edits only, no committed generated .res.js files.
-- Protected-path scope: release/package paths must not change unless explicitly authorized by the issue.
+Run: compozy:queue-flag-compozy-tasks
+PRD directory: queue-flag-compozy-tasks
+Task step status: completed
+Completed task steps: 4/4
 
-Run focused checks when practical. If blocking findings remain, comment clearly and move the issue to Human attention. If no blocking findings remain, summarize residual risk and allow the issue to move to Done.
+## Completed Compozy Task Steps
 
----
+- task_01.md: Add tracker-aware Ordered Queue resolution primitives
+- task_02.md: Wire readiness-first queue diagnostics for bare Compozy slugs
+- task_03.md: Refactor Ordered Queue orchestration to use raw state and resolved identifiers
+- task_04.md: Update queue shortcut docs and CLI help
 
-Stage agent: reviewer
+## PRD (`_prd.md`)
 
-You are working on GitHub issue #70: Pi configuration shouldn't be required.
+# Queue Flag With Compozy Tasks
 
-Repository issue URL: https://github.com/MatheusBBarni/symphony-orchestrator/issues/70
-Current project status: In Review
-Attempt: 
+## Overview
 
-This repository is a Self-Dogfooding Workspace Repository: it is both the Personal Symphony Product Repository and the Workspace Repository for this run. Use the glossary in CONTEXT.md for domain terms, and follow AGENTS.md before making changes.
+Personal Symphony should let a **Workspace Repository** operator queue known **Compozy PRD Runs** by passing bare slugs to `--queue` when `.symphony/settings.json` selects the Compozy-backed **Issue Tracker**.
 
-Runtime boundaries:
-- Keep symphony commands rooted in the Workspace Repository.
-- Treat GITHUB_TOKEN and GH_TOKEN as secret values. Documentation may name the variables but must never include token values, webhook URLs, or local .env contents.
-- Do not commit .symphony/.env, .symphony/state/, or .symphony/workspaces/.
-- Do not commit generated apps/frontend/src/*.res.js files. Edit .res sources only and run the relevant ReScript/frontend build after ReScript changes.
-- Preserve Idempotent Bootstrap behavior. Runtime Home files must be created when missing without overwriting user-edited Runtime Contract or Local Environment files.
+Today, the operator must translate a known run name such as `queue-flag-with-compozy-tasks` into the stable selector form `compozy:queue-flag-with-compozy-tasks`. The proposed product change shortens that step for ad hoc local terminal use while preserving the current **Ordered Queue** contract, selected-tracker validation rules, and canonical internal identifiers.
 
-Protected-path guidance:
-- Do not modify release, package, or packaged-binary paths unless the issue explicitly scopes that work.
-- Protected paths include bin/symphony.js, scripts/package-binary.js, vendor/, package.json, pnpm-lock.yaml, .github/workflows/, apps/backend/lib/runtime_home.ml Runtime Contract defaults, and package/export release documentation.
-- If the requested work appears to require one of these paths but the issue does not explicitly authorize it, stop and move the task to Human attention with a clear comment.
+The value is simple: make a frequent operator command faster and more natural without broadening the product into a general selector redesign.
 
-Dogfood workflow:
-- Routine development should validate source-checkout behavior.
-- Installed CLI Package validation belongs only to release, update, or packaging issues that explicitly ask for it.
-- Stage Push is disabled. Do not push Task Branches unless the operator explicitly asks.
-- main is a Protected Trunk Branch. Do not auto-merge task work into main.
-- The intended Loop-Start Branch for orchestration is symphony/dogfood until an Allowed Loop-Start Branch Policy is implemented.
+## Goals
 
-Make focused changes, run targeted verification, and report the exact files changed and checks run.
+- Reduce the command length and cognitive overhead for queuing known **Compozy PRD Runs** from the terminal.
+- Preserve the current meaning of **Ordered Queue** and keep queue validation aligned with the selected **Issue Tracker**.
+- Make the Compozy-backed queue experience feel native to `.compozy/tasks/<task_name>/` naming rather than requiring manual selector translation.
+- Keep existing GitHub, minibeads, and canonical Compozy queue behavior stable.
+- Provide clear feedback when an operator tries to use bare Compozy slugs while another tracker mode is selected.
+
+## User Stories
+
+- As a solo operator using a Compozy-backed **Workspace Repository**, I want to type known run slugs directly into `--queue` so that I can start an ad hoc run with less friction.
+- As a solo operator who already recognizes `.compozy/tasks/<task_name>/` names, I want the queue command to match those names so that I do not need to mentally translate them into another format.
+- As a solo operator working in the terminal, I want queue input errors to explain tracker mismatch clearly so that I can correct the command quickly.
+- As a maintainer of existing Symphony workflows, I want this improvement to leave other tracker modes and existing canonical selectors unchanged so that current usage does not regress.
+
+## Core Features
+
+- **Compozy bare-slug queue entry**
+  When the selected **Issue Tracker** is the Compozy-backed tracker, `--queue` accepts a comma-separated list of bare **Compozy PRD Run** slugs.
+
+- **Tracker-aware eligibility**
+  The shorter queue format is only available when the active tracker mode is Compozy-backed, keeping the user-facing rule aligned with the selected **Issue Tracker**.
+
+- **Guided mismatch feedback**
+  If an operator uses bare Compozy slugs while another tracker mode is selected, Symphony explains the mismatch and points the operator to the correct selector style.
+
+- **Fail-fast queue acceptance**
+  The queue is accepted only when every supplied slug is valid for the active Compozy-backed tracker context and each referenced run is eligible for dispatch.
+
+- **Compatibility preservation**
+  Existing canonical Compozy selectors and non-Compozy queue flows remain supported with their current behavior.
+
+- **Documentation refresh**
+  User-facing examples for `--queue` and Compozy-backed tracking explain the shorter input path and its boundaries.
+
+## User Experience
+
+The primary journey is an ad hoc local terminal flow.
+
+1. The operator works in a **Workspace Repository** that already uses the Compozy-backed **Issue Tracker**.
+2. They know the names of one or more **Compozy PRD Runs** from `.compozy/tasks/<task_name>/`.
+3. They run a short queue command using those slugs separated by commas.
+4. Symphony evaluates the request in the context of the active tracker mode.
+5. If the input is valid, the **Ordered Queue** starts with the same queue-order behavior operators already expect.
+6. If the input is invalid, Symphony stops early and explains the issue in language that helps the operator recover quickly.
+
+The UX priority is speed and clarity for a known command, not discoverability through a new interface. Documentation and CLI messaging should make the boundary obvious: bare slugs are a Compozy-backed queue shortcut, not a universal selector format.
+
+Accessibility and usability considerations:
+
+- Error feedback should be short, explicit, and readable in a terminal context.
+- Queue input rules should be easy to understand from CLI help and README examples.
+- Operators should not need to inspect internals to understand why a bare slug was rejected.
+
+## High-Level Technical Constraints
+
+- The feature must remain rooted in the **Workspace Repository** runtime model and selected **Issue Tracker** semantics.
+- The product must preserve the existing **Ordered Queue** behavior around order, readiness validation, and queue resume expectations.
+- The change must not weaken existing compatibility for GitHub or minibeads tracker modes.
+- Queue validation must continue to protect operators from starting a run with invalid or ineligible queue entries.
+- User-facing documentation must avoid secret values and preserve existing Runtime Contract boundaries.
+
+## Non-Goals (Out of Scope)
+
+- Simplifying selector input for GitHub or minibeads tracker modes.
+- Redesigning selector behavior across all selector-based flows.
+- Changing **Task Branch**, retry, dispatch, completion, or **Runtime State** semantics.
+- Adding partial-success queue behavior for invalid mixed input.
+- Introducing a new UI surface for building queues.
+- Expanding MVP scope beyond `--queue` to other operator commands.
+
+## Phased Rollout Plan
+
+### MVP (Phase 1)
+
+- Support bare Compozy slugs in `--queue` for the Compozy-backed **Issue Tracker**.
+- Keep the MVP focused on ad hoc local terminal use.
+- Provide guided mismatch feedback when the wrong tracker mode is active.
+- Preserve current behavior for all existing non-MVP queue inputs.
+
+Success criteria to proceed:
+
+- Operators can queue known **Compozy PRD Runs** with shorter commands.
+- Existing queue behavior remains stable for current users.
+- Documentation clearly explains when the shortcut does and does not apply.
+
+### Phase 2
+
+- Evaluate whether the same ergonomics should apply to other selector-based Compozy flows.
+- Refine error guidance based on real operator confusion patterns.
+- Improve documentation examples for mixed Symphony environments with different tracker kinds.
+
+Success criteria to proceed:
+
+- Real usage shows that operators want the same shorthand beyond `--queue`.
+- Support questions or dogfood feedback indicate recurring confusion worth smoothing.
+
+### Phase 3
+
+- Consider a broader product decision on whether selector ergonomics should become more uniform across Compozy-backed flows.
+- Reassess whether the product should offer saved or previewable queue inputs for repeat use.
+
+Long-term success criteria:
+
+- Selector ergonomics feel consistent where consistency adds value, without weakening tracker-specific clarity.
+
+## Success Metrics
+
+- Queue command brevity for Compozy-backed ad hoc runs improves by at least 15% for multi-run commands.
+- Operators can successfully queue known **Compozy PRD Runs** using bare slugs in the primary local terminal flow.
+- Queue-entry attempts involving bare slugs fail with guided mismatch feedback when the wrong tracker mode is active.
+- Existing non-Compozy queue flows show no user-facing regression.
+- Documentation examples for Compozy-backed queue usage remain accurate and easy to follow.
+
+## Risks and Mitigations
+
+- **Risk: Users assume bare slugs should work everywhere.**
+  Mitigation: Make the Compozy-only boundary explicit in CLI help, README examples, and error messages.
+
+- **Risk: The feature feels too small to justify product attention.**
+  Mitigation: Keep the PRD tightly scoped and tie success directly to a high-frequency operator workflow.
+
+- **Risk: Operators remain unsure which queue syntax to use in multi-tracker contexts.**
+  Mitigation: Use guided mismatch feedback that explains the active tracker context and the expected input style.
+
+- **Risk: Future requests expand scope prematurely into a larger selector redesign.**
+  Mitigation: Preserve the MVP narrative as a focused queue shortcut and defer broader selector consistency work to later phases.
+
+## Architecture Decision Records
+
+- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving canonical internal identifiers.
+- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
+
+## Open Questions
+
+- Should bare Compozy slugs remain `--queue`-only after MVP, or later extend to other selector-based flows?
+- What documentation example set best prevents confusion for operators who switch between Compozy-backed and non-Compozy tracker modes?
+
+## TechSpec (`_techspec.md`)
+
+# Queue Flag With Compozy Tasks TechSpec
+
+## Executive Summary
+
+Implement the PRD by keeping `Ordered_queue.parse` tracker-agnostic, then adding a shared post-settings queue-resolution step that interprets bare Compozy slugs only when `.symphony/settings.json` selects `tracker.kind = "compozy_tasks"`. The queue keeps the operator-facing identifier text for state and resume, while readiness, lookup, and dispatch operate on ephemeral canonical identifiers.
+
+The primary trade-off is deliberate: preserving raw bare slugs in queue state makes the shortcut feel native and keeps readiness messages close to what the operator typed, but it means queue resume stays input-style-sensitive. Restarting with `example-feature` is not the same queue run as restarting with `compozy:example-feature`.
+
+## System Architecture
+
+### Component Overview
+
+| Component | Responsibility | Boundary |
+| --- | --- | --- |
+| `Ordered_queue` | Parse structurally valid queue tokens and resolve them against the selected tracker after config load. | Must stay tracker-agnostic at parse time. |
+| `Issue_tracker` | Normalize tracker-specific identifiers and validate dispatchability. | Compozy adapter gains bare-slug normalization support; GitHub and minibeads behavior stays stable. |
+| `Runtime_readiness` | Surface queue mismatch and invalid-entry feedback as **Readiness Gaps** before orchestration starts. | Owns startup reporting, not dispatch-time recovery. |
+| `Orchestrator` | Use resolved canonical identifiers for queue ordering, matching, and dispatch while persisting raw queue identifiers in queue state. | Must preserve current **Ordered Queue** semantics and resume behavior. |
+| `Runtime_state` | Keep the existing queue JSON shape while allowing Compozy bare-slug queue entries to appear as typed by the operator. | No new queue fields in MVP. |
+| Docs / CLI help | Explain the Compozy-only shortcut and guided mismatch behavior. | Must not imply a global selector redesign. |
+
+Data flow:
+
+1. `parse_ordered_queue_arg` builds a queue from structurally valid raw tokens.
+2. Runtime startup loads `.symphony/settings.json` and selects the active tracker.
+3. A shared queue-resolution helper uses `tracker.normalize_identifier` to resolve each entry into a canonical identifier or a readiness error.
+4. `Runtime_readiness` reports tracker mismatch, mixed-style Compozy input, duplicate resolved identifiers, and undispatchable runs as **Readiness Gaps**.
+5. `Orchestrator` uses resolved canonical identifiers for lookup and ordering, while persisted queue state keeps raw queue identifiers.
+6. Queue resume compares the raw queue sequence, not the resolved canonical sequence.
+
+## Implementation Design
+
+### Core Interfaces
+
+Actual implementation is OCaml. The Go structs below are compact schema sketches for the key boundary.
+
+```go
+type QueueEntry struct {
+    QueueIdentifier string
+}
+
+type ResolvedQueueEntry struct {
+    QueueIdentifier     string
+    CanonicalIdentifier string
+}
+```
+
+```go
+type QueueResolver interface {
+    Resolve(queue []QueueEntry) ([]ResolvedQueueEntry, error)
+}
+```
+
+### Data Models
+
+#### Ordered Queue Entry
+
+Keep the existing queue-state shape conceptually centered on one identifier field, but change its meaning for the Compozy shortcut path:
+
+- For GitHub and minibeads inputs, the stored identifier remains the canonical queue identifier as today.
+- For bare Compozy slug input, the stored identifier remains the original slug text.
+- Downstream canonical issue identity is resolved separately and never inferred from persisted queue state alone.
+
+#### Resolved Queue Entry
+
+Add an internal resolved queue representation used only after tracker selection:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `queue_identifier` | string | Raw or queue-state identifier shown to the operator |
+| `canonical_identifier` | string | Canonical tracker identifier used for lookup and dispatch |
+
+#### Compozy Normalization Rules
+
+When `tracker.kind = "compozy_tasks"`:
+
+- `example-feature` resolves to `compozy:example-feature`
+- `compozy:example-feature` remains a valid legacy canonical selector
+- mixed bare and canonical Compozy selectors in the same queue are rejected in MVP
+- task-step-like selectors such as `compozy:task_01` remain invalid at the **Compozy PRD Run** boundary
+
+When `tracker.kind != "compozy_tasks"`:
+
+- bare opaque tokens fail readiness with a guided tracker-mismatch message
+- existing GitHub and minibeads normalization rules remain unchanged
+
+#### Runtime State
+
+No new queue JSON fields are required. Existing `ordered_queue.entries[].issue_identifier` remains the serialized field, but for Compozy bare-slug queues it now contains the raw slug text. This preserves the approved queue-state behavior and keeps existing frontend/backend parsing compatible.
+
+### API Endpoints
+
+No new HTTP endpoint is required.
+
+Existing Runtime State endpoints continue to expose ordered queue state:
+
+| Method | Path | Change |
+| --- | --- | --- |
+| GET | `/api/v1/state` | Existing queue shape stays intact; Compozy bare-slug queues expose raw slug identifiers in queue entries. |
+| GET | `/api/v1/state/live` | Same shape as snapshot state. |
+
+## Integration Points
+
+| Integration Point | Design |
+| --- | --- |
+| `main.ml` startup path | Parse the queue before config load, then resolve it after tracker selection for readiness and orchestration. |
+| `Issue_tracker.normalize_identifier` | Reuse the selected tracker hook as the canonical normalization boundary. |
+| `README.md` and CLI help | Update queue examples and mismatch guidance without changing other tracker documentation. |
+| Existing queue resume state | Preserve raw sequence matching for bare-slug queue runs. |
+| Existing canonical Compozy tests | Keep canonical `compozy:<task_name>` flows valid to avoid regression. |
+
+## Impact Analysis
+
+| Component | Impact Type | Description and Risk | Required Action |
+| --- | --- | --- | --- |
+| `apps/backend/lib/ordered_queue.ml` | Modified | Current parser assumes canonical identifiers and duplicates are resolved immediately. | Add opaque bare-token support, tracker-aware resolution helpers, and resolved-duplicate checks. |
+| `apps/backend/lib/issue_tracker.ml` | Modified | Compozy normalization currently accepts canonical selectors only. | Allow Compozy bare-slug normalization after tracker selection while keeping GitHub/minibeads unchanged. |
+| `apps/backend/lib/runtime_readiness.ml` | Modified | Queue validation currently assumes parsed identifiers are already canonical. | Validate through resolved queue entries and emit guided mismatch remediation. |
+| `apps/backend/lib/orchestrator.ml` | Modified | Queue ordering and resume currently compare canonical identifiers directly. | Use resolved canonical identifiers for dispatch matching while preserving raw queue state for resume. |
+| `apps/backend/bin/main.ml` | Modified | Startup currently separates parse problems from readiness validation. | Keep structural parse failures early and route tracker-aware queue problems into readiness. |
+| `apps/backend/lib/cli_command.ml` | Modified | `--queue` help still describes generic issue identifiers only. | Document Compozy bare-slug shortcut scope. |
+| `README.md` | Modified | Current docs require `compozy:<task_name>` in selector-based flows. | Add `--queue` MVP shortcut examples and tracker-mismatch guidance. |
+| `apps/backend/test/test_backend.ml` | Modified | Existing tests cover canonical queue parsing and canonical queue resume. | Add bare-slug parser, readiness, orchestration, and resume coverage near existing queue tests. |
+
+## Testing Approach
+
+### Unit Tests
+
+- `Ordered_queue.parse` accepts bare opaque tokens while still rejecting empty entries, URLs, and cross-repository references.
+- Resolved duplicate detection catches canonical collisions such as `20` and `#20`, `MB-020` and `mb-20`, and repeated bare Compozy slugs.
+- Compozy `normalize_identifier` accepts both `example-feature` and `compozy:example-feature`.
+- Mixed bare and canonical Compozy queue input is rejected in MVP.
+- Guided tracker-mismatch remediation is produced when bare Compozy slugs are used under GitHub or minibeads tracker modes.
+- Canonical Compozy queue validation remains unchanged.
+
+### Integration Tests
+
+- A Compozy bare-slug queue validates successfully without GitHub Project membership.
+- Orchestrator dispatches a Compozy bare-slug **Ordered Queue** only in the requested order.
+- Runtime State persists raw bare-slug queue identifiers during a Compozy queue run.
+- Restarting with the same bare-slug queue resumes queue progress.
+- Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run rather than resuming.
+- A bare-slug queue under a non-Compozy tracker reports a **Readiness Gap** and does not begin orchestration.
+- Existing canonical `compozy:<task_name>` queue tests continue to pass.
+
+## Development Sequencing
+
+### Build Order
+
+1. Add queue-resolution data types and helper functions in `Ordered_queue` - no dependencies.
+2. Update `Ordered_queue.parse` to accept opaque bare tokens while preserving current structural rejection rules - depends on step 1.
+3. Extend Compozy tracker normalization to accept bare slugs after tracker selection - depends on step 1.
+4. Route queue validation through resolved queue entries in `Runtime_readiness` - depends on steps 1 and 3.
+5. Update `main.ml` startup wiring so tracker-aware queue failures surface as readiness output - depends on steps 2 and 4.
+6. Refactor `Orchestrator` queue matching and ordering to use resolved canonical identifiers while persisting raw queue state - depends on steps 1, 3, and 4.
+7. Update CLI help and README examples for the Compozy shortcut - depends on steps 4 and 6.
+8. Add unit coverage for parse, resolution, and readiness cases - depends on steps 2 through 5.
+9. Add end-to-end orchestration and resume coverage for bare-slug queues - depends on steps 6 and 8.
+10. Run focused backend verification - depends on steps 1 through 9.
+
+### Technical Dependencies
+
+- Existing `Issue_tracker.normalize_identifier` contract remains the selected-tracker normalization boundary.
+- Existing **Runtime State** queue schema remains in place; no frontend schema migration is required for MVP.
+- Existing queue resume behavior in `Orchestrator` must be updated carefully because it currently assumes canonical identifier sequences.
+- Work stays inside the current backend module layout; no new package or directory is required.
+
+## Monitoring and Observability
+
+- Startup readiness output should distinguish structural parse errors from tracker-aware queue mismatch errors.
+- Queue-related logs should include both the queue-state identifier and the resolved canonical identifier when a Compozy bare slug is resolved.
+- Ordered queue skipped or invalid-entry output should continue to show the operator-facing queue identifier.
+- Existing Runtime State queue projections remain the primary operator-visible queue status surface.
+
+## Technical Considerations
+
+### Key Decisions
+
+- Decision: keep `Ordered_queue.parse` generic and move Compozy meaning behind post-settings queue resolution.
+  Rationale: matches the selected tracker boundary and avoids Compozy-specific parser logic.
+  Trade-off: queue validation becomes two-phase instead of parse-only.
+
+- Decision: preserve raw bare-slug text in queue state and resume keys.
+  Rationale: keeps state aligned with what the operator typed and with the approved terminal-first workflow.
+  Trade-off: equivalent raw and canonical selector forms no longer resume the same queue run.
+
+- Decision: emit guided bare-slug tracker mismatch as a **Readiness Gap**.
+  Rationale: readiness has the selected tracker context and already owns startup blocking feedback.
+  Trade-off: some invalid inputs now fail at readiness rather than parse time.
+
+- Decision: add end-to-end orchestration coverage, including resume behavior for bare-slug queues.
+  Rationale: the change touches parser, readiness, runtime state, and dispatch matching in one flow.
+  Trade-off: broader test setup than a parser-only change.
+
+### Known Risks
+
+- Raw queue state and resolved canonical identifiers may drift if resolution logic is duplicated.
+  Mitigation: use one shared resolution helper from readiness and orchestration.
+
+- Mixed-style Compozy queue input could confuse operators and complicate duplicate rules.
+  Mitigation: reject mixed bare and canonical Compozy input in MVP.
+
+- Preserving raw queue identifiers may surprise operators who expect bare and canonical restarts to resume the same queue.
+  Mitigation: document the resume behavior explicitly and cover it with end-to-end tests.
+
+## Architecture Decision Records
+
+- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving downstream canonical identifiers.
+- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
+- [ADR-003: Tracker-Aware Ordered Queue Resolution](adrs/adr-003.md) — Separates raw queue state from post-settings canonical resolution and preserves raw input for resume.
+- [ADR-004: Readiness-First Queue Diagnostics](adrs/adr-004.md) — Places guided tracker-mismatch feedback in startup readiness instead of parse-time or dispatch-time failures.

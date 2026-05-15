@@ -233,7 +233,7 @@ A CLI-provided sequence of issue identifiers that Personal Symphony uses as the 
 _Avoid_: project order, priority list, sorted candidates
 
 **Ordered Queue Entry**:
-One issue identifier and its current queue progress within an Ordered Queue.
+One operator-provided queue identifier and its current queue progress within an Ordered Queue. For a Compozy-backed `--queue` shortcut, this identifier may be a bare Compozy PRD Run slug preserved as typed while dispatch uses the resolved canonical tracker identifier.
 _Avoid_: queue item, queued issue, queue row
 
 **Batch Pull Request**:
@@ -540,6 +540,7 @@ _Avoid_: reinitialize, reset
 - A full **Stage Concurrency Policy** does not block later **Ordered Queue** entries whose selected **Stage Agent** mapping still has capacity.
 - An **Ordered Queue** is provided by the operator at launch.
 - An **Ordered Queue** is named with issue identifiers from the Workspace Repository issue tracker.
+- When Runtime Settings select the Compozy-backed **Issue Tracker**, `--queue` may also name **Compozy PRD Runs** with bare slugs from `.compozy/tasks/<task_name>/`.
 - An **Ordered Queue** does not use issue URLs or cross-repository issue references.
 - An **Ordered Queue** is not inferred from GitHub Project item order.
 - `--queue` is the CLI expression of an **Ordered Queue**.
@@ -549,13 +550,15 @@ _Avoid_: reinitialize, reset
 - An invalid **Ordered Queue** is a **Readiness Gap** and must identify the queue entries that prevent dispatch.
 - **Ordered Queue** validation contributes to the same readiness report as other **Readiness Gaps**.
 - An **Ordered Queue Entry** is invalid when it is malformed, missing from the Workspace Repository issue tracker, absent from the configured GitHub Project, terminal, or not dispatchable.
-- Duplicate issue identifiers make an **Ordered Queue** invalid.
+- Bare Compozy PRD Run slugs under a non-Compozy **Issue Tracker** are invalid **Ordered Queue Entries** and are reported as **Readiness Gaps** after Runtime Settings select the active tracker.
+- Duplicate issue identifiers after selected-tracker normalization make an **Ordered Queue** invalid.
 - If an **Ordered Queue Entry** becomes invalid after startup validation, Symphony reports the skipped entry in **Runtime State** and continues with later queue entries.
-- **Runtime State** records the original order and current progress of an active **Ordered Queue**.
+- **Runtime State** records the original order and current progress of an active **Ordered Queue** using the operator-provided queue identifiers.
 - The **Runtime Home** state directory stores the active **Ordered Queue** Runtime State projection for ordinary process restart resume.
-- The ordered issue sequence identifies an **Ordered Queue** run.
+- The ordered queue identifier sequence identifies an **Ordered Queue** run.
 - Restarting with the same **Ordered Queue** resumes queue progress from **Runtime State** when possible.
 - Restarting with a different **Ordered Queue** starts a new queue run after validation.
+- A bare-slug Compozy **Ordered Queue** and an equivalent canonical `compozy:<task_name>` **Ordered Queue** are different queue runs for resume.
 - An **Ordered Queue Entry** can be pending, running, retrying, completed, or skipped.
 - An **Ordered Queue Entry** is completed only after the configured task completion behavior finishes.
 - A skipped **Ordered Queue Entry** must be reported to the operator.
