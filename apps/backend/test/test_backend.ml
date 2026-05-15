@@ -1950,6 +1950,73 @@ let test_compozy_runtime_readiness_valid_fixture_omits_github_gaps () =
               Alcotest.(check int) "total" 1 progress.total
           | None -> Alcotest.fail "expected initial Compozy progress"))
 
+let test_compozy_runtime_readiness_resumes_ordered_queue_without_revalidating_attention_entry () =
+  with_temp_dir "symphony-compozy-runtime-readiness-queue-resume-" (fun root ->
+      let base_config = write_compozy_settings root in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              terminal_states = "human_attention" :: base_config.tracker.terminal_states;
+            };
+        }
+      in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "attention-run" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Needs previous session follow-up" (Filename.concat prd_dir "task_01.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      Compozy_lifecycle.save config
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_execution;
+          dispatch_state = "human_attention";
+          stage_agent = Some "engineer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-14T21:55:52Z";
+        }
+      |> require_ok "save lifecycle";
+      let ordered_queue =
+        match Ordered_queue.parse "compozy:attention-run" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let fresh_state = Runtime_readiness.state ~ordered_queue config in
+      Alcotest.(check (list string)) "fresh queue still validates terminal entry"
+        [ "orderedQueue.compozy:attention-run" ]
+        (runtime_requirements fresh_state.Runtime_state.readiness_gaps);
+      let resumed_queue =
+        {
+          Runtime_state.entries =
+            [
+              {
+                Runtime_state.issue_identifier = "compozy:attention-run";
+                title = Some "Compozy PRD run: attention-run";
+                state = "running";
+                skip_reason = None;
+              };
+            ];
+        }
+      in
+      let queue_state_path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname queue_state_path);
+      Util.write_file queue_state_path (Runtime_state.ordered_queue_to_yojson resumed_queue |> Yojson.Safe.to_string);
+      let resumed_state = Runtime_readiness.state ~ordered_queue config in
+      Alcotest.(check (list string)) "resumed queue has no readiness gaps" []
+        (runtime_requirements resumed_state.Runtime_state.readiness_gaps);
+      match resumed_state.Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "readiness exposes resumed queue state" [ "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected resumed ordered queue")
+
 let test_github_runtime_readiness_still_reports_github_gaps () =
   with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
       with_temp_dir "symphony-github-runtime-readiness-gaps-" (fun root ->
@@ -13691,6 +13758,8 @@ let () =
             test_compozy_readiness_no_runnable_prd_run_gap;
           Alcotest.test_case "serves Compozy runtime readiness without GitHub gaps" `Quick
             test_compozy_runtime_readiness_valid_fixture_omits_github_gaps;
+          Alcotest.test_case "resumes Compozy ordered queue readiness without revalidation" `Quick
+            test_compozy_runtime_readiness_resumes_ordered_queue_without_revalidating_attention_entry;
           Alcotest.test_case "keeps GitHub runtime readiness gaps" `Quick
             test_github_runtime_readiness_still_reports_github_gaps;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;

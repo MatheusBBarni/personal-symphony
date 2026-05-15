@@ -342,15 +342,18 @@ let ordered_queue_state_matches queue state =
   let actual = List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier) state.Runtime_state.entries in
   expected = actual
 
-let load_ordered_queue_state config queue =
+let resume_ordered_queue_state config queue =
   let path = ordered_queue_state_path config in
   if Sys.file_exists path then
     try
       match Yojson.Safe.from_file path |> Runtime_state.ordered_queue_of_yojson with
-      | Some state when ordered_queue_state_matches queue state -> state
-      | _ -> ordered_queue_state queue
-    with _ -> ordered_queue_state queue
-  else ordered_queue_state queue
+      | Some state when ordered_queue_state_matches queue state -> Some state
+      | _ -> None
+    with _ -> None
+  else None
+
+let load_ordered_queue_state config queue =
+  match resume_ordered_queue_state config queue with Some state -> state | None -> ordered_queue_state queue
 
 let persist_ordered_queue_state config = function
   | None -> ()
