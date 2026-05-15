@@ -259,8 +259,8 @@ let terminal_metadata_matches derived lifecycle =
 
 let stale_active_terminal_dispatch config run lifecycle =
   let derived = derive config run in
-  match derived.lifecycle_state with
-  | In_execution when attention_dispatch_state config lifecycle.dispatch_state -> Some derived
+  match (derived.lifecycle_state, lifecycle.lifecycle_state) with
+  | In_execution, In_execution when attention_dispatch_state config lifecycle.dispatch_state -> Some derived
   | _ -> None
 
 let reconcile config run lifecycle =

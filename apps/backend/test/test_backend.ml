@@ -8728,6 +8728,46 @@ let test_compozy_lifecycle_reconciles_stale_active_terminal_dispatch () =
       in
       Alcotest.(check string) "persisted dispatch repaired" "pending" reloaded.dispatch_state)
 
+let test_compozy_lifecycle_preserves_blocked_attention_dispatch () =
+  with_temp_dir "symphony-compozy-lifecycle-blocked-attention-dispatch-" (fun root ->
+      let base_config, run = run_from_status_fixture root "blocked-attention-dispatch" [ "in_progress" ] in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              terminal_states = "human_attention" :: base_config.tracker.terminal_states;
+            };
+        }
+      in
+      let blocked : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.Blocked;
+          dispatch_state = "human_attention";
+          stage_agent = Some "engineer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = Some "manual review required";
+          updated_at = "2026-05-14T21:55:52Z";
+        }
+      in
+      Compozy_lifecycle.save config blocked |> require_ok "save blocked lifecycle";
+      let reconciled = Compozy_lifecycle.load_or_backfill_reconciled config run |> require_ok "reconcile lifecycle" in
+      check_lifecycle_state "blocked lifecycle preserved" "blocked" reconciled;
+      Alcotest.(check string) "attention dispatch preserved" "human_attention" reconciled.dispatch_state;
+      Alcotest.(check (option string)) "stage preserved" (Some "engineer") reconciled.stage_agent;
+      Alcotest.(check (option string)) "reason preserved" (Some "manual review required") reconciled.reason;
+      let reloaded =
+        match Compozy_lifecycle.load config run |> require_ok "reload lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected blocked lifecycle file"
+      in
+      check_lifecycle_state "persisted blocked lifecycle" "blocked" reloaded;
+      Alcotest.(check string) "persisted attention dispatch" "human_attention" reloaded.dispatch_state)
+
 let test_compozy_lifecycle_persists_under_runtime_home () =
   with_temp_dir "symphony-compozy-lifecycle-runtime-home-" (fun root ->
       let _home, _ = Runtime_home.bootstrap root in
@@ -13845,6 +13885,8 @@ let () =
             test_compozy_lifecycle_reconciles_stale_ready_metadata;
           Alcotest.test_case "reconciles stale active terminal Compozy dispatch state" `Quick
             test_compozy_lifecycle_reconciles_stale_active_terminal_dispatch;
+          Alcotest.test_case "preserves blocked Compozy attention dispatch state" `Quick
+            test_compozy_lifecycle_preserves_blocked_attention_dispatch;
           Alcotest.test_case "persists Compozy lifecycle under Runtime Home" `Quick
             test_compozy_lifecycle_persists_under_runtime_home;
           Alcotest.test_case "persists Compozy lifecycle transition helpers" `Quick
