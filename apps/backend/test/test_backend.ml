@@ -1950,8 +1950,8 @@ let test_compozy_runtime_readiness_valid_fixture_omits_github_gaps () =
               Alcotest.(check int) "total" 1 progress.total
           | None -> Alcotest.fail "expected initial Compozy progress"))
 
-let test_compozy_runtime_readiness_resumes_ordered_queue_without_revalidating_attention_entry () =
-  with_temp_dir "symphony-compozy-runtime-readiness-queue-resume-" (fun root ->
+let test_compozy_runtime_readiness_repairs_stale_attention_lifecycle () =
+  with_temp_dir "symphony-compozy-runtime-readiness-stale-attention-" (fun root ->
       let base_config = write_compozy_settings root in
       let config =
         {
@@ -1989,9 +1989,12 @@ let test_compozy_runtime_readiness_resumes_ordered_queue_without_revalidating_at
         | Error _ -> Alcotest.fail "queue parse failed"
       in
       let fresh_state = Runtime_readiness.state ~ordered_queue config in
-      Alcotest.(check (list string)) "fresh queue still validates terminal entry"
-        [ "orderedQueue.compozy:attention-run" ]
+      Alcotest.(check (list string)) "fresh queue repairs stale terminal lifecycle" []
         (runtime_requirements fresh_state.Runtime_state.readiness_gaps);
+      (match Compozy_lifecycle.load config run |> require_ok "load repaired lifecycle" with
+      | Some lifecycle ->
+          Alcotest.(check string) "dispatch state repaired" "In progress" lifecycle.dispatch_state
+      | None -> Alcotest.fail "expected repaired lifecycle");
       let resumed_queue =
         {
           Runtime_state.entries =
@@ -8687,6 +8690,44 @@ let test_compozy_lifecycle_reconciles_stale_ready_metadata () =
       in
       check_lifecycle_state "persisted reconciled lifecycle" "failed" reloaded)
 
+let test_compozy_lifecycle_reconciles_stale_active_terminal_dispatch () =
+  with_temp_dir "symphony-compozy-lifecycle-active-terminal-dispatch-" (fun root ->
+      let base_config, run = run_from_status_fixture root "active-terminal-dispatch" [ "pending" ] in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              terminal_states = "human_attention" :: base_config.tracker.terminal_states;
+            };
+        }
+      in
+      let stale : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_execution;
+          dispatch_state = "human_attention";
+          stage_agent = Some "engineer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-14T21:55:52Z";
+        }
+      in
+      Compozy_lifecycle.save config stale |> require_ok "save stale lifecycle";
+      let reconciled = Compozy_lifecycle.load_or_backfill_reconciled config run |> require_ok "reconcile lifecycle" in
+      check_lifecycle_state "active lifecycle" "in_execution" reconciled;
+      Alcotest.(check string) "terminal dispatch repaired" "pending" reconciled.dispatch_state;
+      Alcotest.(check (option string)) "stale stage cleared" None reconciled.stage_agent;
+      let reloaded =
+        match Compozy_lifecycle.load config run |> require_ok "reload lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected reconciled lifecycle file"
+      in
+      Alcotest.(check string) "persisted dispatch repaired" "pending" reloaded.dispatch_state)
+
 let test_compozy_lifecycle_persists_under_runtime_home () =
   with_temp_dir "symphony-compozy-lifecycle-runtime-home-" (fun root ->
       let _home, _ = Runtime_home.bootstrap root in
@@ -13802,6 +13843,8 @@ let () =
             test_compozy_lifecycle_backfills_terminal_non_ready_runs;
           Alcotest.test_case "reconciles stale Compozy lifecycle metadata" `Quick
             test_compozy_lifecycle_reconciles_stale_ready_metadata;
+          Alcotest.test_case "reconciles stale active terminal Compozy dispatch state" `Quick
+            test_compozy_lifecycle_reconciles_stale_active_terminal_dispatch;
           Alcotest.test_case "persists Compozy lifecycle under Runtime Home" `Quick
             test_compozy_lifecycle_persists_under_runtime_home;
           Alcotest.test_case "persists Compozy lifecycle transition helpers" `Quick
@@ -13873,8 +13916,8 @@ let () =
             test_compozy_readiness_no_runnable_prd_run_gap;
           Alcotest.test_case "serves Compozy runtime readiness without GitHub gaps" `Quick
             test_compozy_runtime_readiness_valid_fixture_omits_github_gaps;
-          Alcotest.test_case "resumes Compozy ordered queue readiness without revalidation" `Quick
-            test_compozy_runtime_readiness_resumes_ordered_queue_without_revalidating_attention_entry;
+          Alcotest.test_case "repairs stale Compozy attention lifecycle readiness" `Quick
+            test_compozy_runtime_readiness_repairs_stale_attention_lifecycle;
           Alcotest.test_case "keeps GitHub runtime readiness gaps" `Quick
             test_github_runtime_readiness_still_reports_github_gaps;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;

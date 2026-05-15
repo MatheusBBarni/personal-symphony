@@ -208,6 +208,14 @@ let active_current_step = function
       match String.lowercase_ascii step.status with "pending" | "in_progress" -> true | _ -> false)
   | None -> false
 
+let string_equal_ci left right =
+  String.lowercase_ascii (Util.trim left) = String.lowercase_ascii (Util.trim right)
+
+let status_in values status = List.exists (fun value -> string_equal_ci value status) values
+
+let attention_dispatch_state config status =
+  status_in [ config.Config.git.merge_attention_status; "human_attention"; "human attention" ] status
+
 let active_dispatch_state config (run : Compozy_tasks_tracker.prd_run) =
   match config.Config.tracker.project_status_on_dispatch with
   | Some status when Util.trim status <> "" -> status
@@ -249,6 +257,12 @@ let terminal_non_ready_from_steps config run =
 let terminal_metadata_matches derived lifecycle =
   lifecycle.lifecycle_state = derived.lifecycle_state && lifecycle.pr_readiness = derived.pr_readiness
 
+let stale_active_terminal_dispatch config run lifecycle =
+  let derived = derive config run in
+  match derived.lifecycle_state with
+  | In_execution when attention_dispatch_state config lifecycle.dispatch_state -> Some derived
+  | _ -> None
+
 let reconcile config run lifecycle =
   match terminal_non_ready_from_steps config run with
   | Some derived when not (terminal_metadata_matches derived lifecycle) ->
@@ -260,7 +274,10 @@ let reconcile config run lifecycle =
         }
       in
       (match save config reconciled with Ok () -> Ok reconciled | Error _ as error -> error)
-  | _ -> Ok lifecycle
+  | _ -> (
+      match stale_active_terminal_dispatch config run lifecycle with
+      | Some derived -> (match save config derived with Ok () -> Ok derived | Error _ as error -> error)
+      | None -> Ok lifecycle)
 
 let load_or_backfill_reconciled config run =
   match load config run with
