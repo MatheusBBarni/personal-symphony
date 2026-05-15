@@ -1,4 +1,0 @@
-{"type":"thread.started","thread_id":"019e1e1a-0449-7432-aec7-5ef5675d1c19"}
-{"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"codex goal ok"}}
-{"type":"turn.completed","usage":{"input_tokens":20616,"cached_input_tokens":12672,"output_tokens":8,"reasoning_output_tokens":0}}
