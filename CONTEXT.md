@@ -80,6 +80,10 @@ _Avoid_: config, preferences
 The configured source of Workspace Repository issue records that Personal Symphony polls and updates during orchestration.
 _Avoid_: task database, work list
 
+**Symphony-ready Status**:
+The tracker-owned status value that makes one Workspace Repository work item eligible for first admission into orchestration.
+_Avoid_: queue state, in-progress status, label-only marker
+
 **GitHub Tracker**:
 An Issue Tracker that uses GitHub Issues as issue records and GitHub Projects status values as dispatch state.
 _Avoid_: GitHub workflow, remote tracker
@@ -381,6 +385,7 @@ _Avoid_: reinitialize, reset
 - The **Runtime Contract** contains **Runtime Settings**.
 - Runtime Settings select one **Issue Tracker** for orchestration.
 - The **GitHub Tracker** remains the default Issue Tracker.
+- A **Symphony-ready Status** controls first admission into orchestration; it does not replace queue ordering or post-admission lifecycle behavior.
 - A **Local Issue Tracker** stores issue records in **Local Issue Files** owned by the Workspace Repository.
 - A Compozy-backed **Local Issue Tracker** treats one **Compozy PRD Run** as the issue-level work item and the contained **Compozy Task Steps** as ordered progress within that work item.
 - A **Compozy PRD Run Lifecycle** belongs to the **Compozy PRD Run**, not to an individual **Compozy Task Step**.
