@@ -18,6 +18,7 @@
   yojson
   cmdliner
   alcotest
+  reason
   tui
   uutf
   toffee))

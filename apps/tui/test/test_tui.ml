@@ -81,6 +81,14 @@ let surface_ansi_respects_no_color () =
   Surface.set surface ~x:0 ~y:0 ~style:Style.(make ~fg:(Color.ansi 1) ()) "x";
   Alcotest.(check string) "plain when no color" "x " (Surface.to_ansi ~level surface)
 
+let utf_width_helpers_handle_unicode () =
+  Alcotest.(check int) "ascii width" 5 (Utf.string_width "hello");
+  Alcotest.(check int) "wide width" 2 (Utf.string_width "界");
+  Alcotest.(check int) "combining mark width" 1 (Utf.string_width "é");
+  Alcotest.(check string) "utf8 encoding 2-byte" "é" (Utf.uchar_to_utf8 (Uchar.of_int 0x00E9));
+  Alcotest.(check string) "utf8 encoding 3-byte" "界" (Utf.uchar_to_utf8 (Uchar.of_int 0x754C));
+  Alcotest.(check string) "utf8 encoding 4-byte" "😀" (Utf.uchar_to_utf8 (Uchar.of_int 0x1F600))
+
 let table_component_fits_unicode () =
   let root = Components.table [ ("COL", 3) ] [ [ "abcdef" ] ] in
   let renderer = Renderer.create ~width:10 ~height:3 root in
@@ -248,6 +256,7 @@ let () =
         ] );
       ("keys", [ Alcotest.test_case "sequence" `Quick keymap_sequence; Alcotest.test_case "arrow parser" `Quick key_parses_arrows ]);
       ("ansi", [ Alcotest.test_case "no color" `Quick surface_ansi_respects_no_color ]);
+      ("utf", [ Alcotest.test_case "unicode width helpers" `Quick utf_width_helpers_handle_unicode ]);
       ( "components",
         [
           Alcotest.test_case "table unicode fit" `Quick table_component_fits_unicode;

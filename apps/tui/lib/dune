@@ -1,4 +1,5 @@
 (library
  (name tui)
  (public_name tui)
+ (private_modules tui_utf)
  (libraries unix uutf toffee))

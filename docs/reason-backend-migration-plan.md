@@ -75,6 +75,16 @@ Verification:
 Success gate:
 - Small backend modules can be rewritten one at a time with no behavior regressions and no noticeable build or maintenance penalty.
 
+## Phase 0/1 Implementation Record
+
+Date: 2026-05-15
+
+- Phase 0 added `reason` to the Product Repository and TUI package dependencies, letting Dune compile `.re` and `.rei` files through its built-in Reason dialect.
+- Phase 1 started in `apps/tui` by extracting the Unicode helper logic into private Reason module `apps/tui/lib/tui_utf.re`.
+- `Tui.Utf` remains the public API surface; it delegates to the private Reason module so existing callers keep the same module path and value names.
+- Verification passed for `pnpm test`, `pnpm backend:build`, `pnpm build`, all five TUI examples, and the backend Terminal Console preview.
+- `refmt --in-place apps/tui/lib/tui_utf.re` works for Reason formatting. `dune build @fmt` still depends on the existing OCamlFormat setup and currently fails because `ocamlformat` is not installed in the local switch.
+
 ## Working Rules
 
 - Migrate by module, not by broad subsystem.

@@ -11,6 +11,7 @@ bug-reports: "https://github.com/MatheusBBarni/symphony-orchestrator/issues"
 depends: [
   "ocaml" {>= "5.1"}
   "dune" {>= "3.19"}
+  "reason"
   "uutf"
   "toffee"
   "odoc" {with-doc}
