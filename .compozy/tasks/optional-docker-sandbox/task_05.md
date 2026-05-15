@@ -74,4 +74,3 @@ Reference the TechSpec sections "Component Overview", "API Endpoints", and "Moni
 - Test coverage >=80%
 - Operators can see approved sandbox status in the Web Dashboard for running work.
 - Dashboard behavior for non-sandboxed repositories remains unchanged.
-

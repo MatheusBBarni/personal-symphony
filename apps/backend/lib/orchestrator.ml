@@ -2037,7 +2037,17 @@ let mark_compozy_child_blocked orchestrator child reason =
     | Error error -> set_error orchestrator error
 
 let mark_compozy_run_completed orchestrator run =
-  note_compozy_lifecycle_update orchestrator run (Compozy_lifecycle.mark_completed orchestrator.config run)
+  let result =
+    if run.Compozy_tasks_tracker.counts.failed > 0 then
+      Compozy_lifecycle.mark_failed orchestrator.config run ~reason:""
+    else if run.counts.skipped > 0 then Compozy_lifecycle.mark_skipped orchestrator.config run ~reason:""
+    else if String.lowercase_ascii run.state = "completed" then
+      Compozy_lifecycle.mark_completed orchestrator.config run
+    else
+      Compozy_lifecycle.mark_not_pr_ready orchestrator.config run
+        ~reason:"Compozy PRD Run finished without all task steps completing."
+  in
+  note_compozy_lifecycle_update orchestrator run result
 
 let compozy_issue_with_lifecycle_dispatch_state config run =
   let issue = Compozy_tasks_tracker.issue_of_prd_run run in

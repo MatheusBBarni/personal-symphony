@@ -80,4 +80,3 @@ Reference the TechSpec sections "High-Level Technical Constraints", "Impact Anal
 - Test coverage >=80%
 - Runtime Contract examples and docs match the final sandbox implementation.
 - Bootstrap remains idempotent and secret-free after sandbox documentation changes.
-

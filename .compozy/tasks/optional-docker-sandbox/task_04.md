@@ -75,4 +75,3 @@ Reference the TechSpec sections "Runtime State Additions", "API Endpoints", and 
 - Test coverage >=80%
 - Backend runtime snapshots carry moderate sandbox metadata without regressing non-sandbox behavior.
 - HTTP and live runtime-state surfaces remain consistent for sandboxed and non-sandboxed runs.
-

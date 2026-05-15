@@ -1,9 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Reconcile Compozy lifecycle metadata from task-step truth"
 type: backend
 complexity: medium
 dependencies: []
+
+
 ---
 
 # Task 01: Reconcile Compozy lifecycle metadata from task-step truth
@@ -29,11 +31,11 @@ Tighten the Runtime Home lifecycle layer so it remains a reconciled run-level su
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Audit lifecycle derive, backfill, and reconciliation helpers against the approved task-step-truth contract.
-- [ ] 1.2 Tighten lifecycle downgrade behavior for stale `completed`, `ready`, and other non-matching terminal metadata.
-- [ ] 1.3 Preserve existing lifecycle JSON schema and compatibility handling for optional fields.
-- [ ] 1.4 Keep handoff and readiness semantics separate from lifecycle phase semantics.
-- [ ] 1.5 Add focused backend tests for backfill, reconciliation, and terminal downgrade cases.
+- [x] 1.1 Audit lifecycle derive, backfill, and reconciliation helpers against the approved task-step-truth contract.
+- [x] 1.2 Tighten lifecycle downgrade behavior for stale `completed`, `ready`, and other non-matching terminal metadata.
+- [x] 1.3 Preserve existing lifecycle JSON schema and compatibility handling for optional fields.
+- [x] 1.4 Keep handoff and readiness semantics separate from lifecycle phase semantics.
+- [x] 1.5 Add focused backend tests for backfill, reconciliation, and terminal downgrade cases.
 
 ## Implementation Details
 Reference TechSpec "Data Models" sections 1 through 4 and ADR-006. Keep this task centered on `Compozy_lifecycle` and any narrowly scoped helper usage needed to reconcile Runtime Home metadata from Compozy Task Step truth.
@@ -62,14 +64,14 @@ Reference TechSpec "Data Models" sections 1 through 4 and ADR-006. Keep this tas
 
 ## Tests
 - Unit tests:
-  - [ ] Lifecycle JSON round-trip preserves version `1` schema and optional fields.
-  - [ ] Missing lifecycle metadata backfills from active task-step progress as `in_execution` and `not_ready`.
-  - [ ] Missing lifecycle metadata backfills from completed task-step progress as `completed` with the expected readiness policy.
-  - [ ] Stale `completed` or `ready` metadata is downgraded when task-step truth becomes `failed`, `skipped`, `blocked`, or `not_pr_ready`.
-  - [ ] Handoff-related metadata keeps `pr_handoff` as the lifecycle phase while readiness remains `handoff_attempting`, `handoff_completed`, or `handoff_failed`.
+  - [x] Lifecycle JSON round-trip preserves version `1` schema and optional fields.
+  - [x] Missing lifecycle metadata backfills from active task-step progress as `in_execution` and `not_ready`.
+  - [x] Missing lifecycle metadata backfills from completed task-step progress as `completed` with the expected readiness policy.
+  - [x] Stale `completed` or `ready` metadata is downgraded when task-step truth becomes `failed`, `skipped`, `blocked`, or `not_pr_ready`.
+  - [x] Handoff-related metadata keeps `pr_handoff` as the lifecycle phase while readiness remains `handoff_attempting`, `handoff_completed`, or `handoff_failed`.
 - Integration tests:
-  - [ ] Runtime lifecycle load for a discovered Compozy PRD Run returns reconciled metadata after a task-step truth change.
-  - [ ] Corrupt or stale lifecycle metadata is repaired from task-step truth without changing Compozy Task Step files.
+  - [x] Runtime lifecycle load for a discovered Compozy PRD Run returns reconciled metadata after a task-step truth change.
+  - [x] Corrupt or stale lifecycle metadata is repaired from task-step truth without changing Compozy Task Step files.
 - Test coverage target: >=80%
 - All tests must pass
 

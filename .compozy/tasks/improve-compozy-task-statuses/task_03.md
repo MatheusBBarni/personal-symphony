@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Complete orchestrator lifecycle transitions for dispatch, retry, blocked, completion, and handoff"
 type: backend
 complexity: high
@@ -32,11 +32,11 @@ Finish the run-level transition matrix in orchestration so planners, engineers, 
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Audit existing Compozy transition writes across dispatch, retry, blocked, completion, and handoff paths.
-- [ ] 3.2 Align stage-started transitions for planner, engineer, and reviewer dispatch.
-- [ ] 3.3 Tighten retry and failure transitions so retrying, failed, and blocked outcomes remain distinct.
-- [ ] 3.4 Preserve completion and Batch Pull Request handoff semantics for ready, disabled, and failed handoff paths.
-- [ ] 3.5 Add focused backend integration coverage for representative transition sequences.
+- [x] 3.1 Audit existing Compozy transition writes across dispatch, retry, blocked, completion, and handoff paths.
+- [x] 3.2 Align stage-started transitions for planner, engineer, and reviewer dispatch.
+- [x] 3.3 Tighten retry and failure transitions so retrying, failed, and blocked outcomes remain distinct.
+- [x] 3.4 Preserve completion and Batch Pull Request handoff semantics for ready, disabled, and failed handoff paths.
+- [x] 3.5 Add focused backend integration coverage for representative transition sequences.
 
 ## Implementation Details
 Reference TechSpec "Implementation Design" mapping rules, TechSpec "Integration Tests", and ADR-004 through ADR-006. Keep the implementation centered on Compozy lifecycle update calls inside `orchestrator.ml`; do not redesign Stage Agent orchestration or Pull Request Policy defaults.
@@ -65,15 +65,15 @@ Reference TechSpec "Implementation Design" mapping rules, TechSpec "Integration 
 
 ## Tests
 - Unit tests:
-  - [ ] Planner dispatch records `in_planning` and reviewer dispatch records `in_review`.
-  - [ ] Engineer dispatch and retrying task-step failure keep lifecycle `in_execution` with non-ready status.
-  - [ ] Final failed task-step over retry limit records lifecycle `failed` with a reason.
-  - [ ] Non-retryable completion and protected-path attention record lifecycle `blocked`.
-  - [ ] Batch Pull Request handoff helper records `handoff_attempting`, `handoff_completed`, and `handoff_failed` while lifecycle remains `pr_handoff`.
+  - [x] Planner dispatch records `in_planning` and reviewer dispatch records `in_review`.
+  - [x] Engineer dispatch and retrying task-step failure keep lifecycle `in_execution` with non-ready status.
+  - [x] Final failed task-step over retry limit records lifecycle `failed` with a reason.
+  - [x] Non-retryable completion and protected-path attention record lifecycle `blocked`.
+  - [x] Batch Pull Request handoff helper records `handoff_attempting`, `handoff_completed`, and `handoff_failed` while lifecycle remains `pr_handoff`.
 - Integration tests:
-  - [ ] Successful Compozy PRD Run completion records `completed` and the expected readiness for Pull Request Policy mode.
-  - [ ] Failed, skipped, blocked, and handoff-failed runs never appear ready for an aggregate Batch Pull Request.
-  - [ ] Existing Compozy orchestration paths still avoid per-step pull requests in batch mode.
+  - [x] Successful Compozy PRD Run completion records `completed` and the expected readiness for Pull Request Policy mode.
+  - [x] Failed, skipped, blocked, and handoff-failed runs never appear ready for an aggregate Batch Pull Request.
+  - [x] Existing Compozy orchestration paths still avoid per-step pull requests in batch mode.
 - Test coverage target: >=80%
 - All tests must pass
 

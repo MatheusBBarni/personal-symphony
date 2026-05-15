@@ -76,4 +76,3 @@ Reference the TechSpec sections "Component Overview", "Core Interfaces", "Data M
 - Test coverage >=80%
 - Docker lifecycle decisions are isolated in one helper boundary with repository-scoped identity.
 - Bootstrap commands and reuse outcomes behave deterministically for create, reuse, and recreate cases.
-

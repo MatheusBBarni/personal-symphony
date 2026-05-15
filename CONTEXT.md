@@ -105,11 +105,11 @@ One `task_NN.md` file inside a Compozy PRD Run that Symphony executes as an orde
 _Avoid_: separate Symphony issue, GitHub issue, standalone task
 
 **Compozy PRD Run Lifecycle**:
-The run-level state for one Compozy PRD Run, separate from Compozy Task Step progress, that reports whether the run is pending, planning, executing, reviewing, blocked, completed, failed, skipped, not PR-ready, or in Batch Pull Request handoff.
+The run-level state for one Compozy PRD Run, separate from Compozy Task Step progress, represented by `pending`, `in_planning`, `in_execution`, `in_review`, `blocked`, `completed`, `failed`, `skipped`, `not_pr_ready`, or `pr_handoff`.
 _Avoid_: task status, step status, issue lane
 
 **Compozy PR Readiness**:
-The run-level Batch Pull Request eligibility summary for one Compozy PRD Run, separate from Compozy Task Step progress and represented as disabled, not-ready, ready, handoff attempting, handoff completed, or handoff failed.
+The run-level Batch Pull Request eligibility summary for one Compozy PRD Run, separate from Compozy Task Step progress and represented by `disabled`, `not_ready`, `ready`, `handoff_attempting`, `handoff_completed`, or `handoff_failed`.
 _Avoid_: completed steps, terminal progress, review status
 
 **Runtime Settings Invocation Override**:

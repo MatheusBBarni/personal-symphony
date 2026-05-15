@@ -76,4 +76,3 @@ Reference the TechSpec sections "System Architecture", "Implementation Design", 
 - Test coverage >=80%
 - Sandbox settings are parsed from the **Runtime Settings** without affecting disabled repositories.
 - Sandbox-enabled invalid repositories are blocked through existing readiness mechanisms before dispatch.
-

@@ -78,4 +78,3 @@ Reference the TechSpec sections "Data Flow", "Impact Analysis", and "Integration
 - Test coverage >=80%
 - Sandbox-enabled repositories execute through Docker at the launch boundary without changing orchestration ownership.
 - Existing host launch behavior and retry semantics remain intact for repositories without sandboxing enabled.
-
