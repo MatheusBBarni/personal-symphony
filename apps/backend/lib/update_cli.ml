@@ -94,6 +94,44 @@ let command_success command =
   let result = shell command in
   if result.code = 0 then Ok result.output else Error result.output
 
+let split_once sep text =
+  match String.index_opt text sep with
+  | None -> (text, None)
+  | Some index ->
+      ( String.sub text 0 index,
+        Some (String.sub text (index + 1) (String.length text - index - 1)) )
+
+let all_digits text =
+  String.length text > 0
+  && String.for_all (function '0' .. '9' -> true | _ -> false) text
+
+let valid_version_identifier text =
+  String.length text > 0
+  && String.for_all
+       (function 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '-' -> true | _ -> false)
+       text
+
+let valid_version_identifiers text =
+  String.length text > 0
+  && text |> String.split_on_char '.' |> List.for_all valid_version_identifier
+
+let valid_npm_version version =
+  let core_and_pre, build = split_once '+' version in
+  let core, prerelease = split_once '-' core_and_pre in
+  let core_valid =
+    match String.split_on_char '.' core with
+    | [ major; minor; patch ] -> List.for_all all_digits [ major; minor; patch ]
+    | _ -> false
+  in
+  core_valid
+  && Option.fold ~none:true ~some:valid_version_identifiers prerelease
+  && Option.fold ~none:true ~some:valid_version_identifiers build
+
+let parse_version_text output =
+  let version = Util.trim output in
+  if valid_npm_version version then Ok version
+  else Error ("npm returned invalid package version: " ^ output)
+
 let find_callable () =
   match Util.getenv_nonempty "SYMPHONY_LAUNCHER_PATH" with
   | Some path -> Ok path
@@ -103,16 +141,19 @@ let find_callable () =
 let parse_latest_version output =
   try
     match Yojson.Basic.from_string output with
-    | `String version when Util.trim version <> "" -> Ok (Util.trim version)
+    | `String version -> parse_version_text version
     | _ -> Error ("npm returned malformed version metadata: " ^ output)
   with Yojson.Json_error _ -> (
     let trimmed = Util.trim output in
-    if trimmed <> "" && not (String.contains trimmed '\n') then Ok trimmed
+    if trimmed <> "" && not (String.contains trimmed '\n') then parse_version_text trimmed
     else Error ("npm returned malformed version metadata: " ^ output))
 
+let package_spec version = package_name ^ "@" ^ version
+
 let manual_repair ~target_version ~install_prefix =
-  Printf.sprintf "Manual repair: run npm install -g %s@%s --prefix %s, then run symphony --version."
-    package_name target_version (Util.shell_quote install_prefix)
+  Printf.sprintf "Manual repair: run npm install -g %s --prefix %s, then run symphony --version."
+    (Util.shell_quote (package_spec target_version))
+    (Util.shell_quote install_prefix)
 
 let confirm_update ~current_version ~latest_version ~install_prefix ~install_command =
   Printf.printf "current version: %s\n" current_version;
@@ -156,7 +197,8 @@ let run ?(runner = shell) ?(find_callable = find_callable) ?(is_tty = fun () -> 
                   0)
                 else
                   let install_command =
-                    Printf.sprintf "npm install -g %s@%s --prefix %s" package_name latest_version
+                    Printf.sprintf "npm install -g %s --prefix %s"
+                      (Util.shell_quote (package_spec latest_version))
                       (Util.shell_quote install_prefix)
                   in
                   if (not yes) && not (is_tty ()) then (

@@ -18,4 +18,6 @@
   yojson
   cmdliner
   alcotest
-  mosaic))
+  tui
+  uutf
+  toffee))

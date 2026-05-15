@@ -376,6 +376,8 @@ let fetch_prd_runs (config : Config.t) =
 
 let runnable_prd_run (run : prd_run) = Option.is_some run.current_step
 
+let completed_prd_run (run : prd_run) = run.counts.total > 0 && run.counts.total = run.counts.completed
+
 let readiness_gaps (config : Config.t) =
   let root = config.tracker.compozy_root in
   let gap requirement remediation = { requirement; remediation } in
@@ -469,6 +471,40 @@ let current_prompt (run : prd_run) =
                     @ List.filter_map Fun.id [ prd_section; techspec_section ]
                   in
                   Ok (String.concat "\n" sections))))
+
+let completed_prompt (run : prd_run) =
+  if not (completed_prd_run run) then current_prompt run
+  else
+    let completed_steps =
+      run.steps
+      |> List.map (fun (step : task_step) -> Printf.sprintf "- %s: %s" step.file step.title)
+      |> String.concat "\n"
+    in
+    let header =
+      Printf.sprintf
+        "# Compozy PRD Run Stage\n\nRun: %s\nPRD directory: %s\nTask step status: completed\nCompleted task steps: %d/%d\n"
+        run.id run.slug run.counts.completed run.counts.total
+    in
+    match prompt_optional_file run "_prd.md" "PRD (`_prd.md`)" with
+    | Error _ as error -> error
+    | Ok prd_section -> (
+        match prompt_optional_file run "_techspec.md" "TechSpec (`_techspec.md`)" with
+        | Error _ as error -> error
+        | Ok techspec_section ->
+            let sections =
+              [
+                header;
+                prompt_section "Completed Compozy Task Steps" completed_steps;
+              ]
+              @ List.filter_map Fun.id [ prd_section; techspec_section ]
+            in
+            Ok (String.concat "\n" sections))
+
+let stage_prompt (run : prd_run) =
+  match run.current_step with
+  | Some _ -> current_prompt run
+  | None when completed_prd_run run -> completed_prompt run
+  | None -> current_prompt run
 
 let yaml_line_value = function
   | `Status status -> status

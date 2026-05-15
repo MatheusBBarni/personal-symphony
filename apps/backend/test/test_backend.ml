@@ -1956,6 +1956,76 @@ let test_compozy_runtime_readiness_valid_fixture_omits_github_gaps () =
               Alcotest.(check int) "total" 1 progress.total
           | None -> Alcotest.fail "expected initial Compozy progress"))
 
+let test_compozy_runtime_readiness_repairs_stale_attention_lifecycle () =
+  with_temp_dir "symphony-compozy-runtime-readiness-stale-attention-" (fun root ->
+      let base_config = write_compozy_settings root in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              terminal_states = "human_attention" :: base_config.tracker.terminal_states;
+            };
+        }
+      in
+      let prd_dir = Filename.concat config.Config.tracker.compozy_root "attention-run" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Needs previous session follow-up" (Filename.concat prd_dir "task_01.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      Compozy_lifecycle.save config
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_execution;
+          dispatch_state = "human_attention";
+          stage_agent = Some "engineer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-14T21:55:52Z";
+        }
+      |> require_ok "save lifecycle";
+      let ordered_queue =
+        match Ordered_queue.parse "compozy:attention-run" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let fresh_state = Runtime_readiness.state ~ordered_queue config in
+      Alcotest.(check (list string)) "fresh queue repairs stale terminal lifecycle" []
+        (runtime_requirements fresh_state.Runtime_state.readiness_gaps);
+      (match Compozy_lifecycle.load config run |> require_ok "load repaired lifecycle" with
+      | Some lifecycle ->
+          Alcotest.(check string) "dispatch state repaired" "In progress" lifecycle.dispatch_state
+      | None -> Alcotest.fail "expected repaired lifecycle");
+      let resumed_queue =
+        {
+          Runtime_state.entries =
+            [
+              {
+                Runtime_state.issue_identifier = "compozy:attention-run";
+                title = Some "Compozy PRD run: attention-run";
+                state = "running";
+                skip_reason = None;
+              };
+            ];
+        }
+      in
+      let queue_state_path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname queue_state_path);
+      Util.write_file queue_state_path (Runtime_state.ordered_queue_to_yojson resumed_queue |> Yojson.Safe.to_string);
+      let resumed_state = Runtime_readiness.state ~ordered_queue config in
+      Alcotest.(check (list string)) "resumed queue has no readiness gaps" []
+        (runtime_requirements resumed_state.Runtime_state.readiness_gaps);
+      match resumed_state.Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "readiness exposes resumed queue state" [ "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected resumed ordered queue")
+
 let test_github_runtime_readiness_still_reports_github_gaps () =
   with_env [ ("GITHUB_TOKEN", ""); ("GH_TOKEN", "") ] (fun () ->
       with_temp_dir "symphony-github-runtime-readiness-gaps-" (fun root ->
@@ -2882,8 +2952,8 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
       "Run `symphony` from the Workspace Repository root";
       "Runtime State snapshots";
       "Readiness Gaps";
-      "Ordered Queue progress";
-      "Compozy PRD Run progress";
+      "Queue progress";
+      "Logs progress";
       "Agent Worktree details";
       "Task Branch context";
       "Web Dashboard handoff command";
@@ -3513,17 +3583,37 @@ let test_update_discovery_failure_does_not_install () =
         [ "npm view symphony-orchestrator version --json" ]
         (List.rev !commands))
 
+let test_update_rejects_invalid_latest_version_before_install () =
+  with_temp_dir "symphony-update-invalid-version-" (fun root ->
+      let _, launcher, _ = make_fake_npm_install root in
+      let commands = ref [] in
+      let runner command =
+        commands := command :: !commands;
+        if command = "npm view symphony-orchestrator version --json" then
+          { Update_cli.code = 0; output = {|"0.2.0;touch /tmp/symphony-owned"|} }
+        else Alcotest.fail ("unexpected command: " ^ command)
+      in
+      let code =
+        Update_cli.run ~runner ~find_callable:(fun () -> Ok launcher) ~is_tty:(fun () -> false) ~current_version:"0.1.1"
+          ~yes:true ()
+      in
+      Alcotest.(check int) "exit code" 1 code;
+      Alcotest.(check (list string)) "only discovers latest"
+        [ "npm view symphony-orchestrator version --json" ]
+        (List.rev !commands))
+
 let test_update_installs_and_validates_with_yes () =
   with_temp_dir "symphony-update-yes-" (fun root ->
       let prefix, launcher, launcher_target = make_fake_npm_install root in
       let launcher_real = Unix.realpath launcher_target in
+      let package_spec = Util.shell_quote "symphony-orchestrator@0.2.0" in
       let commands = ref [] in
       let runner command =
         commands := command :: !commands;
         if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
         else if
           command
-          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+          = Printf.sprintf "npm install -g %s --prefix %s" package_spec (Util.shell_quote prefix)
         then { Update_cli.code = 0; output = "installed" }
         else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
         else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
@@ -3540,13 +3630,14 @@ let test_update_installs_and_validates_with_yes () =
 let test_update_install_failure_does_not_validate () =
   with_temp_dir "symphony-update-install-failure-" (fun root ->
       let prefix, launcher, _ = make_fake_npm_install root in
+      let package_spec = Util.shell_quote "symphony-orchestrator@0.2.0" in
       let commands = ref [] in
       let runner command =
         commands := command :: !commands;
         if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
         else if
           command
-          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+          = Printf.sprintf "npm install -g %s --prefix %s" package_spec (Util.shell_quote prefix)
         then { Update_cli.code = 1; output = "EACCES" }
         else Alcotest.fail ("unexpected command: " ^ command)
       in
@@ -3561,11 +3652,12 @@ let test_update_validation_failure_is_not_success () =
   with_temp_dir "symphony-update-validation-" (fun root ->
       let prefix, launcher, launcher_target = make_fake_npm_install root in
       let launcher_real = Unix.realpath launcher_target in
+      let package_spec = Util.shell_quote "symphony-orchestrator@0.2.0" in
       let runner command =
         if command = "npm view symphony-orchestrator version --json" then { Update_cli.code = 0; output = {|"0.2.0"|} }
         else if
           command
-          = Printf.sprintf "npm install -g symphony-orchestrator@0.2.0 --prefix %s" (Util.shell_quote prefix)
+          = Printf.sprintf "npm install -g %s --prefix %s" package_spec (Util.shell_quote prefix)
         then { Update_cli.code = 0; output = "installed" }
         else if command = "command -v symphony" then { Update_cli.code = 0; output = launcher }
         else if command = Printf.sprintf "%s --version" (Util.shell_quote launcher_real) then
@@ -4436,7 +4528,7 @@ let test_terminal_console_model_projects_compozy_progress () =
   let progress =
     {
       Runtime_state.run_id = "compozy:\027[31mrun\027[0m";
-      slug = "mosaic-tui";
+      slug = "tui-rewrite";
       current_step = Some "task_02.md";
       completed = 1;
       failed = 2;
@@ -4462,7 +4554,7 @@ let test_terminal_console_model_projects_compozy_progress () =
       Alcotest.(check int) "failed" 2 projected.failed;
       Alcotest.(check int) "skipped" 3 projected.skipped;
       Alcotest.(check int) "total" 9 projected.total;
-      Alcotest.(check string) "summary" "mosaic-tui: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
+      Alcotest.(check string) "summary" "tui-rewrite: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
         projected.summary
   | None -> Alcotest.fail "expected Compozy progress"
 
@@ -4476,20 +4568,20 @@ let test_terminal_console_model_sanitizes_untrusted_text () =
   Alcotest.(check string) "secret assignment redacted" "GITHUB_TOKEN=[redacted]"
     (Terminal_console_model.sanitize "GITHUB_TOKEN=super-secret")
 
-let test_terminal_console_mosaic_status_labels () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_status_labels () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   Alcotest.(check string) "idle" "Idle" (Shell.status_label "idle");
   Alcotest.(check string) "running" "Running" (Shell.status_label "running");
   Alcotest.(check string) "retrying" "Retrying" (Shell.status_label "retrying");
   Alcotest.(check string) "attention" "Needs attention" (Shell.status_label "attention");
   Alcotest.(check string) "readiness blocked" "Readiness blocked" (Shell.status_label "readiness_blocked")
 
-let test_terminal_console_mosaic_initial_model_uses_projection () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_initial_model_uses_projection () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let issue, running =
     terminal_console_running_row ~identifier:"\027[32m#9\027[0m"
-      ~title:"Render\027]0;spoof\007 Mosaic\000 shell"
-      ~branch_name:"feature/\027[31mmosaic\027[0m" "I9"
+      ~title:"Render\027]0;spoof\007 Tui\000 shell"
+      ~branch_name:"feature/\027[31mtui\027[0m" "I9"
   in
   let state =
     {
@@ -4503,10 +4595,10 @@ let test_terminal_console_mosaic_initial_model_uses_projection () =
   match model.snapshot.Terminal_console_model.active with
   | [ row ] ->
       Alcotest.(check string) "identifier sanitized" "#9" row.Terminal_console_model.id;
-      Alcotest.(check string) "title sanitized" "Render Mosaic shell" row.title;
+      Alcotest.(check string) "title sanitized" "Render Tui shell" row.title;
       (match row.detail with
       | Some detail ->
-          Alcotest.(check bool) "branch sanitized" true (contains_substring detail "branch feature/mosaic");
+          Alcotest.(check bool) "branch sanitized" true (contains_substring detail "branch feature/tui");
           check_no_terminal_control "detail has no terminal controls" detail
       | None -> Alcotest.fail "expected detail")
   | _ -> Alcotest.fail "expected one active shell row"
@@ -4522,13 +4614,26 @@ let check_wrapped_text_contains label lines expected =
 
 let terminal_console_snapshot state = Terminal_console_model.of_runtime_state state
 
-let terminal_console_rendered ?terminal_size state =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
-  Shell.render_snapshot ?terminal_size (terminal_console_snapshot state)
+let terminal_console_rendered ?terminal_size ?logs state =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  Shell.render_snapshot ?terminal_size ?logs (terminal_console_snapshot state)
 
-let terminal_console_panel ?terminal_size state title =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
-  Shell.panel_lines (terminal_console_rendered ?terminal_size state) title
+let terminal_console_panel ?terminal_size ?logs state title =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let snapshot = terminal_console_snapshot state in
+  if title = "Task Detail" then
+    let panel = Shell.task_detail_panel ?terminal_size snapshot in
+    panel.Shell.lines
+  else Shell.panel_lines (Shell.render_snapshot ?terminal_size ?logs snapshot) title
+
+let test_terminal_console_tui_project_title_and_tabs () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let state = Runtime_state.empty ~workspace_repository_name:"workspace-one" () in
+  let rendered = Shell.render_snapshot (terminal_console_snapshot state) in
+  Alcotest.(check string) "project title" "workspace-one" rendered.Shell.heading;
+  Alcotest.(check string) "status" "STOPPED" rendered.Shell.status_label;
+  Alcotest.(check string) "tabs" "Queue | Logs | Tasks | Readiness | Needs attention" rendered.Shell.tabs;
+  check_line_absent "subheading does not repeat active tab" [ rendered.Shell.subheading ] "tab "
 
 let terminal_console_queue_fixture () =
   {
@@ -4545,7 +4650,7 @@ let terminal_console_queue_fixture () =
 let terminal_console_compozy_fixture =
   {
     Runtime_state.run_id = "compozy:run";
-    slug = "mosaic-tui";
+    slug = "tui-rewrite";
     current_step = Some "task_04.md";
     completed = 2;
     failed = 1;
@@ -4559,7 +4664,7 @@ let terminal_console_compozy_fixture =
     handoff_status = None;
   }
 
-let test_terminal_console_mosaic_active_home_panel () =
+let test_terminal_console_tui_active_home_panel () =
   let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
   let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
   let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
@@ -4583,16 +4688,19 @@ let test_terminal_console_mosaic_active_home_panel () =
       usage_totals = { Runtime_state.input_tokens = 40; output_tokens = 60; total_tokens = 100 };
     }
   in
-  let lines = terminal_console_panel state "Active Work" in
+  let lines = terminal_console_panel state "Tasks" in
   check_line_contains "home includes running row" lines "RUNNING #1 Running task";
   check_line_contains "home includes retrying row" lines "RETRYING #2 Retry task";
   check_line_contains "home includes attention row" lines "ATTENTION #3 Attention task";
   check_line_contains "home includes next queued work" lines "Next work: NEXT PENDING #1 One";
   check_line_contains "home includes token total" lines "Total tokens: 100";
-  check_line_contains "home includes update context" lines "Updated:"
+  check_line_contains "home includes update context" lines "Updated:";
+  let attention_lines = terminal_console_panel state "Needs attention" in
+  check_line_contains "attention tab includes attention row" attention_lines "ATTENTION #3 Attention task";
+  check_line_contains "attention tab includes error" attention_lines "Current error: needs merge"
 
-let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_readiness_attention_panel_wraps_remediation () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let size : Shell.terminal_size = { columns = 80; rows = 24 } in
   let state =
     Runtime_state.empty
@@ -4611,7 +4719,7 @@ let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () 
         ]
       ()
   in
-  let lines = terminal_console_panel ~terminal_size:size state "Readiness and Attention" in
+  let lines = terminal_console_panel ~terminal_size:size state "Readiness" in
   check_line_contains "first requirement" lines "READINESS GAP 1 requirement: tracker.owner";
   check_wrapped_text_contains "first remediation retained" lines
     "Set tracker.owner in Runtime Settings so dispatch can discover Workspace Repository issues.";
@@ -4619,9 +4727,9 @@ let test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation () 
   check_wrapped_text_contains "second remediation retained" lines
     "Use stageAgents.stages[].context.command with an argv array and a Workspace Repository safe cwd"
 
-let test_terminal_console_mosaic_ordered_queue_panel_states () =
+let test_terminal_console_tui_ordered_queue_panel_states () =
   let state = Runtime_state.empty ~ordered_queue:(terminal_console_queue_fixture ()) () in
-  let lines = terminal_console_panel state "Ordered Queue" in
+  let lines = terminal_console_panel state "Queue" in
   check_line_contains "queue next work" lines "Next work: NEXT PENDING #1 One";
   check_line_contains "pending state" lines "PENDING #1 One";
   check_line_contains "running state" lines "RUNNING #2 Two";
@@ -4630,14 +4738,119 @@ let test_terminal_console_mosaic_ordered_queue_panel_states () =
   check_line_contains "skipped state" lines "SKIPPED #5 Five";
   check_line_contains "skip reason" lines "skip reason: Issue skipped"
 
-let test_terminal_console_mosaic_compozy_panel_counts () =
-  let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:terminal_console_compozy_fixture () in
-  let lines = terminal_console_panel state "Compozy PRD Run" in
-  check_line_contains "compozy slug" lines "Compozy PRD Run: mosaic-tui";
-  check_line_contains "compozy current step" lines "Current step: task_04.md";
-  check_line_contains "compozy counts" lines "Progress: completed 2 | failed 1 | skipped 3 | total 8"
+let test_terminal_console_tui_queue_flags_current_compozy_task_step () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "compozy:tui-rewrite";
+            title = Some "Compozy PRD run: tui-rewrite";
+            state = "running";
+            skip_reason = None;
+          };
+        ];
+    }
+  in
+  let state =
+    Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:queue
+      ~compozy_progress:terminal_console_compozy_fixture ()
+  in
+  let lines = terminal_console_panel state "Queue" in
+  check_line_contains "queue row current step" lines "Current Compozy Task Step: task_04.md";
+  check_line_contains "queue row step progress" lines "progress completed 2, failed 1, skipped 3, total 8";
+  let expanded = Shell.initial_model state |> Shell.apply_key Shell.Space_key in
+  let expanded_lines = Shell.render_model expanded.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_contains "expanded current step" expanded_lines "Current Compozy Task Step: task_04.md"
 
-let test_terminal_console_mosaic_task_detail_panel_includes_context () =
+let test_terminal_console_tui_queue_space_expands_selected_stage () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  (match Shell.ui_key_of_tui_key (Tui.Key.of_sequence " ") with
+  | Some Shell.Space_key -> ()
+  | _ -> Alcotest.fail "expected terminal space key to map to Queue expansion key");
+  let running_issue, running = terminal_console_running_row ~identifier:"#2" ~title:"Two" "I2" in
+  let queue =
+    { Runtime_state.entries = [ { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "running"; skip_reason = None } ] }
+  in
+  let state =
+    {
+      (Runtime_state.empty ~ordered_queue:queue ()) with
+      issues = [ running_issue ];
+      running = [ running ];
+    }
+  in
+  let model = Shell.initial_model state in
+  let expanded = Shell.apply_key Shell.Space_key model in
+  Alcotest.(check (option string)) "expanded queue row" (Some "#2")
+    expanded.model.Shell.interaction.Shell.expanded_queue_id;
+  let lines = Shell.render_model expanded.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_contains "expanded task line" lines "Task: #2 Two";
+  check_line_contains "expanded stage agent" lines "Stage: stage agent engineer";
+  check_wrapped_text_contains "expanded stage states" lines "stage states Todo, In progress";
+  let collapsed = Shell.apply_key Shell.Space_key expanded.model in
+  Alcotest.(check (option string)) "collapsed queue row" None
+    collapsed.model.Shell.interaction.Shell.expanded_queue_id
+
+let test_terminal_console_tui_logs_panel_uses_background_logs () =
+  let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:terminal_console_compozy_fixture () in
+  let logs =
+    [
+      "bootstrap 0 created 12 already configured";
+      "startup ready terminal_console tracker compozy_tasks /tmp/tasks event=startup outcome=completed";
+      "18:09:52 poll checking compozy_tasks tracker, 0 running, 0 retrying";
+    ]
+  in
+  let lines = terminal_console_panel ~logs state "Logs" in
+  check_line_contains "bootstrap log" lines "bootstrap 0 created 12 already configured";
+  check_line_contains "startup log" lines "startup ready terminal_console tracker compozy_tasks";
+  check_line_contains "poll log" lines "poll checking compozy_tasks tracker";
+  check_line_absent "logs tab is not summary panel" lines "Compozy PRD Run: tui-rewrite"
+
+let test_terminal_console_tui_logs_panel_newest_first_and_scrolls () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let size : Shell.terminal_size = { columns = 80; rows = 24 } in
+  let logs = List.init 18 (fun index -> Printf.sprintf "log-%02d" (index + 1)) in
+  let snapshot = terminal_console_snapshot (Runtime_state.empty ()) in
+  let interaction = Shell.{ default_interaction with active_tab = Logs } in
+  let newest_lines =
+    Shell.render_snapshot ~terminal_size:size ~interaction ~logs snapshot |> fun rendered ->
+    Shell.panel_lines rendered "Logs"
+  in
+  (match newest_lines with
+  | first :: _ -> check_line_contains "newest log first" [ first ] "log-18"
+  | [] -> Alcotest.fail "expected log lines");
+  check_line_absent "oldest log outside first page" newest_lines "log-01";
+  let scrolled_lines =
+    Shell.render_snapshot ~terminal_size:size ~interaction:Shell.{ interaction with logs_scroll = 2 } ~logs snapshot
+    |> fun rendered -> Shell.panel_lines rendered "Logs"
+  in
+  (match scrolled_lines with
+  | first :: _ -> check_line_contains "scroll moves toward older logs" [ first ] "log-16"
+  | [] -> Alcotest.fail "expected scrolled log lines");
+  let model = Shell.initial_model ~terminal_size:size ~logs (Runtime_state.empty ()) in
+  let model = Shell.{ model with interaction } in
+  let moved_down = Shell.apply_key Shell.Down_key model in
+  Alcotest.(check int) "down scrolls logs" 1 moved_down.model.Shell.interaction.Shell.logs_scroll;
+  let moved_up = Shell.apply_key Shell.Up_key moved_down.model in
+  Alcotest.(check int) "up scrolls logs" 0 moved_up.model.Shell.interaction.Shell.logs_scroll
+
+let test_terminal_console_tui_log_paths_are_compact () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  Alcotest.(check string) "runtime file path" "symphony-orchestrator/.symphony/settings.json"
+    (Shell.compact_path_token
+       "/Users/matheusbbarni/projects/symphony-orchestrator/.symphony/settings.json");
+  Alcotest.(check string) "compozy root path" "symphony-orchestrator/.compozy/tasks"
+    (Shell.compact_path_token
+       "/Users/matheusbbarni/projects/symphony-orchestrator/.compozy/tasks");
+  Alcotest.(check string) "relative path" ".symphony/settings.json"
+    (Shell.compact_path_token ".symphony/settings.json");
+  Alcotest.(check string) "log line path"
+    "kept settings.json symphony-orchestrator/.symphony/settings.json"
+    (Shell.compact_log_line
+       "kept settings.json /Users/matheusbbarni/projects/symphony-orchestrator/.symphony/settings.json")
+
+let test_terminal_console_tui_task_detail_panel_includes_context () =
   let usage = { Runtime_state.status = Some "active"; time_used_seconds = Some 12.; tokens_used = Some 77 } in
   let issue, running =
     terminal_console_running_row ~identifier:"#10" ~title:"Detailed task" ~branch_name:"feature/detail"
@@ -4660,7 +4873,7 @@ let test_terminal_console_mosaic_task_detail_panel_includes_context () =
   check_line_contains "detail goal usage" lines "Goal Usage: status active | time 12s | tokens 77";
   check_line_contains "detail context" lines "Context Status: warning: Context needs review"
 
-let test_terminal_console_mosaic_task_detail_omits_absent_optional_fields () =
+let test_terminal_console_tui_task_detail_omits_absent_optional_fields () =
   let issue = Issue.empty ~id:"I11" ~identifier:"#11" ~title:"Attention without extras" ~state:"In progress" in
   let state =
     {
@@ -4674,8 +4887,39 @@ let test_terminal_console_mosaic_task_detail_omits_absent_optional_fields () =
   check_line_absent "goal omitted" lines "Goal Usage:";
   check_line_absent "context omitted" lines "Context Status:"
 
-let test_terminal_console_mosaic_no_color_labels_remain_distinct () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_tasks_panel_separates_task_rows () =
+  let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
+  let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
+  let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ running_issue; retry_issue; attention_issue ];
+      running = [ running ];
+      retrying =
+        [
+          {
+            Runtime_state.issue_id = "I2";
+            issue_identifier = "#2";
+            attempt = 1;
+            due_at = "2026-05-04T00:02:00Z";
+            error = None;
+            goal_usage = None;
+          };
+        ];
+      issue_errors = [ { Runtime_state.issue_id = "I3"; issue_identifier = "#3"; error = "blocked"; goal_usage = None } ];
+    }
+  in
+  let lines = terminal_console_panel state "Tasks" in
+  let separator_count =
+    List.fold_left
+      (fun count line -> if contains_substring line "------------" then count + 1 else count)
+      0 lines
+  in
+  Alcotest.(check int) "task separators" 2 separator_count
+
+let test_terminal_console_tui_no_color_labels_remain_distinct () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let running_issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Running task" "I1" in
   let retry_issue = Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Retry task" ~state:"Todo" in
   let attention_issue = Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention task" ~state:"In progress" in
@@ -4712,8 +4956,8 @@ let test_terminal_console_mosaic_no_color_labels_remain_distinct () =
   let idle_lines = Runtime_state.empty () |> terminal_console_rendered |> Shell.rendered_lines in
   check_line_contains "idle text label" idle_lines "IDLE No active work"
 
-let test_terminal_console_mosaic_renders_runtime_state_fixtures () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_renders_runtime_state_fixtures () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let running_issue, running = terminal_console_running_row ~identifier:"#20" ~title:"Running fixture" "I20" in
   let retry_issue = Issue.empty ~id:"I21" ~identifier:"#21" ~title:"Retry fixture" ~state:"Todo" in
   let states =
@@ -4753,8 +4997,8 @@ let test_terminal_console_mosaic_renders_runtime_state_fixtures () =
       Alcotest.(check bool) (name ^ " rendered lines") true (Shell.rendered_lines rendered <> []))
     states
 
-let test_terminal_console_mosaic_minimum_size_message () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_minimum_size_message () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let small : Shell.terminal_size = { columns = 72; rows = 20 } in
   let rendered = Shell.render_snapshot ~terminal_size:small (terminal_console_snapshot (Runtime_state.empty ())) in
   let lines = Shell.rendered_lines rendered in
@@ -4783,21 +5027,23 @@ let terminal_console_interaction_state () =
       ];
   }
 
-let test_terminal_console_mosaic_navigation_is_ui_only () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_navigation_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (terminal_console_interaction_state ()) in
   let snapshot = model.Shell.snapshot in
-  let moved_row = Shell.apply_key Shell.Down_key model in
+  let moved_to_logs = Shell.apply_key Shell.Right_key model in
+  let moved_to_tasks = Shell.apply_key Shell.Right_key moved_to_logs.model in
+  let moved_row = Shell.apply_key Shell.Down_key moved_to_tasks.model in
   Alcotest.(check bool) "row navigation keeps snapshot" true (moved_row.Shell.model.Shell.snapshot == snapshot);
   Alcotest.(check int) "selected active row" 1
     moved_row.model.Shell.interaction.Shell.selected_rows.Shell.active;
-  let moved_panel = Shell.apply_key Shell.Right_key moved_row.model in
-  Alcotest.(check bool) "panel navigation keeps snapshot" true (moved_panel.model.Shell.snapshot == snapshot);
-  Alcotest.(check string) "focused panel" "Readiness and Attention"
-    (Shell.focused_panel_title moved_panel.model.Shell.interaction.Shell.focused_panel)
+  let moved_tab = Shell.apply_key Shell.Right_key moved_row.model in
+  Alcotest.(check bool) "tab navigation keeps snapshot" true (moved_tab.model.Shell.snapshot == snapshot);
+  Alcotest.(check string) "active tab" "Readiness"
+    (Shell.focused_tab_title moved_tab.model.Shell.interaction.Shell.active_tab)
 
-let test_terminal_console_mosaic_filtering_is_ui_only () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_filtering_is_ui_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (terminal_console_interaction_state ()) in
   let snapshot = model.Shell.snapshot in
   let opened = Shell.apply_key (Shell.Character '/') model in
@@ -4810,13 +5056,14 @@ let test_terminal_console_mosaic_filtering_is_ui_only () =
     (List.length (Shell.visible_active_rows applied.model.Shell.snapshot applied.model.Shell.interaction));
   Alcotest.(check int) "projected rows unchanged" 2 (List.length snapshot.Terminal_console_model.active)
 
-let test_terminal_console_mosaic_refresh_invokes_only_refresh_aid () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_refresh_invokes_only_refresh_aid () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (terminal_console_interaction_state ()) in
   let calls = ref [] in
   let runtime : Shell.runtime =
     {
       initial_state = Runtime_state.empty ();
+      initial_logs = [];
       subscribe = (fun _ -> ());
       safe_aid = (fun aid -> calls := aid :: !calls);
       web_handoff = Shell.default_web_handoff ();
@@ -4836,8 +5083,8 @@ let test_terminal_console_mosaic_refresh_invokes_only_refresh_aid () =
     (Some "Refreshed latest in-memory Runtime State snapshot")
     updated.status_message
 
-let test_terminal_console_mosaic_web_handoff_guidance_only () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_web_handoff_guidance_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (Runtime_state.empty ()) in
   let handoff = Shell.default_web_handoff ~port:7777 () in
   let transition = Shell.apply_key ~web_handoff:handoff (Shell.Character 'w') model in
@@ -4854,8 +5101,8 @@ let test_terminal_console_mosaic_web_handoff_guidance_only () =
       check_line_contains "handoff url" [ message ] "http://127.0.0.1:7777/"
   | None -> Alcotest.fail "expected Web Dashboard handoff guidance"
 
-let test_terminal_console_mosaic_invalid_path_is_ui_local () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_invalid_path_is_ui_local () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   with_temp_dir "symphony-terminal-path-root-" (fun root ->
       with_temp_dir "symphony-terminal-path-outside-" (fun outside_root ->
           let outside_file = Filename.concat outside_root "outside.txt" in
@@ -4884,21 +5131,28 @@ let test_terminal_console_mosaic_invalid_path_is_ui_local () =
           | None -> Alcotest.fail "expected invalid path status");
           Alcotest.(check string) "outside file unchanged" "unchanged\n" (Util.read_file outside_file)))
 
-let test_terminal_console_mosaic_footer_help_content () =
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+let test_terminal_console_tui_footer_help_content () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let model = Shell.initial_model (Runtime_state.empty ()) in
   let footer = Shell.render_model model |> fun rendered -> rendered.Shell.footer in
   List.iter
     (fun expected -> check_line_contains ("footer has " ^ expected) [ footer ] expected)
-    [ "q quit"; "Tab/Left/Right panels"; "/ search"; "r refresh"; "w Web Dashboard"; "o inspect path" ];
+    [ "[q]quit"; "[Tab]tabs"; "[/]search"; "[r]refresh"; "[w]web"; "[o]path"; "[?]help" ];
   let help = Shell.apply_key (Shell.Character '?') model in
-  let safe_aids = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Safe Aids" in
-  check_line_contains "help includes navigation" safe_aids "Up/Down or k/j move rows";
-  check_line_contains "help includes handoff" safe_aids "w show Web Dashboard handoff"
+  Alcotest.(check bool) "question mark opens command modal" true
+    help.model.Shell.interaction.Shell.help_visible;
+  Alcotest.(check (option string)) "modal status" (Some "Commands shown") help.model.Shell.status_message;
+  let queue = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_absent "modal help is not appended to active panel" queue "Help";
+  check_line_absent "commands stay out of active panel" queue "switch tabs";
+  let closed = Shell.apply_key Shell.Escape_key help.model in
+  Alcotest.(check bool) "escape closes command modal" false
+    closed.model.Shell.interaction.Shell.help_visible;
+  Alcotest.(check (option string)) "closed status" (Some "Commands hidden") closed.model.Shell.status_message
 
 let test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   with_temp_dir "symphony-terminal-runtime-path-" (fun root ->
       let diagnostic = Filename.concat root "diagnostic.txt" in
       Util.write_file diagnostic "diagnostic\n";
@@ -4948,7 +5202,7 @@ let terminal_console_runtime_branch_name = function
   | Symphony_terminal_console_shell.Terminal_console_runtime.Terminal_console_orchestrator ->
       "terminal_console_orchestrator"
 
-let test_terminal_console_runtime_selects_non_mosaic_paths () =
+let test_terminal_console_runtime_selects_non_tui_paths () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
   let readiness_gaps = [ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ] in
   let select ?(once = false) ?(mode = Cli_mode.Terminal_console) ?(merge_args = []) ?(readiness_gaps = [])
@@ -4990,7 +5244,7 @@ let test_terminal_console_runtime_handoff_subscribes_latest_snapshot () =
 
 let test_terminal_console_runtime_readiness_runs_ui_without_orchestration () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let readiness_state =
     Runtime_state.empty
       ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
@@ -5007,7 +5261,7 @@ let test_terminal_console_runtime_readiness_runs_ui_without_orchestration () =
 
 let test_terminal_console_runtime_orchestrator_notify_updates_initial_ui_state () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
-  let module Shell = Symphony_terminal_console_shell.Terminal_console_mosaic in
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let start_called = ref false in
   let ui_initial = ref None in
   Runtime.run ~initial_state:(Runtime_state.empty ~last_error:"readiness" ())
@@ -6300,7 +6554,7 @@ let test_issue_tracker_selects_compozy_adapter () =
       (match tracker.fetch_candidates () with
       | Ok [ issue ] ->
           Alcotest.(check string) "identifier" "compozy:adapter-run" issue.Issue.identifier;
-          Alcotest.(check string) "state" "pending" issue.state
+          Alcotest.(check string) "state" "In progress" issue.state
       | Ok issues -> Alcotest.fail (Printf.sprintf "expected one candidate, got %d" (List.length issues))
       | Error (Issue_tracker.Failed message) -> Alcotest.fail message
       | Error (Issue_tracker.Rate_limited _) -> Alcotest.fail "Compozy tracker should not rate-limit");
@@ -7426,7 +7680,7 @@ let test_github_child_failure_retry_behavior_unchanged () =
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
       let statuses = ref [] in
-      let set_status _ issue status =
+      let set_status _ _issue status =
         statuses := (issue.Issue.identifier, status) :: !statuses;
         Ok ()
       in
@@ -7591,7 +7845,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
         else Ok []
       in
       let statuses = ref [] in
-      let set_status _ issue status =
+      let set_status _ _issue status =
         current_status := status;
         statuses := (issue.Issue.identifier, status) :: !statuses;
         Ok ()
@@ -7711,6 +7965,51 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           stderr_size = 0;
         };
       Alcotest.(check (list (pair string string))) "review moves done" [ ("#1", "Done") ] (List.rev !statuses))
+
+let test_orchestrator_archives_dispatch_prompt () =
+  with_temp_dir "symphony-prompt-archive-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let issue = Issue.empty ~id:"I42" ~identifier:"#42" ~title:"Archive prompt" ~state:"Todo" in
+      let current_status = ref "Todo" in
+      let fetch _ = if !current_status = "Todo" then Ok [ { issue with state = !current_status } ] else Ok [] in
+      let set_status _ _issue status =
+        current_status := status;
+        Ok ()
+      in
+      let captured_prompt = ref "" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch ~set_status ~config
+          ~prompt_template:"Issue {{ issue.identifier }} state {{ issue.state }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let archive_dir =
+        Filename.concat (Filename.concat (Filename.concat root ".symphony") "state") "task-prompts"
+      in
+      let files = Sys.readdir archive_dir |> Array.to_list in
+      let prompts = List.filter (fun name -> Filename.check_suffix name ".md") files in
+      let metadata = List.filter (fun name -> Filename.check_suffix name ".json") files in
+      Alcotest.(check int) "one prompt archived" 1 (List.length prompts);
+      Alcotest.(check int) "one metadata file archived" 1 (List.length metadata);
+      let prompt_file = List.hd prompts in
+      let archive_stem = Filename.chop_extension prompt_file in
+      let prompt_path = Filename.concat archive_dir prompt_file in
+      let metadata_path = Filename.concat archive_dir (archive_stem ^ ".json") in
+      Alcotest.(check bool) "matching metadata exists" true (Sys.file_exists metadata_path);
+      Alcotest.(check string) "archived prompt is exact" !captured_prompt (Util.read_file prompt_path);
+      Alcotest.(check int) "archive dir private" 0 ((Unix.stat archive_dir).Unix.st_perm land 0o077);
+      Alcotest.(check int) "prompt file private" 0 ((Unix.stat prompt_path).Unix.st_perm land 0o077);
+      let open Yojson.Safe.Util in
+      let metadata_json = Yojson.Safe.from_file metadata_path in
+      Alcotest.(check string) "archive kind" "Agent Prompt Archive" (metadata_json |> member "kind" |> to_string);
+      Alcotest.(check string) "issue identifier" "#42" (metadata_json |> member "issueIdentifier" |> to_string);
+      Alcotest.(check string) "issue state" "In progress" (metadata_json |> member "issueState" |> to_string);
+      Alcotest.(check int) "attempt" 1 (metadata_json |> member "attempt" |> to_int);
+      Alcotest.(check string) "harness name" "codex" (metadata_json |> member "harnessName" |> to_string);
+      Alcotest.(check string) "prompt path" prompt_path (metadata_json |> member "promptPath" |> to_string))
 
 let test_orchestrator_prepends_stage_goal_handoff () =
   with_temp_dir "symphony-stage-goal-prompt-" (fun root ->
@@ -8556,6 +8855,84 @@ let test_compozy_lifecycle_reconciliation_preserves_handoff_phase () =
       Alcotest.(check (option string)) "handoff reason" (Some "Batch Pull Request handoff failed.")
         reconciled.reason)
 
+let test_compozy_lifecycle_reconciles_stale_active_terminal_dispatch () =
+  with_temp_dir "symphony-compozy-lifecycle-active-terminal-dispatch-" (fun root ->
+      let base_config, run = run_from_status_fixture root "active-terminal-dispatch" [ "pending" ] in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              terminal_states = "human_attention" :: base_config.tracker.terminal_states;
+            };
+        }
+      in
+      let stale : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_execution;
+          dispatch_state = "human_attention";
+          stage_agent = Some "engineer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-14T21:55:52Z";
+        }
+      in
+      Compozy_lifecycle.save config stale |> require_ok "save stale lifecycle";
+      let reconciled = Compozy_lifecycle.load_or_backfill_reconciled config run |> require_ok "reconcile lifecycle" in
+      check_lifecycle_state "active lifecycle" "in_execution" reconciled;
+      Alcotest.(check string) "terminal dispatch repaired" "pending" reconciled.dispatch_state;
+      Alcotest.(check (option string)) "stale stage cleared" None reconciled.stage_agent;
+      let reloaded =
+        match Compozy_lifecycle.load config run |> require_ok "reload lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected reconciled lifecycle file"
+      in
+      Alcotest.(check string) "persisted dispatch repaired" "pending" reloaded.dispatch_state)
+
+let test_compozy_lifecycle_preserves_blocked_attention_dispatch () =
+  with_temp_dir "symphony-compozy-lifecycle-blocked-attention-dispatch-" (fun root ->
+      let base_config, run = run_from_status_fixture root "blocked-attention-dispatch" [ "in_progress" ] in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              terminal_states = "human_attention" :: base_config.tracker.terminal_states;
+            };
+        }
+      in
+      let blocked : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.Blocked;
+          dispatch_state = "human_attention";
+          stage_agent = Some "engineer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = Some "manual review required";
+          updated_at = "2026-05-14T21:55:52Z";
+        }
+      in
+      Compozy_lifecycle.save config blocked |> require_ok "save blocked lifecycle";
+      let reconciled = Compozy_lifecycle.load_or_backfill_reconciled config run |> require_ok "reconcile lifecycle" in
+      check_lifecycle_state "blocked lifecycle preserved" "blocked" reconciled;
+      Alcotest.(check string) "attention dispatch preserved" "human_attention" reconciled.dispatch_state;
+      Alcotest.(check (option string)) "stage preserved" (Some "engineer") reconciled.stage_agent;
+      Alcotest.(check (option string)) "reason preserved" (Some "manual review required") reconciled.reason;
+      let reloaded =
+        match Compozy_lifecycle.load config run |> require_ok "reload lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected blocked lifecycle file"
+      in
+      check_lifecycle_state "persisted blocked lifecycle" "blocked" reloaded;
+      Alcotest.(check string) "persisted attention dispatch" "human_attention" reloaded.dispatch_state)
+
 let test_compozy_lifecycle_persists_under_runtime_home () =
   with_temp_dir "symphony-compozy-lifecycle-runtime-home-" (fun root ->
       let _home, _ = Runtime_home.bootstrap root in
@@ -8674,6 +9051,245 @@ let test_orchestrator_dispatch_records_compozy_stage_lifecycle () =
               (compozy_task_status (Filename.concat workspace.path ".compozy/tasks") workspace_task))))
     cases
 
+let compozy_planner_engineer_stages =
+  [
+    compozy_stage ~start_status:"in_planning" ~success_status:"in_progress" ~retry_status:"pending" "planner"
+      [ "pending"; "in_planning" ];
+    compozy_stage ~start_status:"in_execution" ~success_status:"in_review" ~retry_status:"pending" "engineer"
+      [ "in_progress"; "in_execution" ];
+  ]
+
+let compozy_stage_routing_config root compozy_root =
+  let config = compozy_test_config_with_stages root compozy_root compozy_planner_engineer_stages in
+  let stage_agent_root = Filename.concat (Filename.concat root ".symphony") "agents" in
+  Util.mkdir_p stage_agent_root;
+  Util.write_file (Filename.concat stage_agent_root "planner.md") "Planner instructions";
+  Util.write_file (Filename.concat stage_agent_root "engineer.md") "Engineer instructions";
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        project_status_on_dispatch = Some "in_progress";
+        project_status_on_success = Some "in_review";
+        project_status_on_retry = Some "pending";
+      };
+    stage_agents = { config.stage_agents with root = stage_agent_root };
+  }
+
+let test_compozy_initial_pending_step_routes_by_lifecycle_dispatch_state () =
+  with_temp_dir "symphony-compozy-stage-initial-dispatch-" (fun root ->
+      let compozy_root, prd_dir, task_01 = setup_compozy_repo root "stage-routed-feature" in
+      let config = compozy_stage_routing_config root compozy_root in
+      let launched = ref [] in
+      let launch ~stage ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+        let stage_agent = Option.map (fun (stage : Config.stage_agent) -> stage.agent) stage in
+        launched := (stage_agent, issue, workspace, prompt) :: !launched;
+        {
+          Orchestrator.pid = None;
+          session_id = Some issue.Issue.id;
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let stage_agent, issue, workspace, prompt =
+        match !launched with
+        | [ launch ] -> launch
+        | _ -> Alcotest.fail "expected one Compozy launch"
+      in
+      Alcotest.(check (option string)) "stage selected from dispatch state" (Some "engineer") stage_agent;
+      Alcotest.(check string) "launch issue state after stage start" "in_execution" issue.Issue.state;
+      Alcotest.(check bool) "engineer prompt" true (contains_substring prompt "Stage agent: engineer");
+      Alcotest.(check bool) "planner prompt absent" false (contains_substring prompt "Stage agent: planner");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir
+        |> require_ok "build root Compozy PRD run"
+      in
+      let lifecycle = load_compozy_lifecycle config run in
+      check_lifecycle_state "dispatch lifecycle" "in_execution" lifecycle;
+      Alcotest.(check string) "dispatch state persisted" "in_execution" lifecycle.dispatch_state;
+      Alcotest.(check (option string)) "stage persisted" (Some "engineer") lifecycle.stage_agent;
+      Alcotest.(check string) "root task-step not mutated before commit" "pending"
+        (compozy_task_status compozy_root task_01);
+      let workspace_task =
+        Filename.concat
+          (Filename.concat (Filename.concat workspace.Workspace.path ".compozy/tasks") "stage-routed-feature")
+          "task_01.md"
+      in
+      Alcotest.(check string) "workspace task-step started" "in_progress"
+        (compozy_task_status (Filename.concat workspace.path ".compozy/tasks") workspace_task))
+
+let test_compozy_intermediate_relaunch_keeps_lifecycle_dispatch_stage () =
+  with_temp_dir "symphony-compozy-stage-relaunch-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "stage-relaunch-feature" in
+      Util.mkdir_p prd_dir;
+      let task_01 = Filename.concat prd_dir "task_01.md" in
+      let task_02 = Filename.concat prd_dir "task_02.md" in
+      write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst stage sentinel.\n" task_01;
+      write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond stage sentinel.\n" task_02;
+      ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
+      ignore_runtime_home root;
+      let config = compozy_stage_routing_config root compozy_root in
+      let launches = ref [] in
+      let launch ~stage ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+        let stage_agent = Option.map (fun (stage : Config.stage_agent) -> stage.agent) stage in
+        launches := (stage_agent, issue, workspace, prompt) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some (string_of_int (List.length !launches));
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let first_stage, first_issue, first_workspace, first_prompt =
+        match List.rev !launches with
+        | [ launch ] -> launch
+        | _ -> Alcotest.fail "expected first Compozy launch"
+      in
+      Alcotest.(check (option string)) "first stage" (Some "engineer") first_stage;
+      Alcotest.(check bool) "first prompt uses engineer" true
+        (contains_substring first_prompt "Stage agent: engineer");
+      Orchestrator.mark_completed orchestrator (compozy_child first_issue first_workspace);
+      let second_stage, second_issue, second_workspace, second_prompt =
+        match List.rev !launches with
+        | [ _first; second ] -> second
+        | _ -> Alcotest.fail "expected relaunch for second Compozy task"
+      in
+      Alcotest.(check (option string)) "second stage remains engineer" (Some "engineer") second_stage;
+      Alcotest.(check string) "second launch dispatch state" "in_execution" second_issue.Issue.state;
+      Alcotest.(check string) "same workspace" first_workspace.path second_workspace.path;
+      Alcotest.(check bool) "second prompt uses engineer" true
+        (contains_substring second_prompt "Stage agent: engineer");
+      Alcotest.(check bool) "second prompt does not use planner" false
+        (contains_substring second_prompt "Stage agent: planner");
+      let workspace_compozy_root = Filename.concat (Filename.concat first_workspace.path ".compozy") "tasks" in
+      let workspace_task_01 = Filename.concat (Filename.concat workspace_compozy_root "stage-relaunch-feature") "task_01.md" in
+      let workspace_task_02 = Filename.concat (Filename.concat workspace_compozy_root "stage-relaunch-feature") "task_02.md" in
+      Alcotest.(check string) "first task completed" "completed"
+        (compozy_task_status workspace_compozy_root workspace_task_01);
+      Alcotest.(check string) "second task started" "in_progress"
+        (compozy_task_status workspace_compozy_root workspace_task_02))
+
+let test_compozy_final_step_hands_off_to_reviewer_before_task_pr () =
+  with_temp_dir "symphony-compozy-final-review-handoff-" (fun root ->
+      let compozy_root, _prd_dir, _task_01 = setup_compozy_repo root "final-review-feature" in
+      let engineer =
+        compozy_stage ~start_status:"in_execution" ~success_status:"in_review" ~retry_status:"pending"
+          "engineer" [ "in_execution" ]
+      in
+      let reviewer =
+        compozy_stage ~start_status:"in_review" ~success_status:"completed" ~retry_status:"human_attention"
+          "reviewer" [ "in_review" ]
+      in
+      let base_config = compozy_test_config_with_stages root compozy_root [ engineer; reviewer ] in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              project_status_on_dispatch = Some "in_execution";
+              project_status_on_success = Some "in_review";
+              project_status_on_retry = Some "pending";
+            };
+          pull_request =
+            {
+              enabled = true;
+              mode = "task";
+              open_on_review = true;
+              base_branch = "main";
+              title = "Task PR <head_branch>";
+              body = "Task PR body";
+            };
+          stage_agents =
+            {
+              base_config.stage_agents with
+              root = Filename.concat (Filename.concat root ".symphony") "agents";
+            };
+        }
+      in
+      Util.mkdir_p config.stage_agents.root;
+      Util.write_file (Filename.concat config.stage_agents.root "engineer.md") "Engineer instructions";
+      Util.write_file (Filename.concat config.stage_agents.root "reviewer.md") "Reviewer instructions";
+      let launches = ref [] in
+      let launch ~stage ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+        let stage_agent = Option.map (fun (stage : Config.stage_agent) -> stage.agent) stage in
+        launches := (stage_agent, issue, workspace, prompt) :: !launches;
+        {
+          Orchestrator.pid = None;
+          session_id = Some (string_of_int (List.length !launches));
+          event = "test-launch";
+          stdout_path = None;
+          stderr_path = None;
+        }
+      in
+      let commit_stage _config (workspace : Workspace.t) _issue _stage _next_status =
+        let dirty =
+          Sys.command
+            (Printf.sprintf "cd %s && test -n \"$(git status --porcelain)\""
+               (Util.shell_quote workspace.path))
+          = 0
+        in
+        if dirty then
+          ignore (run_ok ~cwd:workspace.path "commit Compozy stage" "git add . && git commit -q -m compozy-stage");
+        Ok ()
+      in
+      let pr_attempts = ref [] in
+      let batch_pull_request_handoff config ~head_branch =
+        pr_attempts := (config.Config.pull_request.mode, head_branch) :: !pr_attempts;
+        Ok (Some "https://github.example/acme/widgets/pull/99")
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~batch_pull_request_handoff ~config
+          ~prompt_template:"Compozy {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let first_stage, first_issue, first_workspace, _first_prompt =
+        match List.rev !launches with
+        | [ launch ] -> launch
+        | _ -> Alcotest.fail "expected engineer launch"
+      in
+      Alcotest.(check (option string)) "first stage" (Some "engineer") first_stage;
+      Orchestrator.mark_completed orchestrator (compozy_child first_issue first_workspace);
+      Alcotest.(check int) "no PR before reviewer stage" 0 (List.length !pr_attempts);
+      (match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "handoff lifecycle" (Some "in_review") progress.lifecycle_state;
+          Alcotest.(check (option string)) "handoff dispatch" (Some "in_review") progress.dispatch_state;
+          Alcotest.(check (option string)) "handoff readiness" (Some "not_ready") progress.pr_readiness
+      | None -> Alcotest.fail "expected Compozy progress after engineer completion");
+      Orchestrator.poll_once orchestrator;
+      let second_stage, second_issue, second_workspace, second_prompt =
+        match List.rev !launches with
+        | [ _first; second ] -> second
+        | _ -> Alcotest.fail "expected reviewer launch"
+      in
+      Alcotest.(check (option string)) "second stage" (Some "reviewer") second_stage;
+      Alcotest.(check string) "same workspace" first_workspace.path second_workspace.path;
+      Alcotest.(check bool) "reviewer prompt names completed run" true
+        (contains_substring second_prompt "Compozy PRD Run Stage");
+      Alcotest.(check bool) "reviewer prompt lists completed tasks" true
+        (contains_substring second_prompt "Completed Compozy Task Steps");
+      Orchestrator.mark_completed orchestrator (compozy_child second_issue second_workspace);
+      Alcotest.(check int) "task PR opens after final stage" 1 (List.length !pr_attempts);
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "handoff mode" "task" handoff.mode;
+          Alcotest.(check string) "handoff status" "completed" handoff.status
+      | None -> Alcotest.fail "expected task pull request handoff")
+
 let require_poll_ok label = function
   | Ok value -> value
   | Error (Issue_tracker.Failed error) -> Alcotest.fail (label ^ ": " ^ error)
@@ -8692,7 +9308,7 @@ let test_compozy_tracker_fetch_backfills_lifecycle_candidate () =
       let tracker = Issue_tracker.compozy config in
       let issue = tracker.fetch_candidates () |> require_poll_ok "fetch candidates" |> only_issue "candidate" in
       Alcotest.(check string) "candidate identifier" "compozy:example-feature" issue.identifier;
-      Alcotest.(check string) "candidate dispatch state" "pending" issue.state;
+      Alcotest.(check string) "candidate dispatch state" "In progress" issue.state;
       let run =
         Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
         |> require_ok "build PRD run"
@@ -8705,7 +9321,7 @@ let test_compozy_tracker_fetch_backfills_lifecycle_candidate () =
         | None -> Alcotest.fail "expected lifecycle metadata"
       in
       check_lifecycle_state "backfilled lifecycle" "in_execution" lifecycle;
-      Alcotest.(check string) "backfilled dispatch" "pending" lifecycle.dispatch_state)
+      Alcotest.(check string) "backfilled dispatch" "In progress" lifecycle.dispatch_state)
 
 let test_compozy_tracker_fetch_uses_lifecycle_dispatch_state () =
   with_temp_dir "symphony-compozy-tracker-dispatch-state-" (fun root ->
@@ -8790,7 +9406,7 @@ let test_compozy_tracker_lookup_repairs_corrupt_lifecycle () =
         | Some issue -> issue
         | None -> Alcotest.fail "expected repaired lookup issue"
       in
-      Alcotest.(check string) "issue state from repaired lifecycle" "pending" issue.state;
+      Alcotest.(check string) "issue state from repaired lifecycle" "In progress" issue.state;
       Alcotest.(check string) "task-step file unchanged" task_before (Util.read_file task_path);
       let repaired = load_compozy_lifecycle config run in
       check_lifecycle_state "repaired lifecycle" "in_execution" repaired;
@@ -8891,6 +9507,47 @@ let test_compozy_tracker_active_terminal_use_lifecycle_dispatch_state () =
       Alcotest.(check string) "released dispatch state" "Released" looked_up.state;
       Alcotest.(check bool) "configured terminal state" true (tracker.is_terminal looked_up.state);
       Alcotest.(check bool) "built-in terminal state" true (tracker.is_terminal "completed"))
+
+let test_compozy_tracker_fetch_exposes_completed_next_stage_candidate () =
+  with_temp_dir "symphony-compozy-tracker-completed-next-stage-" (fun root ->
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "review-ready-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" ~title:"Completed step" (Filename.concat prd_dir "task_01.md");
+      let reviewer =
+        compozy_stage ~start_status:"in_review" ~success_status:"completed" ~retry_status:"human_attention"
+          "reviewer" [ "in_review" ]
+      in
+      let config = compozy_test_config_with_stages root compozy_root [ reviewer ] in
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir
+        |> require_ok "build completed PRD run"
+      in
+      let lifecycle : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_review;
+          dispatch_state = "in_review";
+          stage_agent = Some "reviewer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-14T12:00:00Z";
+        }
+      in
+      Compozy_lifecycle.save config lifecycle |> require_ok "save review lifecycle";
+      let tracker = Issue_tracker.compozy config in
+      let issue =
+        match tracker.fetch_candidates () with
+        | Ok [ issue ] -> issue
+        | Ok issues -> Alcotest.fail (Printf.sprintf "expected one candidate, got %d" (List.length issues))
+        | Error (Issue_tracker.Failed error) -> Alcotest.fail ("fetch candidates failed: " ^ error)
+        | Error (Issue_tracker.Rate_limited (error, _)) -> Alcotest.fail ("fetch candidates rate limited: " ^ error)
+      in
+      Alcotest.(check string) "completed run remains dispatchable for next stage" "compozy:review-ready-feature"
+        issue.identifier;
+      Alcotest.(check string) "dispatch state" "in_review" issue.state)
 
 let test_compozy_completion_relaunches_next_step_in_same_worktree () =
   with_temp_dir "symphony-compozy-sequential-" (fun root ->
@@ -11749,6 +12406,95 @@ let test_ordered_queue_revives_persisted_completed_active_entries () =
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
       | None -> Alcotest.fail "expected ordered queue state")
 
+let test_ordered_queue_skips_stale_persisted_running_entry () =
+  with_temp_dir "symphony-orchestrator-queue-stale-running-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "running"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launched;
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          (match queue.entries with
+          | [ entry ] ->
+              Alcotest.(check string) "stale running entry skipped" "skipped" entry.state;
+              Alcotest.(check (option string)) "skip reason"
+                (Some "Issue became unavailable or not dispatchable before admission.")
+                entry.skip_reason
+          | _ -> Alcotest.fail "expected one ordered queue entry")
+      | None -> Alcotest.fail "expected ordered queue state")
+
+let test_ordered_queue_requeues_stale_persisted_running_entry_when_dispatchable () =
+  with_temp_dir "symphony-orchestrator-queue-stale-running-dispatchable-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "running"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      let _other_issue, other_running = terminal_console_running_row ~identifier:"#99" ~title:"Other work" "I99" in
+      Orchestrator.update_state orchestrator (fun state -> { state with Runtime_state.running = [ other_running ] });
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "capacity is full so dispatch waits" 0 !launched;
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          (match queue.entries with
+          | [ entry ] ->
+              Alcotest.(check string) "stale running entry requeued" "pending" entry.state;
+              Alcotest.(check (option string)) "skip reason cleared" None entry.skip_reason
+          | _ -> Alcotest.fail "expected one ordered queue entry")
+      | None -> Alcotest.fail "expected ordered queue state")
+
 let commit_file ~cwd file content message =
   Util.write_file (Filename.concat cwd file) content;
   ignore (run_ok ~cwd "commit file" (Printf.sprintf "git add %s && git commit -q -m %s" (Util.shell_quote file) (Util.shell_quote message)))
@@ -13452,12 +14198,20 @@ let () =
             test_compozy_lifecycle_load_reconciled_repairs_corrupt_metadata;
           Alcotest.test_case "keeps Compozy handoff phase separate during reconciliation" `Quick
             test_compozy_lifecycle_reconciliation_preserves_handoff_phase;
+          Alcotest.test_case "reconciles stale active terminal Compozy dispatch state" `Quick
+            test_compozy_lifecycle_reconciles_stale_active_terminal_dispatch;
+          Alcotest.test_case "preserves blocked Compozy attention dispatch state" `Quick
+            test_compozy_lifecycle_preserves_blocked_attention_dispatch;
           Alcotest.test_case "persists Compozy lifecycle under Runtime Home" `Quick
             test_compozy_lifecycle_persists_under_runtime_home;
           Alcotest.test_case "persists Compozy lifecycle transition helpers" `Quick
             test_compozy_lifecycle_transition_helpers_persist;
           Alcotest.test_case "orchestrator records Compozy stage lifecycle on dispatch" `Quick
             test_orchestrator_dispatch_records_compozy_stage_lifecycle;
+          Alcotest.test_case "Compozy pending steps route through lifecycle dispatch state" `Quick
+            test_compozy_initial_pending_step_routes_by_lifecycle_dispatch_state;
+          Alcotest.test_case "Compozy relaunch keeps lifecycle dispatch stage" `Quick
+            test_compozy_intermediate_relaunch_keeps_lifecycle_dispatch_stage;
           Alcotest.test_case "Compozy tracker backfills lifecycle on fetch" `Quick
             test_compozy_tracker_fetch_backfills_lifecycle_candidate;
           Alcotest.test_case "Compozy tracker uses lifecycle dispatch state" `Quick
@@ -13472,6 +14226,8 @@ let () =
             test_compozy_tracker_lookup_stays_at_prd_run_boundary;
           Alcotest.test_case "Compozy tracker active and terminal checks use dispatch state" `Quick
             test_compozy_tracker_active_terminal_use_lifecycle_dispatch_state;
+          Alcotest.test_case "Compozy tracker exposes completed next-stage candidates" `Quick
+            test_compozy_tracker_fetch_exposes_completed_next_stage_candidate;
           Alcotest.test_case "Compozy disabled Pull Request Policy records disabled readiness" `Quick
             test_compozy_completed_disabled_policy_records_disabled_readiness;
           Alcotest.test_case "Compozy Batch Pull Request success mirrors handoff lifecycle" `Quick
@@ -13519,6 +14275,8 @@ let () =
             test_compozy_readiness_no_runnable_prd_run_gap;
           Alcotest.test_case "serves Compozy runtime readiness without GitHub gaps" `Quick
             test_compozy_runtime_readiness_valid_fixture_omits_github_gaps;
+          Alcotest.test_case "repairs stale Compozy attention lifecycle readiness" `Quick
+            test_compozy_runtime_readiness_repairs_stale_attention_lifecycle;
           Alcotest.test_case "keeps GitHub runtime readiness gaps" `Quick
             test_github_runtime_readiness_still_reports_github_gaps;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
@@ -13621,40 +14379,52 @@ let () =
             test_terminal_console_model_projects_compozy_progress;
           Alcotest.test_case "sanitizes Terminal Console display text" `Quick
             test_terminal_console_model_sanitizes_untrusted_text;
-          Alcotest.test_case "labels Mosaic Terminal Console modes" `Quick
-            test_terminal_console_mosaic_status_labels;
-          Alcotest.test_case "builds Mosaic shell model from sanitized projection" `Quick
-            test_terminal_console_mosaic_initial_model_uses_projection;
-          Alcotest.test_case "renders Active Work Home panel" `Quick
-            test_terminal_console_mosaic_active_home_panel;
+          Alcotest.test_case "labels Tui Terminal Console modes" `Quick
+            test_terminal_console_tui_status_labels;
+          Alcotest.test_case "builds Tui shell model from sanitized projection" `Quick
+            test_terminal_console_tui_initial_model_uses_projection;
+          Alcotest.test_case "renders project title and primary tabs" `Quick
+            test_terminal_console_tui_project_title_and_tabs;
+          Alcotest.test_case "renders Tasks Home panel" `Quick
+            test_terminal_console_tui_active_home_panel;
           Alcotest.test_case "renders readiness remediation panel" `Quick
-            test_terminal_console_mosaic_readiness_attention_panel_wraps_remediation;
-          Alcotest.test_case "renders Ordered Queue panel states" `Quick
-            test_terminal_console_mosaic_ordered_queue_panel_states;
-          Alcotest.test_case "renders Compozy PRD Run panel counts" `Quick
-            test_terminal_console_mosaic_compozy_panel_counts;
+            test_terminal_console_tui_readiness_attention_panel_wraps_remediation;
+          Alcotest.test_case "renders Queue panel states" `Quick
+            test_terminal_console_tui_ordered_queue_panel_states;
+          Alcotest.test_case "flags current Compozy Task Step in Queue" `Quick
+            test_terminal_console_tui_queue_flags_current_compozy_task_step;
+          Alcotest.test_case "expands Queue stage details with Space" `Quick
+            test_terminal_console_tui_queue_space_expands_selected_stage;
+          Alcotest.test_case "renders Logs panel background output" `Quick
+            test_terminal_console_tui_logs_panel_uses_background_logs;
+          Alcotest.test_case "renders Logs newest first with scroll" `Quick
+            test_terminal_console_tui_logs_panel_newest_first_and_scrolls;
+          Alcotest.test_case "compacts Terminal Console log paths" `Quick
+            test_terminal_console_tui_log_paths_are_compact;
           Alcotest.test_case "renders task detail context" `Quick
-            test_terminal_console_mosaic_task_detail_panel_includes_context;
+            test_terminal_console_tui_task_detail_panel_includes_context;
           Alcotest.test_case "omits absent task detail fields" `Quick
-            test_terminal_console_mosaic_task_detail_omits_absent_optional_fields;
+            test_terminal_console_tui_task_detail_omits_absent_optional_fields;
+          Alcotest.test_case "separates Tasks panel rows" `Quick
+            test_terminal_console_tui_tasks_panel_separates_task_rows;
           Alcotest.test_case "keeps no-color status labels distinct" `Quick
-            test_terminal_console_mosaic_no_color_labels_remain_distinct;
+            test_terminal_console_tui_no_color_labels_remain_distinct;
           Alcotest.test_case "renders Terminal Console fixture snapshots" `Quick
-            test_terminal_console_mosaic_renders_runtime_state_fixtures;
+            test_terminal_console_tui_renders_runtime_state_fixtures;
           Alcotest.test_case "renders Terminal Console minimum-size message" `Quick
-            test_terminal_console_mosaic_minimum_size_message;
+            test_terminal_console_tui_minimum_size_message;
           Alcotest.test_case "keeps Terminal Console navigation UI-only" `Quick
-            test_terminal_console_mosaic_navigation_is_ui_only;
+            test_terminal_console_tui_navigation_is_ui_only;
           Alcotest.test_case "keeps Terminal Console filtering UI-only" `Quick
-            test_terminal_console_mosaic_filtering_is_ui_only;
+            test_terminal_console_tui_filtering_is_ui_only;
           Alcotest.test_case "refresh invokes only non-mutating aid" `Quick
-            test_terminal_console_mosaic_refresh_invokes_only_refresh_aid;
+            test_terminal_console_tui_refresh_invokes_only_refresh_aid;
           Alcotest.test_case "shows Web Dashboard handoff guidance only" `Quick
-            test_terminal_console_mosaic_web_handoff_guidance_only;
+            test_terminal_console_tui_web_handoff_guidance_only;
           Alcotest.test_case "keeps invalid local path inspection UI-local" `Quick
-            test_terminal_console_mosaic_invalid_path_is_ui_local;
+            test_terminal_console_tui_invalid_path_is_ui_local;
           Alcotest.test_case "renders Terminal Console contextual help/footer" `Quick
-            test_terminal_console_mosaic_footer_help_content;
+            test_terminal_console_tui_footer_help_content;
           Alcotest.test_case "records only non-mutating Terminal Console safe aids" `Quick
             test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids;
           Alcotest.test_case "stores latest Terminal Console runtime state" `Quick
@@ -13685,7 +14455,7 @@ let () =
         [
           Alcotest.test_case "selects terminal or web mode" `Quick test_cli_mode_selection;
           Alcotest.test_case "selects Terminal Console runtime branches" `Quick
-            test_terminal_console_runtime_selects_non_mosaic_paths;
+            test_terminal_console_runtime_selects_non_tui_paths;
           Alcotest.test_case "evaluates runtime command from backend library" `Quick
             test_cli_command_evaluates_runtime_from_library;
           Alcotest.test_case "parses runtime invocation override flags" `Quick
@@ -13710,6 +14480,7 @@ let () =
           Alcotest.test_case "requires --yes when non-interactive" `Quick test_update_noninteractive_requires_yes_before_install;
           Alcotest.test_case "already current skips confirmation" `Quick test_update_already_current_does_not_require_yes;
           Alcotest.test_case "discovery failure does not install" `Quick test_update_discovery_failure_does_not_install;
+          Alcotest.test_case "rejects invalid latest version" `Quick test_update_rejects_invalid_latest_version_before_install;
           Alcotest.test_case "installs and validates update" `Quick test_update_installs_and_validates_with_yes;
           Alcotest.test_case "install failure does not validate" `Quick test_update_install_failure_does_not_validate;
           Alcotest.test_case "fails validation mismatch" `Quick test_update_validation_failure_is_not_success;
@@ -13785,6 +14556,10 @@ let () =
             test_ordered_queue_keeps_stage_handoffs_pending;
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
             test_ordered_queue_revives_persisted_completed_active_entries;
+          Alcotest.test_case "skips stale active ordered queue entries without candidates" `Quick
+            test_ordered_queue_skips_stale_persisted_running_entry;
+          Alcotest.test_case "requeues stale active ordered queue entries with dispatchable candidates" `Quick
+            test_ordered_queue_requeues_stale_persisted_running_entry_when_dispatchable;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "records generic tracker poll failure" `Quick
             test_orchestrator_records_generic_tracker_poll_failure;
@@ -13802,6 +14577,7 @@ let () =
             test_orchestrator_timeout_kills_agent_process_group;
           Alcotest.test_case "moves status to review on success" `Quick test_orchestrator_moves_status_to_review_on_success;
           Alcotest.test_case "uses stage agent prompt and status" `Quick test_orchestrator_uses_stage_agent_prompt_and_status;
+          Alcotest.test_case "archives dispatch prompts" `Quick test_orchestrator_archives_dispatch_prompt;
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
           Alcotest.test_case "uses default Codex loop command" `Quick test_compose_prompt_uses_default_codex_loop_command;
           Alcotest.test_case "uses custom Codex loop command" `Quick test_compose_prompt_uses_custom_codex_loop_command;
@@ -13817,6 +14593,8 @@ let () =
             test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change;
           Alcotest.test_case "relaunches Compozy task steps in one worktree" `Quick
             test_compozy_completion_relaunches_next_step_in_same_worktree;
+          Alcotest.test_case "hands completed Compozy runs to reviewer before Task Pull Request" `Quick
+            test_compozy_final_step_hands_off_to_reviewer_before_task_pr;
           Alcotest.test_case "retries failed Compozy task step then advances" `Quick
             test_compozy_failed_step_retries_then_advances_to_next_step;
           Alcotest.test_case "dispatch preserves external Compozy root path" `Quick

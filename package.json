@@ -24,6 +24,7 @@
   "scripts": {
     "build": "pnpm -r build && opam exec -- dune build @all",
     "test": "opam exec -- dune runtest",
+    "compozy:complete": "node scripts/complete-compozy-tasks.js",
     "docs:test": "node scripts/validate-docs-examples.js",
     "prepack": "pnpm frontend:build && pnpm backend:build && node scripts/package-binary.js",
     "npm:validate": "node scripts/validate-npm-export.js",

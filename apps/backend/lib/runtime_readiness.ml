@@ -32,11 +32,13 @@ let selected_tracker_readiness_gaps config =
 let state ?ordered_queue ?(queue_parse_problems = []) config =
   let local_gaps = Config.readiness_gaps config in
   let queue_gaps = queue_parse_gaps queue_parse_problems in
+  let resumed_ordered_queue_state = Option.bind ordered_queue (Orchestrator.resume_ordered_queue_state config) in
   let gaps =
     match local_gaps @ queue_gaps with
     | [] -> (
         let tracker_gaps = selected_tracker_readiness_gaps config in
         match (tracker_gaps, ordered_queue) with
+        | [], Some _ when Option.is_some resumed_ordered_queue_state -> []
         | [], Some queue -> (
             try queue_validation_gaps config queue
             with exn ->
@@ -60,7 +62,12 @@ let state ?ordered_queue ?(queue_parse_problems = []) config =
         { Runtime_state.requirement = gap.requirement; remediation = gap.remediation })
       gaps
   in
+  let ordered_queue_state =
+    match ordered_queue with
+    | None -> None
+    | Some queue -> Some (Option.value resumed_ordered_queue_state ~default:(Orchestrator.ordered_queue_state queue))
+  in
   Runtime_state.empty ?last_error ~tracker_kind:config.tracker.kind ~status_order:(Config.project_status_order config)
-    ?ordered_queue:(Option.map Orchestrator.ordered_queue_state ordered_queue)
+    ?ordered_queue:ordered_queue_state
     ?compozy_progress:(Runtime_state.initial_compozy_progress config)
     ~readiness_gaps ()
