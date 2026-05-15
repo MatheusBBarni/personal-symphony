@@ -413,20 +413,44 @@ let count_active state rows = rows |> List.filter (is_state state) |> List.lengt
 
 let next_queue_row snapshot = List.find_opt (is_state "pending") snapshot.Projection.queue
 
+let compozy_row_matches (progress : Projection.compozy_progress) (row : Projection.task_row) =
+  row.id = progress.run_id || row.id = "compozy:" ^ progress.slug
+  || row.title = "Compozy PRD run: " ^ progress.slug
+
+let compozy_task_step_summary (progress : Projection.compozy_progress) =
+  let step = option_value ~default:"No active Compozy Task Step" progress.current_step in
+  Printf.sprintf
+    "Current Compozy Task Step: %s | progress completed %d, failed %d, skipped %d, total %d"
+    step progress.completed progress.failed progress.skipped progress.total
+
+let compozy_detail_for_row (snapshot : Projection.t) row =
+  match snapshot.Projection.compozy with
+  | Some progress when compozy_row_matches progress row -> Some (compozy_task_step_summary progress)
+  | _ -> None
+
 let task_row_line ?(prefix = "") (row : Projection.task_row) =
   let base = Printf.sprintf "%s%s %s %s" prefix (state_token row.state) row.id row.title in
   match row.detail with None -> base | Some detail -> base ^ " - " ^ shorten detail
 
 let row_marker selected index = if selected = index then "> " else "  "
 
-let queue_row_line ?(next = false) (row : Projection.task_row) =
+let queue_row_line ?(next = false) ?compozy_detail (row : Projection.task_row) =
   let base =
     Printf.sprintf "%s%s %s %s" (if next then "NEXT " else "") (state_token row.state) row.id row.title
   in
-  match row.error with
-  | Some reason when String.lowercase_ascii row.state = "skipped" -> base ^ " - skip reason: " ^ shorten reason
-  | _ -> (
-      match row.detail with None -> base | Some detail -> base ^ " - " ^ shorten detail)
+  let detail =
+    match row.error with
+    | Some reason when String.lowercase_ascii row.state = "skipped" -> Some ("skip reason: " ^ reason)
+    | _ -> row.detail
+  in
+  let detail =
+    match (detail, compozy_detail) with
+    | None, None -> None
+    | Some detail, None -> Some detail
+    | None, Some compozy_detail -> Some compozy_detail
+    | Some detail, Some compozy_detail -> Some (detail ^ " | " ^ compozy_detail)
+  in
+  match detail with None -> base | Some detail -> base ^ " - " ^ shorten detail
 
 let idle_home_line mode =
   match mode with
@@ -458,7 +482,11 @@ let tasks_panel ?terminal_size ?(interaction = default_interaction) (snapshot : 
         |> intersperse (task_separator_line width)
   in
   let next_lines =
-    match next_queue_row snapshot with Some row -> [ "Next work: " ^ queue_row_line ~next:true row ] | None -> []
+    match next_queue_row snapshot with
+    | Some row ->
+        let compozy_detail = compozy_detail_for_row snapshot row in
+        [ "Next work: " ^ queue_row_line ~next:true ?compozy_detail row ]
+    | None -> []
   in
   let error_lines =
     match snapshot.last_error with Some error -> [ "Last state error: " ^ shorten error ] | None -> []
@@ -539,6 +567,11 @@ let matching_active_task snapshot (row : Projection.task_row) =
 
 let queue_expansion_lines snapshot (row : Projection.task_row) =
   let task_line = Printf.sprintf "    Task: %s %s" row.id row.title in
+  let compozy_lines =
+    match compozy_detail_for_row snapshot row with
+    | Some detail -> [ "    " ^ detail ]
+    | None -> []
+  in
   match matching_active_task snapshot row with
   | Some active ->
       let items = detail_items active in
@@ -548,11 +581,14 @@ let queue_expansion_lines snapshot (row : Projection.task_row) =
         | [] -> "    Stage: " ^ state_token active.state
         | stage_items -> "    Stage: " ^ String.concat " | " stage_items
       in
-      [ task_line; stage_line ]
-  | None -> [ task_line; "    Stage: " ^ state_token row.state ]
+      [ task_line; stage_line ] @ compozy_lines
+  | None -> [ task_line; "    Stage: " ^ state_token row.state ] @ compozy_lines
 
 let queue_row_lines snapshot interaction index row =
-  let line = queue_row_line row |> fun line -> row_marker interaction.selected_rows.queue index ^ line in
+  let compozy_detail = compozy_detail_for_row snapshot row in
+  let line =
+    queue_row_line ?compozy_detail row |> fun line -> row_marker interaction.selected_rows.queue index ^ line
+  in
   match interaction.expanded_queue_id with
   | Some id when id = row.Projection.id -> line :: queue_expansion_lines snapshot row
   | _ -> [ line ]
@@ -565,7 +601,11 @@ let queue_panel ?terminal_size ?(interaction = default_interaction) (snapshot : 
     | [] -> [ "No Ordered Queue state present." ]
     | queue ->
         let next =
-          match next_queue_row snapshot with Some row -> [ "Next work: " ^ queue_row_line ~next:true row ] | None -> []
+          match next_queue_row snapshot with
+          | Some row ->
+              let compozy_detail = compozy_detail_for_row snapshot row in
+              [ "Next work: " ^ queue_row_line ~next:true ?compozy_detail row ]
+          | None -> []
         in
         next @ (List.mapi (queue_row_lines snapshot interaction) queue |> List.concat)
   in
@@ -1116,7 +1156,7 @@ let value_span value =
   | "failed" | "failure" | "error" | "blocked" -> log_error display
   | "retrying" | "checking" | "attention" | "skipped" | "kept" -> log_warning display
   | "terminal_console" | "compozy_tasks" | "github" | "minibeads" -> log_secondary display
-  | _ when is_path_token value -> log_muted display
+  | _ when is_path_token value -> log_default display
   | _ -> log_default display
 
 let key_value_spans token =
@@ -1140,7 +1180,7 @@ let token_spans token =
       | "failed" | "error" | "reason" -> [ log_error token ]
       | "tracker" | "mode" | "runtime_home" | "workspace_root" | "project_number" -> [ log_secondary token ]
       | _ when is_timestamp_token token -> [ log_info token ]
-      | _ when is_path_token token -> [ log_muted (compact_path_token token) ]
+      | _ when is_path_token token -> [ log_default (compact_path_token token) ]
       | _ -> [ log_default token ])
 
 let log_line_spans line =
@@ -1205,7 +1245,7 @@ let rec value_token_spans token =
   | None when is_timestamp_token token || (String.contains token 'T' && String.contains token ':') ->
       [ log_info token ]
   | None when is_number_like token -> [ log_emphasis token ]
-  | None when is_path_token token -> [ log_muted (compact_path_token token) ]
+  | None when is_path_token token -> [ log_default (compact_path_token token) ]
   | None when String.length token > 1 && token = String.uppercase_ascii token -> [ log_emphasis token ]
   | None -> [ log_default token ]
 
@@ -1260,8 +1300,12 @@ let content_line_spans line =
             else [ log_muted ~attrs:[] " " ] @ value_spans value
       | _ -> (
           match split_first_word body with
-          | Some ("No", rest) -> [ log_muted ("No" ^ if rest = "" then "" else " " ^ rest) ]
-          | Some ("Resize", rest) -> [ log_muted ("Resize" ^ if rest = "" then "" else " " ^ rest) ]
+          | Some ("No", rest) ->
+              [ toned_span Components.Success "No" ]
+              @ if rest = "" then [] else [ log_muted ~attrs:[] " "; log_default rest ]
+          | Some ("Resize", rest) ->
+              [ toned_span Components.Info "Resize" ]
+              @ if rest = "" then [] else [ log_muted ~attrs:[] " "; log_default rest ]
           | _ -> value_spans body)
   in
   prefix_spans @ body_spans
@@ -1352,16 +1396,36 @@ let tab_node active tab =
       toned_span ~attrs tone (tab_title tab);
     ]
 
+let header_node rendered active_tab mode =
+  let title =
+    Components.text
+      ~style:Style.(make ~fg:(Theme.dark Theme.Fg_emphasis) ~attrs:[ Attr.Bold ] ())
+      rendered.heading
+  in
+  let subtitle =
+    Components.text ~style:Style.(make ~fg:(Theme.dark Theme.Fg_default) ()) rendered.subheading
+  in
+  let badges =
+    [ (tab_tone active_tab, tab_title active_tab); (status_badge_tone mode, rendered.status_label) ]
+    |> List.map (fun (tone, label) -> Components.badge ~tone label)
+  in
+  Components.box
+    ~style:
+      Style.(
+        make ~height:(Cells 3) ~flex_direction:Row ~justify_content:Space_between
+          ~align_items:Align_center ~padding:(spacing_xy ~x:2 ~y:0) ())
+    [
+      Components.box ~style:Style.(make ~flex_direction:Column ()) [ title; subtitle ];
+      Components.box ~style:Style.(make ~flex_direction:Row ~gap:1 ()) badges;
+    ]
+
 let view model =
   let rendered = render_model model in
   let panel = active_panel rendered model.interaction in
   let active_tab = model.interaction.active_tab in
   let children =
     [
-      Components.header ~subtitle:rendered.subheading
-        ~badges:
-          [ (tab_tone active_tab, tab_title active_tab); (status_badge_tone model.snapshot.mode, rendered.status_label) ]
-        rendered.heading;
+      header_node rendered active_tab model.snapshot.mode;
       Components.row
         ~style:
           Style.(

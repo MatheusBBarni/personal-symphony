@@ -4648,6 +4648,32 @@ let test_terminal_console_tui_ordered_queue_panel_states () =
   check_line_contains "skipped state" lines "SKIPPED #5 Five";
   check_line_contains "skip reason" lines "skip reason: Issue skipped"
 
+let test_terminal_console_tui_queue_flags_current_compozy_task_step () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "compozy:tui-rewrite";
+            title = Some "Compozy PRD run: tui-rewrite";
+            state = "running";
+            skip_reason = None;
+          };
+        ];
+    }
+  in
+  let state =
+    Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:queue
+      ~compozy_progress:terminal_console_compozy_fixture ()
+  in
+  let lines = terminal_console_panel state "Queue" in
+  check_line_contains "queue row current step" lines "Current Compozy Task Step: task_04.md";
+  check_line_contains "queue row step progress" lines "progress completed 2, failed 1, skipped 3, total 8";
+  let expanded = Shell.initial_model state |> Shell.apply_key Shell.Space_key in
+  let expanded_lines = Shell.render_model expanded.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_contains "expanded current step" expanded_lines "Current Compozy Task Step: task_04.md"
+
 let test_terminal_console_tui_queue_space_expands_selected_stage () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   (match Shell.ui_key_of_tui_key (Tui.Key.of_sequence " ") with
@@ -13872,6 +13898,8 @@ let () =
             test_terminal_console_tui_readiness_attention_panel_wraps_remediation;
           Alcotest.test_case "renders Queue panel states" `Quick
             test_terminal_console_tui_ordered_queue_panel_states;
+          Alcotest.test_case "flags current Compozy Task Step in Queue" `Quick
+            test_terminal_console_tui_queue_flags_current_compozy_task_step;
           Alcotest.test_case "expands Queue stage details with Space" `Quick
             test_terminal_console_tui_queue_space_expands_selected_stage;
           Alcotest.test_case "renders Logs panel background output" `Quick
