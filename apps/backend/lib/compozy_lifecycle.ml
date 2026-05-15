@@ -258,17 +258,20 @@ let reconcile config run lifecycle =
 
 let load_or_backfill_reconciled config run =
   match load config run with
-  | Error _ as error -> error
+  | Error load_error -> (
+      match backfill config run with
+      | Ok _ as repaired -> repaired
+      | Error repair_error ->
+          Error
+            (Printf.sprintf "%s; could not repair Compozy lifecycle from task-step truth: %s" load_error
+               repair_error))
   | Ok None -> backfill config run
   | Ok (Some lifecycle) -> reconcile config run lifecycle
 
 let for_runtime config _state run = load_or_backfill_reconciled config run
 
 let load_or_backfill config run =
-  match load config run with
-  | Error _ as error -> error
-  | Ok (Some lifecycle) -> Ok lifecycle
-  | Ok None -> backfill config run
+  load_or_backfill_reconciled config run
 
 let lifecycle_for_stage ?stage_agent ~dispatch_state () =
   match Option.map (fun value -> String.lowercase_ascii (Util.trim value)) stage_agent with

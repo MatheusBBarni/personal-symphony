@@ -395,7 +395,7 @@ let compozyProgressPanel = (progress: option<compozyProgress>) =>
       >
         <div className="min-w-0">
           <div className="text-sm font-semibold text-neutral-100">
-            {React.string("PRD run progress")}
+            {React.string("Compozy PRD Run progress")}
           </div>
           <div className="mt-1 truncate font-mono text-xs text-neutral-500">
             {React.string(progress.runId)}
@@ -413,16 +413,22 @@ let compozyProgressPanel = (progress: option<compozyProgress>) =>
         {switch hasProgressDetails(progress) {
         | false => React.null
         | true =>
-          <div className="mb-3 grid gap-3 md:grid-cols-3">
+          <div
+            ariaLabel="Compozy PRD Run lifecycle"
+            className="mb-3 grid gap-3 md:grid-cols-3"
+          >
             {progressDetailTile("Lifecycle", progress.lifecycleState)}
             {progressDetailTile("Dispatch state", progress.dispatchState)}
             {progressDetailTile("Stage agent", progress.stageAgent)}
             {progressDetailTile("PR readiness", progress.prReadiness)}
-            {progressDetailTile("Handoff", progress.handoffStatus)}
+            {progressDetailTile("Handoff status", progress.handoffStatus)}
             {progressDetailTile("Reason", progress.reason)}
           </div>
         }}
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(5rem,1fr))]">
+        <div
+          ariaLabel="Compozy Task Step progress"
+          className="grid gap-3 md:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(5rem,1fr))]"
+        >
           <div className="rounded border border-neutral-800 bg-[#1d1d1d] px-3 py-3">
             <div className="text-[11px] font-semibold uppercase tracking-normal text-neutral-500">
               {React.string("Current step")}

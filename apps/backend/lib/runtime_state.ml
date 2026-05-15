@@ -287,7 +287,7 @@ let compozy_progress_of_prd_run ?lifecycle (run : Compozy_tasks_tracker.prd_run)
   }
 
 let lifecycle_metadata_for_progress config run =
-  match Compozy_lifecycle.load config run with Ok (Some lifecycle) -> Some lifecycle | _ -> None
+  match Compozy_lifecycle.load_or_backfill_reconciled config run with Ok lifecycle -> Some lifecycle | _ -> None
 
 let compozy_progress_of_prd_run_for_runtime config run =
   compozy_progress_of_prd_run ?lifecycle:(lifecycle_metadata_for_progress config run) run
