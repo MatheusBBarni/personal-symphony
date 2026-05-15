@@ -17,3 +17,5 @@ stderr.log
 stdout.log
 
 .codex-goals
+
+.compozy/completed_tasks
