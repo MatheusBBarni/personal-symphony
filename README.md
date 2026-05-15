@@ -60,12 +60,12 @@ name; secret values belong only in the Local Environment.
 
 Run `symphony` from the Workspace Repository root to start the default read-first Terminal Console.
 It is the foreground surface for normal local orchestration and renders Runtime State snapshots for
-active work, retrying work, task attention, Readiness Gaps, Ordered Queue progress, Compozy PRD Run
-progress, Agent Worktree details, and Task Branch context.
+active work, retrying work, task attention, Readiness Gaps, Ordered Queue progress, Logs progress, Agent Worktree details,
+and Task Branch context.
 Compozy PRD Run progress appears when Compozy tracking is selected.
 
 The Terminal Console is safe to keep open while Symphony runs. Its MVP safe local aids are limited to
-refreshing the latest in-memory Runtime State snapshot, navigating and filtering panels, showing the
+refreshing the latest in-memory Runtime State snapshot, navigating and filtering tabs, showing the
 Web Dashboard handoff command, and inspecting validated local paths such as the Workspace Repository
 or Runtime Home. These aids do not retry tasks, pause or resume dispatch, update tracker status, merge
 or push Task Branches, open pull requests, change Runtime Contract files, or otherwise mutate task
@@ -152,29 +152,35 @@ next runnable task step. Runtime State, the Terminal Console, and the Web Dashbo
 tracker kind, Compozy PRD Run identifier, current task step, completed count, failed count, skipped
 count, and total count when Compozy tracking is selected.
 
-Compozy tracking has two status layers:
+Compozy tracking has four related status layers:
 
-- The Compozy PRD Run lifecycle describes the whole work item. Runtime State, the Terminal Console,
-  and the Web Dashboard show lifecycle details with compact labels such as `Lifecycle`,
-  `Dispatch state`, `Stage agent`, `PR readiness`, `Handoff`, and `Reason`.
-- Compozy Task Step progress describes ordered execution inside that run. Step counts and current
-  step selection still come from `task_NN.md` frontmatter and do not replace run-level lifecycle or
-  pull-request readiness.
+| Layer | Runtime State field or source | What it answers |
+| --- | --- | --- |
+| Compozy Task Step progress | `current_step`, `completed`, `failed`, `skipped`, `total` from `task_NN.md` frontmatter | Which ordered step is selected and how many steps are terminal. |
+| Compozy PRD Run lifecycle | `lifecycle_state` | What phase the whole run is in from the operator perspective. |
+| Dispatch state | `dispatch_state` and `stage_agent` | Which configured tracker status and Stage Agent routing state Symphony is using. |
+| Compozy PR Readiness | `pr_readiness`, `handoff_status`, and `reason` | Whether the completed run is eligible for one aggregate Batch Pull Request or why it is not. |
+
+Runtime State, the Terminal Console, and the Web Dashboard render these layers from the same
+`compozy_progress` payload. The Terminal Console and Web Dashboard use compact labels such as
+`Lifecycle`, `Dispatch state`, `Stage agent`, `PR readiness`, `Handoff`, and `Reason`, but those
+labels do not merge the layers. Compozy Task Step progress remains the source for current-step and
+count truth; lifecycle and readiness explain the run around that progress.
 
 Compozy PRD Run lifecycle meanings:
 
 | Lifecycle state | Meaning |
 | --- | --- |
 | `pending` | The run exists but has not entered active Stage Agent work. |
-| `in_planning` | Planner-stage work is active or selected for the run. |
-| `in_execution` | Engineering or task-step execution work is active. |
-| `in_review` | Reviewer-stage work is active or selected for the run. |
-| `blocked` | Symphony needs operator attention before the run should continue. |
+| `in_planning` | Planner-stage work is active. |
+| `in_execution` | Engineer-stage work or active task-step execution is in progress. |
+| `in_review` | Reviewer-stage work is active. |
+| `blocked` | Symphony needs operator attention and the run is not progressing normally. |
 | `completed` | The run completed successfully from the lifecycle perspective. |
-| `failed` | The run ended with failed task-step or orchestration outcome. |
+| `failed` | The run ended with failed work and is not ready for a Batch Pull Request. |
 | `skipped` | The run ended with skipped work and is not ready for a Batch Pull Request. |
 | `not_pr_ready` | The run is stopped or terminal but cannot open a Batch Pull Request; this is the not-PR-ready lifecycle and `Reason` explains why. |
-| `pr_handoff` | Pull-request handoff for the aggregate Batch Pull Request is attempting, completed, or failed. |
+| `pr_handoff` | Batch Pull Request handoff for the aggregate Batch Pull Request is attempting, completed, or failed. |
 
 PR readiness is separate from both lifecycle and task-step counts:
 
@@ -187,12 +193,27 @@ PR readiness is separate from both lifecycle and task-step counts:
 | `handoff_completed` | Symphony opened, completed, or reused the aggregate Batch Pull Request. |
 | `handoff_failed` | Batch Pull Request handoff failed and may be retried after the cause is fixed. |
 
+Representative Compozy PRD Run examples:
+
+| Scenario | Task-step progress | `lifecycle_state` | `dispatch_state` / `stage_agent` | `pr_readiness` / `handoff_status` | Operator meaning |
+| --- | --- | --- | --- | --- | --- |
+| Review active | Current Compozy Task Step and counts still come from task files. | `in_review` | `In review` / `reviewer` | `not_ready` / none | Reviewer work is active; the run is not ready for Batch Pull Request handoff. |
+| Retrying execution | The current step remains selected while retry context is visible in Runtime State. | `in_execution` | Current configured run state / `engineer` | `not_ready` / none | Retry does not create a new lifecycle value; `Reason` explains the retry. |
+| Blocked attention | Counts may show failed, skipped, or unavailable task-step progress. | `blocked` | `Human attention` / current Stage Agent when known | `not_ready` / none | Operator action is required before normal progress or handoff can continue. |
+| Failed or skipped terminal | Task-step truth shows failed or skipped terminal work. | `failed` or `skipped` | Terminal configured run state | `not_ready` / none | Terminal progress is visible, but it is not Batch Pull Request-ready. |
+| Completed and batch-ready | All task steps completed and final integration is safe. | `completed` | `Done` / current Stage Agent when known | `ready` / none | The Compozy PRD Run is eligible for one aggregate Batch Pull Request when the Pull Request Policy enables batch handoff. |
+| Completed with pull requests disabled | All task steps completed and final integration is safe. | `completed` | `Done` / current Stage Agent when known | `disabled` / none | The run completed, but automatic Batch Pull Requests are disabled by Pull Request Policy. |
+| Handoff failure | The completed run entered aggregate Batch Pull Request handoff. | `pr_handoff` | `Done` / current Stage Agent when known | `handoff_failed` / `handoff_failed` | The run is in handoff phase, and the failed handoff is a readiness outcome with a `Reason`, not successful review readiness. |
+
 Terminal task-step progress does not imply Batch Pull Request readiness. A run with failed, skipped,
 blocked, or otherwise terminal Compozy Task Steps remains `not_ready` unless the Compozy PRD Run
 completed successfully, final integration is safe, and the Pull Request Policy allows handoff.
 In `batch` Pull Request Mode, Compozy tracking preserves aggregate Batch Pull Request behavior:
 Symphony never opens one pull request per Compozy Task Step. At most one Batch Pull Request is
 eligible for the completed Compozy PRD Run, using the Loop-Start Branch as the pull-request head.
+If the completed Compozy Task Steps move the run into another configured Stage Agent state, Symphony
+dispatches that next Stage Agent with completed-run context first. Pull request handoff happens only
+after there is no configured next Stage Agent.
 
 When the selected Issue Tracker is `tracker.kind = "compozy_tasks"`, `--queue` accepts bare Compozy
 PRD Run slugs from `.compozy/tasks/<task_name>/`:
@@ -577,6 +598,9 @@ Symphony still reports Workspace Repository or GitHub Project access gaps, remov
 - `apps/backend`: OCaml service, workflow loader, GitHub tracker boundary, workspace manager, HTTP
   state API, CLI, and tests.
 - `apps/frontend`: ReScript React/Vite dashboard that consumes the backend state API.
+- `apps/tui`: reusable OCaml terminal UI toolkit packaged with Dune/opam as `tui`. Its
+  `@symphony-orchestrator/tui` package.json is a private pnpm workspace label, not the publishing
+  target.
 - `.github/ISSUE_TEMPLATE`: issue template for work items Symphony can dispatch.
 - `.github/project-tracking.md`: GitHub Tracker setup and workflow notes.
 - `WORKFLOW.example.md`: legacy/developer fixture for the earlier root workflow format.
@@ -590,9 +614,9 @@ actual orchestration belong in the Workspace Repository where `symphony init` is
 repository keeps code, tests, packaging scripts, fixtures, and documentation.
 
 Product Repository development requires `pnpm` 10.x and an OCaml toolchain with `opam`, OCaml
-`>= 5.1`, Dune `>= 3.19`, `cmdliner`, `yojson`, `alcotest`, and `mosaic`. The local scripts run
-OCaml commands through `opam exec`, so make sure the active opam switch has the required packages
-installed.
+`>= 5.1`, Dune `>= 3.19`, `cmdliner`, `yojson`, `alcotest`, the local `apps/tui` package, `uutf`,
+and `toffee`. The local scripts run OCaml commands through `opam exec`, so make sure the active opam
+switch has the required packages installed.
 
 Install dependencies:
 

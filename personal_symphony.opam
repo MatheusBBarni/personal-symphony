@@ -12,7 +12,9 @@ depends: [
   "yojson"
   "cmdliner"
   "alcotest"
-  "mosaic"
+  "tui"
+  "uutf"
+  "toffee"
   "odoc" {with-doc}
 ]
 build: [

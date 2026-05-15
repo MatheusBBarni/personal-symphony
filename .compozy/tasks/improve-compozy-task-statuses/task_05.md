@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Align Dashboard snapshot parsing and rendering with the shared Compozy status contract"
 type: frontend
 complexity: medium
 dependencies:
   - task_04
+
 ---
 
 # Task 05: Align Dashboard snapshot parsing and rendering with the shared Compozy status contract
@@ -30,11 +31,11 @@ Bring the Web Dashboard into line with the backend contract so operators see the
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Audit frontend snapshot parsing for lifecycle-rich and lifecycle-absent Compozy payloads.
-- [ ] 5.2 Align dashboard data mapping with the backend payload field semantics.
-- [ ] 5.3 Tighten Compozy PRD Run panel rendering for lifecycle, readiness, handoff, and reason details.
-- [ ] 5.4 Keep current-step and count presentation separate from lifecycle and readiness presentation.
-- [ ] 5.5 Expand frontend live-state and render tests, then rebuild frontend artifacts without committing generated files.
+- [x] 5.1 Audit frontend snapshot parsing for lifecycle-rich and lifecycle-absent Compozy payloads.
+- [x] 5.2 Align dashboard data mapping with the backend payload field semantics.
+- [x] 5.3 Tighten Compozy PRD Run panel rendering for lifecycle, readiness, handoff, and reason details.
+- [x] 5.4 Keep current-step and count presentation separate from lifecycle and readiness presentation.
+- [x] 5.5 Expand frontend live-state and render tests, then rebuild frontend artifacts without committing generated files.
 
 ## Implementation Details
 Reference TechSpec "Shared Runtime State payload", "API Endpoints", and "Testing Approach". Keep the work in ReScript source files plus the existing live-state test file; generated `apps/frontend/src/*.res.js` files remain ignored.
@@ -62,13 +63,13 @@ Reference TechSpec "Shared Runtime State payload", "API Endpoints", and "Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Snapshot parsing preserves lifecycle-rich Compozy payload fields including `lifecycle_state`, `dispatch_state`, `pr_readiness`, `reason`, and `handoff_status`.
-  - [ ] Snapshot parsing preserves backward compatibility when lifecycle fields are absent.
-  - [ ] Dashboard snapshot mapping keeps current-step counts separate from lifecycle and readiness fields.
+  - [x] Snapshot parsing preserves lifecycle-rich Compozy payload fields including `lifecycle_state`, `dispatch_state`, `pr_readiness`, `reason`, and `handoff_status`.
+  - [x] Snapshot parsing preserves backward compatibility when lifecycle fields are absent.
+  - [x] Dashboard snapshot mapping keeps current-step counts separate from lifecycle and readiness fields.
 - Integration tests:
-  - [ ] Dashboard markup for a lifecycle-rich Compozy payload shows lifecycle, dispatch state, stage agent, readiness, handoff, reason, and counts together.
-  - [ ] Dashboard markup for a legacy Compozy payload still shows current-step and count information without lifecycle placeholders.
-  - [ ] `pnpm frontend:test` and `pnpm frontend:build` pass after ReScript source updates.
+  - [x] Dashboard markup for a lifecycle-rich Compozy payload shows lifecycle, dispatch state, stage agent, readiness, handoff, reason, and counts together.
+  - [x] Dashboard markup for a legacy Compozy payload still shows current-step and count information without lifecycle placeholders.
+  - [x] `pnpm frontend:test` and `pnpm frontend:build` pass after ReScript source updates.
 - Test coverage target: >=80%
 - All tests must pass
 

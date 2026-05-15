@@ -161,6 +161,12 @@ function assertCompozyGuidance(readme) {
     "Runtime State",
     "Terminal Console",
     "Web Dashboard",
+    "Compozy tracking has four related status layers",
+    "Compozy PR Readiness",
+    "`lifecycle_state`",
+    "`dispatch_state`",
+    "`pr_readiness`",
+    "`handoff_status`",
     "compozy:<task_name>",
     "Ordered Queue",
     "Manual Task Merge",
@@ -170,6 +176,124 @@ function assertCompozyGuidance(readme) {
     if (!readme.includes(phrase)) {
       fail(`README.md is missing Compozy tracker guidance for ${phrase}`);
     }
+  }
+}
+
+function extractOcamlMappingStrings(relativePath, functionName) {
+  const source = readDoc(relativePath);
+  const marker = `let ${functionName} = function`;
+  const start = source.indexOf(marker);
+  if (start === -1) {
+    fail(`${relativePath} is missing ${functionName}`);
+    return [];
+  }
+
+  const afterMarker = source.slice(start + marker.length);
+  const end = afterMarker.search(/\n\nlet\s/);
+  const body = end === -1 ? afterMarker : afterMarker.slice(0, end);
+  const values = [...body.matchAll(/\|\s*[A-Za-z_][A-Za-z0-9_]*\s*->\s*"([^"]+)"/g)].map(
+    (match) => match[1],
+  );
+
+  if (values.length === 0) {
+    fail(`${relativePath} ${functionName} has no documented string mappings`);
+  }
+
+  return values;
+}
+
+function markdownTableRow(markdown, label) {
+  return markdown.split(/\r?\n/).find((line) => line.startsWith(`| ${label} |`));
+}
+
+function markdownCells(row) {
+  return row
+    .split("|")
+    .slice(1, -1)
+    .map((cell) => cell.trim());
+}
+
+function assertCompozyLifecycleContractDocs(readme) {
+  const lifecycleValues = extractOcamlMappingStrings(
+    "apps/backend/lib/compozy_lifecycle.ml",
+    "lifecycle_state_to_string",
+  );
+  const readinessValues = extractOcamlMappingStrings(
+    "apps/backend/lib/compozy_lifecycle.ml",
+    "pr_readiness_to_string",
+  );
+
+  for (const value of lifecycleValues) {
+    if (!readme.includes(`| \`${value}\` |`)) {
+      fail(`README.md does not document implemented lifecycle_state ${value}`);
+    }
+    if (!context.includes(`\`${value}\``)) {
+      fail(`CONTEXT.md does not document implemented lifecycle_state ${value}`);
+    }
+  }
+
+  for (const value of readinessValues) {
+    if (!readme.includes(`| \`${value}\` |`)) {
+      fail(`README.md does not document implemented pr_readiness ${value}`);
+    }
+    if (!context.includes(`\`${value}\``)) {
+      fail(`CONTEXT.md does not document implemented pr_readiness ${value}`);
+    }
+  }
+
+  const requiredFields = [
+    "current_step",
+    "completed",
+    "failed",
+    "skipped",
+    "total",
+    "lifecycle_state",
+    "dispatch_state",
+    "stage_agent",
+    "pr_readiness",
+    "handoff_status",
+    "reason",
+  ];
+  for (const field of requiredFields) {
+    if (!readme.includes(`\`${field}\``)) {
+      fail(`README.md is missing Compozy Runtime State field ${field}`);
+    }
+  }
+
+  const scenarios = [
+    ["Review active", "`in_review`", "`not_ready` / none"],
+    ["Retrying execution", "`in_execution`", "`not_ready` / none"],
+    ["Blocked attention", "`blocked`", "`not_ready` / none"],
+    ["Failed or skipped terminal", "`failed` or `skipped`", "`not_ready` / none"],
+    ["Completed and batch-ready", "`completed`", "`ready` / none"],
+    ["Completed with pull requests disabled", "`completed`", "`disabled` / none"],
+    ["Handoff failure", "`pr_handoff`", "`handoff_failed` / `handoff_failed`"],
+  ];
+
+  for (const [label, lifecycle, readiness] of scenarios) {
+    const row = markdownTableRow(readme, label);
+    if (!row) {
+      fail(`README.md is missing Compozy scenario ${label}`);
+      continue;
+    }
+
+    const cells = markdownCells(row);
+    if (cells[2] !== lifecycle) {
+      fail(`README.md scenario ${label} documents lifecycle ${cells[2]}, expected ${lifecycle}`);
+    }
+    if (cells[4] !== readiness) {
+      fail(`README.md scenario ${label} documents readiness ${cells[4]}, expected ${readiness}`);
+    }
+  }
+
+  if (!readme.includes("Retry does not create a new lifecycle value")) {
+    fail("README.md must explain retry remains in_execution with retry context");
+  }
+  if (!readme.includes("Symphony never opens one pull request per Compozy Task Step")) {
+    fail("README.md must keep aggregate Batch Pull Request behavior explicit");
+  }
+  if (!readme.includes("failed handoff is a readiness outcome")) {
+    fail("README.md must explain failed handoff as readiness, not successful review readiness");
   }
 }
 
@@ -318,6 +442,7 @@ assertTrackerExamples(jsonBlocks);
 assertGlossaryTerms();
 assertReadinessGuidance(markdownByPath.get("README.md"));
 assertCompozyGuidance(markdownByPath.get("README.md"));
+assertCompozyLifecycleContractDocs(markdownByPath.get("README.md"));
 assertTerminalConsoleGuidance(markdownByPath.get("README.md"));
 assertGitHubScope(markdownByPath.get(".github/project-tracking.md"));
 assertLegacyWorkflowReferencesAreScoped();

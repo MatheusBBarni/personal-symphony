@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Align Runtime State and Terminal Console with the shared Compozy status contract"
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 04: Align Runtime State and Terminal Console with the shared Compozy status contract

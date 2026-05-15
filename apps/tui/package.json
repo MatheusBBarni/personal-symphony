@@ -1,0 +1,21 @@
+{
+  "name": "@symphony-orchestrator/tui",
+  "version": "0.1.0",
+  "description": "Private pnpm workspace wrapper for the OCaml tui package.",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MatheusBBarni/symphony-orchestrator.git",
+    "directory": "apps/tui"
+  },
+  "bugs": {
+    "url": "https://github.com/MatheusBBarni/symphony-orchestrator/issues"
+  },
+  "homepage": "https://github.com/MatheusBBarni/symphony-orchestrator/tree/main/apps/tui#readme",
+  "scripts": {
+    "build": "opam exec -- dune build @all",
+    "test": "opam exec -- dune runtest",
+    "clean": "opam exec -- dune clean"
+  }
+}

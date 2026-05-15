@@ -11,9 +11,9 @@ Accepted
 ## Context
 
 Normal `symphony` runs previously used a mostly static Terminal Console before orchestration owned the
-foreground process. The Mosaic Terminal Console work changes that runtime shape: the Product
-Repository now has a richer foreground Terminal Console for normal Workspace Repository operation,
-while orchestration runs in the background when readiness allows it.
+foreground process. The Terminal Console work changed that runtime shape: the Product Repository now
+has a richer foreground Terminal Console for normal Workspace Repository operation, while
+orchestration runs in the background when readiness allows it.
 
 The default surface still needs to preserve Personal Symphony runtime boundaries. Runtime State
 remains the source of visible orchestration truth. Runtime Contract files under the Runtime Home still
@@ -25,6 +25,10 @@ Connection remains a Runtime State stream instead of a command channel.
 Normal `symphony` runs open the read-first Terminal Console by default. The Terminal Console renders
 Runtime State snapshots for active work, retrying work, task attention, Readiness Gaps, Ordered Queue
 progress, Compozy PRD Run progress, Agent Worktree details, and Task Branch context.
+
+The Terminal Console implementation uses the local OCaml terminal toolkit package under `apps/tui`.
+Its foreground shell presents the Workspace Repository project title and stable primary tabs:
+`Queue | Logs | Tasks | Readiness`.
 
 The Terminal Console may provide safe local aids for reading and inspection: refresh the latest
 in-memory Runtime State snapshot, navigate, filter, show Web Dashboard handoff guidance, and inspect
@@ -52,7 +56,6 @@ non-interactive terminal output and exits without starting the foreground Termin
 - `README.md`
 - `apps/backend/bin/main.ml`
 - `apps/backend/bin/terminal_console_runtime.ml`
-- `apps/backend/bin/terminal_console_mosaic.ml`
+- `apps/backend/bin/terminal_console_tui.ml`
+- `apps/tui/lib/tui.ml`
 - `apps/backend/lib/terminal_console_model.ml`
-- `.compozy/tasks/mosaic-tui/_prd.md`
-- `.compozy/tasks/mosaic-tui/_techspec.md`

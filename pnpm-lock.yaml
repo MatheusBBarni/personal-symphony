@@ -54,6 +54,8 @@ importers:
         specifier: ^4.1.18
         version: 4.2.4
 
+  apps/tui: {}
+
 packages:
 
   '@adobe/react-spectrum-ui@1.2.1':

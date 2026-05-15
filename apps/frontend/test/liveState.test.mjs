@@ -96,11 +96,11 @@ sockets[0].onmessage({
       failed: 0,
       skipped: 0,
       total: 8,
-      lifecycle_state: "in_review",
-      dispatch_state: "In review",
-      stage_agent: "reviewer",
-      pr_readiness: "not_ready",
-      reason: "Reviewer found failing verification.",
+      lifecycle_state: "pr_handoff",
+      dispatch_state: "Done",
+      stage_agent: "engineer",
+      pr_readiness: "handoff_failed",
+      reason: "Batch Pull Request handoff failed.",
       handoff_status: "handoff_failed",
     },
   }),
@@ -119,11 +119,11 @@ assert.equal(snapshots[0].compozy_progress.completed, 1);
 assert.equal(snapshots[0].compozy_progress.failed, 0);
 assert.equal(snapshots[0].compozy_progress.skipped, 0);
 assert.equal(snapshots[0].compozy_progress.total, 8);
-assert.equal(snapshots[0].compozy_progress.lifecycle_state, "in_review");
-assert.equal(snapshots[0].compozy_progress.dispatch_state, "In review");
-assert.equal(snapshots[0].compozy_progress.stage_agent, "reviewer");
-assert.equal(snapshots[0].compozy_progress.pr_readiness, "not_ready");
-assert.equal(snapshots[0].compozy_progress.reason, "Reviewer found failing verification.");
+assert.equal(snapshots[0].compozy_progress.lifecycle_state, "pr_handoff");
+assert.equal(snapshots[0].compozy_progress.dispatch_state, "Done");
+assert.equal(snapshots[0].compozy_progress.stage_agent, "engineer");
+assert.equal(snapshots[0].compozy_progress.pr_readiness, "handoff_failed");
+assert.equal(snapshots[0].compozy_progress.reason, "Batch Pull Request handoff failed.");
 assert.equal(snapshots[0].compozy_progress.handoff_status, "handoff_failed");
 
 const dashboardSnapshot = snapshotFromState(snapshots[0]);
@@ -136,35 +136,151 @@ assert.equal(dashboardSnapshot.compozyProgress.completed, "1");
 assert.equal(dashboardSnapshot.compozyProgress.failed, "0");
 assert.equal(dashboardSnapshot.compozyProgress.skipped, "0");
 assert.equal(dashboardSnapshot.compozyProgress.total, "8");
-assert.equal(dashboardSnapshot.compozyProgress.lifecycleState, "in_review");
-assert.equal(dashboardSnapshot.compozyProgress.dispatchState, "In review");
-assert.equal(dashboardSnapshot.compozyProgress.stageAgent, "reviewer");
-assert.equal(dashboardSnapshot.compozyProgress.prReadiness, "not_ready");
-assert.equal(dashboardSnapshot.compozyProgress.reason, "Reviewer found failing verification.");
+assert.equal(dashboardSnapshot.compozyProgress.lifecycleState, "pr_handoff");
+assert.equal(dashboardSnapshot.compozyProgress.dispatchState, "Done");
+assert.equal(dashboardSnapshot.compozyProgress.stageAgent, "engineer");
+assert.equal(dashboardSnapshot.compozyProgress.prReadiness, "handoff_failed");
+assert.equal(dashboardSnapshot.compozyProgress.reason, "Batch Pull Request handoff failed.");
 assert.equal(dashboardSnapshot.compozyProgress.handoffStatus, "handoff_failed");
 
 const lifecycleMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: dashboardSnapshot, error: undefined }),
 );
-assert.match(lifecycleMarkup, /PRD run progress/);
+assert.match(lifecycleMarkup, /Compozy PRD Run progress/);
+assert.match(lifecycleMarkup, /Compozy PRD Run lifecycle/);
+assert.match(lifecycleMarkup, /Compozy Task Step progress/);
 assert.match(lifecycleMarkup, /Lifecycle/);
-assert.match(lifecycleMarkup, /in_review/);
+assert.match(lifecycleMarkup, /pr_handoff/);
 assert.match(lifecycleMarkup, /Dispatch state/);
-assert.match(lifecycleMarkup, /In review/);
+assert.match(lifecycleMarkup, /Done/);
 assert.match(lifecycleMarkup, /Stage agent/);
-assert.match(lifecycleMarkup, /reviewer/);
+assert.match(lifecycleMarkup, /engineer/);
 assert.match(lifecycleMarkup, /PR readiness/);
-assert.match(lifecycleMarkup, /not_ready/);
-assert.match(lifecycleMarkup, /Handoff/);
+assert.match(lifecycleMarkup, /handoff_failed/);
+assert.match(lifecycleMarkup, /Handoff status/);
 assert.match(lifecycleMarkup, /handoff_failed/);
 assert.match(lifecycleMarkup, /Reason/);
-assert.match(lifecycleMarkup, /Reviewer found failing verification\./);
+assert.match(lifecycleMarkup, /Batch Pull Request handoff failed\./);
 assert.match(lifecycleMarkup, /Current step/);
 assert.match(lifecycleMarkup, /task_02\.md/);
 assert.match(lifecycleMarkup, /Completed/);
 assert.match(lifecycleMarkup, /Failed/);
 assert.match(lifecycleMarkup, /Skipped/);
 assert.match(lifecycleMarkup, /Total/);
+
+const reviewDashboardSnapshot = snapshotFromState({
+  tracker_kind: "compozy_tasks",
+  counts: { running: 1, retrying: 0 },
+  usage_totals: { total_tokens: 18 },
+  generated_at: "2026-05-04T00:02:00Z",
+  status_order: ["In review"],
+  issues: [],
+  running: [],
+  retrying: [],
+  issue_errors: [],
+  compozy_progress: {
+    run_id: "compozy:review-run",
+    slug: "review-run",
+    current_step: "task_04.md",
+    completed: 3,
+    failed: 0,
+    skipped: 0,
+    total: 6,
+    lifecycle_state: "in_review",
+    dispatch_state: "In review",
+    stage_agent: "reviewer",
+    pr_readiness: "not_ready",
+    reason: "Reviewer found failing verification.",
+  },
+});
+
+assert.equal(reviewDashboardSnapshot.compozyProgress.currentStep, "task_04.md");
+assert.equal(reviewDashboardSnapshot.compozyProgress.completed, "3");
+assert.equal(reviewDashboardSnapshot.compozyProgress.failed, "0");
+assert.equal(reviewDashboardSnapshot.compozyProgress.skipped, "0");
+assert.equal(reviewDashboardSnapshot.compozyProgress.total, "6");
+assert.equal(reviewDashboardSnapshot.compozyProgress.lifecycleState, "in_review");
+assert.equal(reviewDashboardSnapshot.compozyProgress.dispatchState, "In review");
+assert.equal(reviewDashboardSnapshot.compozyProgress.stageAgent, "reviewer");
+assert.equal(reviewDashboardSnapshot.compozyProgress.prReadiness, "not_ready");
+assert.equal(reviewDashboardSnapshot.compozyProgress.reason, "Reviewer found failing verification.");
+assert.equal(reviewDashboardSnapshot.compozyProgress.handoffStatus, "");
+
+const reviewMarkup = renderToStaticMarkup(
+  React.createElement(Dashboard, { snapshot: reviewDashboardSnapshot, error: undefined }),
+);
+assert.match(reviewMarkup, /Lifecycle/);
+assert.match(reviewMarkup, /in_review/);
+assert.match(reviewMarkup, /Dispatch state/);
+assert.match(reviewMarkup, /In review/);
+assert.match(reviewMarkup, /Stage agent/);
+assert.match(reviewMarkup, /reviewer/);
+assert.match(reviewMarkup, /PR readiness/);
+assert.match(reviewMarkup, /not_ready/);
+assert.match(reviewMarkup, /Reason/);
+assert.match(reviewMarkup, /Reviewer found failing verification\./);
+assert.match(reviewMarkup, /Current step/);
+assert.match(reviewMarkup, /task_04\.md/);
+assert.doesNotMatch(reviewMarkup, /Handoff status/);
+
+const blockedDashboardSnapshot = snapshotFromState({
+  tracker_kind: "compozy_tasks",
+  counts: { running: 0, retrying: 0 },
+  usage_totals: { total_tokens: 21 },
+  generated_at: "2026-05-04T00:02:30Z",
+  status_order: ["Human attention"],
+  issues: [],
+  running: [],
+  retrying: [],
+  issue_errors: [],
+  compozy_progress: {
+    run_id: "compozy:blocked-run",
+    slug: "blocked-run",
+    current_step: "task_03.md",
+    completed: 2,
+    failed: 1,
+    skipped: 0,
+    total: 5,
+    lifecycle_state: "blocked",
+    dispatch_state: "Human attention",
+    stage_agent: "engineer",
+    pr_readiness: "not_ready",
+    reason: "Protected path attention required.",
+  },
+});
+
+assert.equal(blockedDashboardSnapshot.compozyProgress.currentStep, "task_03.md");
+assert.equal(blockedDashboardSnapshot.compozyProgress.completed, "2");
+assert.equal(blockedDashboardSnapshot.compozyProgress.failed, "1");
+assert.equal(blockedDashboardSnapshot.compozyProgress.skipped, "0");
+assert.equal(blockedDashboardSnapshot.compozyProgress.total, "5");
+assert.equal(blockedDashboardSnapshot.compozyProgress.lifecycleState, "blocked");
+assert.equal(blockedDashboardSnapshot.compozyProgress.dispatchState, "Human attention");
+assert.equal(blockedDashboardSnapshot.compozyProgress.stageAgent, "engineer");
+assert.equal(blockedDashboardSnapshot.compozyProgress.prReadiness, "not_ready");
+assert.equal(blockedDashboardSnapshot.compozyProgress.reason, "Protected path attention required.");
+assert.equal(blockedDashboardSnapshot.compozyProgress.handoffStatus, "");
+
+const blockedMarkup = renderToStaticMarkup(
+  React.createElement(Dashboard, { snapshot: blockedDashboardSnapshot, error: undefined }),
+);
+assert.match(blockedMarkup, /Lifecycle/);
+assert.match(blockedMarkup, /blocked/);
+assert.match(blockedMarkup, /Dispatch state/);
+assert.match(blockedMarkup, /Human attention/);
+assert.match(blockedMarkup, /Stage agent/);
+assert.match(blockedMarkup, /engineer/);
+assert.match(blockedMarkup, /PR readiness/);
+assert.match(blockedMarkup, /not_ready/);
+assert.match(blockedMarkup, /Reason/);
+assert.match(blockedMarkup, /Protected path attention required\./);
+assert.match(blockedMarkup, /Current step/);
+assert.match(blockedMarkup, /task_03\.md/);
+assert.match(blockedMarkup, /Completed/);
+assert.match(blockedMarkup, /Failed/);
+assert.match(blockedMarkup, /Skipped/);
+assert.match(blockedMarkup, /Total/);
+assert.doesNotMatch(blockedMarkup, /Handoff status/);
 
 const compozyDashboardSnapshot = snapshotFromState({
   tracker_kind: "compozy_tasks",
@@ -211,7 +327,8 @@ assert.equal(compozyDashboardSnapshot.compozyProgress.handoffStatus, "");
 const compozyMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: compozyDashboardSnapshot, error: undefined }),
 );
-assert.match(compozyMarkup, /PRD run progress/);
+assert.match(compozyMarkup, /Compozy PRD Run progress/);
+assert.match(compozyMarkup, /Compozy Task Step progress/);
 assert.match(compozyMarkup, /task_02\.md/);
 assert.match(compozyMarkup, /Current step/);
 assert.match(compozyMarkup, /Completed/);
@@ -220,6 +337,13 @@ assert.match(compozyMarkup, /Skipped/);
 assert.match(compozyMarkup, /Total/);
 assert.match(compozyMarkup, /1 tracked PRD runs/);
 assert.match(compozyMarkup, /work item states/);
+assert.doesNotMatch(compozyMarkup, /Lifecycle/);
+assert.doesNotMatch(compozyMarkup, /Compozy PRD Run lifecycle/);
+assert.doesNotMatch(compozyMarkup, /Dispatch state/);
+assert.doesNotMatch(compozyMarkup, /Stage agent/);
+assert.doesNotMatch(compozyMarkup, /PR readiness/);
+assert.doesNotMatch(compozyMarkup, /Handoff status/);
+assert.doesNotMatch(compozyMarkup, /Reason/);
 
 const richDashboardSnapshot = snapshotFromState({
   workspace_repository_name: "workspace-repo",

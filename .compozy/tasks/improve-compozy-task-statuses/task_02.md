@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Use reconciled lifecycle state in the Compozy tracker adapter"
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 02: Use reconciled lifecycle state in the Compozy tracker adapter
@@ -30,11 +31,11 @@ Align the Compozy-backed Local Issue Tracker with the reconciled lifecycle contr
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Route Compozy candidate fetches and identifier lookups through the reconciled lifecycle loader.
-- [ ] 2.2 Preserve Compozy issue-state mapping from lifecycle `dispatch_state`.
-- [ ] 2.3 Keep corrupt-lifecycle fallback behavior narrow and task-step-derived.
-- [ ] 2.4 Ensure Compozy status updates persist dispatch-state changes back into lifecycle metadata only.
-- [ ] 2.5 Add focused tracker adapter tests for fetch, lookup, update, and lifecycle repair paths.
+- [x] 2.1 Route Compozy candidate fetches and identifier lookups through the reconciled lifecycle loader.
+- [x] 2.2 Preserve Compozy issue-state mapping from lifecycle `dispatch_state`.
+- [x] 2.3 Keep corrupt-lifecycle fallback behavior narrow and task-step-derived.
+- [x] 2.4 Ensure Compozy status updates persist dispatch-state changes back into lifecycle metadata only.
+- [x] 2.5 Add focused tracker adapter tests for fetch, lookup, update, and lifecycle repair paths.
 
 ## Implementation Details
 Reference TechSpec "System Architecture" component overview for `Issue_tracker.compozy` and TechSpec "Impact Analysis" for tracker adapter behavior. Keep this task scoped to `issue_tracker.ml` and the related backend tests; do not widen it into orchestrator transition work.
@@ -64,13 +65,13 @@ Reference TechSpec "System Architecture" component overview for `Issue_tracker.c
 
 ## Tests
 - Unit tests:
-  - [ ] Candidate fetch maps each runnable Compozy PRD Run to a tracker issue using lifecycle `dispatch_state`.
-  - [ ] Identifier lookup returns the Compozy PRD Run issue and preserves the canonical `compozy:<slug>` identifier.
-  - [ ] Corrupt lifecycle JSON falls back to task-step-based backfill instead of failing the tracker adapter.
-  - [ ] `update_status` persists only lifecycle `dispatch_state` changes for a Compozy PRD Run.
+  - [x] Candidate fetch maps each runnable Compozy PRD Run to a tracker issue using lifecycle `dispatch_state`.
+  - [x] Identifier lookup returns the Compozy PRD Run issue and preserves the canonical `compozy:<slug>` identifier.
+  - [x] Corrupt lifecycle JSON falls back to task-step-based backfill instead of failing the tracker adapter.
+  - [x] `update_status` persists only lifecycle `dispatch_state` changes for a Compozy PRD Run.
 - Integration tests:
-  - [ ] Compozy tracker active and terminal checks continue to use dispatch-facing status semantics after lifecycle reconciliation.
-  - [ ] Queue or lookup flows consume repaired lifecycle metadata when a Runtime Home lifecycle file is stale or corrupt.
+  - [x] Compozy tracker active and terminal checks continue to use dispatch-facing status semantics after lifecycle reconciliation.
+  - [x] Queue or lookup flows consume repaired lifecycle metadata when a Runtime Home lifecycle file is stale or corrupt.
 - Test coverage target: >=80%
 - All tests must pass
 
