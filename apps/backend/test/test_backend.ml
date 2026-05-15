@@ -12016,6 +12016,95 @@ let test_ordered_queue_revives_persisted_completed_active_entries () =
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
       | None -> Alcotest.fail "expected ordered queue state")
 
+let test_ordered_queue_skips_stale_persisted_running_entry () =
+  with_temp_dir "symphony-orchestrator-queue-stale-running-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "running"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launched;
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          (match queue.entries with
+          | [ entry ] ->
+              Alcotest.(check string) "stale running entry skipped" "skipped" entry.state;
+              Alcotest.(check (option string)) "skip reason"
+                (Some "Issue became unavailable or not dispatchable before admission.")
+                entry.skip_reason
+          | _ -> Alcotest.fail "expected one ordered queue entry")
+      | None -> Alcotest.fail "expected ordered queue state")
+
+let test_ordered_queue_requeues_stale_persisted_running_entry_when_dispatchable () =
+  with_temp_dir "symphony-orchestrator-queue-stale-running-dispatchable-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "running"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      let _other_issue, other_running = terminal_console_running_row ~identifier:"#99" ~title:"Other work" "I99" in
+      Orchestrator.update_state orchestrator (fun state -> { state with Runtime_state.running = [ other_running ] });
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "capacity is full so dispatch waits" 0 !launched;
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          (match queue.entries with
+          | [ entry ] ->
+              Alcotest.(check string) "stale running entry requeued" "pending" entry.state;
+              Alcotest.(check (option string)) "skip reason cleared" None entry.skip_reason
+          | _ -> Alcotest.fail "expected one ordered queue entry")
+      | None -> Alcotest.fail "expected ordered queue state")
+
 let commit_file ~cwd file content message =
   Util.write_file (Filename.concat cwd file) content;
   ignore (run_ok ~cwd "commit file" (Printf.sprintf "git add %s && git commit -q -m %s" (Util.shell_quote file) (Util.shell_quote message)))
@@ -14063,6 +14152,10 @@ let () =
             test_ordered_queue_keeps_stage_handoffs_pending;
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
             test_ordered_queue_revives_persisted_completed_active_entries;
+          Alcotest.test_case "skips stale active ordered queue entries without candidates" `Quick
+            test_ordered_queue_skips_stale_persisted_running_entry;
+          Alcotest.test_case "requeues stale active ordered queue entries with dispatchable candidates" `Quick
+            test_ordered_queue_requeues_stale_persisted_running_entry_when_dispatchable;
           Alcotest.test_case "pauses tracker after rate limit" `Quick test_orchestrator_pauses_tracker_after_rate_limit;
           Alcotest.test_case "records generic tracker poll failure" `Quick
             test_orchestrator_records_generic_tracker_poll_failure;

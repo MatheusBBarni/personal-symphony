@@ -418,6 +418,16 @@ let entry_state_for_issue state issue_identifier =
   else if List.exists is_error state.issue_errors then Some "skipped"
   else None
 
+let ordered_queue_entry_needs_live_source (entry : Runtime_state.ordered_queue_entry) =
+  match String.lowercase_ascii entry.state with
+  | "pending" | "running" | "retrying" -> true
+  | _ -> false
+
+let ordered_queue_entry_is_stale_active (entry : Runtime_state.ordered_queue_entry) =
+  match String.lowercase_ascii entry.state with
+  | "running" | "retrying" -> true
+  | _ -> false
+
 let retrying_due orchestrator issue =
   match Hashtbl.find_opt orchestrator.retry_due issue.Issue.id with
   | None -> true
@@ -1963,10 +1973,14 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                              match entry_state_for_issue state entry.issue_identifier with
                              | Some state -> state
                              | None
-                               when skip_missing && entry.state = "pending"
+                               when skip_missing
+                                    && ordered_queue_entry_needs_live_source entry
                                     && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
                                  "skipped"
-                             | None when skip_missing && entry.state = "completed" && candidate_dispatchable entry.issue_identifier ->
+                             | None
+                               when skip_missing
+                                    && (entry.state = "completed" || ordered_queue_entry_is_stale_active entry)
+                                    && candidate_dispatchable entry.issue_identifier ->
                                  "pending"
                              | None -> entry.state)))
                in
@@ -1974,9 +1988,9 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                  match skipped_identifier with
                  | Some identifier when identifier = entry.issue_identifier -> skipped_reason
                  | _ when pending_identifier = Some entry.issue_identifier -> None
-                 | _ when skip_missing && entry.state = "pending" && candidate_missing entry.issue_identifier ->
+                 | _ when skip_missing && ordered_queue_entry_needs_live_source entry && candidate_missing entry.issue_identifier ->
                      Some "Issue became unavailable or not dispatchable before admission."
-                 | _ when skip_missing && entry.state = "pending" && candidate_not_dispatchable entry.issue_identifier ->
+                 | _ when skip_missing && ordered_queue_entry_needs_live_source entry && candidate_not_dispatchable entry.issue_identifier ->
                      Some "Issue is no longer in a dispatchable project state."
                  | _ -> entry.skip_reason
                in
