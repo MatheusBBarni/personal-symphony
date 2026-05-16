@@ -54,7 +54,7 @@ jobs:
 
       - name: Install OCaml dependencies
         shell: bash
-        run: opam install . --deps-only --with-test --yes
+        run: opam install . ./apps/tui --deps-only --with-test --yes
 
       - name: Build backend
         shell: bash
@@ -108,7 +108,7 @@ jobs:
         shell: bash
         run: |
           pnpm install --frozen-lockfile
-          opam install . --deps-only --with-test --yes
+          opam install . ./apps/tui --deps-only --with-test --yes
 
       - name: Validate release package
         shell: bash

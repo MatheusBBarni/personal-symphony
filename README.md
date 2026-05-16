@@ -598,7 +598,8 @@ Symphony still reports Workspace Repository or GitHub Project access gaps, remov
 - `apps/backend`: OCaml service, workflow loader, GitHub tracker boundary, workspace manager, HTTP
   state API, CLI, and tests.
 - `apps/frontend`: ReScript React/Vite dashboard that consumes the backend state API.
-- `apps/tui`: reusable OCaml terminal UI toolkit packaged with Dune/opam as `tui`. Its
+- `apps/tui`: reusable OCaml terminal UI toolkit packaged with Dune/opam as
+  `symphony-orchestrator-tui`. Its
   `@symphony-orchestrator/tui` package.json is a private pnpm workspace label, not the publishing
   target.
 - `.github/ISSUE_TEMPLATE`: issue template for work items Symphony can dispatch.
@@ -622,7 +623,7 @@ Install dependencies:
 
 ```sh
 pnpm install
-opam install . --deps-only --with-test --yes
+opam install . ./apps/tui --deps-only --with-test --yes
 ```
 
 Run the backend test suite:

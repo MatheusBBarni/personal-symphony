@@ -19,6 +19,6 @@
   cmdliner
   alcotest
   reason
-  tui
+  symphony-orchestrator-tui
   uutf
   toffee))

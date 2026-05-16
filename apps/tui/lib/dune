@@ -1,5 +1,7 @@
+(include_subdirs unqualified)
+
 (library
  (name tui)
- (public_name tui)
+ (public_name symphony-orchestrator-tui)
  (private_modules tui_utf)
  (libraries unix uutf toffee))
