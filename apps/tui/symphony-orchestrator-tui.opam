@@ -17,6 +17,7 @@ depends: [
   "reason"
   "uutf"
   "toffee"
+  "alcotest" {with-test}
   "odoc" {with-doc}
 ]
 build: [

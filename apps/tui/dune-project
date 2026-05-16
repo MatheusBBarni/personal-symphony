@@ -25,4 +25,5 @@
   (ocaml (>= 5.1))
   reason
   uutf
-  toffee))
+  toffee
+  (alcotest :with-test)))
