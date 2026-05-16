@@ -238,6 +238,22 @@ let table_component_fits_unicode = () => {
   );
 };
 
+let table_component_handles_uneven_rows = () => {
+  let root =
+    Components.table(
+      [("A", 3), ("B", 2)],
+      [["x"], ["one", "two", "ignored"]],
+    );
+  let output =
+    Renderer.render_to_string(Renderer.create(~width=12, ~height=4, root));
+  Alcotest.(check(bool))("keeps short row", true, contains_sub(output, "x"));
+  Alcotest.(check(bool))(
+    "truncates long cell and ignores extra cells",
+    true,
+    contains_sub(output, "one  t…"),
+  );
+};
+
 let dashboard_components_render = () => {
   let root =
     Patterns.app_shell(
@@ -502,6 +518,49 @@ let component_design_injects_theme = () => {
   };
 };
 
+let component_design_rethemes_default_tones = () => {
+  let design = Components.make_design();
+  let light_design = Components.with_theme(~theme=Theme.light, design);
+  let root =
+    Components.badge(
+      ~id="badge",
+      ~tone=Components.Success,
+      ~design=light_design,
+      "ok",
+    );
+  switch (Node.find_by_id("badge", root)) {
+  | Some(node) =>
+    Alcotest.(check(bool))(
+      "uses new theme success color",
+      true,
+      node.style.fg == Some(Theme.light(Theme.Status_success)),
+    )
+  | None => Alcotest.fail("badge not found")
+  };
+};
+
+let component_design_retheme_preserves_custom_tones = () => {
+  let tone_color = _tone => Color.ansi(5);
+  let design = Components.make_design(~tone_color, ());
+  let light_design = Components.with_theme(~theme=Theme.light, design);
+  let root =
+    Components.badge(
+      ~id="badge",
+      ~tone=Components.Success,
+      ~design=light_design,
+      "ok",
+    );
+  switch (Node.find_by_id("badge", root)) {
+  | Some(node) =>
+    Alcotest.(check(bool))(
+      "preserves explicit tone color",
+      true,
+      node.style.fg == Some(Color.ansi(5)),
+    )
+  | None => Alcotest.fail("badge not found")
+  };
+};
+
 let theme_helpers_cover_palettes_and_named_lookup = () => {
   switch (Theme.named("high-contrast")) {
   | Some(theme) =>
@@ -723,6 +782,11 @@ let () =
             table_component_fits_unicode,
           ),
           Alcotest.test_case(
+            "table uneven rows",
+            `Quick,
+            table_component_handles_uneven_rows,
+          ),
+          Alcotest.test_case(
             "dashboard render",
             `Quick,
             dashboard_components_render,
@@ -746,6 +810,16 @@ let () =
             "design injection",
             `Quick,
             component_design_injects_theme,
+          ),
+          Alcotest.test_case(
+            "design retheme default tones",
+            `Quick,
+            component_design_rethemes_default_tones,
+          ),
+          Alcotest.test_case(
+            "design retheme custom tones",
+            `Quick,
+            component_design_retheme_preserves_custom_tones,
           ),
           Alcotest.test_case(
             "theme helpers",

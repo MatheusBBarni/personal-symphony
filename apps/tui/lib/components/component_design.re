@@ -20,6 +20,8 @@ let default_tone_color = theme =>
   | Warning => theme(Theme.Status_warning)
   | Error => theme(Theme.Status_error);
 
+let tones = [Neutral, Accent, Info, Success, Warning, Error];
+
 let make_design = (~theme=Theme.dark, ~tone_color=?, ()) => {
   let tone_color =
     switch (tone_color) {
@@ -39,9 +41,19 @@ let resolve_design =
   | None => default_design
   | Some(design) => design;
 
+let uses_default_tone_color = design => {
+  let default = default_tone_color(design.theme);
+  List.for_all(tone => design.tone_color(tone) == default(tone), tones);
+};
+
 let with_theme = (~theme, design) => {
   theme,
-  tone_color: design.tone_color,
+  tone_color:
+    if (uses_default_tone_color(design)) {
+      default_tone_color(theme);
+    } else {
+      design.tone_color;
+    },
 };
 
 let with_tone_color = (~tone_color, design) => {

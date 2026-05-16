@@ -50,8 +50,25 @@ let make =
     ) => {
   let design = Component_design.resolve_design(design);
   let widths = List.map(snd, columns);
+  let cells_for_columns = cells => {
+    let rec loop = (widths, cells) =>
+      switch (widths, cells) {
+      | ([], _) => []
+      | ([_width, ...rest_widths], []) => ["", ...loop(rest_widths, [])]
+      | ([_width, ...rest_widths], [cell, ...rest_cells]) => [
+          cell,
+          ...loop(rest_widths, rest_cells),
+        ]
+      };
+
+    loop(widths, cells);
+  };
   let line = cells =>
-    List.map2((width, cell) => fit(width, cell), widths, cells)
+    List.map2(
+      (width, cell) => fit(width, cell),
+      widths,
+      cells_for_columns(cells),
+    )
     |> String.concat("  ");
 
   let header_style =
