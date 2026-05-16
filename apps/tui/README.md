@@ -410,7 +410,7 @@ The publishable opam package is `symphony-orchestrator-tui`. opam does not suppo
 
 Package metadata lives in `dune-project`, and `symphony-orchestrator-tui.opam` is generated from it.
 
-The GitHub Actions `TUI package` workflow watches pushes that touch `apps/tui`. It continues only when `apps/tui/package.json` has a version bump in the same push. On the repository default branch, the workflow validates the package, builds `dist/symphony-orchestrator-tui-<version>.tar.gz`, and publishes that archive to a `tui-v<version>` GitHub release.
+The GitHub Actions `TUI package` workflow validates pull requests and pushes that touch `apps/tui` or the workflow itself. Release archive publishing runs only for a TUI package version bump on the repository default branch, or for a manual dispatch with `publish_release` enabled, and publishes `dist/symphony-orchestrator-tui-<version>.tar.gz` to a `tui-v<version>` GitHub release.
 
 Before publishing manually, run the package checks from `apps/tui`:
 

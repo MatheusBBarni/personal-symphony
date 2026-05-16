@@ -7,7 +7,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 version="$1"
-git_ref="${2:-v$version}"
+git_ref="${2:-tui-v$version}"
 repo_root="$(git rev-parse --show-toplevel)"
 out_dir="$repo_root/apps/tui/dist"
 archive="$out_dir/symphony-orchestrator-tui-$version.tar.gz"
