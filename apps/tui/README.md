@@ -346,9 +346,9 @@ let style =
 
 - Core rendering and input modules live in files such as `style.re`, `surface.re`, `node.re`, `layout.re`, `render.re`, and `renderer.re`.
 - Theme tokens and palette helpers live in `theme.re`.
-- Component design context lives in `component_design.re`.
-- Reusable components live one component per file, for example `component_panel.re`, `component_table.re`, `component_callout.re`, and `component_meter.re`.
-- `components_core.re`, `components.re`, `patterns.re`, and `presets.re` aggregate the public layers.
+- Component design context and reusable widgets live under `components/`.
+- Reusable components use one file per component, for example `components/component_panel.re`, `components/component_table.re`, `components/component_callout.re`, and `components/component_meter.re`.
+- `components/components_core.re`, `components/components.re`, `patterns.re`, and `presets.re` aggregate the public layers.
 
 Callers should prefer the stable `Tui.Components`, `Tui.Patterns`, and `Tui.Presets` namespaces. The split files keep implementation ownership clear without requiring consumers to learn every internal module.
 
@@ -410,7 +410,9 @@ The publishable opam package is `symphony-orchestrator-tui`. opam does not suppo
 
 Package metadata lives in `dune-project`, and `symphony-orchestrator-tui.opam` is generated from it.
 
-Before publishing a tagged release, run the package checks from `apps/tui`:
+The GitHub Actions `TUI package` workflow watches pushes that touch `apps/tui`. It continues only when `apps/tui/package.json` has a version bump in the same push. On the repository default branch, the workflow validates the package, builds `dist/symphony-orchestrator-tui-<version>.tar.gz`, and publishes that archive to a `tui-v<version>` GitHub release.
+
+Before publishing manually, run the package checks from `apps/tui`:
 
 ```bash
 opam lint symphony-orchestrator-tui.opam
@@ -430,11 +432,11 @@ Because this package lives under `apps/tui`, publish an archive whose root is th
 Create the package archive from a tag:
 
 ```bash
-sh scripts/release-archive.sh 0.1.0 v0.1.0
+sh scripts/release-archive.sh 0.1.0 tui-v0.1.0
 ```
 
 Upload the generated `dist/symphony-orchestrator-tui-0.1.0.tar.gz` file to the GitHub release for that tag. Then publish through the standard opam-repository PR flow from `apps/tui`:
 
 ```bash
-opam publish https://github.com/MatheusBBarni/symphony-orchestrator/releases/download/v0.1.0/symphony-orchestrator-tui-0.1.0.tar.gz .
+opam publish https://github.com/MatheusBBarni/symphony-orchestrator/releases/download/tui-v0.1.0/symphony-orchestrator-tui-0.1.0.tar.gz .
 ```

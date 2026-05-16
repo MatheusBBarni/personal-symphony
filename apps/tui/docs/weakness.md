@@ -22,7 +22,7 @@ That made the package easy to demo but harder to treat as a general library. A c
 | --- | --- | --- |
 | Theme is injectable at the component layer | `Components.make_design` creates a design context, reusable helpers accept `?design`, and `Theme` now has palette helpers plus `high_contrast_dark`, `named`, and `with_slot`. `Theme.dark` remains only as the default design. | Remaining callers that manually style with `Theme.dark` can still be migrated when they need a shared visual identity. |
 | Product copy is no longer in core defaults | `Patterns.app_shell` defaults to `App`. OpenCode-specific copy lives under `Presets.Open_code`. | Preset defaults are still product-shaped by design; generic code should not depend on those presets. |
-| Primitive and pattern APIs are separated | `Components` now owns reusable widgets, `Patterns` owns application layouts, and `Presets.Open_code` owns OpenCode-inspired helpers. Component implementations are split into `component_*.re` files with `Components` as the public aggregator. | The package still has no `.mli`, so the next hardening pass should define the intended public surface explicitly. |
+| Primitive and pattern APIs are separated | `Components` now owns reusable widgets, `Patterns` owns application layouts, and `Presets.Open_code` owns OpenCode-inspired helpers. Component implementations live under `lib/components/` with `Components` as the public aggregator. | The package still has no `.mli`, so the next hardening pass should define the intended public surface explicitly. |
 | Styling override behavior is partial | Helpers often preserve only selected fields from an incoming `style` value. | Consumers may pass style fields that silently disappear, producing surprising layouts. |
 | Semantic tone is design-driven | `tone` maps through `design.tone_color`, with the dark theme as the default. | Advanced design systems may still need more slots than the current tone set exposes. |
 | Examples use explicit presets | OpenCode-inspired examples use `Presets.Open_code` helpers instead of `Components` helpers. | Demo fidelity and stable toolkit design are now separated, but preset naming should remain clearly example-oriented. |
@@ -39,7 +39,7 @@ Tui
   Presets: Open_code
 ```
 
-This split can continue incrementally. The current cleanup pass keeps `Tui` as the compatibility facade, moves core implementation modules into focused files, and places each reusable component implementation behind its own `component_*.re` file. The important part from here is keeping ownership clear:
+This split can continue incrementally. The current cleanup pass keeps `Tui` as the compatibility facade, moves core implementation modules into focused files, and places reusable component implementation files under `lib/components/`. The important part from here is keeping ownership clear:
 
 - Keep primitives stable and boring.
 - Move opinionated layout helpers into `Patterns`.
@@ -106,5 +106,5 @@ The next pass should focus on API hardening rather than visual polish: add an in
 - Example-specific helpers live outside the core `Components` namespace. Done through `Presets.Open_code`.
 - Existing dashboard and OpenCode-inspired examples still render after the move. Covered by `dune runtest` and updated examples.
 - Tests cover theme injection, neutral defaults, and at least one migrated example helper. Done in `apps/tui/test/test_tui.re`.
-- Reusable component implementations live in separate files and aggregate through `Components`. Done with `component_*.re` modules.
+- Reusable component implementations live in separate files under `lib/components/` and aggregate through `Components`. Done with `component_*.re` modules.
 - New generic components cover divider, callout, empty state, toolbar, and meter use cases. Done with coverage in `apps/tui/test/test_tui.re`.
