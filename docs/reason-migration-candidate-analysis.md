@@ -3,9 +3,9 @@
 Module-by-module assessment for Phase 2 continuation and beyond. All files under `apps/backend/lib/`.
 
 Excluded from conversion: `orchestrator.ml`, `server.ml`, `config.ml`, `runtime_home.ml`.
-Already converted: `util.re`, `issue.re`, `prompt.re`, `ordered_queue.re`.
+Already converted: `util.re`, `issue.re`, `prompt.re`, `ordered_queue.re`, `cli_mode.re`, `runtime_policy.re`, `terminal_console.re`, `workspace.re`, `simple_yaml.re`, `workflow.re`, `runtime_startup.re`, `runtime_readiness.re`, `cli_command.re`.
 
-## Tier 1 — Trivial
+## Tier 1 — Trivial (DONE)
 
 Convert in a single pass. Negligible risk.
 
@@ -16,7 +16,7 @@ Convert in a single pass. Negligible risk.
 | `terminal_console.ml` | 21 | 2 | One optional-line formatting helper. 2 tests in `runtime-state` group. |
 | `workspace.ml` | 30 | 6 | Path sanitization and directory creation. 1 dedicated test group. |
 
-## Tier 2 — Small, straightforward
+## Tier 2 — Small, straightforward (DONE)
 
 | Module | Lines | Imported by | Notes |
 |--------|-------|-------------|-------|

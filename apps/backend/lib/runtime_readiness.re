@@ -91,11 +91,11 @@ let state = (~ordered_queue=?, ~queue_parse_problems=[], config) => {
       )
     };
   Runtime_state.empty(
-    ?last_error: last_error,
+    ~last_error?,
     ~tracker_kind=config.tracker.kind,
     ~status_order=Config.project_status_order(config),
-    ?ordered_queue: ordered_queue_state,
-    ?compozy_progress: Runtime_state.initial_compozy_progress(config),
+    ~ordered_queue=?ordered_queue_state,
+    ~compozy_progress=?Runtime_state.initial_compozy_progress(config),
     ~readiness_gaps,
     (),
   );

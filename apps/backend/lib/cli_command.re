@@ -66,8 +66,7 @@ let polling_interval_ms_arg =
       & info(
         [polling_interval_ms_flag],
         ~docv="MS",
-        ~doc:
-          "Override Runtime Settings polling.intervalMs for the current invocation only.",
+        ~doc="Override Runtime Settings polling.intervalMs for the current invocation only.",
       )
   );
 
@@ -78,8 +77,7 @@ let workspace_root_arg =
       & info(
         [workspace_root_flag],
         ~docv="PATH",
-        ~doc:
-          "Override Runtime Settings workspace.root for current-invocation Agent Worktree placement only; does not select the Workspace Repository.",
+        ~doc="Override Runtime Settings workspace.root for current-invocation Agent Worktree placement only; does not select the Workspace Repository.",
       )
   );
 
@@ -90,8 +88,7 @@ let agent_max_concurrent_agents_arg =
       & info(
         [agent_max_concurrent_agents_flag],
         ~docv="COUNT",
-        ~doc:
-          "Override Runtime Settings agent.maxConcurrentAgents for the current invocation only.",
+        ~doc="Override Runtime Settings agent.maxConcurrentAgents for the current invocation only.",
       )
   );
 
@@ -102,8 +99,7 @@ let agent_max_turns_arg =
       & info(
         [agent_max_turns_flag],
         ~docv="COUNT",
-        ~doc:
-          "Override Runtime Settings agent.maxTurns for the current invocation only.",
+        ~doc="Override Runtime Settings agent.maxTurns for the current invocation only.",
       )
   );
 
@@ -114,8 +110,7 @@ let agent_max_retry_backoff_ms_arg =
       & info(
         [agent_max_retry_backoff_ms_flag],
         ~docv="MS",
-        ~doc:
-          "Override Runtime Settings agent.maxRetryBackoffMs for the current invocation only.",
+        ~doc="Override Runtime Settings agent.maxRetryBackoffMs for the current invocation only.",
       )
   );
 
@@ -123,7 +118,7 @@ let port_arg =
   Cmdliner.Arg.(
     value
       & opt(some(int), None)
-      & info(["port"], ~docv="PORT", ~doc:"HTTP server port. Overrides server.port.")
+      & info(["port"], ~docv="PORT", ~doc="HTTP server port. Overrides server.port.")
   );
 
 let once_arg =
@@ -132,7 +127,7 @@ let once_arg =
       & flag
       & info(
         ["once"],
-        ~doc:"Validate startup and exit without starting the HTTP server.",
+        ~doc="Validate startup and exit without starting the HTTP server.",
       )
   );
 
@@ -142,8 +137,7 @@ let web_arg =
       & flag
       & info(
         ["web"],
-        ~doc:
-          "Start the backend and Web Dashboard mode instead of the Terminal Console.",
+        ~doc="Start the backend and Web Dashboard mode instead of the Terminal Console.",
       )
   );
 
@@ -154,8 +148,7 @@ let queue_arg =
       & info(
         ["queue"],
         ~docv="ISSUES",
-        ~doc:
-          "Run an Ordered Queue from comma-separated Workspace Repository issue identifiers. Optional # prefixes are allowed. When Runtime Settings select tracker.kind = \"compozy_tasks\", --queue also accepts bare Compozy PRD Run slugs such as docs-refresh; this shortcut is not a global selector form. Only listed issues dispatch, in listed first-admission order, while still respecting agent.maxConcurrentAgents.",
+        ~doc="Run an Ordered Queue from comma-separated Workspace Repository issue identifiers. Optional # prefixes are allowed. When Runtime Settings select tracker.kind = \"compozy_tasks\", --queue also accepts bare Compozy PRD Run slugs such as docs-refresh; this shortcut is not a global selector form. Only listed issues dispatch, in listed first-admission order, while still respecting agent.maxConcurrentAgents.",
       )
   );
 
@@ -166,8 +159,7 @@ let merge_arg =
       & info(
         ["merge"],
         ~docv="ISSUE",
-        ~doc:
-          "Run a one-shot Manual Task Merge for Workspace Repository issue identifiers. Optional # prefixes, comma-separated values, and repeated --merge flags are allowed.",
+        ~doc="Run a one-shot Manual Task Merge for Workspace Repository issue identifiers. Optional # prefixes, comma-separated values, and repeated --merge flags are allowed.",
       )
   );
 
@@ -175,7 +167,7 @@ let yes_arg =
   Cmdliner.Arg.(
     value
       & flag
-      & info(["yes", "y"], ~doc:"Update without interactive confirmation.")
+      & info(["yes", "y"], ~doc="Update without interactive confirmation.")
   );
 
 let runtime_term = callbacks => {
@@ -229,12 +221,12 @@ let cmd = (~version, callbacks) => {
   let doc = "Run Personal Symphony from a Git Workspace Repository root.";
   let init_cmd =
     Cmdliner.Cmd.v(
-      Cmdliner.Cmd.info("init", ~doc:"Create missing .symphony runtime files without overwriting edits."),
+      Cmdliner.Cmd.info("init", ~doc="Create missing .symphony runtime files without overwriting edits."),
       Cmdliner.Term.(const(callbacks.init) $ const(())),
     );
   let update_cmd =
     Cmdliner.Cmd.v(
-      Cmdliner.Cmd.info("update", ~doc:"Update the npm-installed CLI Package to the latest npm release."),
+      Cmdliner.Cmd.info("update", ~doc="Update the npm-installed CLI Package to the latest npm release."),
       Cmdliner.Term.(const(yes => callbacks.update(~yes)) $ yes_arg),
     );
   Cmdliner.Cmd.group(
