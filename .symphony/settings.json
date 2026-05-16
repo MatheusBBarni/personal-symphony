@@ -8,7 +8,13 @@
   },
   "project": {
     "statusField": "Status",
-    "activeStates": ["pending", "in_planning", "in_progress", "in_execution", "in_review"],
+    "activeStates": [
+      "pending",
+      "in_planning",
+      "in_progress",
+      "in_execution",
+      "in_review"
+    ],
     "terminalStates": ["human_attention", "completed", "failed", "skipped"],
     "startStatus": "in_progress",
     "reviewStatus": "in_review",
@@ -35,11 +41,11 @@
     "pi": {
       "kind": "pi",
       "command": "pi --model <model> --thinking <reasoning> --print --no-session",
-      "model": "openai-codex/gpt-5.5",
-      "reasoningEffort": "xhigh",
+      "model": "zai/GLM-5.1",
+      "reasoningEffort": "high",
       "loop": {
-        "enabled": false,
-        "command": ""
+        "enabled": true,
+        "command": "/skill:pi-ralph-wiggum"
       }
     }
   },
@@ -61,9 +67,9 @@
       "stallTimeoutMs": 300000
     },
     "reviewer": {
-      "harness": "codex",
-      "model": "gpt-5.4",
-      "reasoningEffort": "xhigh",
+      "harness": "pi",
+      "model": "zai/GLM-5.1",
+      "reasoningEffort": "high",
       "turnTimeoutMs": 3600000,
       "readTimeoutMs": 5000,
       "stallTimeoutMs": 300000
