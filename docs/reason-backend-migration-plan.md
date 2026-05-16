@@ -6,7 +6,7 @@ Validate whether a gradual syntax rewrite from OCaml to Reason is worth doing in
 
 The migration starts with the standalone `apps/tui` package. Backend work only begins after the TUI trial proves that mixed OCaml and Reason development is stable for this codebase.
 
-## Phase 0: Tooling Setup
+## Phase 0: Tooling Setup - COMPLETED
 
 Scope:
 - Add the required Reason dependencies to the Product Repository toolchain.
@@ -29,7 +29,7 @@ Stop conditions:
 - Editor or Dune integration becomes inconsistent across normal development flows.
 - The setup requires repo-wide churn before any pilot conversion starts.
 
-## Phase 1: TUI Pilot
+## Phase 1: TUI Pilot - COMPLETED
 
 Scope:
 - Start in `apps/tui` only.
@@ -53,7 +53,7 @@ Stop conditions:
 - Snapshot, rendering, input, or layout behavior changes unintentionally.
 - The backend Terminal Console becomes harder to verify or debug.
 
-## Phase 2: Backend Leaf Modules
+## Phase 2: Backend Leaf Modules - COMPLETED
 
 This phase starts only if Phase 1 succeeds.
 
@@ -74,6 +74,22 @@ Verification:
 
 Success gate:
 - Small backend modules can be rewritten one at a time with no behavior regressions and no noticeable build or maintenance penalty.
+
+## Phase 2 Implementation Record
+
+Date: 2026-05-16
+
+- Converted four backend leaf modules from OCaml to Reason:
+  - `apps/backend/lib/util.re` (was `util.ml`) — string helpers, file I/O, shell utilities
+  - `apps/backend/lib/issue.re` (was `issue.ml`) — issue record types and JSON serialization
+  - `apps/backend/lib/prompt.re` (was `prompt.ml`) — template rendering with `{{ issue.field }}` interpolation
+  - `apps/backend/lib/ordered_queue.re` (was `ordered_queue.ml`) — queue parsing, resolution, and validation
+- Build and 374/375 tests pass. The single failing test (`orchestrator.114`) is pre-existing on main, unrelated to the Reason conversion.
+- Key lessons from the conversion:
+  - Reason `==` is structural equality (OCaml `=`), `===` is physical equality (OCaml `==`). String comparisons must use `==`, never `===` or `=`.
+  - Reason `{field}` can be parsed as a block scope rather than a record pun. Use explicit `{field: field}` when a single-field record literal appears in an ambiguous position.
+  - Reason `!=` is structural inequality (OCaml `<>`), `!==` is physical inequality (OCaml `!=`).
+- No Runtime Contract behavior changes, no new test regressions introduced.
 
 ## Phase 0/1 Implementation Record
 
