@@ -13,7 +13,7 @@ depends: [
   "cmdliner"
   "alcotest"
   "reason"
-  "tui"
+  "symphony-orchestrator-tui"
   "uutf"
   "toffee"
   "odoc" {with-doc}

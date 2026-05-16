@@ -1,6 +1,6 @@
 # TUI Examples
 
-These examples show the main ways to use the `tui` package. Commands are meant to run from `apps/tui`.
+These examples show the main ways to use the `symphony-orchestrator-tui` package. Commands are meant to run from `apps/tui`.
 
 | Example | Source | README | Run |
 | --- | --- | --- | --- |

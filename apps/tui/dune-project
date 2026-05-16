@@ -1,6 +1,6 @@
 (lang dune 3.19)
 
-(name tui)
+(name symphony-orchestrator-tui)
 
 (generate_opam_files true)
 
@@ -14,13 +14,15 @@
 (license MIT)
 
 (package
- (name tui)
- (synopsis "OCaml terminal UI toolkit for Symphony")
+ (name symphony-orchestrator-tui)
+ (synopsis "Terminal UI toolkit for OCaml applications")
  (description
-  "Reusable OCaml terminal UI toolkit with a buffered renderer, flexbox layout, widgets, key parsing, and terminal helpers.")
+  "An OCaml terminal UI toolkit with a buffered renderer, Toffee-backed flexbox layout, reusable widgets, key parsing, keymaps, viewport helpers, and terminal rendering helpers.")
+ (documentation "https://github.com/MatheusBBarni/symphony-orchestrator/tree/main/apps/tui#readme")
+ (tags
+  (terminal tui ui widgets layout))
  (depends
   (ocaml (>= 5.1))
-  (dune (>= 3.19))
   reason
   uutf
   toffee))

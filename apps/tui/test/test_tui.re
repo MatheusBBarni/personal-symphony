@@ -457,6 +457,103 @@ let component_design_injects_theme = () => {
   };
 };
 
+let theme_helpers_cover_palettes_and_named_lookup = () => {
+  switch (Theme.named("high-contrast")) {
+  | Some(theme) =>
+    Alcotest.(check(bool))(
+      "named high contrast",
+      true,
+      theme(Theme.Accent_primary) == Theme.high_contrast_dark(Theme.Accent_primary),
+    )
+  | None => Alcotest.fail("theme not found")
+  };
+  Alcotest.(check(bool))(
+    "missing theme",
+    true,
+    Option.is_none(Theme.named("missing")),
+  );
+  let palette = Theme.to_palette(Theme.dark);
+  Alcotest.(check(bool))(
+    "palette roundtrip",
+    true,
+    palette.Theme.fg_default == Theme.dark(Theme.Fg_default),
+  );
+  let custom = Theme.with_slot(Theme.Accent_primary, Color.ansi(3), Theme.light);
+  Alcotest.(check(bool))(
+    "override slot",
+    true,
+    custom(Theme.Accent_primary) == Color.ansi(3),
+  );
+  Alcotest.(check(bool))(
+    "fallback slot",
+    true,
+    custom(Theme.Fg_default) == Theme.light(Theme.Fg_default),
+  );
+};
+
+let component_design_style_helpers = () => {
+  let design = Components.make_design(~theme=Theme.high_contrast_dark, ());
+  let style =
+    Components.style(
+      ~design,
+      ~fg=Theme.Accent_primary,
+      ~bg=Theme.Bg_surface,
+      ~attrs=[Attr.Bold],
+      (),
+    );
+  Alcotest.(check(bool))(
+    "style fg",
+    true,
+    style.fg == Some(Theme.high_contrast_dark(Theme.Accent_primary)),
+  );
+  Alcotest.(check(bool))(
+    "style bg",
+    true,
+    style.bg == Some(Theme.high_contrast_dark(Theme.Bg_surface)),
+  );
+  Alcotest.(check(bool))("style attrs", true, style.attrs == [Attr.Bold]);
+};
+
+let new_component_primitives_render = () => {
+  let root =
+    Components.column([
+      Components.divider(~id="divider", ~width=24, ~title="State", ()),
+      Components.callout(
+        ~id="callout",
+        ~title="Notice",
+        [text("queued for review")],
+      ),
+      Components.empty_state(
+        ~id="empty",
+        ~detail="No runs match this filter",
+        ~action="[r] reset",
+        "Nothing here",
+      ),
+      Components.toolbar(~id="toolbar", [("q", "uit"), ("/", "filter")]),
+      Components.meter(~id="meter", ~label="CPU", ~value="67%", 0.67),
+    ]);
+
+  let renderer = Renderer.create(~width=48, ~height=18, root);
+  let output = Renderer.render_to_string(renderer);
+  Alcotest.(check(bool))(
+    "divider id",
+    true,
+    Option.is_some(Node.find_by_id("divider", renderer.root)),
+  );
+  Alcotest.(check(bool))(
+    "callout body",
+    true,
+    contains_sub(output, "queued for review"),
+  );
+  Alcotest.(check(bool))(
+    "empty title",
+    true,
+    contains_sub(output, "Nothing here"),
+  );
+  Alcotest.(check(bool))("toolbar key", true, contains_sub(output, "[q]"));
+  Alcotest.(check(bool))("meter label", true, contains_sub(output, "CPU"));
+};
+
 let app_shell_default_is_neutral = () => {
   let output =
     Renderer.render_to_string(
@@ -599,6 +696,21 @@ let () =
             "design injection",
             `Quick,
             component_design_injects_theme,
+          ),
+          Alcotest.test_case(
+            "theme helpers",
+            `Quick,
+            theme_helpers_cover_palettes_and_named_lookup,
+          ),
+          Alcotest.test_case(
+            "design style helpers",
+            `Quick,
+            component_design_style_helpers,
+          ),
+          Alcotest.test_case(
+            "new primitives",
+            `Quick,
+            new_component_primitives_render,
           ),
           Alcotest.test_case(
             "neutral app shell default",
