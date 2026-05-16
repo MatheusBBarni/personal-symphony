@@ -1064,8 +1064,44 @@ let render_model model =
 
 let nonempty_lines fallback = function [] -> [ fallback ] | lines -> lines
 
-let span ?(attrs = []) slot text =
-  Span.make ~style:Style.(make ~fg:(Theme.dark slot) ~attrs ()) text
+let cursor_canvas = Color.rgb 22 21 18
+let cursor_canvas_soft = Color.rgb 30 29 25
+let cursor_surface_card = Color.rgb 38 37 32
+let cursor_surface_strong = Color.rgb 52 50 43
+let cursor_ink = Color.rgb 247 247 244
+let cursor_body = Color.rgb 214 211 202
+let cursor_muted = Color.rgb 160 156 146
+let cursor_orange = Color.rgb 245 78 0
+let cursor_success = Color.rgb 88 181 142
+let cursor_error = Color.rgb 232 83 118
+(* Cursor timeline pastels are reserved for agent timeline markers, not global semantics. *)
+let terminal_console_warning = Color.rgb 218 164 65
+let terminal_console_info = Color.rgb 139 177 224
+
+let terminal_console_theme =
+  Theme.of_palette
+    (Theme.make
+       ~fg_default:cursor_body
+       ~fg_muted:cursor_muted
+       ~fg_emphasis:cursor_ink
+       ~bg_base:cursor_canvas
+       ~bg_surface:cursor_canvas_soft
+       ~bg_overlay:cursor_surface_card
+       ~bg_selection:cursor_surface_strong
+       ~accent_primary:cursor_orange
+       ~accent_secondary:cursor_ink
+       ~status_error:cursor_error
+       ~status_warning:terminal_console_warning
+       ~status_success:cursor_success
+       ~status_info:terminal_console_info
+       ())
+
+let terminal_console_design = Components.make_design ~theme:terminal_console_theme ()
+
+let theme_color slot = terminal_console_theme slot
+
+let span ?(attrs = []) ?(bg = Theme.Bg_surface) slot text =
+  Span.make ~style:Style.(make ~fg:(theme_color slot) ~bg:(theme_color bg) ~attrs ()) text
 
 let theme_slot_of_tone = function
   | Components.Neutral -> Theme.Fg_muted
@@ -1316,7 +1352,8 @@ let line_nodes ?(spaced = false) lines =
          Components.text
            ~style:
              Style.(
-               make ~fg:(Theme.dark Theme.Fg_default) ~height:(Cells 1)
+               make ~fg:(theme_color Theme.Fg_default) ~bg:(theme_color Theme.Bg_surface)
+                 ~height:(Cells 1)
                  ~margin:(spacing ~bottom:(if spaced then 1 else 0) ()) ())
            line)
 
@@ -1326,7 +1363,8 @@ let content_line_nodes lines =
          Components.rich_text
            ~style:
              Style.(
-               make ~height:(Cells 1) ~fg:(Theme.dark Theme.Fg_default)
+               make ~height:(Cells 1) ~fg:(theme_color Theme.Fg_default)
+                 ~bg:(theme_color Theme.Bg_surface)
                  ~margin:(spacing ~bottom:1 ()) ())
            (content_line_spans line))
 
@@ -1334,12 +1372,15 @@ let log_line_nodes lines =
   lines |> nonempty_lines "No background logs captured yet."
   |> List.map (fun line ->
          Components.rich_text
-           ~style:Style.(make ~height:(Cells 1) ~fg:(Theme.dark Theme.Fg_default) ())
+           ~style:
+             Style.(
+               make ~height:(Cells 1) ~fg:(theme_color Theme.Fg_default)
+                 ~bg:(theme_color Theme.Bg_surface) ())
            (log_line_spans line))
 
 let command_help_row (key, label) =
   Components.rich_text
-    ~style:Style.(make ~height:(Cells 1) ())
+    ~style:Style.(make ~height:(Cells 1) ~bg:(theme_color Theme.Bg_surface) ())
     [
       span ~attrs:[ Attr.Bold ] Theme.Accent_primary key;
       span ~attrs:[] Theme.Fg_muted "  ";
@@ -1348,6 +1389,7 @@ let command_help_row (key, label) =
 
 let help_modal_node () =
   Components.modal ~id:"terminal-console-command-modal" ~tone:Components.Info
+    ~design:terminal_console_design
     ~style:Style.(make ~width:(Cells 72) ~height:(Cells 14) ())
     "Commands"
     [
@@ -1361,7 +1403,10 @@ let find_panel rendered title = List.find_opt (fun panel -> panel.title = title)
 let active_panel rendered interaction =
   match find_panel rendered (tab_title interaction.active_tab) with
   | Some panel -> panel
-  | None -> { title = tab_title interaction.active_tab; lines = [ "No content available." ] }
+  | None -> (
+      match rendered.panels with
+      | panel :: _ -> panel
+      | [] -> { title = tab_title interaction.active_tab; lines = [ "No content available." ] })
 
 let footer_segment_spans text =
   let text = Util.trim text in
@@ -1383,15 +1428,15 @@ let footer_node rendered =
   Components.rich_text
     ~style:
       Style.(
-        make ~height:(Cells 1) ~width:(Percent 1.) ~bg:(Theme.dark Theme.Bg_surface)
-          ~fg:(Theme.dark Theme.Fg_default) ())
+        make ~height:(Cells 1) ~width:(Percent 1.) ~bg:(theme_color Theme.Bg_surface)
+          ~fg:(theme_color Theme.Fg_default) ())
     (footer_spans rendered.footer)
 
 let tab_node active tab =
   let tone = tab_tone tab in
   let attrs = if active then [ Attr.Bold; Attr.Underline ] else [ Attr.Dim ] in
   Components.rich_text
-    ~style:Style.(make ~height:(Cells 1) ())
+    ~style:Style.(make ~height:(Cells 1) ~bg:(theme_color Theme.Bg_surface) ())
     [
       toned_span ~attrs tone (tab_title tab);
     ]
@@ -1399,15 +1444,20 @@ let tab_node active tab =
 let header_node rendered active_tab mode =
   let title =
     Components.text
-      ~style:Style.(make ~fg:(Theme.dark Theme.Fg_emphasis) ~attrs:[ Attr.Bold ] ())
+      ~style:
+        Style.(
+          make ~fg:(theme_color Theme.Fg_emphasis) ~bg:(theme_color Theme.Bg_base)
+            ~attrs:[ Attr.Bold ] ())
       rendered.heading
   in
   let subtitle =
-    Components.text ~style:Style.(make ~fg:(Theme.dark Theme.Fg_default) ()) rendered.subheading
+    Components.text
+      ~style:Style.(make ~fg:(theme_color Theme.Fg_default) ~bg:(theme_color Theme.Bg_base) ())
+      rendered.subheading
   in
   let badges =
     [ (tab_tone active_tab, tab_title active_tab); (status_badge_tone mode, rendered.status_label) ]
-    |> List.map (fun (tone, label) -> Components.badge ~tone label)
+    |> List.map (fun (tone, label) -> Components.badge ~tone ~design:terminal_console_design label)
   in
   Components.box
     ~style:
@@ -1430,22 +1480,23 @@ let view model =
         ~style:
           Style.(
             make ~height:(Cells 1) ~align_items:Align_center
-              ~padding:(spacing_xy ~x:2 ~y:0) ~bg:(Theme.dark Theme.Bg_surface) ())
+              ~padding:(spacing_xy ~x:2 ~y:0) ~bg:(theme_color Theme.Bg_surface) ())
         [
           Components.row ~gap:2
             (List.map (fun tab -> tab_node (tab = active_tab) tab) tab_order);
         ];
       Components.panel panel.title ~tone:(tab_tone active_tab)
+        ~design:terminal_console_design
         ~style:
           Style.(
             make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0)
-              ~bg:(Theme.dark Theme.Bg_surface) ())
+              ~bg:(theme_color Theme.Bg_surface) ())
         [
           Components.scroll_box
             ~style:
               Style.(
                 make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0)
-                  ~flex_direction:Column ~bg:(Theme.dark Theme.Bg_surface) ())
+                  ~flex_direction:Column ~bg:(theme_color Theme.Bg_surface) ())
             (if model.interaction.active_tab = Logs then log_line_nodes panel.lines
              else content_line_nodes panel.lines);
         ];
@@ -1457,8 +1508,8 @@ let view model =
     ~style:
       Style.(
         make ~width:(Percent 1.) ~height:(Percent 1.) ~flex_direction:Column
-          ~padding:(spacing_xy ~x:1 ~y:0) ~gap:1 ~bg:(Theme.dark Theme.Bg_base)
-          ~fg:(Theme.dark Theme.Fg_default) ())
+          ~padding:(spacing_xy ~x:1 ~y:0) ~gap:1 ~bg:(theme_color Theme.Bg_base)
+          ~fg:(theme_color Theme.Fg_default) ())
     children
 
 let init runtime () = (initial_model ~logs:runtime.initial_logs runtime.initial_state, ())

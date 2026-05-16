@@ -4823,6 +4823,45 @@ let test_terminal_console_tui_project_title_and_tabs () =
   Alcotest.(check string) "tabs" "Queue | Logs | Tasks | Readiness | Needs attention" rendered.Shell.tabs;
   check_line_absent "subheading does not repeat active tab" [ rendered.Shell.subheading ] "tab "
 
+let test_terminal_console_tui_uses_cursor_design_theme () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let module Color = Tui.Color in
+  let module Theme = Tui.Theme in
+  let check_slot label slot expected =
+    Alcotest.(check bool) label true (Shell.terminal_console_theme slot = expected)
+  in
+  check_slot "cursor dark canvas" Theme.Bg_base (Color.rgb 22 21 18);
+  check_slot "cursor dark canvas soft" Theme.Bg_surface (Color.rgb 30 29 25);
+  check_slot "cursor dark surface card" Theme.Bg_overlay (Color.rgb 38 37 32);
+  check_slot "cursor dark ink" Theme.Fg_emphasis (Color.rgb 247 247 244);
+  check_slot "cursor dark body" Theme.Fg_default (Color.rgb 214 211 202);
+  check_slot "cursor orange" Theme.Accent_primary (Color.rgb 245 78 0);
+  check_slot "cursor dark semantic success" Theme.Status_success (Color.rgb 88 181 142);
+  check_slot "cursor dark semantic error" Theme.Status_error (Color.rgb 232 83 118);
+  let timeline_pastels =
+    [
+      Color.rgb 223 168 143;
+      Color.rgb 159 201 162;
+      Color.rgb 159 187 224;
+      Color.rgb 192 168 221;
+      Color.rgb 192 133 50;
+    ]
+  in
+  let check_not_timeline label color =
+    Alcotest.(check bool) label false (List.exists (fun pastel -> pastel = color) timeline_pastels)
+  in
+  [
+    ("accent is not a timeline pastel", Shell.terminal_console_theme Theme.Accent_primary);
+    ("info is not a timeline pastel", Shell.terminal_console_theme Theme.Status_info);
+    ("warning is not a timeline pastel", Shell.terminal_console_theme Theme.Status_warning);
+    ("success is not a timeline pastel", Shell.terminal_console_theme Theme.Status_success);
+    ("error is not a timeline pastel", Shell.terminal_console_theme Theme.Status_error);
+  ]
+  |> List.iter (fun (label, color) -> check_not_timeline label color);
+  let root = Shell.view (Shell.initial_model (Runtime_state.empty ())) in
+  Alcotest.(check bool) "root uses cursor dark canvas" true
+    ((root.Tui.Node.style).Tui.Style.bg = Some (Shell.terminal_console_theme Theme.Bg_base))
+
 let terminal_console_queue_fixture () =
   {
     Runtime_state.entries =
@@ -5193,7 +5232,10 @@ let test_terminal_console_tui_minimum_size_message () =
   check_line_contains "minimum message" lines "Terminal Console needs at least 80 columns x 24 rows.";
   check_line_contains "current size" lines "Current size: 72 columns x 20 rows.";
   check_line_contains "resize help" lines "Resize the terminal to continue.";
-  ignore (Shell.view (Shell.initial_model ~terminal_size:small (Runtime_state.empty ())))
+  let model = Shell.initial_model ~terminal_size:small (Runtime_state.empty ()) in
+  let active_panel = Shell.active_panel (Shell.render_model model) model.Shell.interaction in
+  Alcotest.(check string) "active minimum panel" "Minimum Size" active_panel.Shell.title;
+  ignore (Shell.view model)
 
 let terminal_console_interaction_state () =
   let running_issue, running = terminal_console_running_row ~identifier:"#30" ~title:"Running task" "I30" in
@@ -14740,6 +14782,8 @@ let () =
             test_terminal_console_tui_initial_model_uses_projection;
           Alcotest.test_case "renders project title and primary tabs" `Quick
             test_terminal_console_tui_project_title_and_tabs;
+          Alcotest.test_case "uses Cursor design theme for Terminal Console" `Quick
+            test_terminal_console_tui_uses_cursor_design_theme;
           Alcotest.test_case "renders Tasks Home panel" `Quick
             test_terminal_console_tui_active_home_panel;
           Alcotest.test_case "renders readiness remediation panel" `Quick

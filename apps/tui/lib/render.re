@@ -200,18 +200,39 @@
     | Some(_) => Surface.fill_rect(~clip, surface, rect, ~style)
     };
 
-  let render_text = (surface, clip, rect: Geometry.rect, spans) => {
+  let inherit_text_style = (parent: Style.t, child: Style.t) => {
+    let fg =
+      switch (child.Style.fg) {
+      | Some(_) => child.fg
+      | None => parent.fg
+      };
+    let bg =
+      switch (child.Style.bg) {
+      | Some(_) => child.bg
+      | None => parent.bg
+      };
+    let attrs =
+      List.fold_left(
+        (attrs, attr) => Attr.add(attr, attrs),
+        parent.attrs,
+        child.attrs,
+      );
+    Style.{...child, fg, bg, attrs};
+  };
+
+  let render_text = (surface, clip, rect: Geometry.rect, node_style, spans) => {
     let x = ref(rect.Geometry.x);
     let y = ref(rect.y);
     List.iter(
       span => {
+        let style = inherit_text_style(node_style, span.Span.style);
         let (nx, ny) =
           Surface.write(
             ~clip,
             surface,
             ~x=x^,
             ~y=y^,
-            ~style=span.Span.style,
+            ~style,
             span.text,
           );
         x := nx;
@@ -421,7 +442,13 @@
     draw_border(surface, positioned.clip, positioned.rect, node.style);
     switch (node.kind) {
     | Text(spans) =>
-      render_text(surface, positioned.clip, positioned.content, spans)
+      render_text(
+        surface,
+        positioned.clip,
+        positioned.content,
+        node.style,
+        spans,
+      )
     | Vertical_rule(char) =>
       render_vertical_rule(
         surface,

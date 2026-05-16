@@ -59,6 +59,41 @@ let flex_row_layout = () => {
   );
 };
 
+let rich_text_inherits_node_paint = () => {
+  let root =
+    rich_text(
+      ~style=
+        Style.(make(~fg=Color.ansi(1), ~bg=Color.ansi(2), ~attrs=[Attr.Bold], ())),
+      [Span.make(~style=Style.(make(~fg=Color.ansi(3), ~attrs=[Attr.Underline], ())), "X")],
+    );
+  let renderer = Renderer.create(~width=2, ~height=1, root);
+  let surface = Renderer.request_render(renderer);
+  switch (Surface.get(surface, ~x=0, ~y=0)) {
+  | Some(cell) =>
+    Alcotest.(check(bool))(
+      "span keeps explicit fg",
+      true,
+      cell.Surface.style.Style.fg == Some(Color.ansi(3)),
+    );
+    Alcotest.(check(bool))(
+      "span inherits node bg",
+      true,
+      cell.style.bg == Some(Color.ansi(2)),
+    );
+    Alcotest.(check(bool))(
+      "span inherits parent attrs",
+      true,
+      Attr.mem(Attr.Bold, cell.style.attrs),
+    );
+    Alcotest.(check(bool))(
+      "span keeps child attrs",
+      true,
+      Attr.mem(Attr.Underline, cell.style.attrs),
+    )
+  | None => Alcotest.fail("missing rendered cell")
+  };
+};
+
 let input_editing = () => {
   let field = input(~id="field", ~value="ab", ());
   let renderer = Renderer.create(~width=8, ~height=1, field);
@@ -496,8 +531,24 @@ let component_design_injects_theme = () => {
       "uses custom success color",
       true,
       node.style.fg == Some(Color.ansi(12)),
+    );
+    Alcotest.(check(bool))(
+      "uses custom badge background",
+      true,
+      node.style.bg == Some(Color.ansi(7)),
     )
   | None => Alcotest.fail("badge not found")
+  };
+  let surface = Renderer.request_render(Renderer.create(~width=4, ~height=1, root));
+  switch (Surface.get(surface, ~x=1, ~y=0)) {
+  | Some(cell) =>
+    Alcotest.(check(string))("badge label cell", "o", cell.Surface.text);
+    Alcotest.(check(bool))(
+      "rendered badge label background",
+      true,
+      cell.style.bg == Some(Color.ansi(7)),
+    )
+  | None => Alcotest.fail("badge label cell not rendered")
   };
   let light_design = Components.make_design(~theme=Theme.light, ());
   let light =
@@ -727,6 +778,11 @@ let () =
         [
           Alcotest.test_case("plain snapshot", `Quick, plain_snapshot),
           Alcotest.test_case("flex row", `Quick, flex_row_layout),
+          Alcotest.test_case(
+            "rich text inherits node paint",
+            `Quick,
+            rich_text_inherits_node_paint,
+          ),
         ],
       ),
       (
