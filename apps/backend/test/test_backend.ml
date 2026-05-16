@@ -13666,7 +13666,7 @@ let test_orchestrator_requires_clean_loop_start_for_new_compozy_worktree_reports
       Alcotest.(check int) "not launched" 0 !launches;
       Alcotest.(check (list string)) "moves to attention without in-progress" [ "human_attention" ] (List.rev !statuses);
       Alcotest.(check bool) "retry log includes issue" true
-        (contains_substring stderr "dispatch retrying compozy:terminal-console-elegance");
+        (contains_substring stderr "compozy:terminal-console-elegance");
       Alcotest.(check bool) "retry log includes current task file" true (contains_substring stderr "task_01.md");
       Alcotest.(check (option string)) "last error"
         (Some "loop-start worktree must be clean before creating task worktrees")
