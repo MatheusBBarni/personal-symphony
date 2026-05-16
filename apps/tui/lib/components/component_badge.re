@@ -8,6 +8,7 @@ let make =
     ) => {
   let design = Component_design.resolve_design(design);
   let fg = Component_design.color_of_tone(~design, tone);
+  let bg = Component_design.theme_color(design, Theme.Bg_selection);
   Node.box(
     ~id?,
     ~style=
@@ -17,6 +18,7 @@ let make =
             ~height=Cells(1),
             ~padding=spacing_xy(~x=1, ~y=0),
             ~fg,
+            ~bg,
             ~attrs=[Attr.Bold],
             (),
           ),
@@ -24,6 +26,6 @@ let make =
         margin: style.margin,
         width: style.width,
       },
-    [Node.text(~style=Style.(make(~fg, ~attrs=[Attr.Bold], ())), label)],
+    [Node.text(~style=Style.(make(~fg, ~bg, ~attrs=[Attr.Bold], ())), label)],
   );
 };
