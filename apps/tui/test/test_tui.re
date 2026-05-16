@@ -162,6 +162,51 @@ let surface_ansi_respects_no_color = () => {
   );
 };
 
+let control_bytes_are_not_rendered_from_text = () => {
+  let renderer =
+    Renderer.create(~width=24, ~height=1, text("\027]52;c;QUJD\007visible"));
+  let plain = Renderer.render_to_string(renderer);
+  let surface = Renderer.request_render(renderer);
+  let ansi = Surface.to_ansi(~level=Color.No_color, surface);
+  let styled_ansi = Surface.to_ansi(~level=Color.Ansi16, surface);
+  let osc_prefix = "\027]52;c;";
+  let assert_sanitized = (label, output) => {
+    Alcotest.(check(bool))(
+      label ++ " has no ESC",
+      false,
+      String.contains(output, Char.chr(0x1B)),
+    );
+    Alcotest.(check(bool))(
+      label ++ " has no BEL",
+      false,
+      String.contains(output, Char.chr(0x07)),
+    );
+    Alcotest.(check(bool))(
+      label ++ " keeps printable text",
+      true,
+      contains_sub(output, "]52;c;QUJDvisible"),
+    );
+  };
+
+  assert_sanitized("plain", plain);
+  assert_sanitized("ansi", ansi);
+  Alcotest.(check(bool))(
+    "styled ansi has no OSC prefix",
+    false,
+    contains_sub(styled_ansi, osc_prefix),
+  );
+  Alcotest.(check(bool))(
+    "styled ansi has no BEL",
+    false,
+    String.contains(styled_ansi, Char.chr(0x07)),
+  );
+  Alcotest.(check(bool))(
+    "styled ansi keeps printable text",
+    true,
+    contains_sub(styled_ansi, "]52;c;QUJDvisible"),
+  );
+};
+
 let utf_width_helpers_handle_unicode = () => {
   Alcotest.(check(int))("ascii width", 5, Utf.string_width("hello"));
   Alcotest.(check(int))("wide width", 2, Utf.string_width("界"));
@@ -651,6 +696,11 @@ let () =
             "no color",
             `Quick,
             surface_ansi_respects_no_color,
+          ),
+          Alcotest.test_case(
+            "text control bytes",
+            `Quick,
+            control_bytes_are_not_rendered_from_text,
           ),
         ],
       ),
