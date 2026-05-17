@@ -489,7 +489,7 @@ let entry_state_for_issue state issue_identifier =
   let is_error (row : Runtime_state.issue_error) = row.issue_identifier = issue_identifier in
   if List.exists is_issue state.Runtime_state.running then Some "running"
   else if List.exists is_retry state.retrying then Some "retrying"
-  else if List.exists is_error state.issue_errors then Some "attention"
+  else if List.exists is_error state.issue_errors then Some "skipped"
   else None
 
 let ordered_queue_entry_needs_live_source (entry : Runtime_state.ordered_queue_entry) =
@@ -508,15 +508,18 @@ let queue_attention_status config status =
 
 let queue_terminal_state_for_status config status =
   let normalized = String.lowercase_ascii (Util.trim status) in
-  if queue_attention_status config status then "attention"
-  else match normalized with "failed" -> "failed" | "skipped" | "closed" -> "skipped" | _ -> "completed"
+  if queue_attention_status config status then "skipped"
+  else match normalized with "failed" | "skipped" | "closed" -> "skipped" | _ -> "completed"
 
 let queue_terminal_reason_for_status config status =
   match queue_terminal_state_for_status config status with
-  | "attention" -> Some "Issue is in a human attention state."
-  | "failed" -> Some "Issue is in a terminal failed state."
+  | "skipped" when queue_attention_status config status -> Some "Issue is in a human attention state."
+  | "skipped" when string_equal_ci status "failed" -> Some "Issue is in a terminal failed state."
   | "skipped" -> Some "Issue is in a terminal skipped state."
   | _ -> None
+
+let normalize_ordered_queue_entry_state state =
+  match String.lowercase_ascii state with "failed" | "attention" -> "skipped" | _ -> state
 
 let retrying_due orchestrator issue =
   match Hashtbl.find_opt orchestrator.retry_due issue.Issue.id with
@@ -2114,11 +2117,11 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                      | _ -> (
                          match failed_identifier with
                          | Some identifier when entry_matches_identifier entry.issue_identifier identifier ->
-                             Some ("failed", failed_reason)
+                             Some ("skipped", failed_reason)
                          | _ -> (
                              match attention_identifier with
                              | Some identifier when entry_matches_identifier entry.issue_identifier identifier ->
-                                 Some ("attention", attention_reason)
+                                 Some ("skipped", attention_reason)
                              | _ -> (
                                  match skipped_identifier with
                                  | Some identifier when entry_matches_identifier entry.issue_identifier identifier ->
@@ -2139,7 +2142,7 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                        | None -> "skipped")
                  | None
                    when skip_missing
-                        && (entry.state = "completed" || ordered_queue_entry_is_stale_active entry)
+                        && ordered_queue_entry_is_stale_active entry
                         && candidate_not_dispatchable entry.issue_identifier ->
                      (match candidate_for entry.issue_identifier with
                      | Some issue -> queue_terminal_state_for_status orchestrator.config issue.Issue.state
@@ -2151,7 +2154,10 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                      "pending"
                  | None -> entry.state
                in
-               let state_name = match explicit_outcome with Some (state, _) -> state | None -> inferred_state in
+               let state_name =
+                 match explicit_outcome with Some (state, _) -> state | None -> inferred_state
+                 |> normalize_ordered_queue_entry_state
+               in
                let skip_reason =
                  match explicit_outcome with
                  | Some ("failed", reason) | Some ("attention", reason) | Some ("skipped", reason) -> reason
@@ -2167,7 +2173,7 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
                      | None -> Some "Issue is no longer in a dispatchable project state.")
                  | None
                    when skip_missing
-                        && (entry.state = "completed" || ordered_queue_entry_is_stale_active entry)
+                        && ordered_queue_entry_is_stale_active entry
                         && candidate_not_dispatchable entry.issue_identifier ->
                      (match candidate_for entry.issue_identifier with
                      | Some issue -> queue_terminal_reason_for_status orchestrator.config issue.Issue.state
@@ -3473,7 +3479,7 @@ let mark_child_failed orchestrator child error =
       complete_child ~next_status:next_issue.state orchestrator child;
       dispatch_issue orchestrator next_issue
   | Ok (Compozy_finished_after_failure (run, reason)) ->
-      complete_child ~next_status:run.state ~queue_terminal_state:"failed" ~queue_terminal_reason:reason orchestrator child
+      complete_child ~next_status:run.state ~queue_terminal_state:"skipped" ~queue_terminal_reason:reason orchestrator child
 
 let cleanup_task_worktree orchestrator child =
   cleanup_task_worktree_for_issue orchestrator.config child.issue child.workspace.path

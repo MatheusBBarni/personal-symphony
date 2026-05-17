@@ -10560,7 +10560,7 @@ let test_compozy_failed_final_step_over_limit_records_failed_lifecycle () =
       | None -> Alcotest.fail "expected Compozy progress after over-limit failure");
       (match state.Runtime_state.ordered_queue with
       | Some queue ->
-          Alcotest.(check (list string)) "queue records failed run" [ "failed" ]
+          Alcotest.(check (list string)) "queue skips failed run" [ "skipped" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
           let entry = List.hd queue.entries in
           Alcotest.(check bool) "queue reason mentions failed step" true
@@ -13097,7 +13097,7 @@ let test_ordered_queue_marks_terminal_candidates_with_specific_states () =
       match state.Runtime_state.ordered_queue with
       | None -> Alcotest.fail "expected ordered queue state"
       | Some queue ->
-          Alcotest.(check (list string)) "terminal queue states" [ "completed"; "failed"; "attention" ]
+          Alcotest.(check (list string)) "terminal queue states" [ "completed"; "skipped"; "skipped" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
           Alcotest.(check (list (option string))) "terminal queue reasons"
             [
@@ -13107,7 +13107,65 @@ let test_ordered_queue_marks_terminal_candidates_with_specific_states () =
             ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries);
           let model = Terminal_console_model.of_runtime_state state in
-          Alcotest.(check string) "terminal queue mode" "attention" model.mode)
+          Alcotest.(check string) "terminal queue mode" "idle" model.mode)
+
+let test_ordered_queue_normalizes_legacy_attention_terminal_states () =
+  with_temp_dir "symphony-orchestrator-queue-legacy-terminal-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [
+              {
+                Runtime_state.issue_identifier = "#1";
+                title = Some "Failed";
+                state = "failed";
+                skip_reason = Some "Final step failed";
+              };
+              {
+                Runtime_state.issue_identifier = "#2";
+                title = Some "Attention";
+                state = "attention";
+                skip_reason = Some "Issue is in a human attention state.";
+              };
+            ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let ordered_queue =
+        match Ordered_queue.parse "#1,#2" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launched;
+      let state = Orchestrator.get_state orchestrator in
+      match state.Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "legacy terminal states normalize to skipped" [ "skipped"; "skipped" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          Alcotest.(check (list (option string))) "legacy terminal reasons stay attached"
+            [ Some "Final step failed"; Some "Issue is in a human attention state." ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries);
+          let model = Terminal_console_model.of_runtime_state state in
+          Alcotest.(check string) "legacy terminal queue mode" "idle" model.mode
+      | None -> Alcotest.fail "expected ordered queue state")
 
 let test_ordered_queue_revives_persisted_completed_active_entries () =
   with_temp_dir "symphony-orchestrator-queue-revive-" (fun root ->
@@ -13147,6 +13205,54 @@ let test_ordered_queue_revives_persisted_completed_active_entries () =
       | Some queue ->
           Alcotest.(check (list string)) "revived state is running" [ "running" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state")
+
+let test_ordered_queue_preserves_persisted_completed_terminal_entries () =
+  with_temp_dir "symphony-orchestrator-queue-preserve-completed-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ~merge_attention_status:"human_attention" ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done"; "human_attention" ];
+              project_status_on_dispatch = None;
+            };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "completed"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"human_attention" in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launched;
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "completed remains completed" [ "completed" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          Alcotest.(check (list (option string))) "completed reason stays empty" [ None ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries)
       | None -> Alcotest.fail "expected ordered queue state")
 
 let test_ordered_queue_skips_stale_persisted_running_entry () =
@@ -15313,6 +15419,8 @@ let () =
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
           Alcotest.test_case "marks terminal ordered queue candidates by state" `Quick
             test_ordered_queue_marks_terminal_candidates_with_specific_states;
+          Alcotest.test_case "normalizes legacy ordered queue terminal attention" `Quick
+            test_ordered_queue_normalizes_legacy_attention_terminal_states;
           Alcotest.test_case "dispatches minibeads ordered queue only when dispatchable" `Quick
             test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
           Alcotest.test_case "dispatches Compozy bare ordered queue by resolved identity" `Quick
@@ -15325,6 +15433,8 @@ let () =
             test_ordered_queue_keeps_stage_handoffs_pending;
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
             test_ordered_queue_revives_persisted_completed_active_entries;
+          Alcotest.test_case "preserves completed ordered queue entries in terminal states" `Quick
+            test_ordered_queue_preserves_persisted_completed_terminal_entries;
           Alcotest.test_case "skips stale active ordered queue entries without candidates" `Quick
             test_ordered_queue_skips_stale_persisted_running_entry;
           Alcotest.test_case "requeues stale active ordered queue entries with dispatchable candidates" `Quick
