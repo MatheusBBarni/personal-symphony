@@ -10560,7 +10560,7 @@ let test_compozy_failed_final_step_over_limit_records_failed_lifecycle () =
       | None -> Alcotest.fail "expected Compozy progress after over-limit failure");
       (match state.Runtime_state.ordered_queue with
       | Some queue ->
-          Alcotest.(check (list string)) "queue skips failed run" [ "skipped" ]
+          Alcotest.(check (list string)) "queue records failed run" [ "failed" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
           let entry = List.hd queue.entries in
           Alcotest.(check bool) "queue reason mentions failed step" true
@@ -13097,7 +13097,7 @@ let test_ordered_queue_marks_terminal_candidates_with_specific_states () =
       match state.Runtime_state.ordered_queue with
       | None -> Alcotest.fail "expected ordered queue state"
       | Some queue ->
-          Alcotest.(check (list string)) "terminal queue states" [ "completed"; "skipped"; "skipped" ]
+          Alcotest.(check (list string)) "terminal queue states" [ "completed"; "failed"; "attention" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
           Alcotest.(check (list (option string))) "terminal queue reasons"
             [
@@ -13107,9 +13107,9 @@ let test_ordered_queue_marks_terminal_candidates_with_specific_states () =
             ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries);
           let model = Terminal_console_model.of_runtime_state state in
-          Alcotest.(check string) "terminal queue mode" "idle" model.mode)
+          Alcotest.(check string) "terminal queue mode" "attention" model.mode)
 
-let test_ordered_queue_normalizes_legacy_attention_terminal_states () =
+let test_ordered_queue_preserves_terminal_attention_states () =
   with_temp_dir "symphony-orchestrator-queue-legacy-terminal-" (fun root ->
       let base_config = base_orchestrator_config root (git_policy ()) in
       let config =
@@ -13158,13 +13158,13 @@ let test_ordered_queue_normalizes_legacy_attention_terminal_states () =
       let state = Orchestrator.get_state orchestrator in
       match state.Runtime_state.ordered_queue with
       | Some queue ->
-          Alcotest.(check (list string)) "legacy terminal states normalize to skipped" [ "skipped"; "skipped" ]
+          Alcotest.(check (list string)) "terminal attention states stay distinct" [ "failed"; "attention" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
           Alcotest.(check (list (option string))) "legacy terminal reasons stay attached"
             [ Some "Final step failed"; Some "Issue is in a human attention state." ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries);
           let model = Terminal_console_model.of_runtime_state state in
-          Alcotest.(check string) "legacy terminal queue mode" "idle" model.mode
+          Alcotest.(check string) "terminal queue mode" "attention" model.mode
       | None -> Alcotest.fail "expected ordered queue state")
 
 let test_ordered_queue_revives_persisted_completed_active_entries () =
@@ -15419,8 +15419,8 @@ let () =
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
           Alcotest.test_case "marks terminal ordered queue candidates by state" `Quick
             test_ordered_queue_marks_terminal_candidates_with_specific_states;
-          Alcotest.test_case "normalizes legacy ordered queue terminal attention" `Quick
-            test_ordered_queue_normalizes_legacy_attention_terminal_states;
+          Alcotest.test_case "preserves ordered queue terminal attention" `Quick
+            test_ordered_queue_preserves_terminal_attention_states;
           Alcotest.test_case "dispatches minibeads ordered queue only when dispatchable" `Quick
             test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
           Alcotest.test_case "dispatches Compozy bare ordered queue by resolved identity" `Quick
