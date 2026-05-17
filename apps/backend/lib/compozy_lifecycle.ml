@@ -263,6 +263,15 @@ let stale_active_terminal_dispatch config run lifecycle =
   | In_execution, In_execution when attention_dispatch_state config lifecycle.dispatch_state -> Some derived
   | _ -> None
 
+let stale_blocked_runnable_dispatch config run lifecycle =
+  let derived = derive config run in
+  match (derived.lifecycle_state, lifecycle.lifecycle_state) with
+  | In_execution, (Blocked | Not_pr_ready)
+    when string_equal_ci lifecycle.dispatch_state "not_runnable"
+         && not (attention_dispatch_state config lifecycle.dispatch_state) ->
+      Some derived
+  | _ -> None
+
 let reconcile config run lifecycle =
   match terminal_non_ready_from_steps config run with
   | Some derived when not (terminal_metadata_matches derived lifecycle) ->
@@ -275,9 +284,12 @@ let reconcile config run lifecycle =
       in
       (match save config reconciled with Ok () -> Ok reconciled | Error _ as error -> error)
   | _ -> (
-      match stale_active_terminal_dispatch config run lifecycle with
+      match stale_blocked_runnable_dispatch config run lifecycle with
       | Some derived -> (match save config derived with Ok () -> Ok derived | Error _ as error -> error)
-      | None -> Ok lifecycle)
+      | None -> (
+          match stale_active_terminal_dispatch config run lifecycle with
+          | Some derived -> (match save config derived with Ok () -> Ok derived | Error _ as error -> error)
+          | None -> Ok lifecycle))
 
 let load_or_backfill_reconciled config run =
   match load config run with

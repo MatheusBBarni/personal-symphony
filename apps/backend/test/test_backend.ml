@@ -4160,6 +4160,43 @@ let test_ordered_queue_validation_resolves_compozy_prd_run_without_github_projec
       let tracker = Issue_tracker.compozy config in
       let gaps = Ordered_queue.validation_gaps tracker queue in
       Alcotest.(check (list string)) "no validation gaps" [] (List.map (fun gap -> gap.Ordered_queue.requirement) gaps);
+      let stale_prd_dir = Filename.concat config.Config.tracker.compozy_root "stale-feature" in
+      Util.mkdir_p stale_prd_dir;
+      write_compozy_task ~title:"Stale queued Compozy run" (Filename.concat stale_prd_dir "task_01.md");
+      let stale_run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root stale_prd_dir
+        |> require_ok "build stale PRD run"
+      in
+      let stale_lifecycle : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = stale_run.id;
+          slug = stale_run.slug;
+          lifecycle_state = Compozy_lifecycle.Blocked;
+          dispatch_state = "not_runnable";
+          stage_agent = None;
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = Some ("no Compozy task files found in " ^ stale_prd_dir);
+          updated_at = "2026-05-12T21:00:00Z";
+        }
+      in
+      Compozy_lifecycle.save config stale_lifecycle |> require_ok "save stale lifecycle";
+      let stale_queue =
+        match Ordered_queue.parse "stale-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "stale bare queue parse failed"
+      in
+      let stale_gaps = Ordered_queue.validation_gaps tracker stale_queue in
+      Alcotest.(check (list string)) "stale runnable queue has no gaps" []
+        (List.map (fun gap -> gap.Ordered_queue.requirement) stale_gaps);
+      let repaired =
+        match Compozy_lifecycle.load config stale_run |> require_ok "load repaired stale lifecycle" with
+        | Some lifecycle -> lifecycle
+        | None -> Alcotest.fail "expected repaired stale lifecycle"
+      in
+      Alcotest.(check string) "stale lifecycle repaired" "in_execution"
+        (Compozy_lifecycle.lifecycle_state_to_string repaired.lifecycle_state);
+      Alcotest.(check string) "stale dispatch repaired" "In progress" repaired.dispatch_state;
       let missing_queue =
         match Ordered_queue.parse "missing-feature" with
         | Ok queue -> queue
