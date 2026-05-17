@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Add Cursor Harness Kind, Defaults, And Command Rendering"
 type: backend
 complexity: high
 dependencies: []
+
 ---
 
 # Task 01: Add Cursor Harness Kind, Defaults, And Command Rendering
@@ -30,11 +31,11 @@ supported contract shape, defaults, and render path without disturbing existing 
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add `cursor` to the allowed Harness kind set and default kind/command resolution.
-- [ ] 1.2 Extend Harness parsing so named Cursor Harness entries load through existing Runtime Settings paths.
-- [ ] 1.3 Ensure logical-agent override merging works for Cursor-selected roles.
-- [ ] 1.4 Add or adjust Cursor command rendering coverage so selected commands render deterministically.
-- [ ] 1.5 Add regression tests proving existing supported Harness kinds still resolve and render unchanged.
+- [x] 1.1 Add `cursor` to the allowed Harness kind set and default kind/command resolution.
+- [x] 1.2 Extend Harness parsing so named Cursor Harness entries load through existing Runtime Settings paths.
+- [x] 1.3 Ensure logical-agent override merging works for Cursor-selected roles.
+- [x] 1.4 Add or adjust Cursor command rendering coverage so selected commands render deterministically.
+- [x] 1.5 Add regression tests proving existing supported Harness kinds still resolve and render unchanged.
 
 ## Implementation Details
 Modify the shared Harness parser and renderer without introducing a parallel provider model. See TechSpec
@@ -66,14 +67,14 @@ native provider-specific extension rather than a compatibility shim.
 
 ## Tests
 - Unit tests:
-  - [ ] Parsing `harnesses.cursor.kind: "cursor"` succeeds.
-  - [ ] Cursor default command and default loop values are populated when omitted.
-  - [ ] A `Logical Agent` referencing a Cursor Harness resolves through `Config.selected_agent_harness`.
-  - [ ] Cursor command rendering substitutes configured placeholders deterministically.
-  - [ ] Existing Codex, Claude, and PI command-rendering behavior remains unchanged.
+  - [x] Parsing `harnesses.cursor.kind: "cursor"` succeeds.
+  - [x] Cursor default command and default loop values are populated when omitted.
+  - [x] A `Logical Agent` referencing a Cursor Harness resolves through `Config.selected_agent_harness`.
+  - [x] Cursor command rendering substitutes configured placeholders deterministically.
+  - [x] Existing Codex, Claude, and PI command-rendering behavior remains unchanged.
 - Integration tests:
-  - [ ] A settings file with a Cursor-selected stage loads and resolves the expected Harness end to end.
-  - [ ] A fake launch path receives the rendered Cursor command for a selected role without breaking existing Harness flows.
+  - [x] A settings file with a Cursor-selected stage loads and resolves the expected Harness end to end.
+  - [x] A fake launch path receives the rendered Cursor command for a selected role without breaking existing Harness flows.
 - Test coverage target: >=80%
 - All tests must pass
 

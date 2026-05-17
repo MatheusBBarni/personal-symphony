@@ -1306,6 +1306,64 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
       Alcotest.(check string) "pi prompt piped" "Issue #1"
         (Util.read_file (Filename.concat workspace.path "pi.prompt") |> Util.trim))
 
+let test_shell_launch_selects_cursor_harness_for_stage_agent () =
+  with_temp_dir "symphony-launch-cursor-root-" (fun root ->
+      let workspace_root = Filename.concat root "workspaces" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
+      let script = Filename.concat root "fake-cursor.sh" in
+      Util.write_file script
+        {|#!/bin/sh
+printf '%s\n' "$@" > cursor.args
+cat > cursor.prompt
+|};
+      Unix.chmod script 0o755;
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        (Printf.sprintf
+           {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "cursor": {
+      "kind": "cursor",
+      "command": %s,
+      "model": "cursor-default",
+      "reasoningEffort": "medium"
+    }
+  },
+  "agents": {
+    "engineer": {
+      "harness": "cursor",
+      "model": "cursor-override",
+      "reasoningEffort": "high"
+    }
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+           (Yojson.Safe.to_string
+              (`String (script ^ " --model <model> --reasoning <reasoning> --output-format stream-json"))));
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let stage =
+        match config.stage_agents.stages with [ stage ] -> stage | _ -> Alcotest.fail "expected one stage"
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+      let launched =
+        Orchestrator.shell_launch ~stage:(Some stage) ~config ~workspace ~prompt:"Issue #1" ~issue
+      in
+      (match launched.pid with
+      | Some pid -> ignore (Unix.waitpid [] pid)
+      | None -> Alcotest.fail "expected shell launch pid");
+      Alcotest.(check string) "cursor args" "--model\ncursor-override\n--reasoning\nhigh\n--output-format\nstream-json"
+        (Util.read_file (Filename.concat workspace.path "cursor.args") |> Util.trim);
+      Alcotest.(check string) "cursor prompt piped" "Issue #1"
+        (Util.read_file (Filename.concat workspace.path "cursor.prompt") |> Util.trim))
+
 let test_dispatch_selects_pi_harness_before_start_status_update () =
   with_temp_dir "symphony-dispatch-pi-start-status-" (fun root ->
       init_repo root "feature/start";
@@ -2204,6 +2262,70 @@ let test_config_parses_harnesses_and_logical_agents () =
       Alcotest.(check (option string)) "reviewer reasoning absent" None reviewer.reasoning_effort;
       Alcotest.(check (option int)) "reviewer turn timeout absent" None reviewer.turn_timeout_ms)
 
+let test_config_parses_cursor_harness_defaults_and_selection () =
+  with_temp_dir "symphony-cursor-harness-settings-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "cursor": {
+      "kind": "cursor"
+    }
+  },
+  "agents": {
+    "engineer": {
+      "harness": "cursor",
+      "model": "cursor-override",
+      "reasoningEffort": "high"
+    }
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let cursor =
+            match Config.harness_named "cursor" config.agent_harnesses with
+            | Some harness -> harness
+            | None -> Alcotest.fail "expected Cursor Harness"
+          in
+          Alcotest.(check string) "cursor kind" "cursor" cursor.kind;
+          Alcotest.(check string) "cursor default command" Config.default_cursor_command cursor.command;
+          Alcotest.(check string) "cursor default model" Config.default_model cursor.model;
+          Alcotest.(check string) "cursor default reasoning" Config.default_reasoning_effort
+            cursor.reasoning_effort;
+          Alcotest.(check bool) "cursor loop disabled" false cursor.loop_enabled;
+          Alcotest.(check string) "cursor loop command" "" cursor.loop_command;
+          match config.stage_agents.stages with
+          | [ stage ] -> (
+              match Config.selected_agent_harness config (Some stage) with
+              | Some selected ->
+                  Alcotest.(check string) "selected Harness" "cursor" selected.name;
+                  Alcotest.(check string) "selected kind" "cursor" selected.kind;
+                  Alcotest.(check string) "agent model override" "cursor-override" selected.model;
+                  Alcotest.(check string) "agent reasoning override" "high" selected.reasoning_effort;
+                  let requirements =
+                    Config.readiness_gaps config
+                    |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+                  in
+                  Alcotest.(check bool) "cursor kind accepted" false
+                    (List.exists (( = ) "harnesses.cursor.kind") requirements);
+                  Alcotest.(check bool) "cursor command defaulted" false
+                    (List.exists (( = ) "harnesses.cursor.command") requirements);
+                  Alcotest.(check bool) "cursor model defaulted" false
+                    (List.exists (( = ) "harnesses.cursor.model") requirements);
+                  Alcotest.(check bool) "cursor reasoning defaulted" false
+                    (List.exists (( = ) "harnesses.cursor.reasoningEffort") requirements)
+              | None -> Alcotest.fail "expected selected Cursor Harness")
+          | _ -> Alcotest.fail "expected one stage"))
+
 let test_config_loads_mixed_harness_settings_without_dispatch () =
   with_temp_dir "symphony-mixed-harness-settings-" (fun root ->
       Unix.putenv "GITHUB_TOKEN" "token";
@@ -2416,6 +2538,23 @@ let test_harness_command_rendering () =
   Alcotest.(check string) "claude tokens"
     "claude --model 'claude-opus-4-7' --reasoning 'xhigh' -p --output-format stream-json"
     (Orchestrator.render_harness_command claude);
+  let cursor =
+    {
+      Config.name = "cursor";
+      kind = "cursor";
+      command = "cursor-agent -p --model <model> --reasoning <reasoning> --output-format stream-json";
+      model = "gpt-5.5";
+      reasoning_effort = "high";
+      turn_timeout_ms = 1000;
+      read_timeout_ms = 100;
+      stall_timeout_ms = 1000;
+      loop_enabled = false;
+      loop_command = "";
+    }
+  in
+  Alcotest.(check string) "cursor tokens"
+    "cursor-agent -p --model 'gpt-5.5' --reasoning 'high' --output-format stream-json"
+    (Orchestrator.render_harness_command cursor);
   let codex =
     {
       Config.name = "codex";
@@ -14727,6 +14866,8 @@ let () =
         [
           Alcotest.test_case "runs agent in agent worktree" `Quick test_shell_launch_runs_agent_in_agent_worktree;
           Alcotest.test_case "selects PI harness for stage agent" `Quick test_shell_launch_selects_pi_harness_for_stage_agent;
+          Alcotest.test_case "selects Cursor harness for stage agent" `Quick
+            test_shell_launch_selects_cursor_harness_for_stage_agent;
           Alcotest.test_case "selects PI harness before start status update" `Quick
             test_dispatch_selects_pi_harness_before_start_status_update;
         ] );
@@ -14904,6 +15045,8 @@ let () =
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
           Alcotest.test_case "parses Harnesses and logical agents" `Quick
             test_config_parses_harnesses_and_logical_agents;
+          Alcotest.test_case "parses Cursor Harness defaults and selection" `Quick
+            test_config_parses_cursor_harness_defaults_and_selection;
           Alcotest.test_case "loads mixed-Harness Runtime Settings" `Quick
             test_config_loads_mixed_harness_settings_without_dispatch;
           Alcotest.test_case "resolves stage agents through logical agents" `Quick

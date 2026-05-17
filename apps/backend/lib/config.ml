@@ -158,6 +158,7 @@ let default_codex_loop_command = "/goal"
 let default_pi_model = "openai/gpt-5.5"
 let default_pi_command = "pi --model <model> --thinking <reasoning> --print --no-session"
 let default_claude_command = "claude -p --model <model> --output-format stream-json"
+let default_cursor_command = "cursor-agent -p --model <model> --output-format stream-json"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_minibeads_root = ".beads"
@@ -581,12 +582,13 @@ type selected_harness_resolution =
   | Missing_referenced_harness of string
 
 let default_harness_kind name =
-  match name with "codex" -> "codex" | "pi" -> "pi" | "claude" -> "claude" | _ -> ""
+  match name with "codex" -> "codex" | "pi" -> "pi" | "claude" -> "claude" | "cursor" -> "cursor" | _ -> ""
 
 let default_harness_command = function
   | "codex" -> default_codex_command
   | "pi" -> default_pi_command
   | "claude" -> default_claude_command
+  | "cursor" -> default_cursor_command
   | _ -> ""
 
 let default_harness_model = function "pi" -> default_pi_model | _ -> default_model
@@ -1690,8 +1692,8 @@ let readiness_gaps config =
       in
       if Util.trim harness.name = "" then
         add "harnesses" "Harness identifiers in .symphony/settings.json must not be empty.";
-      if not (List.exists (( = ) harness.kind) [ "codex"; "claude"; "pi" ]) then
-        add (prefix ^ ".kind") "Set Harness kind to codex, claude, or pi.";
+      if not (List.exists (( = ) harness.kind) [ "codex"; "claude"; "cursor"; "pi" ]) then
+        add (prefix ^ ".kind") "Set Harness kind to codex, claude, cursor, or pi.";
       if Util.trim harness.command = "" then
         add (prefix ^ ".command") "Set the Harness command to a non-interactive launch command.";
       if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Harness model.";
