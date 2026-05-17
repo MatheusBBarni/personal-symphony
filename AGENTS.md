@@ -18,6 +18,12 @@
 - Package distribution is npm `bin/symphony.js` plus a platform binary in `vendor/`.
 - Runtime files belong to a Workspace Repository under `.symphony/`; this repo is the Product Repository.
 
+## Package Rules
+
+- MUST read and follow `.agents/rules/backend.md` before editing `apps/backend/**`.
+- MUST read and follow `.agents/rules/frontend.md` before editing `apps/frontend/**`.
+- MUST read and follow `.agents/rules/tui.md` before editing `apps/tui/**`.
+
 ## Boundaries
 
 ### Always
@@ -26,6 +32,7 @@
 - MUST update `CONTEXT.md` when adding or changing domain language.
 - MUST add or update an ADR under `docs/adr/` for architecture decisions that change runtime semantics.
 - MUST edit `.res` sources only; generated `apps/frontend/src/*.res.js` files are ignored and must not be committed. Run `pnpm frontend:build` or `pnpm --filter @personal-symphony/frontend rescript:build` after ReScript changes.
+- MUST write new backend source modules in ReasonML (`.re`/`.rei`) when adding files under `apps/backend/`; non-source backend files remain in their native formats.
 - MUST keep `symphony` commands rooted in a Workspace Repository; root validation is an accepted product behavior.
 - MUST preserve idempotent Bootstrap behavior: create missing Runtime Home files without overwriting user-edited runtime files.
 - MUST treat `GITHUB_TOKEN` and `GH_TOKEN` as secret values; only variable names belong in docs or examples.
