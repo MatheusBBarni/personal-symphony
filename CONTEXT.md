@@ -140,6 +140,10 @@ _Avoid_: codex clone, claude agent
 An Agent Harness whose launch semantics target PI non-interactive execution.
 _Avoid_: codex-compatible command, pi agent
 
+**Cursor Harness**:
+An Agent Harness whose launch semantics target Cursor CLI non-interactive execution with CLI `stream-json` output.
+_Avoid_: codex clone, cursor agent
+
 **Harness Loop**:
 The per-Harness Runtime Settings capability that controls whether Stage Goal Handoff prepends a loop command such as `/goal`.
 _Avoid_: global goal mode, codex-only setting
@@ -221,11 +225,11 @@ A Runtime Settings rule that limits how many agents may run for a specific Stage
 _Avoid_: agents per status, per-stage maxConcurrentAgents, worker pool
 
 **Stage Goal Handoff**:
-A stage-specific Codex handoff that sets a Codex goal when Symphony launches an agent for that stage.
+A stage-specific Harness Loop handoff that sends Stage Goal Context when Symphony launches an agent for that stage.
 _Avoid_: global goal mode, `/goal` setting, issue goal
 
 **Stage Goal Context**:
-The deterministic issue and stage data used as the Codex goal payload for a Stage Goal Handoff.
+The deterministic issue and stage data used as the Harness Loop payload for a Stage Goal Handoff.
 _Avoid_: whole prompt, all context, goal message
 
 **Goal Usage**:
@@ -424,9 +428,15 @@ _Avoid_: reinitialize, reset
 - A **Claude Harness** uses CLI `stream-json` for the first Claude integration.
 - A **Claude Harness** has **Harness Loop** disabled by default.
 - A **PI Harness** uses PI non-interactive print mode for the first PI integration.
+- A **Cursor Harness** uses Cursor CLI non-interactive execution with CLI `stream-json` output.
+- A **Cursor Harness** has **Harness Loop** disabled by default.
 - A selected **PI Harness** must have an installed command executable and PI authentication before dispatch.
 - An unused **PI Harness** definition must not create PI install or authentication **Readiness Gaps**.
 - A **PI Harness** must preserve Agent Worktree, Task Branch, Agent Prompt, Stage Commit, Stage Push, retry, and status transition behavior.
+- A selected **Cursor Harness** must have an installed command executable and a successful Cursor CLI status check before dispatch.
+- An unused **Cursor Harness** definition must not create Cursor install or authentication **Readiness Gaps**.
+- A selected loop-enabled **Cursor Harness** must prove that its configured **Harness Loop** command is accepted from standard input before dispatch.
+- A loop-disabled **Cursor Harness**, or a **Cursor Harness** with a blank `loop.command`, must use the normal **Agent Prompt** path without **Stage Goal Handoff**.
 - The **Runtime Settings** contain a **Git Policy**.
 - A **Git Policy** may contain an **Allowed Loop-Start Branch Policy**.
 - A **Workspace Repository** may define a **Protected Path Policy**.
@@ -533,12 +543,16 @@ _Avoid_: reinitialize, reset
 - A **Stage Goal Handoff** must not replace the normal **Agent Prompt**.
 - A **Stage Goal Handoff** runs only when the selected **Agent Harness** has **Harness Loop** enabled with a non-empty loop command.
 - Missing Codex goal support for a selected loop-enabled **Codex Harness** is a **Readiness Gap**, not a task retry condition.
+- Missing Cursor loop plugin support for a selected loop-enabled **Cursor Harness** is a **Readiness Gap**, not a task retry condition.
 - The **Readiness Gap** for missing Codex goal support tells the user how to use a Codex command that accepts the configured Harness loop command from standard input.
+- The **Readiness Gap** for missing Cursor loop plugin support tells the user to install or enable the plugin path that accepts the configured Harness loop command from standard input, or to disable the Cursor Harness loop.
 - Symphony checks `~/.codex/config.toml` for `[features] goals = true` when a selected loop-enabled **Codex Harness** uses the default `/goal` command.
 - Symphony tells the user to use a Codex command that accepts the configured Harness loop command from standard input when Codex goal support is missing.
 - Symphony sends the selected **Agent Harness** loop command before the normal rendered **Agent Prompt** when performing a **Stage Goal Handoff**.
 - Implementation of **Stage Goal Handoff** must verify that the selected loop-enabled **Codex Harness** accepts its loop command from standard input before treating the feature as supported.
 - If the selected loop-enabled **Codex Harness** does not accept its loop command from standard input, Symphony must surface the blocker instead of pretending **Stage Goal Handoff** works.
+- Implementation of **Stage Goal Handoff** must verify that the selected loop-enabled **Cursor Harness** accepts its loop command from standard input before treating the feature as supported.
+- If the selected loop-enabled **Cursor Harness** does not accept its loop command from standard input, Symphony must surface the blocker instead of pretending **Stage Goal Handoff** works.
 - **Stage Goal Context** includes issue identifier, title, description, comments, URL, current project status, labels, priority when present, blocker references when present, attempt, and stage agent name.
 - **Stage Goal Context** does not include issue creation or update timestamps by default.
 - Symphony extracts **Goal Usage** from Codex output when Codex reports it in a parseable form.

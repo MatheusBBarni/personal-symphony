@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Implement Cursor Loop Readiness And Goal Handoff Support"
 type: backend
 complexity: medium
 dependencies:
   - task_01
   - task_02
+
 ---
 
 # Task 03: Implement Cursor Loop Readiness And Goal Handoff Support
@@ -32,11 +33,11 @@ explicit readiness checks when loop support is enabled.
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Extend Cursor Harness semantics so loop-enabled configuration participates in stage goal handoff.
-- [ ] 3.2 Add Cursor-specific readiness validation for plugin-backed loop support.
-- [ ] 3.3 Ensure prompt composition prepends the configured Cursor loop command only in valid goal-handoff cases.
-- [ ] 3.4 Keep disabled or blank Cursor loop configuration on the normal prompt path.
-- [ ] 3.5 Add targeted tests for disabled, blank, failing, and successful Cursor loop scenarios.
+- [x] 3.1 Extend Cursor Harness semantics so loop-enabled configuration participates in stage goal handoff.
+- [x] 3.2 Add Cursor-specific readiness validation for plugin-backed loop support.
+- [x] 3.3 Ensure prompt composition prepends the configured Cursor loop command only in valid goal-handoff cases.
+- [x] 3.4 Keep disabled or blank Cursor loop configuration on the normal prompt path.
+- [x] 3.5 Add targeted tests for disabled, blank, failing, and successful Cursor loop scenarios.
 
 ## Implementation Details
 Build on the current Harness loop model instead of introducing a new provider-specific goal-handoff abstraction. See
@@ -68,14 +69,14 @@ operator-configured, plugin-backed, and guarded by explicit readiness rather tha
 
 ## Tests
 - Unit tests:
-  - [ ] A loop-enabled Cursor Harness with missing plugin readiness produces a blocking loop requirement.
-  - [ ] A loop-disabled Cursor Harness with stage goal enabled does not prepend a loop command.
-  - [ ] A Cursor Harness with blank `loop.command` behaves like normal prompt execution.
-  - [ ] Existing Codex loop readiness and loop prompt composition remain unchanged.
-  - [ ] Non-loop Claude and PI behavior remains unchanged.
+  - [x] A loop-enabled Cursor Harness with missing plugin readiness produces a blocking loop requirement.
+  - [x] A loop-disabled Cursor Harness with stage goal enabled does not prepend a loop command.
+  - [x] A Cursor Harness with blank `loop.command` behaves like normal prompt execution.
+  - [x] Existing Codex loop readiness and loop prompt composition remain unchanged.
+  - [x] Non-loop Claude and PI behavior remains unchanged.
 - Integration tests:
-  - [ ] A selected Cursor stage with successful loop readiness prepends the configured loop command and stage goal context.
-  - [ ] A selected Cursor stage with loop disabled emits the normal prompt without loop handoff.
+  - [x] A selected Cursor stage with successful loop readiness prepends the configured loop command and stage goal context.
+  - [x] A selected Cursor stage with loop disabled emits the normal prompt without loop handoff.
 - Test coverage target: >=80%
 - All tests must pass
 

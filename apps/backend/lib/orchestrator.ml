@@ -2406,6 +2406,17 @@ let content_text content =
   |> String.concat ""
   |> nonempty_option
 
+let content_text_preserving_whitespace content =
+  let text =
+    content
+    |> List.filter_map (fun item ->
+           match json_member "type" item with
+           | Some (`String "text") -> json_string_member "text" item
+           | _ -> None)
+    |> String.concat ""
+  in
+  if Util.trim text = "" then None else Some text
+
 let content_tool_name content =
   content
   |> List.find_map (fun item ->
@@ -2612,6 +2623,128 @@ let parse_claude_stream_activity stdout_path stderr_path =
            try Yojson.Safe.from_string line |> claude_activity_from_json activity
            with Yojson.Json_error _ -> activity)
        empty_claude_stream_activity
+
+type cursor_stream_activity = {
+  cursor_seen : bool;
+  cursor_last_event : string option;
+  cursor_last_message : string option;
+  cursor_tokens : Runtime_state.tokens;
+}
+
+let empty_cursor_stream_activity =
+  {
+    cursor_seen = false;
+    cursor_last_event = None;
+    cursor_last_message = None;
+    cursor_tokens = runtime_tokens;
+  }
+
+let update_cursor_tokens activity json =
+  usage_json_candidates json
+  |> List.fold_left
+       (fun activity usage ->
+         match usage with
+         | Some (`Assoc _ as usage) ->
+             {
+               cursor_seen = true;
+               cursor_last_event =
+                 (match activity.cursor_last_event with Some _ -> activity.cursor_last_event | None -> Some "cursor_usage");
+               cursor_last_message =
+                 (match activity.cursor_last_message with
+                 | Some _ -> activity.cursor_last_message
+                 | None -> Some "Cursor usage updated");
+               cursor_tokens = max_tokens activity.cursor_tokens (tokens_from_usage_json usage);
+             }
+         | _ -> activity)
+       activity
+
+let cursor_tool_label name =
+  let suffix = "ToolCall" in
+  if String.ends_with ~suffix name then String.sub name 0 (String.length name - String.length suffix) else name
+
+let cursor_tool_call_name json =
+  match json_member "tool_call" json with
+  | Some (`Assoc ((name, _) :: _)) -> Some (cursor_tool_label name)
+  | _ -> None
+
+let append_cursor_message existing chunk =
+  match existing with
+  | Some text when Util.trim text <> "" -> text ^ chunk
+  | _ -> chunk
+
+let cursor_activity_from_json activity json =
+  let activity = update_cursor_tokens activity json in
+  match json_string_member "type" json with
+  | Some "system" -> (
+      match json_string_member "subtype" json with
+      | Some "init" ->
+          {
+            activity with
+            cursor_seen = true;
+            cursor_last_event = Some "cursor_init";
+            cursor_last_message =
+              (match json_string_member "model" json with
+              | Some model -> Some ("Cursor initialized " ^ model)
+              | None -> activity.cursor_last_message);
+          }
+      | Some subtype ->
+          {
+            activity with
+            cursor_seen = true;
+            cursor_last_event = Some ("cursor_system_" ^ subtype);
+          }
+      | None -> { activity with cursor_seen = true })
+  | Some "assistant" -> (
+      match json_member "message" json with
+      | Some (`Assoc _ as message) -> (
+          match content_text_preserving_whitespace (json_list_member "content" message) with
+          | Some text ->
+              {
+                activity with
+                cursor_seen = true;
+                cursor_last_event = Some "cursor_message";
+                cursor_last_message = Some (append_cursor_message activity.cursor_last_message text);
+              }
+          | None -> activity)
+      | _ -> activity)
+  | Some "tool_call" ->
+      let subtype = Option.value (json_string_member "subtype" json) ~default:"event" in
+      let tool_name = Option.value (cursor_tool_call_name json) ~default:"tool" in
+      {
+        activity with
+        cursor_seen = true;
+        cursor_last_event = Some ("cursor_tool_" ^ subtype);
+        cursor_last_message = Some (Printf.sprintf "%s %s" (String.capitalize_ascii subtype) tool_name);
+      }
+  | Some "result" ->
+      let message =
+        first_some
+          [
+            json_string_member "result" json;
+            json_string_member "message" json;
+            json_string_member "summary" json;
+          ]
+      in
+      {
+        activity with
+        cursor_seen = true;
+        cursor_last_event = Some "cursor_result";
+        cursor_last_message = (match message with Some _ -> message | None -> activity.cursor_last_message);
+      }
+  | Some "user" -> { activity with cursor_seen = true }
+  | _ -> activity
+
+let parse_cursor_stream_activity stdout_path stderr_path =
+  let content = file_contents stdout_path ^ "\n" ^ file_contents stderr_path in
+  content |> String.split_on_char '\n'
+  |> List.fold_left
+       (fun activity line ->
+         let line = Util.trim line in
+         if line = "" then activity
+         else
+           try Yojson.Safe.from_string line |> cursor_activity_from_json activity
+           with Yojson.Json_error _ -> activity)
+       empty_cursor_stream_activity
 
 let update_running orchestrator issue_id f =
   update_state orchestrator (fun state ->
@@ -3593,7 +3726,11 @@ let refresh_child_output ?(force = false) orchestrator child =
       if child.harness.kind = "claude" then parse_claude_stream_activity child.stdout_path child.stderr_path
       else empty_claude_stream_activity
     in
-    let tokens = max_tokens tokens claude_activity.claude_tokens in
+    let cursor_activity =
+      if child.harness.kind = "cursor" then parse_cursor_stream_activity child.stdout_path child.stderr_path
+      else empty_cursor_stream_activity
+    in
+    let tokens = max_tokens tokens (max_tokens claude_activity.claude_tokens cursor_activity.cursor_tokens) in
     let goal_usage = parse_goal_usage child.stdout_path child.stderr_path in
     update_state orchestrator (fun state -> { state with usage_totals = max_tokens state.usage_totals tokens });
     update_running orchestrator child.issue_id (fun row ->
@@ -3602,11 +3739,17 @@ let refresh_child_output ?(force = false) orchestrator child =
           Runtime_state.last_event =
             (match claude_activity.claude_last_event with
             | Some _ -> claude_activity.claude_last_event
-            | None -> Some "agent_output");
+            | None -> (
+                match cursor_activity.cursor_last_event with
+                | Some _ -> cursor_activity.cursor_last_event
+                | None -> Some "agent_output"));
           last_message =
             (match claude_activity.claude_last_message with
             | Some _ -> claude_activity.claude_last_message
-            | None -> Some "stdout/stderr updated");
+            | None -> (
+                match cursor_activity.cursor_last_message with
+                | Some _ -> cursor_activity.cursor_last_message
+                | None -> Some "stdout/stderr updated"));
           last_event_at = Some now;
           tokens = max_tokens row.tokens tokens;
           goal_usage = (match goal_usage with Some _ -> goal_usage | None -> row.goal_usage);

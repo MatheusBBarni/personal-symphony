@@ -261,6 +261,22 @@ reasoning, and timeout fields for planner, engineer, or reviewer work:
         "command": ""
       }
     },
+    "cursor": {
+      "kind": "cursor",
+      "command": "cursor-agent -p --model <model> --output-format stream-json",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    },
+    "cursor-force": {
+      "kind": "cursor",
+      "command": "cursor-agent -p --force --model <model> --output-format stream-json",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    },
     "pi": {
       "kind": "pi",
       "command": "pi --model <model> --thinking <reasoning> --print --no-session",
@@ -308,12 +324,20 @@ reasoning, and timeout fields for planner, engineer, or reviewer work:
 }
 ```
 
-PI and Claude are not prerequisites for Codex-only dispatch. Symphony validates install and
+PI, Claude, and Cursor are not prerequisites for Codex-only dispatch. Symphony validates install and
 authentication readiness only for Harnesses selected by enabled Stage Agent routes. A selected PI
 Harness requires the `pi` executable on `PATH` and provider authentication for the configured model. A
 selected Claude Harness requires the `claude` executable and Claude Code authentication, such as
-`ANTHROPIC_API_KEY` or Claude's configured login state. Runtime Settings must reference only
-environment variable names, never secret values.
+`ANTHROPIC_API_KEY` or Claude's configured login state. A selected Cursor Harness requires the
+`cursor-agent` executable and a successful `cursor-agent status` check, using either browser login or
+`CURSOR_API_KEY`. Use the non-`--force` Cursor Harness for review-first operation; select the
+`cursor-force` Harness only when the `Workspace Repository` operator intentionally wants Cursor to
+write directly during that role. Runtime Settings must reference only environment variable names,
+never secret values.
+
+To assign Cursor to any Logical Agent, set `agents.<name>.harness` to `cursor` or `cursor-force`.
+Keep `stageAgents.stages[]` routing by Logical Agent name rather than placing provider fields on the
+stage itself.
 
 Legacy settings that place Harness definitions under `agents.*`, such as `agents.pi.kind`, are
 migration input. When the new Runtime Settings shape is in use, Symphony reports a blocking Readiness
@@ -473,8 +497,8 @@ from the same Compozy PRD Run when those files exist.
 Set `goal.enabled` to `true` on a specific stage to allow Stage Goal Handoff for that stage only.
 The selected Harness decides whether a loop command is actually sent. The Bootstrap default Codex
 Harness has `loop.enabled: true` and `loop.command: "/goal"`, so Codex receives `/goal` with
-deterministic Stage Goal Context before the normal Agent Prompt. The Bootstrap default Claude and PI
-Harnesses have loop disabled, so those Harnesses run the normal prompt even when a stage has
+deterministic Stage Goal Context before the normal Agent Prompt. The Bootstrap default Claude, Cursor,
+and PI Harnesses have loop disabled, so those Harnesses run the normal prompt even when a stage has
 `goal.enabled: true`. Stage Goal Context includes issue identifier, title, description, comments, URL,
 current tracker status, labels, priority when present, blocker references when present,
 attempt, and stage agent name. It omits issue creation and update timestamps.
@@ -490,6 +514,10 @@ goals = true
 If a selected loop-enabled Codex Harness cannot accept the configured loop command, Symphony reports a
 Readiness Gap. Goal Usage reported by Codex is stored in Runtime State for running, retrying, and
 attention-needed task details when available; missing or unparseable Goal Usage does not fail a task.
+If a selected loop-enabled Cursor Harness cannot accept the configured loop command from standard
+input, Symphony reports a Cursor loop Readiness Gap. Cursor `stream-json` activity updates the same
+running-task Runtime State fields used by other Harnesses, while raw stdout and stderr logs remain
+available as diagnostics.
 
 Stage commits run after an agent exits successfully and before Symphony moves the issue to the
 stage's `successStatus`. Set `commit.enabled` per stage to control which transitions create commits;

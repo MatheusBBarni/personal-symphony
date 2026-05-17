@@ -56,6 +56,22 @@ let settings_json =
         "command": ""
       }
     },
+    "cursor": {
+      "kind": "cursor",
+      "command": "cursor-agent -p --model <model> --output-format stream-json",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    },
+    "cursor-force": {
+      "kind": "cursor",
+      "command": "cursor-agent -p --force --model <model> --output-format stream-json",
+      "loop": {
+        "enabled": false,
+        "command": ""
+      }
+    },
     "pi": {
       "kind": "pi",
       "command": "pi --model <model> --thinking <reasoning> --print --no-session",

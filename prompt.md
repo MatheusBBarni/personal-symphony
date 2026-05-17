@@ -1,400 +1,611 @@
-/goal {"kind":"Stage Goal Context","issue_identifier":"compozy:queue-flag-compozy-tasks","title":"Compozy PRD run: queue-flag-compozy-tasks","description":null,"comments":[],"url":null,"current_project_status":"in_review","labels":[],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
+You are the Engineer agent for the Symphony Orchestrator Repository.
+
+You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
+
+Responsibilities:
+- Implement only the scoped issue.
+- Use CONTEXT.md terms and follow AGENTS.md.
+- Prefer existing module boundaries and tests over new abstractions.
+- Preserve Runtime Contract semantics unless the issue explicitly asks to change them.
+- Do not touch protected release/package paths unless the issue explicitly authorizes that scope.
+- Edit ReScript .res sources only; never commit generated .res.js files.
+- Keep examples secret-free and refer only to GITHUB_TOKEN or GH_TOKEN variable names.
+- Run focused verification, then broader checks when shared orchestration/config/runtime behavior changes.
+
+Stage Commit is enabled for this stage. Leave the worktree ready for a local commit boundary before review.
 
 ---
 
-You are the Reviewer agent for the Symphony Orchestrator Repository.
-
-Review completed engineer work before it moves to Done.
-
-Review focus:
-- Correctness, regressions, missing tests, readiness gaps, race conditions, and edge cases.
-- Compliance with CONTEXT.md terminology and AGENTS.md boundaries.
-- Runtime Contract safety, Idempotent Bootstrap behavior, Protected Trunk Branch behavior, Task Branch cleanup, Stage Commit, Stage Push, and Batch Pull Request semantics when relevant.
-- Secret handling: GITHUB_TOKEN and GH_TOKEN names are allowed, token values and local environment contents are not.
-- Frontend source hygiene: .res edits only, no committed generated .res.js files.
-- Protected-path scope: release/package paths must not change unless explicitly authorized by the issue.
-
-Run focused checks when practical. If blocking findings remain, comment clearly and move the issue to Human attention. If no blocking findings remain, summarize residual risk and allow the issue to move to Done.
-
----
-
-Stage agent: reviewer
+Stage agent: engineer
 
 # Compozy PRD Run Stage
 
-Run: compozy:queue-flag-compozy-tasks
-PRD directory: queue-flag-compozy-tasks
+Run: compozy:cursor-cli-harness-integration
+PRD directory: cursor-cli-harness-integration
 Task step status: completed
-Completed task steps: 4/4
+Completed task steps: 6/6
 
 ## Completed Compozy Task Steps
 
-- task_01.md: Add tracker-aware Ordered Queue resolution primitives
-- task_02.md: Wire readiness-first queue diagnostics for bare Compozy slugs
-- task_03.md: Refactor Ordered Queue orchestration to use raw state and resolved identifiers
-- task_04.md: Update queue shortcut docs and CLI help
+- task_01.md: Add Cursor Harness Kind, Defaults, And Command Rendering
+- task_02.md: Add Cursor CLI Install And Auth Readiness Checks
+- task_03.md: Implement Cursor Loop Readiness And Goal Handoff Support
+- task_04.md: Add Cursor Stream-JSON Activity Parsing And Runtime Visibility
+- task_05.md: Update Bootstrap Runtime Contract Defaults For Cursor
+- task_06.md: Update Docs, Glossary, Project ADR, And Harness Onboarding Guidance
 
 ## PRD (`_prd.md`)
 
-# Queue Flag With Compozy Tasks
+# Cursor CLI Harness Integration PRD
 
 ## Overview
 
-Personal Symphony should let a **Workspace Repository** operator queue known **Compozy PRD Runs** by passing bare slugs to `--queue` when `.symphony/settings.json` selects the Compozy-backed **Issue Tracker**.
+Cursor CLI Harness Integration makes Symphony a clearer provider-choice product for operators who already run agent
+work through Cursor. It adds Cursor as a stable first-class `Agent Harness` inside the existing `Runtime Contract`, so
+a `Workspace Repository` can route any `Logical Agent` role to Cursor without abandoning Symphony's orchestration
+model, `Agent Worktree` isolation, `Task Branch` flow, or Runtime State visibility.
 
-Today, the operator must translate a known run name such as `queue-flag-with-compozy-tasks` into the stable selector form `compozy:queue-flag-with-compozy-tasks`. The proposed product change shortens that step for ad hoc local terminal use while preserving the current **Ordered Queue** contract, selected-tracker validation rules, and canonical internal identifiers.
-
-The value is simple: make a frequent operator command faster and more natural without broadening the product into a general selector redesign.
+The value is practical rather than aspirational. Operators should be able to complete normal task flows on
+Cursor-selected roles using the same product concepts they already understand for other Harnesses. The product outcome
+is stronger provider neutrality: Cursor becomes a supported peer to existing Harnesses, while Symphony preserves one
+consistent user model for selection, readiness, observability, and rollout.
 
 ## Goals
 
-- Reduce the command length and cognitive overhead for queuing known **Compozy PRD Runs** from the terminal.
-- Preserve the current meaning of **Ordered Queue** and keep queue validation aligned with the selected **Issue Tracker**.
-- Make the Compozy-backed queue experience feel native to `.compozy/tasks/<task_name>/` naming rather than requiring manual selector translation.
-- Keep existing GitHub, minibeads, and canonical Compozy queue behavior stable.
-- Provide clear feedback when an operator tries to use bare Compozy slugs while another tracker mode is selected.
+- Make Cursor a stable first-class `Agent Harness` option in Symphony's `Runtime Contract`.
+- Let operators assign Cursor to any `Logical Agent` role, not only `engineer`.
+- Enable operators who already use Cursor CLI to complete normal Symphony task flows without switching tools.
+- Preserve clear product boundaries between `harnesses`, `agents`, and `stageAgents`.
+- Strengthen Symphony's repeatable pattern for future Harness additions through a small onboarding or certification
+  checklist.
+
+Target outcomes:
+- Cursor-selected roles can complete normal task flows reliably enough for routine use.
+- Operators understand how to configure Cursor with low ambiguity.
+- Symphony's provider-choice story becomes stronger without fragmenting the product model.
 
 ## User Stories
 
-- As a solo operator using a Compozy-backed **Workspace Repository**, I want to type known run slugs directly into `--queue` so that I can start an ad hoc run with less friction.
-- As a solo operator who already recognizes `.compozy/tasks/<task_name>/` names, I want the queue command to match those names so that I do not need to mentally translate them into another format.
-- As a solo operator working in the terminal, I want queue input errors to explain tracker mismatch clearly so that I can correct the command quickly.
-- As a maintainer of existing Symphony workflows, I want this improvement to leave other tracker modes and existing canonical selectors unchanged so that current usage does not regress.
+**Workspace Repository operator**
+
+- As a `Workspace Repository` operator, I want to select Cursor for any `Logical Agent` role so that Symphony fits the
+  agent tool I already use.
+- As a `Workspace Repository` operator, I want Cursor to look like a real supported Harness, not a hidden
+  compatibility path, so that I can adopt it confidently.
+- As a `Workspace Repository` operator, I want clear readiness and setup guidance so that I can get to a successful
+  run quickly.
+
+**Task supervisor**
+
+- As a task supervisor, I want Runtime State to show when Cursor is the selected Harness so that I can understand
+  which provider is running a task.
+- As a task supervisor, I want normal task progress and logs to remain visible when work runs on Cursor so that
+  provider choice does not reduce operational trust.
+
+**Product maintainer**
+
+- As a product maintainer, I want Cursor onboarding to follow the same Harness model as existing providers so that
+  future Harness additions become easier and less ad hoc.
+- As a product maintainer, I want the PRD to define clear non-goals so that provider support does not quietly expand
+  into unrelated product commitments.
 
 ## Core Features
 
-- **Compozy bare-slug queue entry**  
-  When the selected **Issue Tracker** is the Compozy-backed tracker, `--queue` accepts a comma-separated list of bare **Compozy PRD Run** slugs.
+### F1: Stable First-Class Cursor Harness
 
-- **Tracker-aware eligibility**  
-  The shorter queue format is only available when the active tracker mode is Compozy-backed, keeping the user-facing rule aligned with the selected **Issue Tracker**.
+Symphony must present Cursor as a supported `Agent Harness` inside `harnesses`, with the same product-level status as
+other supported Harnesses.
 
-- **Guided mismatch feedback**  
-  If an operator uses bare Compozy slugs while another tracker mode is selected, Symphony explains the mismatch and points the operator to the correct selector style.
+User capability:
+- Operators can define a Cursor Harness in Runtime Settings.
+- Cursor appears as a valid execution choice rather than an advanced workaround.
+- Product docs teach Cursor through the same Harness model already used elsewhere.
 
-- **Fail-fast queue acceptance**  
-  The queue is accepted only when every supplied slug is valid for the active Compozy-backed tracker context and each referenced run is eligible for dispatch.
+### F2: Any Logical Agent Can Select Cursor
 
-- **Compatibility preservation**  
-  Existing canonical Compozy selectors and non-Compozy queue flows remain supported with their current behavior.
+Cursor support must be available to any `Logical Agent` role.
 
-- **Documentation refresh**  
-  User-facing examples for `--queue` and Compozy-backed tracking explain the shorter input path and its boundaries.
+User capability:
+- Operators can assign Cursor to `planner`, `engineer`, `reviewer`, or other logical roles they define.
+- Symphony does not frame Cursor as an `engineer`-only product path.
+- Provider choice remains role-based and explicit.
+
+### F3: Low-Ambiguity Setup Experience
+
+The product must make it clear how an operator gets from Runtime Settings to a successful Cursor-selected run.
+
+User capability:
+- Operators know where Cursor belongs in the `Runtime Contract`.
+- Operators receive clear readiness or setup feedback when Cursor is selected.
+- Operators can reach a first successful run with low configuration ambiguity.
+
+### F4: Normal Task-Flow Support
+
+Cursor-selected roles must be able to participate in the normal Symphony workflow.
+
+User capability:
+- Operators can use Cursor-selected roles in routine task execution.
+- Provider choice does not break the expected task-flow experience.
+- Cursor support is measured by successful use in ordinary work, not by a narrow demo path.
+
+### F5: Provider Visibility In Runtime State
+
+Cursor must be observable as a selected Harness in operator-facing runtime views.
+
+User capability:
+- Operators can tell when a task is running on Cursor.
+- Provider identity remains visible alongside normal task state.
+- Provider choice does not reduce day-to-day operational clarity.
+
+### F6: Cursor Examples In Bootstrap And Docs
+
+Runtime Contract examples must show Cursor as part of the supported Harness story.
+
+User capability:
+- Operators can copy or adapt a Cursor example from product-owned documentation or seeded defaults.
+- Cursor configuration is discoverable without reading backend source.
+- Docs reinforce the split between `harnesses`, `agents`, and `stageAgents`.
+
+### F7: Harness Onboarding Checklist
+
+The Cursor effort should leave behind a lightweight reusable checklist for future Harness additions.
+
+User capability:
+- Product maintainers can evaluate future Harness candidates against a repeatable set of product expectations.
+- Symphony reduces one-off provider decisions over time.
+- Cursor becomes a compounding product investment, not just a single-provider feature.
 
 ## User Experience
 
-The primary journey is an ad hoc local terminal flow.
+Primary journey:
+1. An operator opens `.symphony/settings.json` or related Runtime Contract docs.
+2. They see Cursor presented as a supported `Agent Harness` alongside the existing provider model.
+3. They assign Cursor to one or more `Logical Agent` roles.
+4. Symphony guides them to readiness rather than leaving provider setup ambiguous.
+5. They dispatch normal work and observe Cursor-selected execution through the same Runtime State surfaces they already
+   use.
+6. They continue using Symphony's existing orchestration flow without needing a separate mental model for Cursor.
 
-1. The operator works in a **Workspace Repository** that already uses the Compozy-backed **Issue Tracker**.
-2. They know the names of one or more **Compozy PRD Runs** from `.compozy/tasks/<task_name>/`.
-3. They run a short queue command using those slugs separated by commas.
-4. Symphony evaluates the request in the context of the active tracker mode.
-5. If the input is valid, the **Ordered Queue** starts with the same queue-order behavior operators already expect.
-6. If the input is invalid, Symphony stops early and explains the issue in language that helps the operator recover quickly.
+Product experience principles:
+- Provider choice should feel native, not bolted on.
+- Role selection should remain simple and explicit.
+- Setup friction should be low enough that current Cursor users can adopt quickly.
+- Visibility should remain strong enough that operators trust mixed-Harness environments.
+- Discoverability should come from the Runtime Contract and product docs, not from tribal knowledge.
 
-The UX priority is speed and clarity for a known command, not discoverability through a new interface. Documentation and CLI messaging should make the boundary obvious: bare slugs are a Compozy-backed queue shortcut, not a universal selector format.
-
-Accessibility and usability considerations:
-
-- Error feedback should be short, explicit, and readable in a terminal context.
-- Queue input rules should be easy to understand from CLI help and README examples.
-- Operators should not need to inspect internals to understand why a bare slug was rejected.
+Accessibility and clarity considerations:
+- Setup and readiness messages should be understandable by operators who know Symphony but do not know backend
+  internals.
+- Product wording should distinguish support scope from future ambitions.
+- Provider-specific examples should reinforce the same information architecture rather than creating a separate
+  Cursor-only UX.
 
 ## High-Level Technical Constraints
 
-- The feature must remain rooted in the **Workspace Repository** runtime model and selected **Issue Tracker** semantics.
-- The product must preserve the existing **Ordered Queue** behavior around order, readiness validation, and queue resume expectations.
-- The change must not weaken existing compatibility for GitHub or minibeads tracker modes.
-- Queue validation must continue to protect operators from starting a run with invalid or ineligible queue entries.
-- User-facing documentation must avoid secret values and preserve existing Runtime Contract boundaries.
+- Cursor must fit the existing `Workspace Repository`-owned `Runtime Contract`.
+- Product examples must preserve the separation between `harnesses`, `agents`, and `stageAgents`.
+- Bootstrap must remain idempotent and must not overwrite user-edited runtime files.
+- Product guidance must reference only secret environment variable names, never secret values.
+- Provider support must preserve existing `Agent Worktree`, `Task Branch`, and Runtime State product semantics.
+- Observability must remain available even when provider-specific structured activity is incomplete.
 
 ## Non-Goals (Out of Scope)
 
-- Simplifying selector input for GitHub or minibeads tracker modes.
-- Redesigning selector behavior across all selector-based flows.
-- Changing **Task Branch**, retry, dispatch, completion, or **Runtime State** semantics.
-- Adding partial-success queue behavior for invalid mixed input.
-- Introducing a new UI surface for building queues.
-- Expanding MVP scope beyond `--queue` to other operator commands.
+- Reframing Cursor as a hidden or experimental-only feature.
+- Limiting Cursor support to only one `Logical Agent` role in the product story.
+- Shipping Cursor background-agent or cloud-agent product behavior in this PRD.
+- Creating a broad new provider-capability framework for permissions, autonomy, or enterprise controls.
+- Promising complete semantic parity between Cursor and every existing Harness.
+- Automatically rewriting user Runtime Contract files.
+- Using this PRD to define implementation details, parser strategy, or backend architecture.
 
 ## Phased Rollout Plan
 
 ### MVP (Phase 1)
 
-- Support bare Compozy slugs in `--queue` for the Compozy-backed **Issue Tracker**.
-- Keep the MVP focused on ad hoc local terminal use.
-- Provide guided mismatch feedback when the wrong tracker mode is active.
-- Preserve current behavior for all existing non-MVP queue inputs.
+- Stable first-class Cursor Harness positioning in the Runtime Contract.
+- Cursor available to any `Logical Agent`.
+- Clear setup and readiness experience for Cursor-selected roles.
+- Normal task-flow support for routine operator use.
+- Runtime State provider visibility for Cursor.
+- Cursor examples in docs or seeded settings.
+- Initial Harness onboarding checklist for future providers.
 
 Success criteria to proceed:
-
-- Operators can queue known **Compozy PRD Runs** with shorter commands.
-- Existing queue behavior remains stable for current users.
-- Documentation clearly explains when the shortcut does and does not apply.
+- Operators can complete normal task flows on Cursor-selected roles.
+- Setup ambiguity is low enough that existing Cursor operators can adopt without deep source-code reading.
+- Runtime State makes Cursor-selected execution understandable in daily use.
 
 ### Phase 2
 
-- Evaluate whether the same ergonomics should apply to other selector-based Compozy flows.
-- Refine error guidance based on real operator confusion patterns.
-- Improve documentation examples for mixed Symphony environments with different tracker kinds.
+- Improve discoverability and operator guidance for mixed-Harness environments.
+- Strengthen the reusable Harness onboarding checklist with examples and validation guidance.
+- Expand product documentation around role selection patterns and common provider-choice scenarios.
 
 Success criteria to proceed:
-
-- Real usage shows that operators want the same shorthand beyond `--queue`.
-- Support questions or dogfood feedback indicate recurring confusion worth smoothing.
+- Operators can confidently mix Cursor with other Harnesses across different roles.
+- Product maintainers can use the onboarding checklist to evaluate another Harness candidate with less ad hoc work.
 
 ### Phase 3
 
-- Consider a broader product decision on whether selector ergonomics should become more uniform across Compozy-backed flows.
-- Reassess whether the product should offer saved or previewable queue inputs for repeat use.
+- Mature Symphony's broader provider-choice narrative using lessons from Cursor adoption.
+- Evaluate whether additional provider-facing product surfaces are needed for richer mixed-Harness workflows.
+- Extend the onboarding pattern into a more formal provider-support playbook if repeated Harness additions justify it.
 
 Long-term success criteria:
-
-- Selector ergonomics feel consistent where consistency adds value, without weakening tracker-specific clarity.
+- Symphony can add future Harnesses without reshaping the core product model.
+- Provider choice becomes a durable product strength rather than a source of setup complexity.
 
 ## Success Metrics
 
-- Queue command brevity for Compozy-backed ad hoc runs improves by at least 15% for multi-run commands.
-- Operators can successfully queue known **Compozy PRD Runs** using bare slugs in the primary local terminal flow.
-- Queue-entry attempts involving bare slugs fail with guided mismatch feedback when the wrong tracker mode is active.
-- Existing non-Compozy queue flows show no user-facing regression.
-- Documentation examples for Compozy-backed queue usage remain accurate and easy to follow.
+- `>= 90%` of Cursor-selected task runs complete the normal dispatch-to-finish flow without setup or support failure in
+  dogfood use.
+- `<= 15 minutes` median time from opening Cursor setup docs to first successful Cursor-selected task flow for an
+  operator who already has Cursor installed.
+- `100%` of Cursor-selected running tasks show provider identity in Runtime State.
+- `>= 2` real `Workspace Repositories` adopt Cursor as part of normal role selection within 30 days of release.
+- `>= 80%` of surveyed or observed early adopters report that provider choice feels clear rather than ambiguous.
 
 ## Risks and Mitigations
 
-- **Risk: Users assume bare slugs should work everywhere.**  
-  Mitigation: Make the Compozy-only boundary explicit in CLI help, README examples, and error messages.
+- **Adoption risk:** Operators may not trust Cursor if support looks partial or ambiguous.
+  - Mitigation: position Cursor as stable first-class support and keep the setup path explicit.
 
-- **Risk: The feature feels too small to justify product attention.**  
-  Mitigation: Keep the PRD tightly scoped and tie success directly to a high-frequency operator workflow.
+- **Expectation risk:** Stable support language may create stronger expectations than the first rollout can satisfy.
+  - Mitigation: keep the supported scope narrow, define clear non-goals, and use phased rollout to control surface
+    area.
 
-- **Risk: Operators remain unsure which queue syntax to use in multi-tracker contexts.**  
-  Mitigation: Use guided mismatch feedback that explains the active tracker context and the expected input style.
+- **Competitive risk:** If Symphony's provider-choice story feels weaker than other agent orchestration products,
+  Cursor support may not change adoption.
+  - Mitigation: focus the MVP on normal task-flow completion and operator clarity, not merely checkbox compatibility.
 
-- **Risk: Future requests expand scope prematurely into a larger selector redesign.**  
-  Mitigation: Preserve the MVP narrative as a focused queue shortcut and defer broader selector consistency work to later phases.
+- **Dependency risk:** Product confidence depends partly on external provider behavior and documentation staying usable.
+  - Mitigation: base the product promise on documented behaviors, preserve fallback visibility, and avoid
+    overspecifying parity claims.
+
+- **Scope creep risk:** Cursor support could quietly grow into unrelated autonomy or provider-platform work.
+  - Mitigation: keep future-oriented items explicitly out of scope and use the onboarding checklist to discipline
+    expansion.
 
 ## Architecture Decision Records
 
-- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving canonical internal identifiers.
-- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
+- [ADR-001: Cursor Harness As A Bounded Multi-Harness Extension](adrs/adr-001.md) — Accepts `kind: "cursor"` as a
+  first-class `Agent Harness` while keeping scope bounded and reusable.
+- [ADR-002: Stable First-Class Cursor Harness Product Posture](adrs/adr-002.md) — Commits the PRD to stable
+  first-class support for Cursor across any `Logical Agent` role.
 
 ## Open Questions
 
-- Should bare Compozy slugs remain `--queue`-only after MVP, or later extend to other selector-based flows?
-- What documentation example set best prevents confusion for operators who switch between Compozy-backed and non-Compozy tracker modes?
+- What default Cursor example should product docs emphasize first for operator setup clarity?
+- How prominently should the Harness onboarding checklist appear in operator-facing docs versus maintainer-facing
+  artifacts?
+- What product language best distinguishes "stable support" from "full semantic parity" without weakening user
+  confidence?
+- Are there specific mixed-Harness role combinations that deserve first-class documentation examples in the initial
+  release?
 
 ## TechSpec (`_techspec.md`)
 
-# Queue Flag With Compozy Tasks TechSpec
+# Cursor CLI Harness Integration TechSpec
 
 ## Executive Summary
 
-Implement the PRD by keeping `Ordered_queue.parse` tracker-agnostic, then adding a shared post-settings queue-resolution step that interprets bare Compozy slugs only when `.symphony/settings.json` selects `tracker.kind = "compozy_tasks"`. The queue keeps the operator-facing identifier text for state and resume, while readiness, lookup, and dispatch operate on ephemeral canonical identifiers.
+This change adds Cursor as a native `kind: "cursor"` `Agent Harness` inside Symphony's existing multi-Harness
+architecture. The implementation reuses the established `harnesses -> agents -> stageAgents` resolution path,
+selected-Harness readiness model, shell-based launch flow, Runtime State Harness identity, and Bootstrap-owned Runtime
+Contract examples. Cursor-specific behavior stays inside the same provider seams already used for Claude and PI.
 
-The primary trade-off is deliberate: preserving raw bare slugs in queue state makes the shortcut feel native and keeps readiness messages close to what the operator typed, but it means queue resume stays input-style-sensitive. Restarting with `example-feature` is not the same queue run as restarting with `compozy:example-feature`.
+The primary technical trade-off is explicit provider support versus shared-module complexity. A native Cursor Harness
+gives clear behavior, readiness, and observability without inventing a second provider system, but it adds new
+provider-specific branches to already dense backend modules such as `config.ml`, `orchestrator.ml`, and
+`test_backend.ml`. The design keeps scope narrow: Cursor uses CLI-driven auth readiness, `stream-json` as the
+canonical structured output path with raw-log fallback, operator-configured loop support through `loop.enabled` /
+`loop.command`, and targeted updates to Bootstrap, docs, and tests.
 
 ## System Architecture
 
 ### Component Overview
 
-| Component | Responsibility | Boundary |
-| --- | --- | --- |
-| `Ordered_queue` | Parse structurally valid queue tokens and resolve them against the selected tracker after config load. | Must stay tracker-agnostic at parse time. |
-| `Issue_tracker` | Normalize tracker-specific identifiers and validate dispatchability. | Compozy adapter gains bare-slug normalization support; GitHub and minibeads behavior stays stable. |
-| `Runtime_readiness` | Surface queue mismatch and invalid-entry feedback as **Readiness Gaps** before orchestration starts. | Owns startup reporting, not dispatch-time recovery. |
-| `Orchestrator` | Use resolved canonical identifiers for queue ordering, matching, and dispatch while persisting raw queue identifiers in queue state. | Must preserve current **Ordered Queue** semantics and resume behavior. |
-| `Runtime_state` | Keep the existing queue JSON shape while allowing Compozy bare-slug queue entries to appear as typed by the operator. | No new queue fields in MVP. |
-| Docs / CLI help | Explain the Compozy-only shortcut and guided mismatch behavior. | Must not imply a global selector redesign. |
+**Runtime Settings / Harness Parsing**
+- Module: `apps/backend/lib/config.ml`
+- Purpose: Parse `kind: "cursor"` inside `harnesses`, merge logical-agent overrides, define defaults, and surface
+  readiness gaps.
+- Boundary: Owns Runtime Contract interpretation and selected-Harness validation, not runtime execution itself.
 
-Data flow:
+**Harness Launch And Prompt Composition**
+- Module: `apps/backend/lib/orchestrator.ml`
+- Purpose: Render the selected Cursor command, compose prompt input, launch the process in an `Agent Worktree`, and
+  capture stdout/stderr.
+- Boundary: Owns dispatch-time behavior and runtime child process handling.
 
-1. `parse_ordered_queue_arg` builds a queue from structurally valid raw tokens.
-2. Runtime startup loads `.symphony/settings.json` and selects the active tracker.
-3. A shared queue-resolution helper uses `tracker.normalize_identifier` to resolve each entry into a canonical identifier or a readiness error.
-4. `Runtime_readiness` reports tracker mismatch, mixed-style Compozy input, duplicate resolved identifiers, and undispatchable runs as **Readiness Gaps**.
-5. `Orchestrator` uses resolved canonical identifiers for lookup and ordering, while persisted queue state keeps raw queue identifiers.
-6. Queue resume compares the raw queue sequence, not the resolved canonical sequence.
+**Runtime State And Operator Visibility**
+- Modules: `apps/backend/lib/runtime_state.ml`, `apps/backend/lib/terminal_console_model.ml`,
+  `apps/frontend/src/RuntimeStateSnapshot.res`, `apps/frontend/src/Pages/Dashboard.res`
+- Purpose: Preserve Harness identity and, where supported, structured live activity for running Cursor tasks.
+- Boundary: Owns operator-facing visibility, not command execution or readiness probing.
+
+**Bootstrap And Runtime Contract Examples**
+- Module: `apps/backend/lib/runtime_home.ml`
+- Purpose: Seed bootstrapped `.symphony/settings.json` examples with Cursor support.
+- Boundary: Owns default Runtime Contract examples and idempotent Bootstrap behavior.
+
+**Documentation And Domain Language**
+- Files: `CONTEXT.md`, `README.md`, `docs/adr/0021-agent-harness-runtime-settings.md`
+- Purpose: Update glossary, supported Harness examples, and architectural documentation so Cursor is part of the
+  official model.
+- Boundary: Owns product-contract explanation rather than implementation behavior.
+
+**Backend Verification**
+- Module: `apps/backend/test/test_backend.ml`
+- Purpose: Extend parser, readiness, command rendering, loop, dispatch, and activity coverage for Cursor.
+- Boundary: Owns regression confidence across shared Harness code.
+
+### Data Flow
+
+1. Operator defines `harnesses.cursor` in `.symphony/settings.json`.
+2. `Config.from_settings_file` parses Cursor as a native Harness kind and merges role-level overrides from
+   `agents.<name>`.
+3. `Config.selected_agent_harness` resolves a stage to a logical agent and then to the Cursor Harness.
+4. `Config.readiness_gaps` performs selected-Harness Cursor install/auth/loop readiness before dispatch.
+5. `Orchestrator.compose_prompt` prepends loop handoff only when `loop.enabled` is true and Cursor loop readiness is
+   satisfied.
+6. `Orchestrator.shell_launch` renders the Cursor command, writes the prompt, and launches the child process with
+   stdout/stderr capture.
+7. Runtime refresh logic parses Cursor `stream-json` when available, otherwise falls back to raw logs.
+8. Runtime State and UI surfaces show `harness_name`, `harness_kind`, and activity updates for the running task.
 
 ## Implementation Design
 
 ### Core Interfaces
 
-Actual implementation is OCaml. The Go structs below are compact schema sketches for the key boundary.
-
-```go
-type QueueEntry struct {
-    QueueIdentifier string
-}
-
-type ResolvedQueueEntry struct {
-    QueueIdentifier     string
-    CanonicalIdentifier string
-}
-```
-
-```go
-type QueueResolver interface {
-    Resolve(queue []QueueEntry) ([]ResolvedQueueEntry, error)
+```ocaml
+type agent_harness = {
+  name : string;
+  kind : string;
+  command : string;
+  model : string;
+  reasoning_effort : string;
+  turn_timeout_ms : int;
+  read_timeout_ms : int;
+  stall_timeout_ms : int;
+  loop_enabled : bool;
+  loop_command : string;
 }
 ```
+
+```ocaml
+type selected_harness_resolution =
+  | Resolved_harness of agent_harness
+  | Missing_logical_agent of string
+  | Missing_referenced_harness of string
+```
+
+```ocaml
+val selected_agent_harness : t -> stage_agent option -> agent_harness option
+val readiness_gaps : t -> readiness_gap list
+val render_harness_command : Config.agent_harness -> string
+```
+
+These interfaces already exist and should remain the primary contracts. The Cursor work extends them by:
+- adding `cursor` as an allowed `kind`
+- adding Cursor-specific default command and readiness behavior
+- optionally extending runtime activity parsing for Cursor output
 
 ### Data Models
 
-#### Ordered Queue Entry
+**Runtime Settings Harness Entry**
+- Existing `agent_harness` record remains the primary data model.
+- Cursor uses the same fields as other Harnesses:
+  - `name`
+  - `kind = "cursor"`
+  - `command`
+  - `model`
+  - `reasoningEffort`
+  - `turnTimeoutMs`
+  - `readTimeoutMs`
+  - `stallTimeoutMs`
+  - `loop.enabled`
+  - `loop.command`
 
-Keep the existing queue-state shape conceptually centered on one identifier field, but change its meaning for the Compozy shortcut path:
+**Logical Agent Mapping**
+- Existing `logical_agent` model remains unchanged.
+- Cursor support is driven through `agents.<name>.harness = "cursor"` or another named Cursor Harness.
 
-- For GitHub and minibeads inputs, the stored identifier remains the canonical queue identifier as today.
-- For bare Compozy slug input, the stored identifier remains the original slug text.
-- Downstream canonical issue identity is resolved separately and never inferred from persisted queue state alone.
-
-#### Resolved Queue Entry
-
-Add an internal resolved queue representation used only after tracker selection:
-
-| Field | Type | Purpose |
-| --- | --- | --- |
-| `queue_identifier` | string | Raw or queue-state identifier shown to the operator |
-| `canonical_identifier` | string | Canonical tracker identifier used for lookup and dispatch |
-
-#### Compozy Normalization Rules
-
-When `tracker.kind = "compozy_tasks"`:
-
-- `example-feature` resolves to `compozy:example-feature`
-- `compozy:example-feature` remains a valid legacy canonical selector
-- mixed bare and canonical Compozy selectors in the same queue are rejected in MVP
-- task-step-like selectors such as `compozy:task_01` remain invalid at the **Compozy PRD Run** boundary
-
-When `tracker.kind != "compozy_tasks"`:
-
-- bare opaque tokens fail readiness with a guided tracker-mismatch message
-- existing GitHub and minibeads normalization rules remain unchanged
-
-#### Runtime State
-
-No new queue JSON fields are required. Existing `ordered_queue.entries[].issue_identifier` remains the serialized field, but for Compozy bare-slug queues it now contains the raw slug text. This preserves the approved queue-state behavior and keeps existing frontend/backend parsing compatible.
+**Runtime State Running Row**
+- Existing `running` model already carries:
+  - `harness_name`
+  - `harness_kind`
+  - `last_event`
+  - `last_message`
+  - `tokens`
+- No schema expansion is required for minimal Cursor support if live activity can fit the current normalized fields.
 
 ### API Endpoints
 
-No new HTTP endpoint is required.
+No new external HTTP API endpoints are required.
 
-Existing Runtime State endpoints continue to expose ordered queue state:
-
-| Method | Path | Change |
-| --- | --- | --- |
-| GET | `/api/v1/state` | Existing queue shape stays intact; Compozy bare-slug queues expose raw slug identifiers in queue entries. |
-| GET | `/api/v1/state/live` | Same shape as snapshot state. |
+Existing backend state endpoints and WebSocket/live-state surfaces continue to serve Runtime State snapshots. Cursor
+support changes the contents of existing running-task rows rather than adding new resources.
 
 ## Integration Points
 
-| Integration Point | Design |
-| --- | --- |
-| `main.ml` startup path | Parse the queue before config load, then resolve it after tracker selection for readiness and orchestration. |
-| `Issue_tracker.normalize_identifier` | Reuse the selected tracker hook as the canonical normalization boundary. |
-| `README.md` and CLI help | Update queue examples and mismatch guidance without changing other tracker documentation. |
-| Existing queue resume state | Preserve raw sequence matching for bare-slug queue runs. |
-| Existing canonical Compozy tests | Keep canonical `compozy:<task_name>` flows valid to avoid regression. |
+This design does not integrate with systems outside the codebase beyond the local Cursor CLI executable invoked by
+Symphony.
+
+The main external boundary is the local Cursor CLI command:
+- installation availability must be verified before dispatch
+- auth/status readiness must be checked through the Cursor CLI itself
+- `stream-json` output must be parsed defensively
+- loop support must validate the plugin-backed command path before dispatch when enabled
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
-| --- | --- | --- | --- |
-| `apps/backend/lib/ordered_queue.ml` | Modified | Current parser assumes canonical identifiers and duplicates are resolved immediately. | Add opaque bare-token support, tracker-aware resolution helpers, and resolved-duplicate checks. |
-| `apps/backend/lib/issue_tracker.ml` | Modified | Compozy normalization currently accepts canonical selectors only. | Allow Compozy bare-slug normalization after tracker selection while keeping GitHub/minibeads unchanged. |
-| `apps/backend/lib/runtime_readiness.ml` | Modified | Queue validation currently assumes parsed identifiers are already canonical. | Validate through resolved queue entries and emit guided mismatch remediation. |
-| `apps/backend/lib/orchestrator.ml` | Modified | Queue ordering and resume currently compare canonical identifiers directly. | Use resolved canonical identifiers for dispatch matching while preserving raw queue state for resume. |
-| `apps/backend/bin/main.ml` | Modified | Startup currently separates parse problems from readiness validation. | Keep structural parse failures early and route tracker-aware queue problems into readiness. |
-| `apps/backend/lib/cli_command.ml` | Modified | `--queue` help still describes generic issue identifiers only. | Document Compozy bare-slug shortcut scope. |
-| `README.md` | Modified | Current docs require `compozy:<task_name>` in selector-based flows. | Add `--queue` MVP shortcut examples and tracker-mismatch guidance. |
-| `apps/backend/test/test_backend.ml` | Modified | Existing tests cover canonical queue parsing and canonical queue resume. | Add bare-slug parser, readiness, orchestration, and resume coverage near existing queue tests. |
+|-----------|-------------|---------------------|-----------------|
+| `apps/backend/lib/config.ml` | modified | Core Harness parsing and readiness logic; high shared-module risk | Add Cursor kind/defaults, CLI-driven auth readiness, and loop readiness |
+| `apps/backend/lib/orchestrator.ml` | modified | Launch path and runtime activity parsing; high behavioral risk | Add Cursor command rendering if needed, Cursor activity parsing, and loop-safe behavior |
+| `apps/backend/lib/runtime_home.ml` | modified | Bootstrap default Runtime Contract; product-contract risk | Add Cursor example while preserving idempotent Bootstrap |
+| `apps/backend/lib/runtime_state.ml` | modified or unchanged | Likely schema reuse, but verify normalized activity suffices | Confirm no new fields are needed |
+| `apps/backend/lib/terminal_console_model.ml` | modified or unchanged | Running-row detail already includes Harness identity | Verify Cursor activity is readable without model changes |
+| `apps/frontend/src/RuntimeStateSnapshot.res` | modified or unchanged | Existing runtime snapshot may already be sufficient | Verify frontend accepts Cursor Harness rows without schema change |
+| `apps/frontend/src/Pages/Dashboard.res` | modified or unchanged | Dashboard may only need display validation | Confirm Harness identity renders correctly |
+| `apps/backend/test/test_backend.ml` | modified | Large shared suite; regression risk | Add targeted Cursor tests near existing Harness cases |
+| `CONTEXT.md` | modified | Domain source of truth; required by repo rules | Add Cursor Harness terminology and semantics |
+| `README.md` | modified | Operator-facing setup surface | Add supported Cursor examples |
+| `docs/adr/0021-agent-harness-runtime-settings.md` | modified | Existing architecture ADR needs amendment for new supported kind | Update supported Harness set and semantics |
 
 ## Testing Approach
 
 ### Unit Tests
 
-- `Ordered_queue.parse` accepts bare opaque tokens while still rejecting empty entries, URLs, and cross-repository references.
-- Resolved duplicate detection catches canonical collisions such as `20` and `#20`, `MB-020` and `mb-20`, and repeated bare Compozy slugs.
-- Compozy `normalize_identifier` accepts both `example-feature` and `compozy:example-feature`.
-- Mixed bare and canonical Compozy queue input is rejected in MVP.
-- Guided tracker-mismatch remediation is produced when bare Compozy slugs are used under GitHub or minibeads tracker modes.
-- Canonical Compozy queue validation remains unchanged.
+Focus areas:
+- `Config` parses `kind: "cursor"` and default Cursor command/loop behavior correctly.
+- `Config.selected_agent_harness` resolves Cursor through logical agents.
+- `Config.readiness_gaps` validates:
+  - selected-only Cursor install checks
+  - CLI-driven auth/status checks
+  - Cursor loop readiness when `loop.enabled` is true
+- `Orchestrator.render_harness_command` handles Cursor token replacement or provider-specific rendering correctly.
+- Cursor structured-output parsing normalizes `stream-json` into existing Runtime State activity fields.
+- Loop-disabled and loop-enabled Cursor prompts behave correctly.
+
+Mock and boundary strategy:
+- Use temporary settings files and fake shell commands as existing tests do for Claude/PI.
+- Use fake Cursor scripts that emit deterministic `stream-json` or status output.
+- Keep tests adjacent to current Harness coverage in `apps/backend/test/test_backend.ml`.
+
+Critical scenarios:
+- selected Cursor Harness with successful install/auth readiness
+- unselected Cursor Harness does not block readiness
+- loop-enabled Cursor Harness without plugin support fails readiness
+- loop-enabled Cursor Harness with plugin support prepends configured `loop.command`
+- Cursor `stream-json` parser ignores malformed lines and preserves raw-log fallback behavior
 
 ### Integration Tests
 
-- A Compozy bare-slug queue validates successfully without GitHub Project membership.
-- Orchestrator dispatches a Compozy bare-slug **Ordered Queue** only in the requested order.
-- Runtime State persists raw bare-slug queue identifiers during a Compozy queue run.
-- Restarting with the same bare-slug queue resumes queue progress.
-- Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run rather than resuming.
-- A bare-slug queue under a non-Compozy tracker reports a **Readiness Gap** and does not begin orchestration.
-- Existing canonical `compozy:<task_name>` queue tests continue to pass.
+Integration slices:
+- full config load with `harnesses.cursor`, `agents.<role>.harness`, and enabled stage routing
+- dispatch path that launches a fake Cursor command and updates Runtime State
+- bootstrapped settings content includes Cursor examples
+- Terminal Console / Runtime State JSON exposes Cursor `harness_name` and `harness_kind`
+
+Test data/setup:
+- temp Workspace Repository roots
+- fake `.symphony/agents/*.md` prompt files
+- fake Cursor binaries/scripts in PATH or explicit temp command paths
+- deterministic fake auth/status command responses
+
+Environment dependencies:
+- no real Cursor install required for tests
+- tests should not depend on user-local Cursor state
+- loop/plugin readiness must be simulated through fake command responses
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Add queue-resolution data types and helper functions in `Ordered_queue` - no dependencies.
-2. Update `Ordered_queue.parse` to accept opaque bare tokens while preserving current structural rejection rules - depends on step 1.
-3. Extend Compozy tracker normalization to accept bare slugs after tracker selection - depends on step 1.
-4. Route queue validation through resolved queue entries in `Runtime_readiness` - depends on steps 1 and 3.
-5. Update `main.ml` startup wiring so tracker-aware queue failures surface as readiness output - depends on steps 2 and 4.
-6. Refactor `Orchestrator` queue matching and ordering to use resolved canonical identifiers while persisting raw queue state - depends on steps 1, 3, and 4.
-7. Update CLI help and README examples for the Compozy shortcut - depends on steps 4 and 6.
-8. Add unit coverage for parse, resolution, and readiness cases - depends on steps 2 through 5.
-9. Add end-to-end orchestration and resume coverage for bare-slug queues - depends on steps 6 and 8.
-10. Run focused backend verification - depends on steps 1 through 9.
+1. Add Cursor kind/defaults in `Config` and update supported-kind validation - no dependencies
+2. Add Cursor selected-Harness install/auth readiness in `Config` - depends on step 1
+3. Add Cursor loop-readiness checks tied to `loop.enabled` / `loop.command` - depends on steps 1-2
+4. Add Cursor command rendering adjustments in `Orchestrator` if the standard token replacement is insufficient - depends on steps 1-2
+5. Add Cursor `stream-json` parsing and running-row activity updates - depends on step 4
+6. Add targeted backend tests for parsing, readiness, loop, rendering, and dispatch - depends on steps 1-5
+7. Update Bootstrap defaults, glossary, README, and project ADR docs - depends on steps 1-6
+8. Verify frontend/dashboard and Terminal Console behavior with Cursor runtime rows - depends on steps 5-7
 
 ### Technical Dependencies
 
-- Existing `Issue_tracker.normalize_identifier` contract remains the selected-tracker normalization boundary.
-- Existing **Runtime State** queue schema remains in place; no frontend schema migration is required for MVP.
-- Existing queue resume behavior in `Orchestrator` must be updated carefully because it currently assumes canonical identifier sequences.
-- Work stays inside the current backend module layout; no new package or directory is required.
+- A documented Cursor CLI command shape that works with stdin-fed non-interactive launch.
+- A documented Cursor CLI auth/status command usable for readiness probing.
+- A documented or validated `stream-json` event shape sufficient for normalized activity parsing.
+- A documented plugin-backed loop command path for Cursor when `loop.enabled` is true.
+- User-approved Bootstrap default change, which has already been provided in the clarification round.
 
 ## Monitoring and Observability
 
-- Startup readiness output should distinguish structural parse errors from tracker-aware queue mismatch errors.
-- Queue-related logs should include both the queue-state identifier and the resolved canonical identifier when a Compozy bare slug is resolved.
-- Ordered queue skipped or invalid-entry output should continue to show the operator-facing queue identifier.
-- Existing Runtime State queue projections remain the primary operator-visible queue status surface.
+Key metrics:
+- Cursor-selected readiness failure rate by requirement (`install`, `auth`, `loop`)
+- Cursor dispatch success rate
+- Cursor structured-output parse success rate
+- Cursor fallback-to-raw-log rate
+- Cursor loop-enabled dispatch success rate
+
+Log events and fields:
+- `harness_name=cursor`
+- `harness_kind=cursor`
+- Cursor readiness requirement identifiers
+- parsed Cursor last event and last message when structured output is available
+- loop-enabled readiness diagnostic details
+- raw stdout/stderr preservation path for troubleshooting
+
+Alerting and escalation:
+- repeated Cursor auth/readiness failures in dogfood environments
+- unexpected parse failure spikes after Cursor CLI upgrades
+- loop-enabled Cursor tasks consistently failing before first output
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- Decision: keep `Ordered_queue.parse` generic and move Compozy meaning behind post-settings queue resolution.  
-  Rationale: matches the selected tracker boundary and avoids Compozy-specific parser logic.  
-  Trade-off: queue validation becomes two-phase instead of parse-only.
+- **Decision:** Implement Cursor as a native Harness kind rather than a generic command shim.
+  - **Rationale:** Fits the accepted Runtime Contract and preserves provider-specific behavior in the right layer.
+  - **Trade-offs:** Adds complexity to shared backend modules.
+  - **Alternatives rejected:** PI-style compatibility-only path; broader generic refactor first.
 
-- Decision: preserve raw bare-slug text in queue state and resume keys.  
-  Rationale: keeps state aligned with what the operator typed and with the approved terminal-first workflow.  
-  Trade-off: equivalent raw and canonical selector forms no longer resume the same queue run.
+- **Decision:** Use Cursor CLI itself for auth/status readiness.
+  - **Rationale:** Matches the selected design choice and avoids weaker indirect heuristics as the main signal.
+  - **Trade-offs:** Couples readiness to a provider-owned CLI contract.
+  - **Alternatives rejected:** env/file-only auth detection; no preflight auth readiness.
 
-- Decision: emit guided bare-slug tracker mismatch as a **Readiness Gap**.  
-  Rationale: readiness has the selected tracker context and already owns startup blocking feedback.  
-  Trade-off: some invalid inputs now fail at readiness rather than parse time.
+- **Decision:** Treat `stream-json` as the canonical Cursor output path.
+  - **Rationale:** Gives Cursor a structured observability contract comparable to Claude where supported.
+  - **Trade-offs:** Requires provider-specific parser maintenance.
+  - **Alternatives rejected:** `json` only; raw-log-only V1.
 
-- Decision: add end-to-end orchestration coverage, including resume behavior for bare-slug queues.  
-  Rationale: the change touches parser, readiness, runtime state, and dispatch matching in one flow.  
-  Trade-off: broader test setup than a parser-only change.
+- **Decision:** Support Cursor loop entry through `loop.enabled` / `loop.command`.
+  - **Rationale:** Preserves the current Harness loop model and fits the plugin-backed Cursor path described by the user.
+  - **Trade-offs:** Requires new loop readiness checks beyond current Codex-only protection.
+  - **Alternatives rejected:** no loop support; Codex-style implicit loop parity.
+
+- **Decision:** Add Cursor to bootstrapped settings examples.
+  - **Rationale:** Matches the approved product posture and reduces Runtime Contract ambiguity for new operators.
+  - **Trade-offs:** Changes default examples in a repo area marked “ask first.”
+  - **Alternatives rejected:** docs-only support; defer Bootstrap changes.
 
 ### Known Risks
 
-- Raw queue state and resolved canonical identifiers may drift if resolution logic is duplicated.  
-  Mitigation: use one shared resolution helper from readiness and orchestration.
+- **stdin/non-TTY incompatibility**
+  - Likelihood: medium
+  - Mitigation: validate the documented non-interactive Cursor command shape early and add a provider-local renderer if
+    required.
 
-- Mixed-style Compozy queue input could confuse operators and complicate duplicate rules.  
-  Mitigation: reject mixed bare and canonical Compozy input in MVP.
+- **Cursor CLI contract drift**
+  - Likelihood: medium
+  - Mitigation: keep parsing defensive, preserve raw-log fallback, and isolate Cursor-specific readiness logic.
 
-- Preserving raw queue identifiers may surprise operators who expect bare and canonical restarts to resume the same queue.  
-  Mitigation: document the resume behavior explicitly and cover it with end-to-end tests.
+- **Loop false positives**
+  - Likelihood: medium
+  - Mitigation: add explicit readiness validation for loop-enabled Cursor Harnesses before dispatch instead of
+    inheriting Codex assumptions.
+
+- **Shared-module regression risk**
+  - Likelihood: high
+  - Mitigation: use targeted changes, add focused backend tests near existing Harness cases, and avoid refactoring
+    `test_backend.ml` structure.
+
+- **Bootstrap/example ambiguity between `--force` and non-`--force`**
+  - Likelihood: medium
+  - Mitigation: make the example posture explicit in docs and seeded settings rather than implying one safe default
+    without explanation.
 
 ## Architecture Decision Records
 
-- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving downstream canonical identifiers.
-- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
-- [ADR-003: Tracker-Aware Ordered Queue Resolution](adrs/adr-003.md) — Separates raw queue state from post-settings canonical resolution and preserves raw input for resume.
-- [ADR-004: Readiness-First Queue Diagnostics](adrs/adr-004.md) — Places guided tracker-mismatch feedback in startup readiness instead of parse-time or dispatch-time failures.
+- [ADR-001: Cursor Harness As A Bounded Multi-Harness Extension](adrs/adr-001.md) — Accepts `kind: "cursor"` as a
+  first-class `Agent Harness` while keeping scope bounded and reusable.
+- [ADR-002: Stable First-Class Cursor Harness Product Posture](adrs/adr-002.md) — Commits the PRD to stable
+  first-class support for Cursor across any `Logical Agent` role.
+- [ADR-003: Native Cursor Harness Technical Design](adrs/adr-003.md) — Chooses a native `cursor` Harness kind over a
+  compatibility shim or broader refactor.
+- [ADR-004: Cursor Output, Readiness, And Loop Contract](adrs/adr-004.md) — Sets `stream-json`, CLI-driven
+  readiness, explicit loop support, and dual command-posture handling as the core Cursor contract.
 
