@@ -5081,6 +5081,60 @@ let test_terminal_console_tui_ordered_queue_attention_states () =
   check_line_contains "attention state" lines "ATTENTION #7 Seven";
   check_line_contains "attention reason" lines "attention reason: Needs review"
 
+let test_terminal_console_tui_terminal_compozy_queue_omits_stale_step_progress () =
+  let progress run_id slug =
+    {
+      terminal_console_compozy_fixture with
+      run_id;
+      slug;
+      current_step = Some "task_01.md";
+      next_step = Some "task_02.md";
+      completed = 0;
+      failed = 0;
+      skipped = 0;
+      total = 6;
+    }
+  in
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "compozy:attention-run";
+            title = Some "Compozy PRD run: attention-run";
+            state = "attention";
+            skip_reason = Some "Reviewer handoff has not created a pull request.";
+          };
+          {
+            Runtime_state.issue_identifier = "compozy:failed-run";
+            title = Some "Compozy PRD run: failed-run";
+            state = "failed";
+            skip_reason = Some "Compozy Task Step task_06.md failed after 2 attempts.";
+          };
+        ];
+    }
+  in
+  let state =
+    Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:queue
+      ~compozy_progresses:
+        [
+          progress "compozy:attention-run" "attention-run";
+          progress "compozy:failed-run" "failed-run";
+        ]
+      ()
+  in
+  let lines = terminal_console_panel state "Queue" in
+  check_wrapped_text_contains "attention row keeps attention reason" lines
+    "ATTENTION compozy:attention-run Compozy PRD run: attention-run";
+  check_wrapped_text_contains "failed row keeps failure reason" lines "FAILED compozy:failed-run Compozy PRD run: failed-run";
+  check_wrapped_text_contains "attention reason retained" lines "attention reason: Reviewer handoff has not created a pull request.";
+  check_wrapped_text_contains "failure reason retained" lines
+    "failure reason: Compozy Task Step task_06.md failed after 2 attempts.";
+  Alcotest.(check bool) "terminal queue omits stale task-step detail" false
+    (contains_substring (String.concat " " lines) "Compozy Task Step: task_01.md -> next task_02.md");
+  Alcotest.(check bool) "terminal queue omits stale progress counters" false
+    (contains_substring (String.concat " " lines) "progress 0/6 completed, 0 failed, 0 skipped")
+
 let test_terminal_console_tui_queue_flags_current_compozy_task_step () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let queue =
@@ -15254,6 +15308,8 @@ let () =
             test_terminal_console_tui_ordered_queue_panel_states;
           Alcotest.test_case "renders Queue panel attention states" `Quick
             test_terminal_console_tui_ordered_queue_attention_states;
+          Alcotest.test_case "omits stale Compozy step progress for terminal Queue rows" `Quick
+            test_terminal_console_tui_terminal_compozy_queue_omits_stale_step_progress;
           Alcotest.test_case "flags current Compozy Task Step in Queue" `Quick
             test_terminal_console_tui_queue_flags_current_compozy_task_step;
           Alcotest.test_case "maps Compozy Task Steps per Queue and Tasks row" `Quick
