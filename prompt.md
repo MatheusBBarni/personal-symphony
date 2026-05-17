@@ -1,198 +1,243 @@
-/goal {"kind":"Stage Goal Context","issue_identifier":"compozy:queue-flag-compozy-tasks","title":"Compozy PRD run: queue-flag-compozy-tasks","description":null,"comments":[],"url":null,"current_project_status":"in_review","labels":[],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
+You are the Engineer agent for the Symphony Orchestrator Repository.
+
+You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
+
+Responsibilities:
+- Implement only the scoped issue.
+- Use CONTEXT.md terms and follow AGENTS.md.
+- Prefer existing module boundaries and tests over new abstractions.
+- Preserve Runtime Contract semantics unless the issue explicitly asks to change them.
+- Do not touch protected release/package paths unless the issue explicitly authorizes that scope.
+- Edit ReScript .res sources only; never commit generated .res.js files.
+- Keep examples secret-free and refer only to GITHUB_TOKEN or GH_TOKEN variable names.
+- Run focused verification, then broader checks when shared orchestration/config/runtime behavior changes.
+
+Stage Commit is enabled for this stage. Leave the worktree ready for a local commit boundary before review.
 
 ---
 
-You are the Reviewer agent for the Symphony Orchestrator Repository.
+Stage agent: engineer
 
-Review completed engineer work before it moves to Done.
+# Compozy Task Step
 
-Review focus:
-- Correctness, regressions, missing tests, readiness gaps, race conditions, and edge cases.
-- Compliance with CONTEXT.md terminology and AGENTS.md boundaries.
-- Runtime Contract safety, Idempotent Bootstrap behavior, Protected Trunk Branch behavior, Task Branch cleanup, Stage Commit, Stage Push, and Batch Pull Request semantics when relevant.
-- Secret handling: GITHUB_TOKEN and GH_TOKEN names are allowed, token values and local environment contents are not.
-- Frontend source hygiene: .res edits only, no committed generated .res.js files.
-- Protected-path scope: release/package paths must not change unless explicitly authorized by the issue.
+Run: compozy:ready-for-symphony-intake
+PRD directory: ready-for-symphony-intake
+Current task file: task_05.md
+Current task title: Expose intake eligibility in Runtime State and dashboard
 
-Run focused checks when practical. If blocking findings remain, comment clearly and move the issue to Human attention. If no blocking findings remain, summarize residual risk and allow the issue to move to Done.
+## Current Task (`task_05.md`)
+
+---
+status: in_progress
+title: "Expose intake eligibility in Runtime State and dashboard"
+type: frontend
+complexity: high
+dependencies:
+  - task_04
 
 ---
 
-Stage agent: reviewer
+# Task 05: Expose intake eligibility in Runtime State and dashboard
 
-# Compozy PRD Run Stage
+## Overview
+Expose first-admission eligibility and blocking reasons through Runtime State so operators can tell why a work item will start, is waiting, or will not start. This task must keep intake explanations tracker-neutral and additive to existing Runtime State snapshots rather than replacing lifecycle, queue, or Compozy progress projections.
 
-Run: compozy:queue-flag-compozy-tasks
-PRD directory: queue-flag-compozy-tasks
-Task step status: completed
-Completed task steps: 4/4
+<critical>
+- ALWAYS READ the PRD and TechSpec before starting
+- REFERENCE TECHSPEC for implementation details - do not duplicate here
+- FOCUS ON "WHAT" - describe what needs to be accomplished, not how
+- MINIMIZE CODE - show code only to illustrate current structure or problem areas
+- TESTS REQUIRED - every task MUST include tests in deliverables
+</critical>
 
-## Completed Compozy Task Steps
+<requirements>
+- R1 MUST add a Runtime State projection for first-admission eligibility keyed to tracker-visible work items.
+- R2 MUST surface tracker-neutral reasons for ready, not-ready, queue-blocked, or parse-blocked intake states without rewriting lifecycle semantics.
+- R3 MUST keep frontend state decoding and dashboard rendering compatible with existing Runtime State snapshots.
+- R4 MUST preserve Ordered Queue and Compozy progress views while adding intake-specific operator visibility.
+- R5 MUST include backend and frontend test coverage for state serialization, snapshot decoding, and dashboard rendering of intake eligibility.
+</requirements>
 
-- task_01.md: Add tracker-aware Ordered Queue resolution primitives
-- task_02.md: Wire readiness-first queue diagnostics for bare Compozy slugs
-- task_03.md: Refactor Ordered Queue orchestration to use raw state and resolved identifiers
-- task_04.md: Update queue shortcut docs and CLI help
+## Subtasks
+- [ ] 5.1 Add intake-eligibility projection fields to Runtime State serialization and live state output.
+- [ ] 5.2 Update frontend Runtime State decoding to understand the new intake-eligibility shape.
+- [ ] 5.3 Render tracker-neutral intake explanations in dashboard state views without collapsing existing lifecycle or queue status.
+- [ ] 5.4 Extend backend and frontend tests for state projection and UI rendering compatibility.
+
+## Implementation Details
+Reference the TechSpec "API Endpoints", "Runtime State Projection", and "Monitoring and Observability" sections. Keep this task focused on state projection and operator visibility; it should not change tracker semantics, queue policy, or run lifecycle ownership introduced by earlier tasks.
+
+### Relevant Files
+- `apps/backend/lib/runtime_state.ml` - Runtime State model and JSON projection that should gain intake-eligibility fields.
+- `apps/backend/lib/server.ml` - State API endpoints that must expose the new projection consistently.
+- `apps/frontend/src/RuntimeStateSnapshot.res` - Frontend decoder for Runtime State snapshots.
+- `apps/frontend/src/Pages/Dashboard.res` - Web Dashboard rendering of runtime status and tracker-facing explanations.
+- `apps/backend/test/test_backend.ml` - Backend state snapshot tests to extend with the new fields.
+
+### Dependent Files
+- `apps/backend/bin/terminal_console_runtime.ml` - Terminal Console consumers may reuse the new intake-eligibility messages.
+- `apps/backend/lib/terminal_console_model.ml` - Shared console projection may need the same intake-eligibility view as the dashboard.
+- `apps/frontend/src` - Other snapshot consumers may need decoding compatibility if they read shared Runtime State types.
+- `README.md` - Later docs task will explain new operator-facing intake diagnostics.
+
+### Related ADRs
+- [ADR-003: Put Symphony-ready status at the tracker boundary with exact-match first-admission semantics](adrs/adr-003.md) - Requires runtime visibility for first-admission rules.
+- [ADR-004: Read Compozy Symphony-ready status from _tasks.md while keeping task-step state separate](adrs/adr-004.md) - Intake visibility must not blur Compozy lifecycle and task-step semantics.
+
+## Deliverables
+- Runtime State projection for intake eligibility and blocking reasons.
+- Frontend decoding and dashboard rendering for tracker-neutral intake explanations.
+- Backend and frontend tests covering serialization, snapshot compatibility, and UI rendering.
+- Unit tests with 80%+ coverage **(REQUIRED)**
+- Integration tests for state and dashboard behavior **(REQUIRED)**
+
+## Tests
+- Unit tests:
+  - [ ] Runtime State JSON includes intake-eligibility fields for ready and non-ready tracker-visible items.
+  - [ ] Frontend Runtime State snapshot decoding accepts the new fields without breaking existing snapshots.
+  - [ ] Dashboard rendering distinguishes intake-blocked items from terminal or lifecycle-completed items.
+- Integration tests:
+  - [ ] Live state output shows queue-blocked or not-ready reasons while preserving Ordered Queue progress.
+  - [ ] Compozy runs with ready-status parse failures surface intake-specific explanations without replacing Compozy PRD Run progress rendering.
+- Test coverage target: >=80%
+- All tests must pass
+
+## Success Criteria
+- All tests passing
+- Test coverage >=80%
+- Operators can see why tracker-visible work is ready, blocked, or excluded from first admission.
+- Runtime State and dashboard consumers gain intake visibility without regressing existing queue or lifecycle views.
 
 ## PRD (`_prd.md`)
 
-# Queue Flag With Compozy Tasks
+# PRD: Ready-for-Symphony Intake
 
 ## Overview
 
-Personal Symphony should let a **Workspace Repository** operator queue known **Compozy PRD Runs** by passing bare slugs to `--queue` when `.symphony/settings.json` selects the Compozy-backed **Issue Tracker**.
+Symphony should automatically start newly eligible work from the selected **Issue Tracker** in a **Workspace Repository** without requiring the operator to restart the running process. The MVP uses a standard Symphony-ready status convention as the visible control for when work should begin.
 
-Today, the operator must translate a known run name such as `queue-flag-with-compozy-tasks` into the stable selector form `compozy:queue-flag-with-compozy-tasks`. The proposed product change shortens that step for ad hoc local terminal use while preserving the current **Ordered Queue** contract, selected-tracker validation rules, and canonical internal identifiers.
-
-The value is simple: make a frequent operator command faster and more natural without broadening the product into a general selector redesign.
+This feature is for self-hosting engineers and small teams who keep Symphony running on a VPS or other long-lived environment. It is valuable because it removes restart friction, makes start timing predictable, and gives GitHub-backed and Compozy-backed workflows one shared product model.
 
 ## Goals
 
-- Reduce the command length and cognitive overhead for queuing known **Compozy PRD Runs** from the terminal.
-- Preserve the current meaning of **Ordered Queue** and keep queue validation aligned with the selected **Issue Tracker**.
-- Make the Compozy-backed queue experience feel native to `.compozy/tasks/<task_name>/` naming rather than requiring manual selector translation.
-- Keep existing GitHub, minibeads, and canonical Compozy queue behavior stable.
-- Provide clear feedback when an operator tries to use bare Compozy slugs while another tracker mode is selected.
+- Let Symphony start newly eligible work within one polling interval without restart.
+- Make tracker status the primary user-visible control for when work starts.
+- Give GitHub-backed and Compozy-backed workflows one consistent Symphony-ready concept.
+- Preserve confidence in existing **Task Branch**, **Agent Worktree**, stage, retry, and **Ordered Queue** behavior.
+- Keep “no ready work yet” as valid **Orchestration Idle** state rather than a failure condition.
 
 ## User Stories
 
-- As a solo operator using a Compozy-backed **Workspace Repository**, I want to type known run slugs directly into `--queue` so that I can start an ad hoc run with less friction.
-- As a solo operator who already recognizes `.compozy/tasks/<task_name>/` names, I want the queue command to match those names so that I do not need to mentally translate them into another format.
-- As a solo operator working in the terminal, I want queue input errors to explain tracker mismatch clearly so that I can correct the command quickly.
-- As a maintainer of existing Symphony workflows, I want this improvement to leave other tracker modes and existing canonical selectors unchanged so that current usage does not regress.
+- As a solo self-hosting engineer, I want Symphony to notice newly ready work automatically so that I can leave it running without babysitting restarts.
+- As a small-team operator, I want one clear Symphony-ready status so that everyone can predict when work will start.
+- As a GitHub-backed operator, I want tracker status to control intake so that I do not need a second readiness mechanism.
+- As a Compozy-backed operator, I want local tracked work to follow the same Symphony-ready concept so that the product feels consistent across trackers.
+- As an operator who uses `--queue` occasionally, I want routine work to start from status alone while keeping queue-based ordering for exceptions.
 
 ## Core Features
 
-- **Compozy bare-slug queue entry**  
-  When the selected **Issue Tracker** is the Compozy-backed tracker, `--queue` accepts a comma-separated list of bare **Compozy PRD Run** slugs.
-
-- **Tracker-aware eligibility**  
-  The shorter queue format is only available when the active tracker mode is Compozy-backed, keeping the user-facing rule aligned with the selected **Issue Tracker**.
-
-- **Guided mismatch feedback**  
-  If an operator uses bare Compozy slugs while another tracker mode is selected, Symphony explains the mismatch and points the operator to the correct selector style.
-
-- **Fail-fast queue acceptance**  
-  The queue is accepted only when every supplied slug is valid for the active Compozy-backed tracker context and each referenced run is eligible for dispatch.
-
-- **Compatibility preservation**  
-  Existing canonical Compozy selectors and non-Compozy queue flows remain supported with their current behavior.
-
-- **Documentation refresh**  
-  User-facing examples for `--queue` and Compozy-backed tracking explain the shorter input path and its boundaries.
+| # | Feature | Priority | Product Requirement |
+| --- | --- | --- | --- |
+| F1 | Standard Symphony-ready status | Critical | Symphony defines one standard ready status concept that means work is eligible to start automatically. |
+| F2 | Cross-tracker consistency | Critical | The same Symphony-ready concept applies to both the **GitHub Tracker** and the Compozy-backed **Local Issue Tracker**. |
+| F3 | Automatic start without restart | Critical | When a work item reaches the Symphony-ready status and capacity is available, Symphony starts it on a later polling cycle without restart. |
+| F4 | Healthy idle behavior | Critical | When no work item is in the Symphony-ready status, Symphony remains in valid **Orchestration Idle** state. |
+| F5 | Status-first operator control | High | Operators use tracker status as the main visible control for start timing instead of separate readiness markers. |
+| F6 | Queue compatibility | High | `--queue` remains available for exceptional ordering and does not disappear from the product model. |
+| F7 | Start-behavior visibility | High | Runtime feedback explains why a work item will start, is waiting, or will not start even when operators believe it is ready. |
 
 ## User Experience
 
-The primary journey is an ad hoc local terminal flow.
+A typical operator keeps Symphony running in a **Workspace Repository** while planning and refining work in the selected tracker. When a work item reaches the Symphony-ready status, the operator does not need to restart the process or rebuild routine intake commands. Symphony notices the newly eligible item on a later poll and starts work if capacity and normal dispatch rules allow it.
 
-1. The operator works in a **Workspace Repository** that already uses the Compozy-backed **Issue Tracker**.
-2. They know the names of one or more **Compozy PRD Runs** from `.compozy/tasks/<task_name>/`.
-3. They run a short queue command using those slugs separated by commas.
-4. Symphony evaluates the request in the context of the active tracker mode.
-5. If the input is valid, the **Ordered Queue** starts with the same queue-order behavior operators already expect.
-6. If the input is invalid, Symphony stops early and explains the issue in language that helps the operator recover quickly.
+For day-to-day use, the core experience is predictability. Operators should be able to look at tracker status and understand whether Symphony will pick something up soon, whether it is intentionally idle, or whether another rule is holding work back. This matters most for always-on usage, where the product should feel like a dependable intake loop rather than a command that must be re-triggered manually.
 
-The UX priority is speed and clarity for a known command, not discoverability through a new interface. Documentation and CLI messaging should make the boundary obvious: bare slugs are a Compozy-backed queue shortcut, not a universal selector format.
-
-Accessibility and usability considerations:
-
-- Error feedback should be short, explicit, and readable in a terminal context.
-- Queue input rules should be easy to understand from CLI help and README examples.
-- Operators should not need to inspect internals to understand why a bare slug was rejected.
+For exceptional cases, operators can still use explicit queue ordering. The MVP should make routine work feel automatic while preserving deliberate control for special sequencing needs.
 
 ## High-Level Technical Constraints
 
-- The feature must remain rooted in the **Workspace Repository** runtime model and selected **Issue Tracker** semantics.
-- The product must preserve the existing **Ordered Queue** behavior around order, readiness validation, and queue resume expectations.
-- The change must not weaken existing compatibility for GitHub or minibeads tracker modes.
-- Queue validation must continue to protect operators from starting a run with invalid or ineligible queue entries.
-- User-facing documentation must avoid secret values and preserve existing Runtime Contract boundaries.
+- Preserve one selected **Issue Tracker** per **Workspace Repository**.
+- Preserve existing **Task Branch**, **Agent Worktree**, stage, retry, and completion behavior after work starts.
+- Preserve the distinction between status-based eligibility and queue-based ordering.
+- Keep GitHub-backed and Compozy-backed workflows aligned under the same product language.
+- Do not require operators to maintain a separate readiness marker for routine intake.
 
-## Non-Goals (Out of Scope)
+## Non-Goals
 
-- Simplifying selector input for GitHub or minibeads tracker modes.
-- Redesigning selector behavior across all selector-based flows.
-- Changing **Task Branch**, retry, dispatch, completion, or **Runtime State** semantics.
-- Adding partial-success queue behavior for invalid mixed input.
-- Introducing a new UI surface for building queues.
-- Expanding MVP scope beyond `--queue` to other operator commands.
+- Replacing `--queue` with a fully automatic prioritization system.
+- Supporting multiple trackers at the same time in one **Workspace Repository**.
+- Adding a second explicit readiness marker beside tracker status.
+- Introducing dynamic prioritization, scheduling policies, or auto-ordering in the MVP.
+- Changing in-flight work behavior based on new status edits after work has already started.
+- Building a broader dashboard control plane as part of this MVP.
 
 ## Phased Rollout Plan
 
 ### MVP (Phase 1)
 
-- Support bare Compozy slugs in `--queue` for the Compozy-backed **Issue Tracker**.
-- Keep the MVP focused on ad hoc local terminal use.
-- Provide guided mismatch feedback when the wrong tracker mode is active.
-- Preserve current behavior for all existing non-MVP queue inputs.
+- Define a standard Symphony-ready status concept.
+- Use tracker status as the main visible control for automatic start.
+- Start newly eligible work within one polling interval without restart.
+- Treat no ready work as valid **Orchestration Idle** state.
+- Preserve `--queue` for exceptional ordering.
 
-Success criteria to proceed:
-
-- Operators can queue known **Compozy PRD Runs** with shorter commands.
-- Existing queue behavior remains stable for current users.
-- Documentation clearly explains when the shortcut does and does not apply.
+Success criteria: operators can leave Symphony running and see newly ready work start automatically without restart.
 
 ### Phase 2
 
-- Evaluate whether the same ergonomics should apply to other selector-based Compozy flows.
-- Refine error guidance based on real operator confusion patterns.
-- Improve documentation examples for mixed Symphony environments with different tracker kinds.
+- Improve operator-facing explanations for why a work item is waiting or not dispatchable.
+- Add clearer project guidance for adopting the Symphony-ready convention across trackers.
+- Improve confidence for teams mixing routine automatic intake with occasional queue-based ordering.
 
-Success criteria to proceed:
-
-- Real usage shows that operators want the same shorthand beyond `--queue`.
-- Support questions or dogfood feedback indicate recurring confusion worth smoothing.
+Success criteria: operators report that start behavior is predictable from tracker status alone.
 
 ### Phase 3
 
-- Consider a broader product decision on whether selector ergonomics should become more uniform across Compozy-backed flows.
-- Reassess whether the product should offer saved or previewable queue inputs for repeat use.
+- Add product guidance and reporting around intake quality, routine throughput, and exceptions.
+- Explore higher-level workflow improvements that build on the status-driven intake model without collapsing it into a hidden queue system.
 
-Long-term success criteria:
-
-- Selector ergonomics feel consistent where consistency adds value, without weakening tracker-specific clarity.
+Success criteria: Symphony-ready status becomes the default mental model for routine intake across supported trackers.
 
 ## Success Metrics
 
-- Queue command brevity for Compozy-backed ad hoc runs improves by at least 15% for multi-run commands.
-- Operators can successfully queue known **Compozy PRD Runs** using bare slugs in the primary local terminal flow.
-- Queue-entry attempts involving bare slugs fail with guided mismatch feedback when the wrong tracker mode is active.
-- Existing non-Compozy queue flows show no user-facing regression.
-- Documentation examples for Compozy-backed queue usage remain accurate and easy to follow.
+| Metric | Target |
+| --- | --- |
+| Ready-to-start latency | 90% of newly eligible work starts within one polling interval when capacity is available |
+| Restart avoidance | 95% reduction in restart-required admissions for routine work |
+| Routine queue avoidance | Most routine intake no longer requires `--queue`, while exceptions still can use it |
+| Predictability | Operators can correctly predict start behavior from tracker status in dogfood validation |
+| False-positive starts | Fewer than 1 unintended start per 100 Symphony-ready work items |
 
 ## Risks and Mitigations
 
-- **Risk: Users assume bare slugs should work everywhere.**  
-  Mitigation: Make the Compozy-only boundary explicit in CLI help, README examples, and error messages.
-
-- **Risk: The feature feels too small to justify product attention.**  
-  Mitigation: Keep the PRD tightly scoped and tie success directly to a high-frequency operator workflow.
-
-- **Risk: Operators remain unsure which queue syntax to use in multi-tracker contexts.**  
-  Mitigation: Use guided mismatch feedback that explains the active tracker context and the expected input style.
-
-- **Risk: Future requests expand scope prematurely into a larger selector redesign.**  
-  Mitigation: Preserve the MVP narrative as a focused queue shortcut and defer broader selector consistency work to later phases.
+| Risk | Mitigation |
+| --- | --- |
+| Teams resist adopting a Symphony-ready status convention | Allow the product concept to stay stable while providing project-level compatibility guidance |
+| Operators expect status to control ordering as well as eligibility | Keep `--queue` as a distinct concept and explain that status controls start eligibility, not sequence |
+| Mixed tracker habits create confusion about what “ready” means | Use one shared Symphony-ready product concept across trackers |
+| Operators lose trust if a ready-looking item does not start | Improve runtime explanations for waiting, blocking, and non-dispatchable cases |
+| Teams overuse the ready status and flood intake | Keep routine intake simple and rely on normal capacity limits plus queue controls for exceptional cases |
 
 ## Architecture Decision Records
 
-- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving canonical internal identifiers.
-- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
+- [ADR-001: Add explicit tracker-driven ready-for-symphony admission](./adrs/adr-001.md) — Initial idea-phase marker-based admission direction, later superseded.
+- [ADR-002: Use a standard Symphony-ready status convention across trackers](./adrs/adr-002.md) — The PRD decision: tracker status becomes the primary intake control.
 
 ## Open Questions
 
-- Should bare Compozy slugs remain `--queue`-only after MVP, or later extend to other selector-based flows?
-- What documentation example set best prevents confusion for operators who switch between Compozy-backed and non-Compozy tracker modes?
+- What exact user-facing status wording should Symphony standardize on for the ready state?
+- How should Runtime State explain cases where a Symphony-ready item is still not dispatchable because of other existing rules?
+- How much project-level compatibility should the MVP allow before the cross-tracker product story becomes too weak?
 
 ## TechSpec (`_techspec.md`)
 
-# Queue Flag With Compozy Tasks TechSpec
+# Ready-for-Symphony Intake
 
 ## Executive Summary
 
-Implement the PRD by keeping `Ordered_queue.parse` tracker-agnostic, then adding a shared post-settings queue-resolution step that interprets bare Compozy slugs only when `.symphony/settings.json` selects `tracker.kind = "compozy_tasks"`. The queue keeps the operator-facing identifier text for state and resume, while readiness, lookup, and dispatch operate on ephemeral canonical identifiers.
+This TechSpec adds a tracker-owned Symphony-ready status rule for first admission into orchestration without changing the existing polling loop, **Task Branch**, **Agent Worktree**, stage routing, retry flow, or **Ordered Queue** model. The core design extends the selected `Issue_tracker` boundary with a first-admission decision separate from the existing active and terminal status predicates. GitHub uses an exact configured ready status for first admission. Compozy reads a run-level ready status from `_tasks.md` while keeping `task_NN.md` frontmatter and **Compozy PRD Run Lifecycle** in their current roles.
 
-The primary trade-off is deliberate: preserving raw bare slugs in queue state makes the shortcut feel native and keeps readiness messages close to what the operator typed, but it means queue resume stays input-style-sensitive. Restarting with `example-feature` is not the same queue run as restarting with `compozy:example-feature`.
+The primary trade-off is deliberate: this design adds a small new tracker contract and a new runtime-state projection instead of reusing the broader `activeStates` set or filtering ad hoc in `Orchestrator`. That costs some interface churn, but it preserves boundary integrity, keeps queue semantics stable, and avoids breaking post-admission lifecycle behavior just to enforce a narrow first-admission rule.
 
 ## System Architecture
 
@@ -200,201 +245,246 @@ The primary trade-off is deliberate: preserving raw bare slugs in queue state ma
 
 | Component | Responsibility | Boundary |
 | --- | --- | --- |
-| `Ordered_queue` | Parse structurally valid queue tokens and resolve them against the selected tracker after config load. | Must stay tracker-agnostic at parse time. |
-| `Issue_tracker` | Normalize tracker-specific identifiers and validate dispatchability. | Compozy adapter gains bare-slug normalization support; GitHub and minibeads behavior stays stable. |
-| `Runtime_readiness` | Surface queue mismatch and invalid-entry feedback as **Readiness Gaps** before orchestration starts. | Owns startup reporting, not dispatch-time recovery. |
-| `Orchestrator` | Use resolved canonical identifiers for queue ordering, matching, and dispatch while persisting raw queue identifiers in queue state. | Must preserve current **Ordered Queue** semantics and resume behavior. |
-| `Runtime_state` | Keep the existing queue JSON shape while allowing Compozy bare-slug queue entries to appear as typed by the operator. | No new queue fields in MVP. |
-| Docs / CLI help | Explain the Compozy-only shortcut and guided mismatch behavior. | Must not imply a global selector redesign. |
+| `Config` | Parse the shared Symphony-ready status setting and preserve existing tracker, project, and stage settings. | Must not break current GitHub or Compozy Runtime Settings loading. |
+| `Issue_tracker` | Own first-admission eligibility at the selected tracker boundary. | `Orchestrator` should not implement tracker-specific ready-status logic itself. |
+| `Github_tracker` | Read GitHub Project status, determine exact ready-status matches for first admission, and continue exposing tracker-visible issues. | Must preserve current GraphQL shape and status-field behavior. |
+| `Compozy_tasks_tracker` | Parse `_tasks.md` run-level readiness, keep `task_NN.md` as task-step execution truth, and expose PRD-run eligibility inputs. | Must not replace task-step frontmatter or lifecycle metadata. |
+| `Compozy_lifecycle` | Continue owning run-level execution and PR-readiness state after admission. | Must stay distinct from `_tasks.md` intake status. |
+| `Runtime_readiness` / `Runtime_policy` | Allow startup with no ready work and keep structural readiness failures only. | “Nothing ready” is valid **Orchestration Idle**, not a readiness block. |
+| `Orchestrator` | Poll tracker-visible issues, use tracker-owned first-admission decisions for dispatch, and keep queue and stage behavior intact. | Must not become the new source of tracker semantics. |
+| `Runtime_state` / UI | Expose intake-eligibility explanations without changing the meaning of tracker status, queue state, or lifecycle state. | Frontend should render snapshot fields, not infer intake rules. |
 
 Data flow:
 
-1. `parse_ordered_queue_arg` builds a queue from structurally valid raw tokens.
-2. Runtime startup loads `.symphony/settings.json` and selects the active tracker.
-3. A shared queue-resolution helper uses `tracker.normalize_identifier` to resolve each entry into a canonical identifier or a readiness error.
-4. `Runtime_readiness` reports tracker mismatch, mixed-style Compozy input, duplicate resolved identifiers, and undispatchable runs as **Readiness Gaps**.
-5. `Orchestrator` uses resolved canonical identifiers for lookup and ordering, while persisted queue state keeps raw queue identifiers.
-6. Queue resume compares the raw queue sequence, not the resolved canonical sequence.
+1. Runtime loads `settings.json` and resolves the selected tracker plus the effective Symphony-ready status.
+2. `Runtime_readiness` validates structure only: tracker config, GitHub connectivity, Compozy root and parseability.
+3. The selected tracker fetches tracker-visible issues or runs.
+4. The tracker adapter computes first-admission eligibility for each visible work item.
+5. `Orchestrator` filters dispatch by tracker eligibility, running state, retry timing, stage capacity, and optional **Ordered Queue** membership.
+6. `Runtime_state` projects candidate visibility plus intake explanations for terminal and dashboard consumers.
+7. Existing post-admission lifecycle, retry, and completion logic continues unchanged.
 
 ## Implementation Design
 
 ### Core Interfaces
 
-Actual implementation is OCaml. The Go structs below are compact schema sketches for the key boundary.
-
 ```go
-type QueueEntry struct {
-    QueueIdentifier string
+type AdmissionDecision struct {
+    Eligible bool
+    Reason   string
 }
 
-type ResolvedQueueEntry struct {
-    QueueIdentifier     string
-    CanonicalIdentifier string
+type Tracker interface {
+    FetchCandidates() ([]Issue, error)
+    FirstAdmission(issue Issue) AdmissionDecision
+    IsActive(status string) bool
+    IsTerminal(status string) bool
 }
 ```
 
 ```go
-type QueueResolver interface {
-    Resolve(queue []QueueEntry) ([]ResolvedQueueEntry, error)
+type CompozyReadySummary struct {
+    ReadyStatus string
+    Path        string
+}
+
+type IntakeEvaluation struct {
+    IssueIdentifier string
+    Eligible        bool
+    Reason          string
 }
 ```
 
 ### Data Models
 
-#### Ordered Queue Entry
+#### Runtime Settings
 
-Keep the existing queue-state shape conceptually centered on one identifier field, but change its meaning for the Compozy shortcut path:
+Add a dedicated ready-status field to the shared tracker-facing project settings.
 
-- For GitHub and minibeads inputs, the stored identifier remains the canonical queue identifier as today.
-- For bare Compozy slug input, the stored identifier remains the original slug text.
-- Downstream canonical issue identity is resolved separately and never inferred from persisted queue state alone.
+- Proposed effective config field: `project.readyStatus`
+- Type: `string`
+- Scope: selected tracker intake semantics
+- Purpose: exact-match first-admission status for GitHub and expected ready value for Compozy `_tasks.md`
+- Assumption for V1 draft: default effective value is `Ready for Symphony` until product wording is finalized
 
-#### Resolved Queue Entry
+This field is separate from:
 
-Add an internal resolved queue representation used only after tracker selection:
+- `project.activeStates`: broader active or visible lifecycle states
+- `project.terminalStates`: terminal lifecycle states
+- `project.startStatus`, `reviewStatus`, `retryStatus`: stage transition targets
 
-| Field | Type | Purpose |
-| --- | --- | --- |
-| `queue_identifier` | string | Raw or queue-state identifier shown to the operator |
-| `canonical_identifier` | string | Canonical tracker identifier used for lookup and dispatch |
+#### Tracker Admission Decision
 
-#### Compozy Normalization Rules
+Add a tracker-bound first-admission evaluation to avoid overloading `is_active`.
 
-When `tracker.kind = "compozy_tasks"`:
+- `eligible: bool`
+- `reason: string`
+- Responsibility: explain exact first-admission result for one tracker-visible issue or run
 
-- `example-feature` resolves to `compozy:example-feature`
-- `compozy:example-feature` remains a valid legacy canonical selector
-- mixed bare and canonical Compozy selectors in the same queue are rejected in MVP
-- task-step-like selectors such as `compozy:task_01` remain invalid at the **Compozy PRD Run** boundary
+#### Compozy Ready Summary
 
-When `tracker.kind != "compozy_tasks"`:
+Add a minimal parser for `.compozy/tasks/<slug>/_tasks.md`.
 
-- bare opaque tokens fail readiness with a guided tracker-mismatch message
-- existing GitHub and minibeads normalization rules remain unchanged
+- Source of truth: run-level intake status only
+- Expected content: one run-level ready-status summary that can be compared to `project.readyStatus`
+- Non-goals: task-step execution status, retry counters, failure metadata, PR-readiness metadata
 
-#### Runtime State
+#### Runtime State Projection
 
-No new queue JSON fields are required. Existing `ordered_queue.entries[].issue_identifier` remains the serialized field, but for Compozy bare-slug queues it now contains the raw slug text. This preserves the approved queue-state behavior and keeps existing frontend/backend parsing compatible.
+Add an optional intake-evaluation projection to `Runtime_state`.
+
+- `issue_identifier: string`
+- `eligible: bool`
+- `reason: string option`
+
+This keeps intake visibility separate from:
+
+- `issues`: tracker-visible work items
+- `ordered_queue`: queue state
+- `compozy_progress`: Compozy lifecycle and task-step progress
+- `issue_errors`: execution failures
 
 ### API Endpoints
 
 No new HTTP endpoint is required.
 
-Existing Runtime State endpoints continue to expose ordered queue state:
+Existing state endpoints should expose the new intake-evaluation projection:
 
 | Method | Path | Change |
 | --- | --- | --- |
-| GET | `/api/v1/state` | Existing queue shape stays intact; Compozy bare-slug queues expose raw slug identifiers in queue entries. |
-| GET | `/api/v1/state/live` | Same shape as snapshot state. |
+| GET | `/api/v1/state` | Add optional intake-evaluation array keyed by issue identifier. |
+| GET | `/api/v1/state/live` | Stream the same additional intake-evaluation fields. |
 
 ## Integration Points
 
 | Integration Point | Design |
 | --- | --- |
-| `main.ml` startup path | Parse the queue before config load, then resolve it after tracker selection for readiness and orchestration. |
-| `Issue_tracker.normalize_identifier` | Reuse the selected tracker hook as the canonical normalization boundary. |
-| `README.md` and CLI help | Update queue examples and mismatch guidance without changing other tracker documentation. |
-| Existing queue resume state | Preserve raw sequence matching for bare-slug queue runs. |
-| Existing canonical Compozy tests | Keep canonical `compozy:<task_name>` flows valid to avoid regression. |
+| GitHub GraphQL Project status | Continue using the configured single-select status field and compare its value to `project.readyStatus` for first admission. |
+| Compozy `_tasks.md` | Add a narrow run-level parser for the ready status without changing `task_NN.md` parsing. |
+| Existing queue validation | Queue entries remain subject to tracker first-admission eligibility before dispatch. |
+| Existing stage routing | Post-admission stage behavior continues to use current transition and lifecycle semantics. |
+| README and `CONTEXT.md` | Document **Symphony-ready Status** and its distinction from ordering and lifecycle state. |
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
 | --- | --- | --- | --- |
-| `apps/backend/lib/ordered_queue.ml` | Modified | Current parser assumes canonical identifiers and duplicates are resolved immediately. | Add opaque bare-token support, tracker-aware resolution helpers, and resolved-duplicate checks. |
-| `apps/backend/lib/issue_tracker.ml` | Modified | Compozy normalization currently accepts canonical selectors only. | Allow Compozy bare-slug normalization after tracker selection while keeping GitHub/minibeads unchanged. |
-| `apps/backend/lib/runtime_readiness.ml` | Modified | Queue validation currently assumes parsed identifiers are already canonical. | Validate through resolved queue entries and emit guided mismatch remediation. |
-| `apps/backend/lib/orchestrator.ml` | Modified | Queue ordering and resume currently compare canonical identifiers directly. | Use resolved canonical identifiers for dispatch matching while preserving raw queue state for resume. |
-| `apps/backend/bin/main.ml` | Modified | Startup currently separates parse problems from readiness validation. | Keep structural parse failures early and route tracker-aware queue problems into readiness. |
-| `apps/backend/lib/cli_command.ml` | Modified | `--queue` help still describes generic issue identifiers only. | Document Compozy bare-slug shortcut scope. |
-| `README.md` | Modified | Current docs require `compozy:<task_name>` in selector-based flows. | Add `--queue` MVP shortcut examples and tracker-mismatch guidance. |
-| `apps/backend/test/test_backend.ml` | Modified | Existing tests cover canonical queue parsing and canonical queue resume. | Add bare-slug parser, readiness, orchestration, and resume coverage near existing queue tests. |
+| `apps/backend/lib/config.ml` | modified | Add ready-status parsing and defaults; medium risk because config changes affect all tracker modes. | Add field parsing, validation, and tests. |
+| `apps/backend/lib/issue_tracker.ml` | modified | Extend tracker contract with first-admission evaluation; medium risk because all adapters depend on this seam. | Add admission-decision type and adapter implementations. |
+| `apps/backend/lib/github_tracker.ml` | modified | Add exact-match ready-status evaluation while preserving visible issue discovery; medium risk due to GitHub project-status assumptions. | Implement GitHub first-admission logic and tests. |
+| `apps/backend/lib/compozy_tasks_tracker.ml` | modified | Parse `_tasks.md` ready status and expose run-level intake inputs; medium risk due to new file parsing path. | Add parser, deterministic errors, and tests. |
+| `apps/backend/lib/compozy_lifecycle.ml` | modified | Keep lifecycle distinct from intake status and ensure reconciliation does not overwrite intake meaning; low to medium risk. | Update derivation or reconciliation only where needed. |
+| `apps/backend/lib/runtime_readiness.ml` | modified | Stop treating “no runnable or ready work” as a readiness gap; high semantic risk because startup behavior changes. | Separate structural gaps from empty-idle state. |
+| `apps/backend/lib/runtime_policy.ml` | modified | Preserve orchestrator start when there are zero ready items; low risk if readiness gaps are corrected upstream. | Keep policy aligned with new readiness semantics. |
+| `apps/backend/lib/orchestrator.ml` | modified | Filter first admission through tracker eligibility while keeping queue and post-admission behavior stable; high risk because dispatch semantics live here. | Use tracker admission decisions in dispatch and state projection. |
+| `apps/backend/lib/runtime_state.ml` | modified | Add intake-evaluation projection; medium risk due to API contract changes. | Extend JSON model and snapshot tests. |
+| `apps/frontend/src/RuntimeStateSnapshot.res` | modified | Decode new intake-evaluation fields; low to medium risk. | Extend snapshot parser. |
+| `apps/frontend/src/Pages/Dashboard.res` | modified | Render intake explanations without overloading lifecycle wording; low to medium risk. | Add tracker-neutral UI copy. |
+| `apps/backend/test/test_backend.ml` | modified | Most behavior changes concentrate here; low structural risk, high verification importance. | Add focused unit and integration coverage. |
+| `README.md` / `CONTEXT.md` / `docs/adr/0024-compozy-prd-run-lifecycle-semantics.md` | modified | Product semantics and Compozy lifecycle wording must stay coherent; medium documentation risk. | Update docs and ADR wording where semantics changed. |
 
 ## Testing Approach
 
 ### Unit Tests
 
-- `Ordered_queue.parse` accepts bare opaque tokens while still rejecting empty entries, URLs, and cross-repository references.
-- Resolved duplicate detection catches canonical collisions such as `20` and `#20`, `MB-020` and `mb-20`, and repeated bare Compozy slugs.
-- Compozy `normalize_identifier` accepts both `example-feature` and `compozy:example-feature`.
-- Mixed bare and canonical Compozy queue input is rejected in MVP.
-- Guided tracker-mismatch remediation is produced when bare Compozy slugs are used under GitHub or minibeads tracker modes.
-- Canonical Compozy queue validation remains unchanged.
+- Config parsing accepts `project.readyStatus` and preserves existing defaults for unrelated fields.
+- GitHub admission returns eligible only when project status exactly matches the configured ready status.
+- GitHub visible-issue discovery still preserves terminal or already-managed visibility needed for ongoing lifecycle.
+- Compozy `_tasks.md` parsing returns a deterministic ready-status summary or deterministic parse failure.
+- Compozy first-admission logic requires both `_tasks.md` ready match and existing runnable-run conditions.
+- Queue validation rejects first-admission attempts for non-ready items even when listed in `--queue`.
+- Runtime readiness does not emit a gap when the tracker is structurally valid but nothing is ready.
 
 ### Integration Tests
 
-- A Compozy bare-slug queue validates successfully without GitHub Project membership.
-- Orchestrator dispatches a Compozy bare-slug **Ordered Queue** only in the requested order.
-- Runtime State persists raw bare-slug queue identifiers during a Compozy queue run.
-- Restarting with the same bare-slug queue resumes queue progress.
-- Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run rather than resuming.
-- A bare-slug queue under a non-Compozy tracker reports a **Readiness Gap** and does not begin orchestration.
-- Existing canonical `compozy:<task_name>` queue tests continue to pass.
+- Startup with valid GitHub settings and zero ready issues enters **Orchestration Idle** rather than readiness-only mode.
+- Startup with valid Compozy settings and zero ready runs enters **Orchestration Idle** rather than readiness-only mode.
+- A GitHub issue moving into the configured ready status is dispatched on a later poll without restart.
+- A Compozy run whose `_tasks.md` changes to the configured ready status is dispatched on a later poll without restart.
+- A queued GitHub or Compozy item that is not ready remains pending and does not dispatch.
+- Runtime State JSON exposes intake evaluations and frontend snapshot decoding remains compatible.
+- Existing Compozy sequential step execution and lifecycle behavior remains unchanged after admission.
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Add queue-resolution data types and helper functions in `Ordered_queue` - no dependencies.
-2. Update `Ordered_queue.parse` to accept opaque bare tokens while preserving current structural rejection rules - depends on step 1.
-3. Extend Compozy tracker normalization to accept bare slugs after tracker selection - depends on step 1.
-4. Route queue validation through resolved queue entries in `Runtime_readiness` - depends on steps 1 and 3.
-5. Update `main.ml` startup wiring so tracker-aware queue failures surface as readiness output - depends on steps 2 and 4.
-6. Refactor `Orchestrator` queue matching and ordering to use resolved canonical identifiers while persisting raw queue state - depends on steps 1, 3, and 4.
-7. Update CLI help and README examples for the Compozy shortcut - depends on steps 4 and 6.
-8. Add unit coverage for parse, resolution, and readiness cases - depends on steps 2 through 5.
-9. Add end-to-end orchestration and resume coverage for bare-slug queues - depends on steps 6 and 8.
-10. Run focused backend verification - depends on steps 1 through 9.
+1. Add `project.readyStatus` parsing and validation in `Config` and update docs for the new Runtime Settings field. No dependencies.
+2. Extend `Issue_tracker` with a first-admission decision contract and update adapter signatures. Depends on step 1.
+3. Implement GitHub exact-match first-admission logic using the configured ready status while preserving visible issue discovery. Depends on steps 1 and 2.
+4. Add `_tasks.md` ready-status parsing and Compozy first-admission evaluation without changing task-step parsing. Depends on steps 1 and 2.
+5. Update `Runtime_readiness` and `Runtime_policy` so structurally valid trackers can start in **Orchestration Idle** with zero ready work. Depends on steps 1, 3, and 4.
+6. Update `Orchestrator` to use tracker admission decisions for first dispatch and queue admission checks while preserving post-admission behavior. Depends on steps 2, 3, 4, and 5.
+7. Extend `Runtime_state` plus dashboard snapshot decoding and rendering for intake evaluations. Depends on step 6.
+8. Add focused backend and frontend tests for config, tracker semantics, idle startup, queue interaction, and runtime-state projection. Depends on steps 3 through 7.
+9. Update `README.md`, `CONTEXT.md`, and any affected ADR wording so the documented semantics match the implementation. Depends on steps 1, 5, and 7.
 
 ### Technical Dependencies
 
-- Existing `Issue_tracker.normalize_identifier` contract remains the selected-tracker normalization boundary.
-- Existing **Runtime State** queue schema remains in place; no frontend schema migration is required for MVP.
-- Existing queue resume behavior in `Orchestrator` must be updated carefully because it currently assumes canonical identifier sequences.
-- Work stays inside the current backend module layout; no new package or directory is required.
+- GitHub project-status GraphQL queries must continue returning the configured status field reliably.
+- Compozy `_tasks.md` needs a stable, documented run-level status format before implementation finalization.
+- Existing Compozy lifecycle semantics in `docs/adr/0024-compozy-prd-run-lifecycle-semantics.md` may need wording updates to distinguish intake status from run lifecycle.
+- Terminal and dashboard consumers depend on `Runtime_state` JSON compatibility and need synchronized snapshot updates.
 
 ## Monitoring and Observability
 
-- Startup readiness output should distinguish structural parse errors from tracker-aware queue mismatch errors.
-- Queue-related logs should include both the queue-state identifier and the resolved canonical identifier when a Compozy bare slug is resolved.
-- Ordered queue skipped or invalid-entry output should continue to show the operator-facing queue identifier.
-- Existing Runtime State queue projections remain the primary operator-visible queue status surface.
+- Track count of tracker-visible items versus first-admission-eligible items per poll.
+- Log ready-status mismatches with issue identifier, tracker kind, observed status, and configured ready status.
+- Log `_tasks.md` parse failures with PRD-run identifier and file path.
+- Surface structured runtime messages for:
+  - `not_ready_status`
+  - `queue_blocked_not_ready`
+  - `idle_no_ready_work`
+  - `compozy_ready_status_parse_failed`
+- Alert only on structural tracker failures or repeated parse failures, not on ordinary idle-with-no-ready-work states.
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- Decision: keep `Ordered_queue.parse` generic and move Compozy meaning behind post-settings queue resolution.  
-  Rationale: matches the selected tracker boundary and avoids Compozy-specific parser logic.  
-  Trade-off: queue validation becomes two-phase instead of parse-only.
+- Decision: add a dedicated tracker-owned first-admission contract instead of reusing `activeStates`.
+  Rationale: first admission is narrower than general active or visible lifecycle semantics.
+  Trade-off: introduces interface changes across all tracker adapters.
+  Alternatives rejected: broad `activeStates` reuse, `Orchestrator`-local filtering.
 
-- Decision: preserve raw bare-slug text in queue state and resume keys.  
-  Rationale: keeps state aligned with what the operator typed and with the approved terminal-first workflow.  
-  Trade-off: equivalent raw and canonical selector forms no longer resume the same queue run.
+- Decision: GitHub first admission requires exact configured ready-status match.
+  Rationale: matches the selected product model and avoids ambiguous active-state behavior.
+  Trade-off: stricter migration for existing projects.
+  Alternatives rejected: broad active-state compatibility, mixed exact-or-legacy behavior.
 
-- Decision: emit guided bare-slug tracker mismatch as a **Readiness Gap**.  
-  Rationale: readiness has the selected tracker context and already owns startup blocking feedback.  
-  Trade-off: some invalid inputs now fail at readiness rather than parse time.
+- Decision: Compozy reads ready status from `_tasks.md` while keeping task-step and lifecycle state separate.
+  Rationale: preserves a run-level local-tracker artifact without overloading execution files.
+  Trade-off: introduces another parsed file and semantic boundary to maintain.
+  Alternatives rejected: lifecycle-owned intake status, task-step-derived readiness.
 
-- Decision: add end-to-end orchestration coverage, including resume behavior for bare-slug queues.  
-  Rationale: the change touches parser, readiness, runtime state, and dispatch matching in one flow.  
-  Trade-off: broader test setup than a parser-only change.
+- Decision: zero ready work is valid **Orchestration Idle** state, not a readiness failure.
+  Rationale: supports always-on runtime behavior and restartless polling.
+  Trade-off: startup readiness becomes structural-only rather than work-availability-driven.
+  Alternatives rejected: blocking startup until ready work exists, readiness-gap-but-still-run hybrid behavior.
+
+- Decision: `--queue` never bypasses the Symphony-ready rule for first admission.
+  Rationale: preserves queue as ordering or selection, not forced eligibility override.
+  Trade-off: queue users may need to update tracker status before dispatch.
+  Alternatives rejected: queue override semantics, order-only-after-ready filtering that weakens admission guarantees.
 
 ### Known Risks
 
-- Raw queue state and resolved canonical identifiers may drift if resolution logic is duplicated.  
-  Mitigation: use one shared resolution helper from readiness and orchestration.
+- The exact default ready-status string is still unresolved at the product level.
+  Mitigation: wire the field as explicit config and keep the default as a documented assumption until finalized.
 
-- Mixed-style Compozy queue input could confuse operators and complicate duplicate rules.  
-  Mitigation: reject mixed bare and canonical Compozy input in MVP.
+- GitHub fetch behavior may need to distinguish “visible for lifecycle” from “eligible for first admission.”
+  Mitigation: keep those as separate adapter concepts and cover the distinction with integration tests.
 
-- Preserving raw queue identifiers may surprise operators who expect bare and canonical restarts to resume the same queue.  
-  Mitigation: document the resume behavior explicitly and cover it with end-to-end tests.
+- Compozy `_tasks.md` may drift from lifecycle or step status in operator mental models.
+  Mitigation: keep `_tasks.md` intake-only, project intake evaluation separately in Runtime State, and update docs.
+
+- Runtime State may still not fully explain all non-dispatchable cases if intake evaluation remains too narrow.
+  Mitigation: start with first-admission explanations and expand only if dogfood feedback shows a real observability gap.
 
 ## Architecture Decision Records
 
-- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving downstream canonical identifiers.
-- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
-- [ADR-003: Tracker-Aware Ordered Queue Resolution](adrs/adr-003.md) — Separates raw queue state from post-settings canonical resolution and preserves raw input for resume.
-- [ADR-004: Readiness-First Queue Diagnostics](adrs/adr-004.md) — Places guided tracker-mismatch feedback in startup readiness instead of parse-time or dispatch-time failures.
+- [ADR-001: Add explicit tracker-driven ready-for-symphony admission](./adrs/adr-001.md) — Initial marker-based idea direction, now superseded.
+- [ADR-002: Use a standard Symphony-ready status convention across trackers](./adrs/adr-002.md) — Establishes the PRD’s status-driven intake model.
+- [ADR-003: Put Symphony-ready status at the tracker boundary with exact-match first-admission semantics](./adrs/adr-003.md) — Keeps ready-status logic in tracker adapters and preserves queue semantics.
+- [ADR-004: Read Compozy Symphony-ready status from _tasks.md while keeping task-step state separate](./adrs/adr-004.md) — Uses `_tasks.md` as Compozy intake source without replacing task-step or lifecycle truth.
 

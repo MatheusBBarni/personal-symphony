@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Parse Compozy _tasks.md ready status and gate PRD-run admission"
 type: backend
 complexity: high
 dependencies:
   - task_01
+
 ---
 
 # Task 03: Parse Compozy _tasks.md ready status and gate PRD-run admission
@@ -30,10 +31,10 @@ Add the Compozy-ready parser for `_tasks.md` and combine it with existing runnab
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add a narrow parser for the Compozy-ready status in `_tasks.md`.
-- [ ] 3.2 Combine the parsed run-level ready status with existing runnable-run checks for first-admission decisions.
-- [ ] 3.3 Preserve task-step and lifecycle ownership boundaries while exposing Compozy admission reasons.
-- [ ] 3.4 Extend backend tests for `_tasks.md` parsing, ready gating, and lifecycle compatibility.
+- [x] 3.1 Add a narrow parser for the Compozy-ready status in `_tasks.md`.
+- [x] 3.2 Combine the parsed run-level ready status with existing runnable-run checks for first-admission decisions.
+- [x] 3.3 Preserve task-step and lifecycle ownership boundaries while exposing Compozy admission reasons.
+- [x] 3.4 Extend backend tests for `_tasks.md` parsing, ready gating, and lifecycle compatibility.
 
 ## Implementation Details
 Reference the TechSpec "Data Models", "Integration Points", and "Technical Considerations" sections, especially the Compozy Ready Summary and the intake-versus-lifecycle separation. Keep this task limited to Compozy adapter semantics and `_tasks.md` parsing; idle startup, queue interaction, and Runtime State visibility belong to later tasks.
@@ -62,13 +63,13 @@ Reference the TechSpec "Data Models", "Integration Points", and "Technical Consi
 
 ## Tests
 - Unit tests:
-  - [ ] `_tasks.md` containing the configured ready status returns an eligible-ready summary for the Compozy PRD Run.
-  - [ ] `_tasks.md` containing a non-ready status returns a deterministic non-eligible admission reason.
-  - [ ] Missing or malformed `_tasks.md` returns a deterministic parse or readiness failure without corrupting task-step parsing.
-  - [ ] Runnable-run checks still reject non-runnable Compozy PRD Runs even when `_tasks.md` is ready.
+  - [x] `_tasks.md` containing the configured ready status returns an eligible-ready summary for the Compozy PRD Run.
+  - [x] `_tasks.md` containing a non-ready status returns a deterministic non-eligible admission reason.
+  - [x] Missing or malformed `_tasks.md` returns a deterministic parse or readiness failure without corrupting task-step parsing.
+  - [x] Runnable-run checks still reject non-runnable Compozy PRD Runs even when `_tasks.md` is ready.
 - Integration tests:
-  - [ ] A Compozy PRD Run becomes newly admissible only when `_tasks.md` is ready and the existing runnable-run conditions are satisfied.
-  - [ ] Existing Compozy Task Step progression and Compozy PRD Run Lifecycle tests continue to pass without moving execution truth into `_tasks.md`.
+  - [x] A Compozy PRD Run becomes newly admissible only when `_tasks.md` is ready and the existing runnable-run conditions are satisfied.
+  - [x] Existing Compozy Task Step progression and Compozy PRD Run Lifecycle tests continue to pass without moving execution truth into `_tasks.md`.
 - Test coverage target: >=80%
 - All tests must pass
 

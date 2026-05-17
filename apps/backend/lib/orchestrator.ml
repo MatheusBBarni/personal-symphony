@@ -2605,6 +2605,71 @@ let retry_status ?stage orchestrator issue =
 let issue_is_active orchestrator issue =
   issue_state_is_dispatchable orchestrator issue.Issue.state
 
+let issue_has_admission_artifact orchestrator issue =
+  Hashtbl.mem orchestrator.attempts issue.Issue.id
+  || Hashtbl.mem orchestrator.previous_attempt_outputs issue.Issue.id
+  || List.exists (fun (row : Runtime_state.retrying) -> row.issue_id = issue.Issue.id) orchestrator.state.retrying
+  || Sys.file_exists (task_workspace_path orchestrator.config issue)
+  ||
+  if is_git_repository orchestrator.config.repository_root then
+    git_ref_exists orchestrator.config.repository_root (task_branch orchestrator.config issue)
+  else false
+
+let issue_allows_dispatch orchestrator issue =
+  if issue_has_admission_artifact orchestrator issue then issue_is_active orchestrator issue
+  else (orchestrator.tracker.first_admission issue).eligible
+
+let intake_state_of_decision (decision : Issue_tracker.admission_decision) =
+  if decision.eligible then "ready"
+  else if Util.starts_with ~prefix:"Compozy _tasks.md readiness parse failed" decision.reason then "parse_blocked"
+  else "not_ready"
+
+let nonempty_reason reason =
+  match Util.trim reason with "" -> None | reason -> Some reason
+
+let ordered_queue_intake_block orchestrator issue (decision : Issue_tracker.admission_decision) =
+  match orchestrator.ordered_queue with
+  | None -> None
+  | Some _ ->
+      let resolved_queue = Option.value orchestrator.resolved_ordered_queue ~default:[] in
+      let issue_in_queue = queue_contains_issue resolved_queue issue in
+      if issue_in_queue && not decision.eligible then
+        Some ("Ordered Queue entry is waiting for first-admission eligibility: " ^ decision.reason)
+      else if (not issue_in_queue) && decision.eligible then
+        Some "Ordered Queue is active and this work item is not listed in the queue."
+      else if decision.eligible && not (queue_entry_allows_dispatch resolved_queue orchestrator.state issue) then
+        Some "Ordered Queue entry is already completed or skipped."
+      else None
+
+let intake_evaluation_for_issue orchestrator issue =
+  if issue_has_admission_artifact orchestrator issue then
+    {
+      Runtime_state.issue_identifier = issue.Issue.identifier;
+      eligible = true;
+      state = "admitted";
+      reason = Some "Work item was already admitted; lifecycle, retry, and stage state now control execution.";
+    }
+  else
+    let decision = orchestrator.tracker.first_admission issue in
+    match ordered_queue_intake_block orchestrator issue decision with
+    | Some reason ->
+        {
+          Runtime_state.issue_identifier = issue.Issue.identifier;
+          eligible = decision.eligible;
+          state = "queue_blocked";
+          reason = Some reason;
+        }
+    | None ->
+        {
+          Runtime_state.issue_identifier = issue.Issue.identifier;
+          eligible = decision.eligible;
+          state = intake_state_of_decision decision;
+          reason = nonempty_reason decision.reason;
+        }
+
+let intake_evaluations_for_candidates orchestrator candidates =
+  List.map (intake_evaluation_for_issue orchestrator) candidates
+
 let issue_needs_attention orchestrator issue =
   string_equal_ci issue.Issue.state orchestrator.config.git.merge_attention_status || is_blocked orchestrator issue
 
@@ -3651,14 +3716,15 @@ let poll_once orchestrator =
       match poll_result with
       | Ok candidates ->
         let last_error = if Hashtbl.length orchestrator.blocked = 0 then None else orchestrator.state.last_error in
-        update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; last_error });
+        let intake_evaluations = intake_evaluations_for_candidates orchestrator candidates in
+        update_state orchestrator (fun state -> { state with Runtime_state.issues = candidates; intake_evaluations; last_error });
         reconcile_startup orchestrator candidates;
         update_ordered_queue_entries orchestrator ~skip_missing:true ~candidates ();
         let available = orchestrator.config.agent.max_concurrent_agents - List.length orchestrator.state.running in
         let dispatchable =
           candidates
           |> List.filter (fun issue ->
-                 issue_is_active orchestrator issue
+                 issue_allows_dispatch orchestrator issue
                  && (not (is_running orchestrator.state issue))
                  && (not (is_blocked orchestrator issue))
                  && retrying_due orchestrator issue)

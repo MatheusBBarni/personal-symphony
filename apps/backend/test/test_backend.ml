@@ -1153,6 +1153,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -1241,6 +1242,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -1356,6 +1358,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -1455,6 +1458,43 @@ let test_config_defaults_to_github_tracker_kind () =
       Alcotest.(check string) "repo" "widgets" config.tracker.repo;
       Alcotest.(check int) "project number" 7 config.tracker.project_number)
 
+let test_config_parses_ready_status_and_preserves_project_defaults () =
+  with_temp_dir "symphony-settings-ready-status-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "project": {"readyStatus": "Ready for Intake"}
+}|};
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "ready status" "Ready for Intake" config.tracker.ready_status;
+      Alcotest.(check (list string)) "active states default" Config.default_active_states
+        config.tracker.active_states;
+      Alcotest.(check (list string)) "terminal states default"
+        (Config.default_terminal_states @ [ Config.default_git.merge_attention_status ])
+        config.tracker.terminal_states;
+      Alcotest.(check (option string)) "start status default" (Some Config.default_dispatch_status)
+        config.tracker.project_status_on_dispatch;
+      Alcotest.(check (option string)) "review status default" (Some Config.default_review_status)
+        config.tracker.project_status_on_success;
+      Alcotest.(check (option string)) "retry status default" (Some Config.default_retry_status)
+        config.tracker.project_status_on_retry)
+
+let test_config_defaults_missing_ready_status_without_mutating_settings () =
+  with_temp_dir "symphony-settings-ready-status-default-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        {|{
+  "tracker": {"kind": "compozy_tasks"},
+  "project": {"activeStates": ["Todo"], "terminalStates": ["Done"]}
+}|};
+      let before = Util.read_file settings in
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      Alcotest.(check string) "default ready status" Config.default_ready_status config.tracker.ready_status;
+      Alcotest.(check string) "settings unchanged" before (Util.read_file settings))
+
 let test_config_parses_minibeads_tracker_defaults () =
   with_temp_dir "symphony-settings-minibeads-defaults-" (fun root ->
       Util.mkdir_p (Filename.concat root ".symphony");
@@ -1535,6 +1575,10 @@ let write_compozy_task ?(status = "pending") ?(title = "Example task") ?(task_ty
     (Printf.sprintf "---\nstatus: %s\ntitle: \"%s\"\ntype: %s\ncomplexity: %s\n%s---\n%s" status title task_type
        complexity dependency_lines body)
 
+let write_compozy_ready_summary ?(status = Config.default_ready_status)
+    ?(body = "\n## Tasks\n\n| # | Title | Status |\n|---|-------|--------|\n") prd_dir =
+  Util.write_file (Filename.concat prd_dir "_tasks.md") (Printf.sprintf "Status: %s\n%s" status body)
+
 let test_compozy_task_files_sort_numeric_order () =
   with_temp_dir "symphony-compozy-sort-" (fun root ->
       let prd_dir = Filename.concat root "run" in
@@ -1545,6 +1589,66 @@ let test_compozy_task_files_sort_numeric_order () =
       let tasks = Compozy_tasks_tracker.list_task_files ~compozy_root:root prd_dir |> require_ok "list tasks" in
       Alcotest.(check (list string)) "numeric order" [ "task_01.md"; "task_02.md"; "task_10.md" ]
         (List.map (fun (task : Compozy_tasks_tracker.task_file) -> task.file) tasks))
+
+let test_compozy_ready_summary_parses_run_level_status () =
+  with_temp_dir "symphony-compozy-ready-summary-" (fun root ->
+      let prd_dir = Filename.concat root "run" in
+      Util.mkdir_p prd_dir;
+      write_compozy_ready_summary ~status:"Ready for Intake" prd_dir;
+      let summary =
+        Compozy_tasks_tracker.parse_ready_summary ~compozy_root:root prd_dir
+        |> require_ok "parse ready summary"
+      in
+      Alcotest.(check string) "ready status" "Ready for Intake" summary.ready_status;
+      Alcotest.(check string) "summary path" (Unix.realpath (Filename.concat prd_dir "_tasks.md")) summary.path;
+      Util.write_file (Filename.concat prd_dir "_tasks.md") "---\nreadyStatus: Ready for Intake\n---\n";
+      let summary =
+        Compozy_tasks_tracker.parse_ready_summary ~compozy_root:root prd_dir
+        |> require_ok "parse camel ready summary"
+      in
+      Alcotest.(check string) "camel ready status" "Ready for Intake" summary.ready_status)
+
+let test_compozy_ready_summary_parses_non_ready_status () =
+  with_temp_dir "symphony-compozy-non-ready-summary-" (fun root ->
+      let prd_dir = Filename.concat root "run" in
+      Util.mkdir_p prd_dir;
+      write_compozy_ready_summary ~status:"Draft" prd_dir;
+      let summary =
+        Compozy_tasks_tracker.parse_ready_summary ~compozy_root:root prd_dir
+        |> require_ok "parse non-ready summary"
+      in
+      Alcotest.(check string) "non-ready status" "Draft" summary.ready_status)
+
+let test_compozy_ready_summary_missing_or_malformed_preserves_task_steps () =
+  with_temp_dir "symphony-compozy-ready-summary-errors-" (fun root ->
+      let prd_dir = Filename.concat root "run" in
+      let task_path = Filename.concat prd_dir "task_01.md" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" task_path;
+      let missing =
+        Compozy_tasks_tracker.parse_ready_summary ~compozy_root:root prd_dir
+        |> require_error "missing ready summary"
+      in
+      Alcotest.(check bool) "missing summary diagnostic" true (contains_substring missing "missing _tasks.md");
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:root prd_dir
+        |> require_ok "build PRD run after missing summary"
+      in
+      Alcotest.(check (option string)) "task-step still runnable" (Some "task_01.md")
+        (Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) run.current_step);
+      Util.write_file (Filename.concat prd_dir "_tasks.md")
+        "# Run task list\n\n| # | Title | Status |\n|---|-------|--------|\n";
+      let malformed =
+        Compozy_tasks_tracker.parse_ready_summary ~compozy_root:root prd_dir
+        |> require_error "malformed ready summary"
+      in
+      Alcotest.(check bool) "malformed summary diagnostic" true
+        (contains_substring malformed "missing run-level Symphony-ready Status");
+      let task =
+        Compozy_tasks_tracker.parse_task_file ~compozy_root:root task_path
+        |> require_ok "parse task after malformed summary"
+      in
+      Alcotest.(check string) "task-step status unchanged" "pending" task.status)
 
 let test_compozy_task_files_ignore_non_task_files () =
   with_temp_dir "symphony-compozy-ignore-" (fun root ->
@@ -1926,13 +2030,12 @@ let test_compozy_readiness_missing_root_gap () =
           Alcotest.(check bool) "token gap omitted" false
             (has_runtime_readiness_requirement "environment.GITHUB_TOKEN" gaps)))
 
-let test_compozy_readiness_no_runnable_prd_run_gap () =
+let test_compozy_readiness_no_runnable_prd_run_is_idle () =
   with_temp_dir "symphony-compozy-readiness-no-runnable-" (fun root ->
       let config = write_compozy_settings root in
       Util.mkdir_p (Filename.concat config.Config.tracker.compozy_root "empty-run");
       let gaps = (Issue_tracker.make config).readiness_gaps () in
-      Alcotest.(check bool) "runnable gap" true
-        (has_runtime_readiness_requirement "tracker.compozy.runnablePrdRun" gaps);
+      Alcotest.(check (list string)) "no work-availability readiness gaps" [] (runtime_requirements gaps);
       Alcotest.(check bool) "github token omitted" false
         (has_runtime_readiness_requirement "environment.GITHUB_TOKEN" gaps))
 
@@ -1943,6 +2046,7 @@ let test_compozy_runtime_readiness_valid_fixture_omits_github_gaps () =
           let prd_dir = Filename.concat config.Config.tracker.compozy_root "valid-run" in
           Util.mkdir_p prd_dir;
           write_compozy_task ~title:"Runnable" (Filename.concat prd_dir "task_01.md");
+          write_compozy_ready_summary prd_dir;
           let state = Runtime_readiness.state config in
           let requirements = runtime_requirements state.Runtime_state.readiness_gaps in
           Alcotest.(check string) "tracker kind" "compozy_tasks" state.tracker_kind;
@@ -1972,6 +2076,7 @@ let test_compozy_runtime_readiness_repairs_stale_attention_lifecycle () =
       let prd_dir = Filename.concat config.Config.tracker.compozy_root "attention-run" in
       Util.mkdir_p prd_dir;
       write_compozy_task ~title:"Needs previous session follow-up" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary prd_dir;
       let run =
         Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root prd_dir
         |> require_ok "build PRD run"
@@ -2780,6 +2885,7 @@ let test_project_status_order_uses_transition_flow () =
         compozy_max_task_step_retries = 2;
       active_states = [ "Backlog"; "Todo"; "To-Do"; "In progress"; "In Progress"; "In review" ];
       terminal_states = [ "Done"; "Closed"; "Cancelled" ];
+      ready_status = Config.default_ready_status;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -2864,6 +2970,7 @@ let test_bootstrap_default_runtime_contract_shape () =
       let string path = Yojson.Safe.Util.to_string (member path) in
       let bool path = Yojson.Safe.Util.to_bool (member path) in
       Alcotest.(check bool) "legacy top-level codex absent" true (member [ "codex" ] = `Null);
+      Alcotest.(check string) "ready status" Config.default_ready_status (string [ "project"; "readyStatus" ]);
       Alcotest.(check string) "codex loop command" "/goal" (string [ "harnesses"; "codex"; "loop"; "command" ]);
       Alcotest.(check bool) "codex loop enabled" true (bool [ "harnesses"; "codex"; "loop"; "enabled" ]);
       Alcotest.(check string) "claude kind" "claude" (string [ "harnesses"; "claude"; "kind" ]);
@@ -3837,6 +3944,50 @@ let test_runtime_state_absent_compozy_progress_is_compatible () =
       Alcotest.(check (option string)) "legacy readiness absent" None parsed.pr_readiness
   | None -> Alcotest.fail "expected legacy Compozy progress to parse"
 
+let test_runtime_state_exposes_intake_evaluations () =
+  let evaluations =
+    [
+      {
+        Runtime_state.issue_identifier = "#1";
+        eligible = true;
+        state = "ready";
+        reason = Some "Tracker state matches configured Symphony-ready Status.";
+      };
+      {
+        Runtime_state.issue_identifier = "#2";
+        eligible = false;
+        state = "not_ready";
+        reason = Some "Tracker state does not match configured Symphony-ready Status.";
+      };
+    ]
+  in
+  let json = Runtime_state.empty ~intake_evaluations:evaluations () |> Runtime_state.to_yojson in
+  let open Yojson.Safe.Util in
+  let payload = json |> member "intake_evaluations" |> to_list in
+  Alcotest.(check int) "evaluation count" 2 (List.length payload);
+  let first = List.hd payload in
+  Alcotest.(check string) "ready identifier" "#1" (first |> member "issue_identifier" |> to_string);
+  Alcotest.(check bool) "ready eligible" true (first |> member "eligible" |> to_bool);
+  Alcotest.(check string) "ready state" "ready" (first |> member "state" |> to_string);
+  Alcotest.(check string) "ready reason" "Tracker state matches configured Symphony-ready Status."
+    (first |> member "reason" |> to_string);
+  let second = List.nth payload 1 in
+  Alcotest.(check string) "blocked identifier" "#2" (second |> member "issue_identifier" |> to_string);
+  Alcotest.(check bool) "blocked eligible" false (second |> member "eligible" |> to_bool);
+  Alcotest.(check string) "blocked state" "not_ready" (second |> member "state" |> to_string);
+  Alcotest.(check int) "older snapshot has no intake evaluations" 0
+    (Runtime_state.intake_evaluations_from_snapshot_yojson (`Assoc []) |> List.length);
+  let parsed = Runtime_state.intake_evaluations_from_snapshot_yojson json in
+  match parsed with
+  | [ ready; blocked ] ->
+      Alcotest.(check string) "parsed ready identifier" "#1" ready.Runtime_state.issue_identifier;
+      Alcotest.(check bool) "parsed ready eligible" true ready.eligible;
+      Alcotest.(check string) "parsed ready state" "ready" ready.state;
+      Alcotest.(check (option string)) "parsed blocked reason"
+        (Some "Tracker state does not match configured Symphony-ready Status.")
+        blocked.reason
+  | _ -> Alcotest.fail "expected parsed intake evaluations"
+
 let compozy_progress_fixture ?(current_step = Some "task_02.md") ?(lifecycle_state = Some "pr_handoff")
     ?(dispatch_state = Some "In review") ?(stage_agent = Some "reviewer")
     ?(pr_readiness = Some "handoff_failed") ?(reason = Some "Batch Pull Request handoff failed.")
@@ -4122,6 +4273,7 @@ let test_ordered_queue_validation_uses_selected_tracker () =
   let tracker =
     {
       kind = "minibeads";
+      ready_status = Config.default_ready_status;
       fetch_candidates = (fun () -> Ok []);
       fetch_by_identifiers = (fun _ -> Ok []);
       fetch_by_identifiers_detailed =
@@ -4136,6 +4288,9 @@ let test_ordered_queue_validation_uses_selected_tracker () =
       update_status = (fun _ _ -> Ok ());
       readiness_gaps = (fun () -> []);
       normalize_identifier = (fun raw -> Ok raw);
+      first_admission =
+        (fun issue ->
+          { Issue_tracker.eligible = issue.Issue.state = "open"; reason = "test admission decision" });
       is_active = (fun status -> status = "open");
       is_terminal = (fun status -> status = "closed");
     }
@@ -4146,12 +4301,51 @@ let test_ordered_queue_validation_uses_selected_tracker () =
   Alcotest.(check string) "terminal remediation" "Issue is terminal in tracker state \"closed\"."
     (List.hd gaps).Ordered_queue.remediation
 
+let test_ordered_queue_validation_rejects_not_ready_admission () =
+  let open Issue_tracker in
+  let issue = Issue.empty ~id:"mb-20" ~identifier:"mb-20" ~title:"Visible but not ready" ~state:"open" in
+  let queue =
+    match Ordered_queue.parse "mb-20" with
+    | Ok queue -> queue
+    | Error _ -> Alcotest.fail "queue parse failed"
+  in
+  let tracker =
+    {
+      kind = "minibeads";
+      ready_status = "Ready for Intake";
+      fetch_candidates = (fun () -> Ok []);
+      fetch_by_identifiers = (fun _ -> Ok []);
+      fetch_by_identifiers_detailed =
+        (fun identifiers ->
+          Alcotest.(check (list string)) "lookup identifiers" [ "mb-20" ] identifiers;
+          Ok [ { identifier = "mb-20"; issue = Some issue; diagnostics = [] } ]);
+      update_status = (fun _ _ -> Ok ());
+      readiness_gaps = (fun () -> []);
+      normalize_identifier = (fun raw -> Ok raw);
+      first_admission =
+        (fun _issue ->
+          {
+            Issue_tracker.eligible = false;
+            reason = "Tracker state \"open\" does not match configured Symphony-ready Status \"Ready for Intake\".";
+          });
+      is_active = (fun status -> status = "open");
+      is_terminal = (fun status -> status = "closed");
+    }
+  in
+  let gaps = Ordered_queue.validation_gaps tracker queue in
+  Alcotest.(check (list string)) "not-ready queue requirement" [ "orderedQueue.mb-20" ]
+    (List.map (fun (gap : Ordered_queue.validation_gap) -> gap.requirement) gaps);
+  let remediation = (List.hd gaps).Ordered_queue.remediation in
+  Alcotest.(check bool) "mentions ready status" true (contains_substring remediation "Symphony-ready Status");
+  Alcotest.(check bool) "includes tracker reason" true (contains_substring remediation "Ready for Intake")
+
 let test_ordered_queue_validation_resolves_compozy_prd_run_without_github_project () =
   with_temp_dir "symphony-compozy-queue-validation-" (fun root ->
       let config = write_compozy_settings root in
       let prd_dir = Filename.concat config.Config.tracker.compozy_root "example-feature" in
       Util.mkdir_p prd_dir;
       write_compozy_task ~title:"Queued Compozy run" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary prd_dir;
       let queue =
         match Ordered_queue.parse "compozy:example-feature" with
         | Ok queue -> queue
@@ -4163,6 +4357,7 @@ let test_ordered_queue_validation_resolves_compozy_prd_run_without_github_projec
       let stale_prd_dir = Filename.concat config.Config.tracker.compozy_root "stale-feature" in
       Util.mkdir_p stale_prd_dir;
       write_compozy_task ~title:"Stale queued Compozy run" (Filename.concat stale_prd_dir "task_01.md");
+      write_compozy_ready_summary stale_prd_dir;
       let stale_run =
         Compozy_tasks_tracker.prd_run_of_directory ~compozy_root:config.tracker.compozy_root stale_prd_dir
         |> require_ok "build stale PRD run"
@@ -4284,6 +4479,7 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -5773,7 +5969,19 @@ let test_runtime_state_auth_token_gates_non_loopback_surfaces () =
 
 let test_http_state_can_include_compozy_progress () =
   let progress = compozy_progress_fixture () in
-  let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress () in
+  let intake_evaluations =
+    [
+      {
+        Runtime_state.issue_identifier = "compozy:compozy-tasks-run-integration";
+        eligible = true;
+        state = "ready";
+        reason = Some "Compozy run satisfies first-admission intake.";
+      };
+    ]
+  in
+  let state =
+    Runtime_state.empty ~tracker_kind:"compozy_tasks" ~intake_evaluations ~compozy_progress:progress ()
+  in
   let http =
     Server.handle_request (fun () -> state)
       { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
@@ -5792,16 +6000,34 @@ let test_http_state_can_include_compozy_progress () =
   Alcotest.(check string) "stage" "reviewer" (payload |> member "stage_agent" |> to_string);
   Alcotest.(check string) "readiness" "handoff_failed" (payload |> member "pr_readiness" |> to_string);
   Alcotest.(check string) "handoff" "handoff_failed" (payload |> member "handoff_status" |> to_string);
-  Alcotest.(check string) "reason" "Batch Pull Request handoff failed." (payload |> member "reason" |> to_string)
+  Alcotest.(check string) "reason" "Batch Pull Request handoff failed." (payload |> member "reason" |> to_string);
+  let intake = json |> member "intake_evaluations" |> to_list |> List.hd in
+  Alcotest.(check string) "intake identifier" "compozy:compozy-tasks-run-integration"
+    (intake |> member "issue_identifier" |> to_string);
+  Alcotest.(check bool) "intake eligible" true (intake |> member "eligible" |> to_bool);
+  Alcotest.(check string) "intake state" "ready" (intake |> member "state" |> to_string)
 
 let test_websocket_compozy_progress_snapshot_shape () =
   let progress = compozy_progress_fixture () in
-  let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:progress () in
+  let intake_evaluations =
+    [
+      {
+        Runtime_state.issue_identifier = "compozy:compozy-tasks-run-integration";
+        eligible = false;
+        state = "queue_blocked";
+        reason = Some "Ordered Queue entry is waiting for first-admission eligibility.";
+      };
+    ]
+  in
+  let state =
+    Runtime_state.empty ~tracker_kind:"compozy_tasks" ~intake_evaluations ~compozy_progress:progress ()
+  in
   with_websocket_client state (fun ~set_state:_ ~live:_ ~client_fd:_ ~initial ->
       let json = Yojson.Safe.from_string initial in
       let has_member name = function `Assoc fields -> List.mem_assoc name fields | _ -> false in
       Alcotest.(check bool) "live payload is snapshot with counts" true (has_member "counts" json);
       Alcotest.(check bool) "live payload has progress" true (has_member "compozy_progress" json);
+      Alcotest.(check bool) "live payload has intake evaluations" true (has_member "intake_evaluations" json);
       Alcotest.(check bool) "live payload is not event envelope" false (has_member "event" json);
       let open Yojson.Safe.Util in
       let payload = json |> member "compozy_progress" in
@@ -5811,6 +6037,8 @@ let test_websocket_compozy_progress_snapshot_shape () =
       Alcotest.(check string) "stage" "reviewer" (payload |> member "stage_agent" |> to_string);
       Alcotest.(check string) "readiness" "handoff_failed" (payload |> member "pr_readiness" |> to_string);
       Alcotest.(check string) "handoff" "handoff_failed" (payload |> member "handoff_status" |> to_string);
+      let intake = json |> member "intake_evaluations" |> to_list |> List.hd in
+      Alcotest.(check string) "intake state" "queue_blocked" (intake |> member "state" |> to_string);
       Alcotest.(check string) "reason" "Batch Pull Request handoff failed."
         (payload |> member "reason" |> to_string))
 
@@ -5893,6 +6121,7 @@ let test_orchestrator_notifies_each_state_mutation () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -5945,6 +6174,7 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6061,6 +6291,7 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6185,6 +6416,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6302,6 +6534,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6501,6 +6734,69 @@ let test_issue_tracker_github_state_semantics_match_existing () =
             (Github_tracker.status_is_terminal ~config:config.tracker status)
             (tracker.is_terminal status))
         [ "Todo"; "todo"; "Doing"; "Done"; "closed"; "Backlog" ])
+
+let test_issue_tracker_admission_decision_preserves_state_helpers () =
+  with_temp_dir "symphony-issue-tracker-admission-" (fun root ->
+      let config = github_issue_tracker_config root in
+      let tracker = Issue_tracker.make config in
+      let issue state = Issue.empty ~id:state ~identifier:("#" ^ state) ~title:state ~state in
+      let ready = tracker.first_admission (issue config.tracker.ready_status) in
+      let active = tracker.first_admission (issue "Todo") in
+      let terminal = tracker.first_admission (issue "Done") in
+      let inactive = tracker.first_admission (issue "Backlog") in
+      Alcotest.(check bool) "active remains active" true (tracker.is_active "Todo");
+      Alcotest.(check bool) "terminal remains terminal" true (tracker.is_terminal "Done");
+      Alcotest.(check bool) "ready admission eligible" true ready.Issue_tracker.eligible;
+      Alcotest.(check bool) "active non-ready admission rejected" false active.Issue_tracker.eligible;
+      Alcotest.(check bool) "terminal admission rejected" false terminal.Issue_tracker.eligible;
+      Alcotest.(check bool) "inactive admission rejected" false inactive.Issue_tracker.eligible;
+      Alcotest.(check bool) "active non-ready reason names ready status" true
+        (contains_substring active.Issue_tracker.reason config.tracker.ready_status))
+
+let test_issue_tracker_ready_status_reaches_github_and_compozy_adapters () =
+  with_temp_dir "symphony-issue-tracker-ready-status-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony");
+      let ready_status = "Ready for Intake" in
+      let settings kind =
+        let path = Filename.concat root (kind ^ "-settings.json") in
+        Util.write_file path
+          (Printf.sprintf
+             {|{
+  "tracker": {"kind": %S, "owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "project": {"readyStatus": %S, "activeStates": ["Todo"], "terminalStates": ["Done"]}
+}|}
+             kind ready_status);
+        Config.from_settings_file ~workspace_root:root path
+      in
+      let github = Issue_tracker.make (settings "github") in
+      let compozy_config = settings "compozy_tasks" in
+      let compozy_prd_dir = Filename.concat compozy_config.Config.tracker.compozy_root "run" in
+      Util.mkdir_p compozy_prd_dir;
+      write_compozy_task ~title:"Runnable Compozy run" (Filename.concat compozy_prd_dir "task_01.md");
+      write_compozy_ready_summary ~status:ready_status compozy_prd_dir;
+      let compozy =
+        Issue_tracker.make
+          {
+            compozy_config with
+            Config.tracker =
+              { compozy_config.tracker with active_states = compozy_config.tracker.active_states @ [ "In progress" ] };
+          }
+      in
+      Alcotest.(check string) "github ready status" ready_status github.ready_status;
+      Alcotest.(check string) "compozy ready status" ready_status compozy.ready_status;
+      let github_decision =
+        github.first_admission (Issue.empty ~id:"I1" ~identifier:"#1" ~title:"GitHub" ~state:ready_status)
+      in
+      let compozy_decision =
+        compozy.first_admission
+          (Issue.empty ~id:"compozy:run" ~identifier:"compozy:run" ~title:"Compozy" ~state:"pending")
+      in
+      Alcotest.(check bool) "github reason includes configured ready status" true
+        (contains_substring github_decision.Issue_tracker.reason ready_status);
+      Alcotest.(check bool) "github admission eligible" true github_decision.Issue_tracker.eligible;
+      Alcotest.(check bool) "compozy admission eligible" true compozy_decision.Issue_tracker.eligible;
+      Alcotest.(check bool) "compozy reason includes configured ready status" true
+        (contains_substring compozy_decision.Issue_tracker.reason ready_status))
 
 let test_issue_tracker_maps_github_rate_limit () =
   with_temp_dir "symphony-issue-tracker-rate-limit-" (fun root ->
@@ -6851,6 +7147,7 @@ let test_github_project_field_parsing () =
         compozy_max_task_step_retries = 2;
       active_states = [ "Todo"; "In Progress" ];
       terminal_states = [ "Done" ];
+      ready_status = Config.default_ready_status;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -6915,6 +7212,7 @@ let test_github_active_state_filtering () =
         compozy_max_task_step_retries = 2;
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
+      ready_status = Config.default_ready_status;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -6970,6 +7268,7 @@ let test_github_empty_project_field_values_are_ignored () =
         compozy_max_task_step_retries = 2;
       active_states = [ "To-Do" ];
       terminal_states = [ "Done" ];
+      ready_status = Config.default_ready_status;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -7012,6 +7311,7 @@ let test_github_status_metadata_parsing () =
         compozy_max_task_step_retries = 2;
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
+      ready_status = Config.default_ready_status;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -7095,6 +7395,7 @@ let stage_capacity_config root ~global_cap =
         compozy_max_task_step_retries = 2;
         active_states = [ "Backlog"; "Todo"; "In progress"; "In review" ];
         terminal_states = [ "Done"; "Human attention" ];
+        ready_status = "Todo";
         project_status_field = "Status";
         project_status_on_dispatch = Some "In progress";
         project_status_on_success = Some "Done";
@@ -7194,6 +7495,7 @@ let test_orchestrator_dispatch_limits () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -7256,11 +7558,12 @@ let test_orchestrator_dispatch_uses_effective_global_concurrency_override () =
         launched := issue.Issue.id :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
-          ~prompt_template:"Issue {{ issue.identifier }}" ()
-      in
-      Orchestrator.poll_once orchestrator;
+	      let orchestrator =
+	        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+	          ~prompt_template:"Issue {{ issue.identifier }}" ()
+	      in
+	      List.iter (fun issue -> Hashtbl.replace orchestrator.Orchestrator.attempts issue.Issue.id 1) issues;
+	      Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "effective global cap" 1 config.agent.max_concurrent_agents;
       Alcotest.(check int) "one running" 1 (List.length state.Runtime_state.running);
@@ -7283,11 +7586,12 @@ let test_orchestrator_stage_capacity_dispatches_all_available_slots () =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
-          ~prompt_template:"Issue {{ issue.identifier }}" ()
-      in
-      Orchestrator.poll_once orchestrator;
+	      let orchestrator =
+	        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+	          ~prompt_template:"Issue {{ issue.identifier }}" ()
+	      in
+	      List.iter (fun issue -> Hashtbl.replace orchestrator.Orchestrator.attempts issue.Issue.id 1) issues;
+	      Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "all configured slots used" 5 (List.length state.Runtime_state.running);
       Alcotest.(check (list string)) "launches across stages" [ "#1"; "#2"; "#3"; "#4"; "#5" ] (List.rev !launched))
@@ -7301,11 +7605,12 @@ let test_orchestrator_stage_capacity_does_not_spawn_idle_agents () =
         incr launch_count;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
-          ~prompt_template:"Issue {{ issue.identifier }}" ()
-      in
-      Orchestrator.poll_once orchestrator;
+	      let orchestrator =
+	        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+	          ~prompt_template:"Issue {{ issue.identifier }}" ()
+	      in
+	      List.iter (fun issue -> Hashtbl.replace orchestrator.Orchestrator.attempts issue.Issue.id 1) issues;
+	      Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "one issue launched" 1 !launch_count;
       Alcotest.(check int) "no idle running rows" 1 (List.length state.Runtime_state.running))
@@ -7327,11 +7632,12 @@ let test_orchestrator_stage_capacity_respects_lower_global_cap () =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator =
-        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
-          ~prompt_template:"Issue {{ issue.identifier }}" ()
-      in
-      Orchestrator.poll_once orchestrator;
+	      let orchestrator =
+	        Orchestrator.make ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+	          ~prompt_template:"Issue {{ issue.identifier }}" ()
+	      in
+	      List.iter (fun issue -> Hashtbl.replace orchestrator.Orchestrator.attempts issue.Issue.id 1) issues;
+	      Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "global cap wins" 3 (List.length state.Runtime_state.running);
       Alcotest.(check (list string)) "only first global slots launch" [ "#1"; "#2"; "#3" ] (List.rev !launched))
@@ -7409,6 +7715,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo"; "In progress"; "In review" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "Done";
@@ -7490,11 +7797,12 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
         launched := issue.Issue.identifier :: !launched;
         { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
       in
-      let orchestrator =
-        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
-          ~prompt_template:"Issue {{ issue.identifier }}" ()
-      in
-      Orchestrator.poll_once orchestrator;
+	      let orchestrator =
+	        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+	          ~prompt_template:"Issue {{ issue.identifier }}" ()
+	      in
+	      List.iter (fun issue -> Hashtbl.replace orchestrator.Orchestrator.attempts issue.Issue.id 1) issues;
+	      Orchestrator.poll_once orchestrator;
       Alcotest.(check (list string)) "launch skips full todo stage" [ "#1"; "#3"; "#4" ] (List.rev !launched);
       let state = Orchestrator.get_state orchestrator in
       Alcotest.(check int) "global cap used by admissible stages" 3 (List.length state.Runtime_state.running);
@@ -7531,6 +7839,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -7658,6 +7967,7 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = Config.default_ready_status;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -7800,6 +8110,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "Done";
@@ -7860,6 +8171,7 @@ let test_orchestrator_retries_failed_agent () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -7917,6 +8229,7 @@ let test_github_child_failure_retry_behavior_unchanged () =
               compozy_max_task_step_retries = 1;
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8016,6 +8329,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -8089,6 +8403,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8156,6 +8471,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
         compozy_max_task_step_retries = 2;
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
+              ready_status = "In review";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8241,7 +8557,10 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
 
 let test_orchestrator_archives_dispatch_prompt () =
   with_temp_dir "symphony-prompt-archive-" (fun root ->
-      let config = github_issue_tracker_config root in
+	      let config =
+	        let config = github_issue_tracker_config root in
+	        { config with Config.tracker = { config.tracker with ready_status = "Todo" } }
+	      in
       let issue = Issue.empty ~id:"I42" ~identifier:"#42" ~title:"Archive prompt" ~state:"Todo" in
       let current_status = ref "Todo" in
       let fetch _ = if !current_status = "Todo" then Ok [ { issue with state = !current_status } ] else Ok [] in
@@ -8307,6 +8626,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = Some "In review";
@@ -8443,6 +8763,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "Todo";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = Some "In review";
@@ -8522,6 +8843,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         compozy_max_task_step_retries = 2;
         active_states = [ "Todo" ];
         terminal_states = [ "Done" ];
+        ready_status = "Todo";
         project_status_field = "Status";
         project_status_on_dispatch = None;
         project_status_on_success = Some "In review";
@@ -8775,6 +9097,7 @@ let compozy_test_config root compozy_root =
         compozy_max_task_step_retries = 2;
         active_states = [ "pending"; "in_progress" ];
         terminal_states = [ "completed"; "failed"; "skipped" ];
+        ready_status = Config.default_ready_status;
         project_status_field = "Status";
         project_status_on_dispatch = None;
         project_status_on_success = Some "completed";
@@ -8846,6 +9169,7 @@ let setup_compozy_repo root slug =
   Util.mkdir_p prd_dir;
   let task_01 = Filename.concat prd_dir "task_01.md" in
   write_compozy_task ~title:"First step" ~body:"\n# First\n\nLifecycle sentinel.\n" task_01;
+  write_compozy_ready_summary prd_dir;
   ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
   ignore_runtime_home root;
   (compozy_root, prd_dir, task_01)
@@ -8854,7 +9178,158 @@ let write_compozy_prd_run compozy_root slug title =
   let prd_dir = Filename.concat compozy_root slug in
   Util.mkdir_p prd_dir;
   write_compozy_task ~title (Filename.concat prd_dir "task_01.md");
+  write_compozy_ready_summary prd_dir;
   prd_dir
+
+let task04_compozy_config root compozy_root ready_status =
+  let config = compozy_test_config root compozy_root in
+  { config with Config.tracker = { config.tracker with ready_status } }
+
+let intake_evaluation state identifier =
+  match
+    List.find_opt
+      (fun (row : Runtime_state.intake_evaluation) -> row.issue_identifier = identifier)
+      state.Runtime_state.intake_evaluations
+  with
+  | Some row -> row
+  | None -> Alcotest.fail ("expected intake evaluation for " ^ identifier)
+
+let commit_compozy_root root message =
+  ignore (run_ok ~cwd:root message ("git add .compozy && git commit -q -m " ^ Util.shell_quote message))
+
+let test_orchestrator_filters_first_admission_by_tracker_decision () =
+  with_temp_dir "symphony-compozy-first-admission-filter-" (fun root ->
+      init_repo root "feature/start";
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "draft-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Draft feature" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary ~status:"Draft" prd_dir;
+      commit_compozy_root root "draft-compozy-run";
+      ignore_runtime_home root;
+      let config = task04_compozy_config root compozy_root ready_status in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator = Orchestrator.make ~launch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check (list string)) "visible draft candidate is not launched" [] (List.rev !launched);
+      Alcotest.(check int) "candidate remains visible" 1 (List.length state.Runtime_state.issues);
+      Alcotest.(check int) "no running work" 0 (List.length state.running);
+      let intake = intake_evaluation state "compozy:draft-feature" in
+      Alcotest.(check bool) "draft intake is not eligible" false intake.eligible;
+      Alcotest.(check string) "draft intake state" "not_ready" intake.state;
+      Alcotest.(check bool) "draft intake reason names ready status" true
+        (option_exists (fun reason -> contains_substring reason "Ready for Intake") intake.reason))
+
+let test_orchestrator_queued_item_waits_until_ready_status () =
+  with_temp_dir "symphony-compozy-queue-ready-gate-" (fun root ->
+      init_repo root "feature/start";
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "queued-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Queued feature" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary ~status:"Draft" prd_dir;
+      commit_compozy_root root "draft-queued-compozy-run";
+      ignore_runtime_home root;
+      let config = task04_compozy_config root compozy_root ready_status in
+      let ordered_queue =
+        match Ordered_queue.parse "queued-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "not launched before ready" [] (List.rev !launched);
+      let waiting_state = Orchestrator.get_state orchestrator in
+      (match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "queue stays pending while not ready" [ "pending" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state");
+      let intake = intake_evaluation waiting_state "compozy:queued-feature" in
+      Alcotest.(check bool) "queued draft intake is not eligible" false intake.eligible;
+      Alcotest.(check string) "queued draft intake state" "queue_blocked" intake.state;
+      Alcotest.(check bool) "queued draft intake reason names queue" true
+        (option_exists (fun reason -> contains_substring reason "Ordered Queue entry is waiting") intake.reason);
+      write_compozy_ready_summary ~status:ready_status prd_dir;
+      commit_compozy_root root "ready-queued-compozy-run";
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "launches after ready" [ "compozy:queued-feature" ] (List.rev !launched);
+      (match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "queue running after ready" [ "running" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state"))
+
+let test_orchestrator_projects_parse_blocked_intake_evaluation () =
+  with_temp_dir "symphony-compozy-intake-parse-blocked-" (fun root ->
+      init_repo root "feature/start";
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "parse-blocked-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Parse blocked feature" (Filename.concat prd_dir "task_01.md");
+      Util.write_file (Filename.concat prd_dir "_tasks.md") "# Run task list\n\n| # | Title | Status |\n";
+      commit_compozy_root root "parse-blocked-compozy-run";
+      ignore_runtime_home root;
+      let config = task04_compozy_config root compozy_root ready_status in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator = Orchestrator.make ~launch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check (list string)) "parse-blocked run is not launched" [] (List.rev !launched);
+      Alcotest.(check int) "parse-blocked candidate remains visible" 1 (List.length state.Runtime_state.issues);
+      let intake = intake_evaluation state "compozy:parse-blocked-feature" in
+      Alcotest.(check bool) "parse-blocked intake is not eligible" false intake.eligible;
+      Alcotest.(check string) "parse-blocked intake state" "parse_blocked" intake.state;
+      Alcotest.(check bool) "parse-blocked reason names parse failure" true
+        (option_exists (fun reason -> contains_substring reason "readiness parse failed") intake.reason))
+
+let test_orchestrator_preserves_admitted_non_ready_work () =
+  with_temp_dir "symphony-compozy-admitted-non-ready-" (fun root ->
+      init_repo root "feature/start";
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "post-admitted-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Post-admitted feature" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary ~status:"Draft" prd_dir;
+      commit_compozy_root root "post-admitted-compozy-run";
+      ignore_runtime_home root;
+      let config = task04_compozy_config root compozy_root ready_status in
+      let issue =
+        Issue.empty ~id:"compozy:post-admitted-feature" ~identifier:"compozy:post-admitted-feature"
+          ~title:"Post-admitted feature" ~state:"pending"
+      in
+      ignore
+        (Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue
+        |> require_ok "prepare admitted workspace");
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator = Orchestrator.make ~launch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "already admitted work continues" [ "compozy:post-admitted-feature" ]
+        (List.rev !launched))
 
 let test_orchestrator_dispatches_compozy_bare_ordered_queue_by_resolved_identity () =
   with_temp_dir "symphony-compozy-bare-queue-" (fun root ->
@@ -9560,6 +10035,7 @@ let test_compozy_intermediate_relaunch_keeps_lifecycle_dispatch_stage () =
       let task_02 = Filename.concat prd_dir "task_02.md" in
       write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst stage sentinel.\n" task_01;
       write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond stage sentinel.\n" task_02;
+      write_compozy_ready_summary prd_dir;
       ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
       ignore_runtime_home root;
       let config = compozy_stage_routing_config root compozy_root in
@@ -9724,6 +10200,123 @@ let require_poll_ok label = function
 let only_issue label = function
   | [ issue ] -> issue
   | issues -> Alcotest.fail (Printf.sprintf "%s: expected one issue, got %d" label (List.length issues))
+
+let compozy_admission_test_config root compozy_root ready_status =
+  let config = compozy_test_config root compozy_root in
+  {
+    config with
+    Config.tracker =
+      {
+        config.tracker with
+        ready_status;
+        active_states = List.sort_uniq String.compare (config.tracker.active_states @ [ "in_review" ]);
+      };
+  }
+
+let compozy_issue identifier = Issue.empty ~id:identifier ~identifier ~title:identifier ~state:"pending"
+
+let test_compozy_tracker_first_admission_accepts_ready_runnable_run () =
+  with_temp_dir "symphony-compozy-admission-ready-" (fun root ->
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat root "tasks" in
+      let prd_dir = Filename.concat compozy_root "ready-feature" in
+      let task_path = Filename.concat prd_dir "task_01.md" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" task_path;
+      write_compozy_ready_summary ~status:ready_status prd_dir;
+      let config = compozy_admission_test_config root compozy_root ready_status in
+      let tracker = Issue_tracker.compozy config in
+      let decision = tracker.first_admission (compozy_issue "compozy:ready-feature") in
+      Alcotest.(check bool) "ready runnable admission" true decision.Issue_tracker.eligible;
+      Alcotest.(check bool) "eligible reason" true
+        (contains_substring decision.reason "satisfies existing runnable-run conditions");
+      let task =
+        Compozy_tasks_tracker.parse_task_file ~compozy_root task_path
+        |> require_ok "parse task after admission"
+      in
+      Alcotest.(check string) "task-step status unchanged" "pending" task.status;
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir
+        |> require_ok "build admitted PRD run"
+      in
+      let lifecycle = load_compozy_lifecycle config run in
+      Alcotest.(check string) "lifecycle dispatch remains derived from task-step truth" "pending"
+        lifecycle.dispatch_state)
+
+let test_compozy_tracker_first_admission_rejects_non_ready_summary () =
+  with_temp_dir "symphony-compozy-admission-non-ready-" (fun root ->
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat root "tasks" in
+      let prd_dir = Filename.concat compozy_root "draft-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary ~status:"Draft" prd_dir;
+      let config = compozy_admission_test_config root compozy_root ready_status in
+      let tracker = Issue_tracker.compozy config in
+      let decision = tracker.first_admission (compozy_issue "compozy:draft-feature") in
+      Alcotest.(check bool) "non-ready admission rejected" false decision.Issue_tracker.eligible;
+      Alcotest.(check bool) "non-ready reason includes observed status" true
+        (contains_substring decision.reason "Draft");
+      Alcotest.(check bool) "non-ready reason includes configured status" true
+        (contains_substring decision.reason ready_status);
+      Alcotest.(check bool) "non-ready mismatch reason" true
+        (contains_substring decision.reason "does not match configured Symphony-ready Status"))
+
+let test_compozy_tracker_first_admission_rejects_ready_non_runnable_run () =
+  with_temp_dir "symphony-compozy-admission-not-runnable-" (fun root ->
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat root "tasks" in
+      let prd_dir = Filename.concat compozy_root "finished-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~status:"completed" ~title:"Done" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary ~status:ready_status prd_dir;
+      let config = compozy_admission_test_config root compozy_root ready_status in
+      let tracker = Issue_tracker.compozy config in
+      let decision = tracker.first_admission (compozy_issue "compozy:finished-feature") in
+      Alcotest.(check bool) "ready non-runnable admission rejected" false decision.Issue_tracker.eligible;
+      Alcotest.(check bool) "ready non-runnable reason" true (contains_substring decision.reason "not runnable");
+      Alcotest.(check bool) "ready status still acknowledged" true
+        (contains_substring decision.reason "matches configured Symphony-ready Status"))
+
+let test_compozy_tracker_first_admission_preserves_lifecycle_dispatch_state () =
+  with_temp_dir "symphony-compozy-admission-lifecycle-boundary-" (fun root ->
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat root "tasks" in
+      let prd_dir = Filename.concat compozy_root "review-feature" in
+      let task_path = Filename.concat prd_dir "task_01.md" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Runnable" task_path;
+      write_compozy_ready_summary ~status:ready_status prd_dir;
+      let config = compozy_admission_test_config root compozy_root ready_status in
+      let run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root prd_dir
+        |> require_ok "build PRD run"
+      in
+      let lifecycle : Compozy_lifecycle.t =
+        {
+          version = 1;
+          run_id = run.id;
+          slug = run.slug;
+          lifecycle_state = Compozy_lifecycle.In_review;
+          dispatch_state = "in_review";
+          stage_agent = Some "reviewer";
+          pr_readiness = Compozy_lifecycle.Not_ready;
+          reason = None;
+          updated_at = "2026-05-12T21:00:00Z";
+        }
+      in
+      Compozy_lifecycle.save config lifecycle |> require_ok "save lifecycle";
+      let tracker = Issue_tracker.compozy config in
+      let decision = tracker.first_admission (compozy_issue "compozy:review-feature") in
+      Alcotest.(check bool) "ready lifecycle admission" true decision.Issue_tracker.eligible;
+      let reloaded = load_compozy_lifecycle config run in
+      Alcotest.(check string) "lifecycle dispatch not replaced by _tasks.md" "in_review"
+        reloaded.dispatch_state;
+      let task =
+        Compozy_tasks_tracker.parse_task_file ~compozy_root task_path
+        |> require_ok "parse task after lifecycle admission"
+      in
+      Alcotest.(check string) "task-step frontmatter remains execution truth" "pending" task.status)
 
 let test_compozy_tracker_fetch_backfills_lifecycle_candidate () =
   with_temp_dir "symphony-compozy-tracker-backfill-" (fun root ->
@@ -9985,6 +10578,7 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
       let task_02 = Filename.concat prd_dir "task_02.md" in
       write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst step sentinel.\n" task_01;
       write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond step sentinel.\n" task_02;
+      write_compozy_ready_summary prd_dir;
       ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
       ignore_runtime_home root;
       let config = compozy_test_config root compozy_root in
@@ -10089,6 +10683,7 @@ let test_compozy_failed_step_retries_then_advances_to_next_step () =
       let task_02 = Filename.concat prd_dir "task_02.md" in
       write_compozy_task ~title:"First step" ~body:"\n# First\n\nFirst retry sentinel.\n" task_01;
       write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nSecond advance sentinel.\n" task_02;
+      write_compozy_ready_summary prd_dir;
       ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
       ignore_runtime_home root;
       let base_config = compozy_test_config root compozy_root in
@@ -10181,6 +10776,7 @@ let test_compozy_dispatch_preserves_external_root_path () =
           Util.mkdir_p prd_dir;
           let task_01 = Filename.concat prd_dir "task_01.md" in
           write_compozy_task ~title:"External step" ~body:"\n# External\n\nExternal root sentinel.\n" task_01;
+          write_compozy_ready_summary prd_dir;
           ignore_runtime_home root;
           let config = compozy_test_config root compozy_root in
           let launches = ref [] in
@@ -10217,6 +10813,7 @@ let test_compozy_final_step_commit_failure_keeps_step_runnable () =
       Util.mkdir_p prd_dir;
       let task_01 = Filename.concat prd_dir "task_01.md" in
       write_compozy_task ~title:"Final step" ~body:"\n# Final\n\nFinal retry sentinel.\n" task_01;
+      write_compozy_ready_summary prd_dir;
       ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
       ignore_runtime_home root;
       let base_config = compozy_test_config root compozy_root in
@@ -10313,6 +10910,7 @@ let test_compozy_finished_run_with_failed_step_stays_failed () =
       Util.mkdir_p prd_dir;
       write_compozy_task ~title:"First step" (Filename.concat prd_dir "task_01.md");
       write_compozy_task ~title:"Second step" (Filename.concat prd_dir "task_02.md");
+      write_compozy_ready_summary prd_dir;
       ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
       ignore_runtime_home root;
       let base_config = compozy_test_config root compozy_root in
@@ -10424,6 +11022,7 @@ let test_compozy_merge_attention_records_blocked_lifecycle () =
       let prd_dir = Filename.concat compozy_root "merge-attention-feature" in
       Util.mkdir_p prd_dir;
       write_compozy_task ~title:"Merge attention" (Filename.concat prd_dir "task_01.md");
+      write_compozy_ready_summary prd_dir;
       ignore (run_ok ~cwd:root "commit Compozy task" "git add .compozy && git commit -q -m compozy-task");
       ignore_runtime_home root;
       let config =
@@ -10882,6 +11481,7 @@ let test_compozy_batch_mode_opens_no_per_step_pull_requests () =
       Util.mkdir_p prd_dir;
       write_compozy_task ~title:"First step" (Filename.concat prd_dir "task_01.md");
       write_compozy_task ~title:"Second step" (Filename.concat prd_dir "task_02.md");
+      write_compozy_ready_summary prd_dir;
       ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
       ignore_runtime_home root;
       let config =
@@ -11474,6 +12074,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
         compozy_max_task_step_retries = 2;
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
+              ready_status = "In review";
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = Some "In review";
@@ -11760,6 +12361,7 @@ let test_orchestrator_commits_stage_before_success_status () =
         compozy_max_task_step_retries = 2;
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
+              ready_status = "In progress";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -11912,6 +12514,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
         compozy_max_task_step_retries = 2;
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
+              ready_status = "In review";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "Done";
@@ -11987,6 +12590,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
         compozy_max_task_step_retries = 2;
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
+              ready_status = "In progress";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -12089,6 +12693,7 @@ let test_stage_commit_requires_code_changes () =
         compozy_max_task_step_retries = 2;
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
+              ready_status = "In progress";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -12153,6 +12758,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
         compozy_max_task_step_retries = 2;
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
+              ready_status = "In progress";
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -12255,6 +12861,7 @@ let base_orchestrator_config root git =
         compozy_max_task_step_retries = 2;
         active_states = [ "Todo"; "In progress" ];
         terminal_states = [ "Done" ];
+        ready_status = "Todo";
         project_status_field = "Status";
         project_status_on_dispatch = Some "In progress";
         project_status_on_success = Some "In review";
@@ -12714,13 +13321,14 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
       let config =
         {
           base_config with
-          Config.tracker =
-            {
-              base_config.tracker with
-              active_states = [ "Backlog"; "Todo" ];
-              project_status_on_dispatch = None;
-              project_status_on_success = Some "Done";
-            };
+	          Config.tracker =
+	            {
+	              base_config.tracker with
+	              active_states = [ "Backlog"; "Todo" ];
+	              ready_status = "Backlog";
+	              project_status_on_dispatch = None;
+	              project_status_on_success = Some "Done";
+	            };
           pull_request = { Config.default_pull_request with enabled = false };
           stage_agents =
             {
@@ -14578,6 +15186,10 @@ let () =
         [
           Alcotest.test_case "defaults omitted tracker kind to github" `Quick
             test_config_defaults_to_github_tracker_kind;
+          Alcotest.test_case "parses ready status and keeps project defaults" `Quick
+            test_config_parses_ready_status_and_preserves_project_defaults;
+          Alcotest.test_case "defaults missing ready status without mutating settings" `Quick
+            test_config_defaults_missing_ready_status_without_mutating_settings;
           Alcotest.test_case "parses minibeads tracker defaults" `Quick
             test_config_parses_minibeads_tracker_defaults;
           Alcotest.test_case "parses minibeads tracker settings" `Quick
@@ -14588,6 +15200,12 @@ let () =
             test_config_parses_compozy_tracker_settings;
           Alcotest.test_case "sorts Compozy task files numerically" `Quick
             test_compozy_task_files_sort_numeric_order;
+          Alcotest.test_case "parses Compozy run-level ready summary" `Quick
+            test_compozy_ready_summary_parses_run_level_status;
+          Alcotest.test_case "parses Compozy non-ready summary" `Quick
+            test_compozy_ready_summary_parses_non_ready_status;
+          Alcotest.test_case "keeps Compozy task steps separate from ready summary errors" `Quick
+            test_compozy_ready_summary_missing_or_malformed_preserves_task_steps;
           Alcotest.test_case "ignores non-task Compozy files" `Quick
             test_compozy_task_files_ignore_non_task_files;
           Alcotest.test_case "parses Compozy task metadata" `Quick
@@ -14640,6 +15258,14 @@ let () =
             test_compozy_initial_pending_step_routes_by_lifecycle_dispatch_state;
           Alcotest.test_case "Compozy relaunch keeps lifecycle dispatch stage" `Quick
             test_compozy_intermediate_relaunch_keeps_lifecycle_dispatch_stage;
+          Alcotest.test_case "Compozy first admission accepts ready runnable runs" `Quick
+            test_compozy_tracker_first_admission_accepts_ready_runnable_run;
+          Alcotest.test_case "Compozy first admission rejects non-ready summaries" `Quick
+            test_compozy_tracker_first_admission_rejects_non_ready_summary;
+          Alcotest.test_case "Compozy first admission keeps runnable gate" `Quick
+            test_compozy_tracker_first_admission_rejects_ready_non_runnable_run;
+          Alcotest.test_case "Compozy first admission preserves lifecycle separation" `Quick
+            test_compozy_tracker_first_admission_preserves_lifecycle_dispatch_state;
           Alcotest.test_case "Compozy tracker backfills lifecycle on fetch" `Quick
             test_compozy_tracker_fetch_backfills_lifecycle_candidate;
           Alcotest.test_case "Compozy tracker uses lifecycle dispatch state" `Quick
@@ -14699,8 +15325,8 @@ let () =
             test_compozy_settings_load_without_github_token;
           Alcotest.test_case "reports missing Compozy root readiness" `Quick
             test_compozy_readiness_missing_root_gap;
-          Alcotest.test_case "reports no runnable Compozy PRD run readiness" `Quick
-            test_compozy_readiness_no_runnable_prd_run_gap;
+          Alcotest.test_case "allows idle Compozy startup with no runnable PRD run" `Quick
+            test_compozy_readiness_no_runnable_prd_run_is_idle;
           Alcotest.test_case "serves Compozy runtime readiness without GitHub gaps" `Quick
             test_compozy_runtime_readiness_valid_fixture_omits_github_gaps;
           Alcotest.test_case "repairs stale Compozy attention lifecycle readiness" `Quick
@@ -14774,6 +15400,7 @@ let () =
           Alcotest.test_case "exposes tracker kind" `Quick test_runtime_state_exposes_tracker_kind;
           Alcotest.test_case "accepts absent Compozy progress" `Quick
             test_runtime_state_absent_compozy_progress_is_compatible;
+          Alcotest.test_case "exposes intake evaluations" `Quick test_runtime_state_exposes_intake_evaluations;
           Alcotest.test_case "renders Compozy lifecycle terminal lines" `Quick
             test_terminal_console_compozy_progress_lines_include_lifecycle;
           Alcotest.test_case "omits absent Compozy lifecycle terminal lines" `Quick
@@ -14788,6 +15415,8 @@ let () =
             test_ordered_queue_resolution_uses_selected_tracker;
           Alcotest.test_case "validates ordered queue through selected tracker" `Quick
             test_ordered_queue_validation_uses_selected_tracker;
+          Alcotest.test_case "validates ordered queue through first-admission readiness" `Quick
+            test_ordered_queue_validation_rejects_not_ready_admission;
           Alcotest.test_case "validates Compozy ordered queue without GitHub Project membership" `Quick
             test_ordered_queue_validation_resolves_compozy_prd_run_without_github_project;
           Alcotest.test_case "reports bare queue slugs under non-Compozy trackers as readiness gaps" `Quick
@@ -14933,6 +15562,10 @@ let () =
             test_issue_tracker_selects_compozy_adapter;
           Alcotest.test_case "preserves active and terminal state semantics" `Quick
             test_issue_tracker_github_state_semantics_match_existing;
+          Alcotest.test_case "constructs admission decisions without changing state helpers" `Quick
+            test_issue_tracker_admission_decision_preserves_state_helpers;
+          Alcotest.test_case "threads ready status to GitHub and Compozy adapters" `Quick
+            test_issue_tracker_ready_status_reaches_github_and_compozy_adapters;
           Alcotest.test_case "maps GitHub rate limits to poll errors" `Quick
             test_issue_tracker_maps_github_rate_limit;
           Alcotest.test_case "preserves lookup diagnostics" `Quick
@@ -14992,6 +15625,14 @@ let () =
             test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
           Alcotest.test_case "dispatches Compozy bare ordered queue by resolved identity" `Quick
             test_orchestrator_dispatches_compozy_bare_ordered_queue_by_resolved_identity;
+          Alcotest.test_case "filters first admission through tracker readiness" `Quick
+            test_orchestrator_filters_first_admission_by_tracker_decision;
+          Alcotest.test_case "keeps queued work pending until ready status" `Quick
+            test_orchestrator_queued_item_waits_until_ready_status;
+          Alcotest.test_case "projects parse-blocked intake evaluations" `Quick
+            test_orchestrator_projects_parse_blocked_intake_evaluation;
+          Alcotest.test_case "preserves admitted work after ready status changes" `Quick
+            test_orchestrator_preserves_admitted_non_ready_work;
           Alcotest.test_case "resumes Compozy bare ordered queue by raw sequence" `Quick
             test_orchestrator_resumes_compozy_bare_ordered_queue_by_raw_sequence;
           Alcotest.test_case "uses raw queue identifiers in skipped diagnostics" `Quick

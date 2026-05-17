@@ -11,14 +11,18 @@ type lookup_result = {
   diagnostics : lookup_diagnostic list;
 }
 
+type admission_decision = { eligible : bool; reason : string }
+
 type t = {
   kind : string;
+  ready_status : string;
   fetch_candidates : unit -> (Issue.t list, poll_error) result;
   fetch_by_identifiers : string list -> (Issue.t option list, string) result;
   fetch_by_identifiers_detailed : string list -> (lookup_result list, string) result;
   update_status : Issue.t -> string -> (unit, string) result;
   readiness_gaps : unit -> Runtime_state.readiness_gap list;
   normalize_identifier : string -> (string, string) result;
+  first_admission : Issue.t -> admission_decision;
   is_active : string -> bool;
   is_terminal : string -> bool;
 }
@@ -60,6 +64,52 @@ let github_issue_numbers identifiers =
 
 let runtime_gap_of_config_gap (gap : Config.readiness_gap) =
   { Runtime_state.requirement = gap.requirement; remediation = gap.remediation }
+
+let active_state_first_admission ~ready_status ~is_active ~is_terminal (issue : Issue.t) =
+  let status = Util.trim issue.Issue.state in
+  if is_terminal status then
+    {
+      eligible = false;
+      reason =
+        Printf.sprintf "Tracker state %S is terminal; configured Symphony-ready Status is %S." status
+          ready_status;
+    }
+  else if is_active status then
+    {
+      eligible = true;
+      reason =
+        Printf.sprintf "Tracker state %S is eligible under the adapter admission contract; configured Symphony-ready Status is %S."
+          status ready_status;
+    }
+  else
+    {
+      eligible = false;
+      reason =
+        Printf.sprintf "Tracker state %S is not active; configured Symphony-ready Status is %S." status ready_status;
+    }
+
+let ready_status_first_admission ~ready_status ~is_terminal (issue : Issue.t) =
+  let status = Util.trim issue.Issue.state in
+  let ready_status = Util.trim ready_status in
+  if is_terminal status then
+    {
+      eligible = false;
+      reason =
+        Printf.sprintf "Tracker state %S is terminal; configured Symphony-ready Status is %S." status
+          ready_status;
+    }
+  else if status = ready_status then
+    {
+      eligible = true;
+      reason = Printf.sprintf "Tracker state %S matches configured Symphony-ready Status." status;
+    }
+  else
+    {
+      eligible = false;
+      reason =
+        Printf.sprintf "Tracker state %S does not match configured Symphony-ready Status %S." status
+          ready_status;
+    }
 
 let github_poll_result f =
   try Ok (f ()) with
@@ -111,16 +161,20 @@ let github ?(fetch_candidates = Github_tracker.fetch_candidate_issues)
               | [ Closed_issue ] -> result.issue
               | _ -> None))
   in
+  let is_active status = Github_tracker.status_is_active ~active_states:config.tracker.active_states status in
+  let is_terminal status = Github_tracker.status_is_terminal ~config:config.tracker status in
   {
     kind = "github";
+    ready_status = config.tracker.ready_status;
     fetch_candidates;
     fetch_by_identifiers;
     fetch_by_identifiers_detailed;
     update_status = (fun issue status -> update_status tracker issue status);
     readiness_gaps = (fun () -> readiness_gaps config |> List.map runtime_gap_of_config_gap);
     normalize_identifier = github_normalize_identifier;
-    is_active = (fun status -> Github_tracker.status_is_active ~active_states:config.tracker.active_states status);
-    is_terminal = (fun status -> Github_tracker.status_is_terminal ~config:config.tracker status);
+    first_admission = ready_status_first_admission ~ready_status:config.tracker.ready_status ~is_terminal;
+    is_active;
+    is_terminal;
   }
 
 let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
@@ -167,8 +221,11 @@ let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
                { identifier; issue; diagnostics = (if Option.is_none issue then [ Missing_issue ] else []) })
              identifiers issues)
   in
+  let is_active = Minibeads_tracker.is_active_status config.tracker in
+  let is_terminal = Minibeads_tracker.is_terminal_status config.tracker in
   {
     kind = "minibeads";
+    ready_status = config.tracker.ready_status;
     fetch_candidates =
       (fun () ->
         match Minibeads_tracker.fetch_candidates ~runner config with
@@ -191,8 +248,10 @@ let minibeads ?(runner = Minibeads_tracker.default_runner) (config : Config.t) =
               (Printf.sprintf
                  "invalid minibeads issue identifier %S; expected an issue identifier like mb-20"
                  raw));
-    is_active = Minibeads_tracker.is_active_status config.tracker;
-    is_terminal = Minibeads_tracker.is_terminal_status config.tracker;
+    first_admission =
+      active_state_first_admission ~ready_status:config.tracker.ready_status ~is_active ~is_terminal;
+    is_active;
+    is_terminal;
   }
 
 let compozy_identifier raw =
@@ -226,6 +285,15 @@ let compozy_status_selects_stage config status =
 let compozy_run_is_candidate config (run : Compozy_tasks_tracker.prd_run) (lifecycle : Compozy_lifecycle.t) =
   Compozy_tasks_tracker.runnable_prd_run run
   || (Compozy_tasks_tracker.completed_prd_run run && compozy_status_selects_stage config lifecycle.dispatch_state)
+
+let compozy_not_runnable_reason config (run : Compozy_tasks_tracker.prd_run) (lifecycle : Compozy_lifecycle.t) =
+  match Option.map Util.trim run.not_runnable_reason with
+  | Some reason when reason <> "" -> reason
+  | _ when Compozy_tasks_tracker.completed_prd_run run && not (compozy_status_selects_stage config lifecycle.dispatch_state)
+    ->
+      Printf.sprintf "completed Compozy PRD Run dispatch state %S does not select a Stage Agent"
+        lifecycle.dispatch_state
+  | _ -> "no runnable Compozy Task Step is available"
 
 let compozy_issue_of_prd_run run (lifecycle : Compozy_lifecycle.t) =
   let issue = Compozy_tasks_tracker.issue_of_prd_run run in
@@ -309,8 +377,78 @@ let compozy config =
                 Compozy_lifecycle.update_dispatch_state config run ~dispatch_state:status
                 |> Result.map (fun _ -> ())))
   in
+  let is_active = compozy_status_is_active config in
+  let is_terminal = compozy_status_is_terminal config in
+  let first_admission issue =
+    let raw_identifier =
+      match Util.trim issue.Issue.identifier with "" -> issue.Issue.id | identifier -> identifier
+    in
+    match compozy_identifier raw_identifier with
+    | Error error -> { eligible = false; reason = error }
+    | Ok identifier -> (
+        match fetch_runs () with
+        | Error error ->
+            { eligible = false; reason = Printf.sprintf "Could not load Compozy PRD Runs for %s: %s" identifier error }
+        | Ok runs -> (
+            match List.find_opt (fun ((run : Compozy_tasks_tracker.prd_run), _) -> run.id = identifier) runs with
+            | None ->
+                { eligible = false; reason = Printf.sprintf "Compozy PRD Run %s was not found." identifier }
+            | Some (run, lifecycle) -> (
+                match
+                  Compozy_tasks_tracker.ready_summary_of_prd_run ~compozy_root:config.Config.tracker.compozy_root run
+                with
+                | Error error ->
+                    {
+                      eligible = false;
+                      reason = Printf.sprintf "Compozy _tasks.md readiness parse failed for %s: %s" identifier error;
+                    }
+                | Ok summary ->
+                    let observed_ready_status = Util.trim summary.Compozy_tasks_tracker.ready_status in
+                    let configured_ready_status = Util.trim config.Config.tracker.ready_status in
+                    if observed_ready_status <> configured_ready_status then
+                      {
+                        eligible = false;
+                        reason =
+                          Printf.sprintf
+                            "Compozy _tasks.md status %S does not match configured Symphony-ready Status %S for %s."
+                            observed_ready_status configured_ready_status identifier;
+                      }
+                    else if not (compozy_run_is_candidate config run lifecycle) then
+                      {
+                        eligible = false;
+                        reason =
+                          Printf.sprintf
+                            "Compozy _tasks.md status %S matches configured Symphony-ready Status, but %s is not runnable: %s."
+                            observed_ready_status identifier (compozy_not_runnable_reason config run lifecycle);
+                      }
+                    else if is_terminal lifecycle.dispatch_state then
+                      {
+                        eligible = false;
+                        reason =
+                          Printf.sprintf
+                            "Compozy _tasks.md status %S matches configured Symphony-ready Status, but lifecycle dispatch state %S is terminal for %s."
+                            observed_ready_status lifecycle.dispatch_state identifier;
+                      }
+                    else if not (is_active lifecycle.dispatch_state) then
+                      {
+                        eligible = false;
+                        reason =
+                          Printf.sprintf
+                            "Compozy _tasks.md status %S matches configured Symphony-ready Status, but lifecycle dispatch state %S is not dispatchable for %s."
+                            observed_ready_status lifecycle.dispatch_state identifier;
+                      }
+                    else
+                      {
+                        eligible = true;
+                        reason =
+                          Printf.sprintf
+                            "Compozy _tasks.md status %S matches configured Symphony-ready Status and %s satisfies existing runnable-run conditions."
+                            observed_ready_status identifier;
+                      })))
+  in
   {
     kind = "compozy_tasks";
+    ready_status = config.Config.tracker.ready_status;
     fetch_candidates;
     fetch_by_identifiers;
     fetch_by_identifiers_detailed;
@@ -321,8 +459,9 @@ let compozy config =
         |> List.map (fun (gap : Compozy_tasks_tracker.readiness_gap) ->
                { Runtime_state.requirement = gap.requirement; remediation = gap.remediation }));
     normalize_identifier = compozy_identifier;
-    is_active = compozy_status_is_active config;
-    is_terminal = compozy_status_is_terminal config;
+    first_admission;
+    is_active;
+    is_terminal;
   }
 
 let make (config : Config.t) =

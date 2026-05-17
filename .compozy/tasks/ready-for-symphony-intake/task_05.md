@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Expose intake eligibility in Runtime State and dashboard"
 type: frontend
 complexity: high
 dependencies:
   - task_04
+
 ---
 
 # Task 05: Expose intake eligibility in Runtime State and dashboard
@@ -29,10 +30,10 @@ Expose first-admission eligibility and blocking reasons through Runtime State so
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add intake-eligibility projection fields to Runtime State serialization and live state output.
-- [ ] 5.2 Update frontend Runtime State decoding to understand the new intake-eligibility shape.
-- [ ] 5.3 Render tracker-neutral intake explanations in dashboard state views without collapsing existing lifecycle or queue status.
-- [ ] 5.4 Extend backend and frontend tests for state projection and UI rendering compatibility.
+- [x] 5.1 Add intake-eligibility projection fields to Runtime State serialization and live state output.
+- [x] 5.2 Update frontend Runtime State decoding to understand the new intake-eligibility shape.
+- [x] 5.3 Render tracker-neutral intake explanations in dashboard state views without collapsing existing lifecycle or queue status.
+- [x] 5.4 Extend backend and frontend tests for state projection and UI rendering compatibility.
 
 ## Implementation Details
 Reference the TechSpec "API Endpoints", "Runtime State Projection", and "Monitoring and Observability" sections. Keep this task focused on state projection and operator visibility; it should not change tracker semantics, queue policy, or run lifecycle ownership introduced by earlier tasks.
@@ -63,12 +64,12 @@ Reference the TechSpec "API Endpoints", "Runtime State Projection", and "Monitor
 
 ## Tests
 - Unit tests:
-  - [ ] Runtime State JSON includes intake-eligibility fields for ready and non-ready tracker-visible items.
-  - [ ] Frontend Runtime State snapshot decoding accepts the new fields without breaking existing snapshots.
-  - [ ] Dashboard rendering distinguishes intake-blocked items from terminal or lifecycle-completed items.
+  - [x] Runtime State JSON includes intake-eligibility fields for ready and non-ready tracker-visible items.
+  - [x] Frontend Runtime State snapshot decoding accepts the new fields without breaking existing snapshots.
+  - [x] Dashboard rendering distinguishes intake-blocked items from terminal or lifecycle-completed items.
 - Integration tests:
-  - [ ] Live state output shows queue-blocked or not-ready reasons while preserving Ordered Queue progress.
-  - [ ] Compozy runs with ready-status parse failures surface intake-specific explanations without replacing Compozy PRD Run progress rendering.
+  - [x] Live state output shows queue-blocked or not-ready reasons while preserving Ordered Queue progress.
+  - [x] Compozy runs with ready-status parse failures surface intake-specific explanations without replacing Compozy PRD Run progress rendering.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -35,6 +35,12 @@ type ordered_queue_entry = {
   skip_reason : string option;
 }
 type ordered_queue = { entries : ordered_queue_entry list }
+type intake_evaluation = {
+  issue_identifier : string;
+  eligible : bool;
+  state : string;
+  reason : string option;
+}
 type compozy_progress = {
   run_id : string;
   slug : string;
@@ -111,6 +117,7 @@ type t = {
   pull_request : pull_request_handoff option;
   pull_requests : pull_request_handoff list;
   ordered_queue : ordered_queue option;
+  intake_evaluations : intake_evaluation list;
   compozy_progress : compozy_progress option;
   startup_reconciliation : startup_reconciliation list;
   task_branch_integrations : task_branch_integration list;
@@ -119,7 +126,7 @@ type t = {
 }
 
 let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue
-    ?compozy_progress ?last_error () =
+    ?(intake_evaluations = []) ?compozy_progress ?last_error () =
   {
     workspace_repository_name;
     tracker_kind;
@@ -136,6 +143,7 @@ let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps
     pull_request = None;
     pull_requests = [];
     ordered_queue;
+    intake_evaluations;
     compozy_progress;
     startup_reconciliation = [];
     task_branch_integrations = [];
@@ -260,6 +268,15 @@ let ordered_queue_entry_to_yojson (row : ordered_queue_entry) =
 let ordered_queue_to_yojson (row : ordered_queue) =
   `Assoc [ ("entries", `List (List.map ordered_queue_entry_to_yojson row.entries)) ]
 
+let intake_evaluation_to_yojson (row : intake_evaluation) =
+  `Assoc
+    [
+      ("issue_identifier", `String row.issue_identifier);
+      ("eligible", `Bool row.eligible);
+      ("state", `String row.state);
+      ("reason", (match row.reason with Some reason -> `String reason | None -> `Null));
+    ]
+
 let handoff_status_of_lifecycle (lifecycle : Compozy_lifecycle.t) =
   match lifecycle.pr_readiness with
   | Compozy_lifecycle.Handoff_attempting
@@ -377,6 +394,26 @@ let ordered_queue_of_yojson json =
   | Some (`List entries) -> Some { entries = List.filter_map ordered_queue_entry_of_yojson entries }
   | _ -> None
 
+let json_bool_member name json =
+  match json_member name json with Some (`Bool value) -> Some value | _ -> None
+
+let intake_evaluation_of_yojson json =
+  match json_string_member "issue_identifier" json with
+  | None -> None
+  | Some issue_identifier ->
+      Some
+        {
+          issue_identifier;
+          eligible = Option.value (json_bool_member "eligible" json) ~default:false;
+          state = Option.value (json_string_member "state" json) ~default:(if Option.value (json_bool_member "eligible" json) ~default:false then "ready" else "not_ready");
+          reason = json_string_member "reason" json;
+        }
+
+let intake_evaluations_from_snapshot_yojson json =
+  match json_member "intake_evaluations" json with
+  | Some (`List evaluations) -> List.filter_map intake_evaluation_of_yojson evaluations
+  | _ -> []
+
 let compozy_progress_of_yojson json =
   match (json_string_member "run_id" json, json_string_member "slug" json) with
   | Some run_id, Some slug ->
@@ -459,6 +496,7 @@ let to_yojson state =
       ("pull_request", (match state.pull_request with Some row -> pull_request_handoff_to_yojson row | None -> `Null));
       ("pull_requests", `List (List.map pull_request_handoff_to_yojson state.pull_requests));
       ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
+      ("intake_evaluations", `List (List.map intake_evaluation_to_yojson state.intake_evaluations));
       ("compozy_progress", (match state.compozy_progress with Some row -> compozy_progress_to_yojson row | None -> `Null));
       ("startup_reconciliation", `List (List.map startup_reconciliation_to_yojson state.startup_reconciliation));
       ("task_branch_integrations", `List (List.map task_branch_integration_to_yojson state.task_branch_integrations));

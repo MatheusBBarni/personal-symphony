@@ -11,6 +11,7 @@ type tracker = {
   compozy_max_task_step_retries : int;
   active_states : string list;
   terminal_states : string list;
+  ready_status : string;
   project_status_field : string;
   project_status_on_dispatch : string option;
   project_status_on_success : string option;
@@ -146,6 +147,7 @@ exception Invalid_config of string
 
 let default_active_states = [ "To-Do"; "Todo"; "In Progress" ]
 let default_terminal_states = [ "Done"; "Closed"; "Cancelled"; "Canceled"; "Duplicate" ]
+let default_ready_status = "Ready for Symphony"
 let default_dispatch_status = "In progress"
 let default_review_status = "In review"
 let default_retry_status = "To-Do"
@@ -445,6 +447,7 @@ let from_workflow workflow =
         compozy_max_task_step_retries = default_compozy_max_task_step_retries;
         active_states;
         terminal_states;
+        ready_status = Option.value (Simple_yaml.get_string "ready_status" tracker_raw) ~default:default_ready_status;
         project_status_field = Option.value (Simple_yaml.get_string "project_status_field" tracker_raw) ~default:"Status";
         project_status_on_dispatch =
           Some (Option.value (Simple_yaml.get_string "project_status_on_dispatch" tracker_raw) ~default:default_dispatch_status);
@@ -1370,6 +1373,7 @@ let from_settings_file ~workspace_root path =
             (json_int "maxTaskStepRetries" compozy_raw ~default:default_compozy_max_task_step_retries);
         active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
         terminal_states;
+        ready_status = json_string "readyStatus" project_raw ~default:default_ready_status |> Util.trim;
         project_status_field = json_string "statusField" project_raw ~default:"Status";
         project_status_on_dispatch =
           Some (Option.value (json_optional_string "startStatus" project_raw) ~default:default_dispatch_status);
@@ -1748,6 +1752,8 @@ let readiness_gaps config =
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
+  if Util.trim config.tracker.ready_status = "" then
+    add "project.readyStatus" "Set project.readyStatus to the Symphony-ready Status for first admission.";
   if config.pull_request.enabled && Util.trim config.pull_request.base_branch = "" then
     add "pullRequest.baseBranch" "Set pullRequest.baseBranch in .symphony/settings.json when pullRequest.enabled is true.";
   if

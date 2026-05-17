@@ -8,6 +8,8 @@ type issueItem = {
   goalUsage: string,
   contextStatus: string,
   harnessIdentity: string,
+  intakeState: string,
+  intakeReason: string,
 }
 
 type queueEntry = {
@@ -171,6 +173,15 @@ let issueStateTone = state =>
   | _ => "border-neutral-700 bg-neutral-900 text-neutral-300"
   }
 
+let intakeStateTone = state =>
+  switch state->toLowerCase {
+  | "ready for intake" => "border-emerald-800 bg-emerald-950/70 text-emerald-100"
+  | "queue blocked" => "border-amber-800 bg-amber-950/70 text-amber-100"
+  | "parse blocked" => "border-red-900 bg-red-950/70 text-red-100"
+  | "already admitted" => "border-sky-800 bg-sky-950/70 text-sky-100"
+  | _ => "border-neutral-700 bg-neutral-900 text-neutral-300"
+  }
+
 let issueCard = (issue: issueItem) =>
   <article
     key=issue.identifier
@@ -215,6 +226,21 @@ let issueCard = (issue: issueItem) =>
         className="mt-3 rounded border border-red-900 bg-red-950/70 px-3 py-2 text-xs leading-5 text-red-100"
       >
         {React.string(message)}
+      </div>
+    }}
+    {switch issue.intakeState {
+    | "" => React.null
+    | label =>
+      <div
+        className={"mt-3 rounded border px-3 py-2 text-xs leading-5 " ++
+        intakeStateTone(label)}
+      >
+        <span className="font-medium"> {React.string("Intake")} </span>
+        <span className="ml-2"> {React.string(label)} </span>
+        {switch issue.intakeReason {
+        | "" => React.null
+        | reason => <div className="mt-1 break-words opacity-90"> {React.string(reason)} </div>
+        }}
       </div>
     }}
     {switch issue.goalUsage {
