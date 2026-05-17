@@ -3814,6 +3814,8 @@ let test_runtime_state_absent_compozy_progress_is_compatible () =
     (Runtime_state.tracker_kind_from_snapshot_yojson older_snapshot);
   Alcotest.(check bool) "older snapshot progress absent" true
     (Option.is_none (Runtime_state.compozy_progress_from_snapshot_yojson older_snapshot));
+  Alcotest.(check int) "older snapshot progress list absent" 0
+    (List.length (Runtime_state.compozy_progresses_from_snapshot_yojson older_snapshot));
   let older_progress_snapshot =
     `Assoc
       [
@@ -3834,10 +3836,13 @@ let test_runtime_state_absent_compozy_progress_is_compatible () =
   | Some parsed ->
       Alcotest.(check string) "legacy parsed run id" "compozy:legacy-feature" parsed.Runtime_state.run_id;
       Alcotest.(check (option string)) "legacy lifecycle absent" None parsed.lifecycle_state;
-      Alcotest.(check (option string)) "legacy readiness absent" None parsed.pr_readiness
+      Alcotest.(check (option string)) "legacy readiness absent" None parsed.pr_readiness;
+      Alcotest.(check int) "legacy progress list fallback" 1
+        (List.length (Runtime_state.compozy_progresses_from_snapshot_yojson older_progress_snapshot))
   | None -> Alcotest.fail "expected legacy Compozy progress to parse"
 
-let compozy_progress_fixture ?(current_step = Some "task_02.md") ?(lifecycle_state = Some "pr_handoff")
+let compozy_progress_fixture ?(current_step = Some "task_02.md") ?(next_step = Some "task_03.md")
+    ?(lifecycle_state = Some "pr_handoff")
     ?(dispatch_state = Some "In review") ?(stage_agent = Some "reviewer")
     ?(pr_readiness = Some "handoff_failed") ?(reason = Some "Batch Pull Request handoff failed.")
     ?(handoff_status = Some "handoff_failed") () =
@@ -3845,6 +3850,7 @@ let compozy_progress_fixture ?(current_step = Some "task_02.md") ?(lifecycle_sta
     Runtime_state.run_id = "compozy:compozy-tasks-run-integration";
     slug = "compozy-tasks-run-integration";
     current_step;
+    next_step;
     completed = 2;
     failed = 1;
     skipped = 0;
@@ -3884,6 +3890,7 @@ let test_terminal_console_compozy_progress_lines_include_lifecycle () =
       "Handoff";
       "Reason";
       "Current step";
+      "Next step";
       "Steps";
     ]
     labels;
@@ -3895,6 +3902,7 @@ let test_terminal_console_compozy_progress_lines_include_lifecycle () =
   Alcotest.(check (option string)) "reason" (Some "Batch Pull Request handoff failed.")
     (List.assoc_opt "Reason" lines);
   Alcotest.(check (option string)) "current step" (Some "task_02.md") (List.assoc_opt "Current step" lines);
+  Alcotest.(check (option string)) "next step" (Some "task_03.md") (List.assoc_opt "Next step" lines);
   Alcotest.(check (option string)) "step counts" (Some "2 completed, 1 failed, 0 skipped, 8 total")
     (List.assoc_opt "Steps" lines)
 
@@ -3913,6 +3921,7 @@ let test_terminal_console_compozy_progress_lines_omit_absent_lifecycle () =
   Alcotest.(check bool) "reason omitted" false (List.mem "Reason" labels);
   Alcotest.(check (option string)) "current step placeholder preserved" (Some "none")
     (List.assoc_opt "Current step" lines);
+  Alcotest.(check (option string)) "next step preserved" (Some "task_03.md") (List.assoc_opt "Next step" lines);
   Alcotest.(check (option string)) "step counts preserved" (Some "2 completed, 1 failed, 0 skipped, 8 total")
     (List.assoc_opt "Steps" lines)
 
@@ -3936,9 +3945,12 @@ let test_runtime_state_exposes_compozy_progress () =
       let open Yojson.Safe.Util in
       Alcotest.(check string) "tracker kind" "compozy_tasks" (json |> member "tracker_kind" |> to_string);
       let payload = json |> member "compozy_progress" in
+      let payloads = json |> member "compozy_progresses" |> to_list in
+      Alcotest.(check int) "progress list length" 1 (List.length payloads);
       Alcotest.(check string) "run id" "compozy:compozy-tasks-run-integration" (payload |> member "run_id" |> to_string);
       Alcotest.(check string) "slug" "compozy-tasks-run-integration" (payload |> member "slug" |> to_string);
       Alcotest.(check string) "current step" "task_02.md" (payload |> member "current_step" |> to_string);
+      Alcotest.(check string) "next step" "task_05.md" (payload |> member "next_step" |> to_string);
       Alcotest.(check int) "completed" 1 (payload |> member "completed" |> to_int);
       Alcotest.(check int) "failed" 1 (payload |> member "failed" |> to_int);
       Alcotest.(check int) "skipped" 1 (payload |> member "skipped" |> to_int);
@@ -3950,14 +3962,20 @@ let test_runtime_state_exposes_compozy_progress () =
       Alcotest.(check bool) "readiness absent" true (optional_field_absent "pr_readiness");
       Alcotest.(check bool) "reason absent" true (optional_field_absent "reason");
       Alcotest.(check bool) "handoff absent" true (optional_field_absent "handoff_status");
-      match Runtime_state.compozy_progress_from_snapshot_yojson json with
+      (match Runtime_state.compozy_progress_from_snapshot_yojson json with
       | Some parsed ->
           Alcotest.(check string) "parsed run id" progress.run_id parsed.Runtime_state.run_id;
           Alcotest.(check (option string)) "parsed current step" (Some "task_02.md") parsed.current_step;
+          Alcotest.(check (option string)) "parsed next step" (Some "task_05.md") parsed.next_step;
           Alcotest.(check int) "parsed total" 5 parsed.total;
           Alcotest.(check (option string)) "parsed lifecycle absent" None parsed.lifecycle_state;
           Alcotest.(check (option string)) "parsed readiness absent" None parsed.pr_readiness
-      | None -> Alcotest.fail "expected parsed Compozy progress")
+      | None -> Alcotest.fail "expected parsed Compozy progress");
+      (match Runtime_state.compozy_progresses_from_snapshot_yojson json with
+      | [ parsed ] ->
+          Alcotest.(check string) "parsed list run id" progress.run_id parsed.Runtime_state.run_id;
+          Alcotest.(check (option string)) "parsed list next step" (Some "task_05.md") parsed.next_step
+      | parsed -> Alcotest.fail (Printf.sprintf "expected one parsed Compozy progress, got %d" (List.length parsed))))
 
 let test_runtime_state_compozy_progress_merges_lifecycle_metadata () =
   with_temp_dir "symphony-compozy-progress-lifecycle-" (fun root ->
@@ -4755,6 +4773,7 @@ let test_terminal_console_model_projects_compozy_progress () =
       Runtime_state.run_id = "compozy:\027[31mrun\027[0m";
       slug = "tui-rewrite";
       current_step = Some "task_02.md";
+      next_step = Some "task_03.md";
       completed = 1;
       failed = 2;
       skipped = 3;
@@ -4775,11 +4794,12 @@ let test_terminal_console_model_projects_compozy_progress () =
   | Some projected ->
       Alcotest.(check string) "run id sanitized" "compozy:run" projected.Terminal_console_model.run_id;
       Alcotest.(check (option string)) "current step" (Some "task_02.md") projected.current_step;
+      Alcotest.(check (option string)) "next step" (Some "task_03.md") projected.next_step;
       Alcotest.(check int) "completed" 1 projected.completed;
       Alcotest.(check int) "failed" 2 projected.failed;
       Alcotest.(check int) "skipped" 3 projected.skipped;
       Alcotest.(check int) "total" 9 projected.total;
-      Alcotest.(check string) "summary" "tui-rewrite: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
+      Alcotest.(check string) "summary" "tui-rewrite: task_02.md -> task_03.md (1 completed, 2 failed, 3 skipped, 9 total)"
         projected.summary
   | None -> Alcotest.fail "expected Compozy progress"
 
@@ -4916,6 +4936,7 @@ let terminal_console_compozy_fixture =
     Runtime_state.run_id = "compozy:run";
     slug = "tui-rewrite";
     current_step = Some "task_04.md";
+    next_step = Some "task_05.md";
     completed = 2;
     failed = 1;
     skipped = 3;
@@ -5022,11 +5043,83 @@ let test_terminal_console_tui_queue_flags_current_compozy_task_step () =
       ~compozy_progress:terminal_console_compozy_fixture ()
   in
   let lines = terminal_console_panel state "Queue" in
-  check_line_contains "queue row current step" lines "Current Compozy Task Step: task_04.md";
-  check_line_contains "queue row step progress" lines "progress completed 2, failed 1, skipped 3, total 8";
+  check_wrapped_text_contains "queue row current and next step" lines "Compozy Task Step: task_04.md -> next task_05.md";
+  check_wrapped_text_contains "queue row step progress" lines "progress 2/8 completed, 1 failed, 3 skipped";
   let expanded = Shell.initial_model state |> Shell.apply_key Shell.Space_key in
   let expanded_lines = Shell.render_model expanded.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
-  check_line_contains "expanded current step" expanded_lines "Current Compozy Task Step: task_04.md"
+  check_line_contains "expanded current step" expanded_lines "Current Compozy Task Step: task_04.md";
+  check_line_contains "expanded next step" expanded_lines "Next Compozy Task Step: task_05.md"
+
+let test_terminal_console_tui_maps_compozy_steps_per_run () =
+  let first_issue, first_running =
+    terminal_console_running_row ~identifier:"compozy:first-feature" ~title:"Compozy PRD run: first-feature" "C1"
+  in
+  let second_issue, second_running =
+    terminal_console_running_row ~identifier:"compozy:second-feature" ~title:"Compozy PRD run: second-feature" "C2"
+  in
+  let progress run_id slug current_step next_step completed total =
+    {
+      Runtime_state.run_id;
+      slug;
+      current_step = Some current_step;
+      next_step = Some next_step;
+      completed;
+      failed = 0;
+      skipped = 0;
+      total;
+      lifecycle_state = None;
+      dispatch_state = None;
+      stage_agent = None;
+      pr_readiness = None;
+      reason = None;
+      handoff_status = None;
+    }
+  in
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "compozy:first-feature";
+            title = Some "Compozy PRD run: first-feature";
+            state = "running";
+            skip_reason = None;
+          };
+          {
+            Runtime_state.issue_identifier = "compozy:second-feature";
+            title = Some "Compozy PRD run: second-feature";
+            state = "running";
+            skip_reason = None;
+          };
+        ];
+    }
+  in
+  let state =
+    {
+      (Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:queue
+         ~compozy_progresses:
+           [
+             progress "compozy:first-feature" "first-feature" "task_01.md" "task_02.md" 0 2;
+             progress "compozy:second-feature" "second-feature" "task_05.md" "task_06.md" 4 6;
+           ]
+         ())
+      with
+      issues = [ first_issue; second_issue ];
+      running = [ first_running; second_running ];
+    }
+  in
+  let queue_lines = terminal_console_panel state "Queue" in
+  check_wrapped_text_contains "queue first run current and next step" queue_lines
+    "compozy:first-feature Compozy PRD run: first-feature - Compozy Task Step: task_01.md -> next task_02.md";
+  check_wrapped_text_contains "queue second run current and next step" queue_lines
+    "compozy:second-feature Compozy PRD run: second-feature - Compozy Task Step: task_05.md -> next task_06.md";
+  let task_lines = terminal_console_panel state "Tasks" in
+  check_wrapped_text_contains "tasks first run row" task_lines "compozy:first-feature Compozy PRD run: first-feature";
+  check_wrapped_text_contains "tasks first run Compozy detail" task_lines
+    "Compozy Task Step: task_01.md -> next task_02.md";
+  check_wrapped_text_contains "tasks second run row" task_lines "compozy:second-feature Compozy PRD run: second-feature";
+  check_wrapped_text_contains "tasks second run Compozy detail" task_lines
+    "Compozy Task Step: task_05.md -> next task_06.md"
 
 let test_terminal_console_tui_queue_space_expands_selected_stage () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -10039,7 +10132,12 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
         (compozy_task_status workspace_compozy_root workspace_task_01);
       Alcotest.(check bool) "first prompt includes first task" true (contains_substring first_prompt "First step sentinel.");
       let first_child = completed_compozy_child first_issue first_workspace in
-      Orchestrator.mark_completed orchestrator first_child;
+      let (), _stdout, transition_stderr =
+        capture_process_output (fun () -> Orchestrator.mark_completed orchestrator first_child)
+      in
+      Alcotest.(check bool) "transition log says starting next task" true
+        (contains_substring transition_stderr "starting" && contains_substring transition_stderr "task_02.md"
+       && contains_substring transition_stderr "from" && contains_substring transition_stderr "task_01.md");
       let first_progress =
         match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
         | Some progress -> progress
@@ -10078,6 +10176,100 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
         final_progress.lifecycle_state;
       Alcotest.(check (option string)) "final readiness follows policy" (Some "disabled")
         final_progress.pr_readiness)
+
+let test_compozy_reap_preserves_relaunched_next_step_child () =
+  with_temp_dir "symphony-compozy-reap-next-child-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "reap-feature" in
+      Util.mkdir_p prd_dir;
+      let task_01 = Filename.concat prd_dir "task_01.md" in
+      let task_02 = Filename.concat prd_dir "task_02.md" in
+      write_compozy_task ~title:"First step" ~body:"\n# First\n\nReap first sentinel.\n" task_01;
+      write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nReap second sentinel.\n" task_02;
+      ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
+      ignore_runtime_home root;
+      let cleanup_pid pid =
+        try
+          match Unix.waitpid [ Unix.WNOHANG ] pid with
+          | 0, _ ->
+              (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+              ignore (try Unix.waitpid [] pid with Unix.Unix_error _ -> (0, Unix.WEXITED 0))
+          | _ -> ()
+        with Unix.Unix_error (Unix.ECHILD, _, _) -> ()
+      in
+      let pids = ref [] in
+      Fun.protect
+        ~finally:(fun () -> List.iter cleanup_pid !pids)
+        (fun () ->
+          let config = compozy_test_config root compozy_root in
+          let launches = ref [] in
+          let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+            let launch_number = List.length !launches + 1 in
+            let command = if launch_number = 1 then "true" else "sleep 30" in
+            let pid =
+              Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; command |] Unix.stdin Unix.stdout Unix.stderr
+            in
+            pids := pid :: !pids;
+            launches := (issue, workspace, prompt, pid) :: !launches;
+            {
+              Orchestrator.pid = Some pid;
+              session_id = Some (string_of_int launch_number);
+              event = "test-launch";
+              stdout_path = None;
+              stderr_path = None;
+            }
+          in
+          let commit_stage _config _workspace _issue _stage _next_status = Ok () in
+          let orchestrator =
+            Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+          in
+          Orchestrator.poll_once orchestrator;
+          let first_issue, first_workspace, first_prompt, _first_pid =
+            match List.rev !launches with
+            | [ launch ] -> launch
+            | _ -> Alcotest.fail "expected first Compozy launch"
+          in
+          let workspace_compozy_root = Filename.concat (Filename.concat first_workspace.path ".compozy") "tasks" in
+          let workspace_task_01 =
+            Filename.concat (Filename.concat workspace_compozy_root "reap-feature") "task_01.md"
+          in
+          let workspace_task_02 =
+            Filename.concat (Filename.concat workspace_compozy_root "reap-feature") "task_02.md"
+          in
+          Alcotest.(check string) "first task started" "in_progress"
+            (compozy_task_status workspace_compozy_root workspace_task_01);
+          Alcotest.(check bool) "first prompt includes first task" true
+            (contains_substring first_prompt "Reap first sentinel.");
+          Unix.sleepf 0.1;
+          Orchestrator.reap_children orchestrator;
+          let second_issue, second_workspace, second_prompt, _second_pid =
+            match List.rev !launches with
+            | [ _first; second ] -> second
+            | _ -> Alcotest.fail "expected reap to relaunch next Compozy task"
+          in
+          Alcotest.(check string) "same workspace" first_workspace.path second_workspace.path;
+          Alcotest.(check string) "first task completed" "completed"
+            (compozy_task_status workspace_compozy_root workspace_task_01);
+          Alcotest.(check string) "second task running" "in_progress"
+            (compozy_task_status workspace_compozy_root workspace_task_02);
+          Alcotest.(check bool) "second prompt includes second task" true
+            (contains_substring second_prompt "Reap second sentinel.");
+          Alcotest.(check int) "relaunched process remains tracked" 1 (List.length orchestrator.Orchestrator.children);
+          (match orchestrator.Orchestrator.children with
+          | [ child ] ->
+              Alcotest.(check string) "tracked child is next step" second_issue.Issue.id child.issue_id;
+              Orchestrator.kill_child child
+          | _ -> Alcotest.fail "expected one tracked child after reap");
+          let progress =
+            match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
+            | Some progress -> progress
+            | None -> Alcotest.fail "expected Compozy progress after reap"
+          in
+          Alcotest.(check (option string)) "runtime current step" (Some "task_02.md") progress.current_step;
+          Alcotest.(check (option string)) "runtime next step" None progress.next_step;
+          Alcotest.(check int) "runtime completed count" 1 progress.completed;
+          Alcotest.(check string) "first issue completed" first_issue.Issue.identifier progress.run_id))
 
 let test_compozy_failed_step_retries_then_advances_to_next_step () =
   with_temp_dir "symphony-compozy-retry-advance-" (fun root ->
@@ -14829,6 +15021,8 @@ let () =
             test_terminal_console_tui_ordered_queue_panel_states;
           Alcotest.test_case "flags current Compozy Task Step in Queue" `Quick
             test_terminal_console_tui_queue_flags_current_compozy_task_step;
+          Alcotest.test_case "maps Compozy Task Steps per Queue and Tasks row" `Quick
+            test_terminal_console_tui_maps_compozy_steps_per_run;
           Alcotest.test_case "expands Queue stage details with Space" `Quick
             test_terminal_console_tui_queue_space_expands_selected_stage;
           Alcotest.test_case "renders Logs panel background output" `Quick
@@ -15037,6 +15231,8 @@ let () =
             test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change;
           Alcotest.test_case "relaunches Compozy task steps in one worktree" `Quick
             test_compozy_completion_relaunches_next_step_in_same_worktree;
+          Alcotest.test_case "keeps reaped Compozy next-step process tracked" `Quick
+            test_compozy_reap_preserves_relaunched_next_step_child;
           Alcotest.test_case "hands completed Compozy runs to reviewer before Task Pull Request" `Quick
             test_compozy_final_step_hands_off_to_reviewer_before_task_pr;
           Alcotest.test_case "retries failed Compozy task step then advances" `Quick

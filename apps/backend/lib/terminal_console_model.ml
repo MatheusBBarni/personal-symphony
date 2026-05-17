@@ -30,6 +30,7 @@ type compozy_progress = {
   run_id : string;
   slug : string;
   current_step : string option;
+  next_step : string option;
   completed : int;
   failed : int;
   skipped : int;
@@ -45,6 +46,7 @@ type t = {
   readiness : readiness_row list;
   queue : task_row list;
   compozy : compozy_progress option;
+  compozy_progresses : compozy_progress list;
   safe_aids : safe_aid list;
   last_error : string option;
 }
@@ -252,13 +254,15 @@ let compozy_progress (progress : Runtime_state.compozy_progress) =
     run_id = sanitize progress.run_id;
     slug;
     current_step;
+    next_step = sanitize_option progress.next_step;
     completed = progress.completed;
     failed = progress.failed;
     skipped = progress.skipped;
     total = progress.total;
     summary =
-      Printf.sprintf "%s: %s (%d completed, %d failed, %d skipped, %d total)" slug step progress.completed
-        progress.failed progress.skipped progress.total;
+      let next = match sanitize_option progress.next_step with Some next -> " -> " ^ next | None -> "" in
+      Printf.sprintf "%s: %s%s (%d completed, %d failed, %d skipped, %d total)" slug step next
+        progress.completed progress.failed progress.skipped progress.total;
   }
 
 let first_pending_queue_entry state =
@@ -355,6 +359,11 @@ let of_runtime_state state =
     match state.ordered_queue with Some queue -> List.map queue_row queue.entries | None -> []
   in
   let compozy = Option.map compozy_progress state.compozy_progress in
+  let compozy_progresses =
+    match List.map compozy_progress state.compozy_progresses with
+    | [] -> Option.to_list compozy
+    | progresses -> progresses
+  in
   {
     generated_at = Util.now_iso8601 ();
     mode;
@@ -363,6 +372,7 @@ let of_runtime_state state =
     readiness;
     queue;
     compozy;
+    compozy_progresses;
     safe_aids = safe_aids state;
     last_error = sanitize_option state.last_error;
   }

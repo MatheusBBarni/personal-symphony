@@ -115,6 +115,15 @@ let render_dispatch_started issue =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "started")
     issue.Issue.identifier issue.title
 
+let render_compozy_task_started issue_identifier task_file previous_task_file =
+  match previous_task_file with
+  | Some previous_task_file ->
+      Printf.eprintf "%s%s %s %s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch")
+        (green "starting") issue_identifier (dim "task") task_file (dim "from") previous_task_file
+  | None ->
+      Printf.eprintf "%s%s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch")
+        (green "starting") issue_identifier (dim "task") task_file
+
 let render_dispatch_retrying ?task_file issue_identifier attempt error =
   match task_file with
   | Some task_file ->
@@ -1884,6 +1893,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
       Runtime_state.empty ~workspace_repository_name ~tracker_kind:tracker.kind ~status_order:(Config.project_status_order config)
         ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
         ?compozy_progress:(Runtime_state.initial_compozy_progress config)
+        ~compozy_progresses:(Runtime_state.initial_compozy_progresses config)
         ();
     children = [];
     retry_due = Hashtbl.create 16;
@@ -1954,6 +1964,27 @@ let dispatch_retry_task_file ?workspace config issue =
     | Ok run -> Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) run.current_step
     | Error _ -> None
 
+let previous_compozy_step_file (step : Compozy_tasks_tracker.task_step) steps =
+  steps
+  |> List.fold_left
+       (fun previous (candidate : Compozy_tasks_tracker.task_step) ->
+         if candidate.index >= step.index then previous
+         else
+           match previous with
+           | None -> Some candidate
+           | Some previous when candidate.index > previous.index -> Some candidate
+           | Some _ -> previous)
+       None
+  |> Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file)
+
+let compozy_task_start_context config workspace issue =
+  match compozy_prd_run_for_workspace_issue config workspace issue with
+  | Error _ -> None
+  | Ok run -> (
+      match run.current_step with
+      | None -> None
+      | Some step -> Some (step.file, previous_compozy_step_file step run.steps))
+
 let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_tracker.prd_run)
     (step : Compozy_tasks_tracker.task_step) status =
   let compozy_root = compozy_workspace_root config workspace in
@@ -1965,11 +1996,25 @@ let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_t
       Compozy_tasks_tracker.update_status ~compozy_root path status
 
 let update_compozy_progress orchestrator run =
+  let progress = Runtime_state.compozy_progress_of_prd_run_for_runtime orchestrator.config run in
+  let upsert_progress progresses =
+    let replaced = ref false in
+    let progresses =
+      List.map
+        (fun existing ->
+          if existing.Runtime_state.run_id = progress.run_id then (
+            replaced := true;
+            progress)
+          else existing)
+        progresses
+    in
+    if !replaced then progresses else progress :: progresses
+  in
   update_state orchestrator (fun state ->
     {
       state with
-      Runtime_state.compozy_progress =
-        Some (Runtime_state.compozy_progress_of_prd_run_for_runtime orchestrator.config run);
+      Runtime_state.compozy_progress = Some progress;
+      compozy_progresses = upsert_progress state.compozy_progresses;
     })
 
 let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
@@ -3047,6 +3092,14 @@ let dispatch_issue orchestrator issue =
                 None
               with exn -> Some ("Agent Prompt Archive persistence failed: " ^ Printexc.to_string exn)
             in
+            (match
+               if is_compozy_prd_run_child orchestrator issue then
+                 compozy_task_start_context orchestrator.config workspace issue
+               else None
+             with
+            | Some (task_file, previous_task_file) ->
+                render_compozy_task_started issue.identifier task_file previous_task_file
+            | None -> ());
             let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
             let now = Util.now_iso8601 () in
             let stage_agent, stage_states = selected_stage_fields stage in
@@ -3571,6 +3624,7 @@ let refresh_child_output ?(force = false) orchestrator child =
 
 let reap_children orchestrator =
   let now = Unix.time () in
+  let original_children = orchestrator.children in
   let finished, still_running =
     List.fold_left
       (fun (finished, running) child ->
@@ -3606,7 +3660,14 @@ let reap_children orchestrator =
               (child.issue_id :: finished, running))
       ([], []) orchestrator.children
   in
-  orchestrator.children <- List.rev still_running;
+  (* Completion handlers may synchronously dispatch a follow-up child, for
+     example the next Compozy Task Step. Keep those children when replacing the
+     original reaped set. *)
+  let launched_during_reap =
+    orchestrator.children
+    |> List.filter (fun child -> not (List.exists (fun original -> original == child) original_children))
+  in
+  orchestrator.children <- List.rev still_running @ List.rev launched_during_reap;
   ignore finished
 
 let poll_once orchestrator =

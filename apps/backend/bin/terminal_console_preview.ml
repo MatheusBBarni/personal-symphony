@@ -61,6 +61,7 @@ let compozy_progress =
     Runtime_state.run_id = "preview-run-20260514";
     slug = "backend-tui-preview";
     current_step = Some "task_03_visual_review.md";
+    next_step = Some "task_04_layout_polish.md";
     completed = 4;
     failed = 1;
     skipped = 1;

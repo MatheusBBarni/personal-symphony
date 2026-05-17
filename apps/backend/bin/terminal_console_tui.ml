@@ -417,20 +417,41 @@ let compozy_row_matches (progress : Projection.compozy_progress) (row : Projecti
   row.id = progress.run_id || row.id = "compozy:" ^ progress.slug
   || row.title = "Compozy PRD run: " ^ progress.slug
 
+let compozy_progress_for_row (snapshot : Projection.t) row =
+  match List.find_opt (fun progress -> compozy_row_matches progress row) snapshot.Projection.compozy_progresses with
+  | Some _ as progress -> progress
+  | None -> (
+      match snapshot.Projection.compozy with
+      | Some progress when compozy_row_matches progress row -> Some progress
+      | _ -> None)
+
 let compozy_task_step_summary (progress : Projection.compozy_progress) =
-  let step = option_value ~default:"No active Compozy Task Step" progress.current_step in
-  Printf.sprintf
-    "Current Compozy Task Step: %s | progress completed %d, failed %d, skipped %d, total %d"
-    step progress.completed progress.failed progress.skipped progress.total
+  let step = option_value ~default:"none" progress.current_step in
+  let next = option_value ~default:"none" progress.next_step in
+  Printf.sprintf "Compozy Task Step: %s -> next %s | progress %d/%d completed, %d failed, %d skipped" step next
+    progress.completed progress.total progress.failed progress.skipped
+
+let compozy_task_step_lines (progress : Projection.compozy_progress) =
+  [
+    "    Current Compozy Task Step: " ^ option_value ~default:"none" progress.current_step;
+    "    Next Compozy Task Step: " ^ option_value ~default:"none" progress.next_step;
+    Printf.sprintf "    Compozy progress: completed %d | failed %d | skipped %d | total %d" progress.completed
+      progress.failed progress.skipped progress.total;
+  ]
 
 let compozy_detail_for_row (snapshot : Projection.t) row =
-  match snapshot.Projection.compozy with
-  | Some progress when compozy_row_matches progress row -> Some (compozy_task_step_summary progress)
-  | _ -> None
+  Option.map compozy_task_step_summary (compozy_progress_for_row snapshot row)
 
-let task_row_line ?(prefix = "") (row : Projection.task_row) =
+let task_row_line ?(prefix = "") ?compozy_detail (row : Projection.task_row) =
   let base = Printf.sprintf "%s%s %s %s" prefix (state_token row.state) row.id row.title in
-  match row.detail with None -> base | Some detail -> base ^ " - " ^ shorten detail
+  let detail =
+    match (row.detail, compozy_detail) with
+    | None, None -> None
+    | Some detail, None -> Some detail
+    | None, Some compozy_detail -> Some compozy_detail
+    | Some detail, Some compozy_detail -> Some (compozy_detail ^ " | " ^ detail)
+  in
+  match detail with None -> base | Some detail -> base ^ " - " ^ shorten detail
 
 let row_marker selected index = if selected = index then "> " else "  "
 
@@ -448,7 +469,7 @@ let queue_row_line ?(next = false) ?compozy_detail (row : Projection.task_row) =
     | None, None -> None
     | Some detail, None -> Some detail
     | None, Some compozy_detail -> Some compozy_detail
-    | Some detail, Some compozy_detail -> Some (detail ^ " | " ^ compozy_detail)
+    | Some detail, Some compozy_detail -> Some (compozy_detail ^ " | " ^ detail)
   in
   match detail with None -> base | Some detail -> base ^ " - " ^ shorten detail
 
@@ -478,7 +499,9 @@ let tasks_panel ?terminal_size ?(interaction = default_interaction) (snapshot : 
     | [] -> [ idle_home_line snapshot.mode ]
     | rows ->
         rows
-        |> List.mapi (fun index row -> task_row_line ~prefix:(row_marker interaction.selected_rows.active index) row)
+        |> List.mapi (fun index row ->
+               let compozy_detail = compozy_detail_for_row snapshot row in
+               task_row_line ~prefix:(row_marker interaction.selected_rows.active index) ?compozy_detail row)
         |> intersperse (task_separator_line width)
   in
   let next_lines =
@@ -568,8 +591,8 @@ let matching_active_task snapshot (row : Projection.task_row) =
 let queue_expansion_lines snapshot (row : Projection.task_row) =
   let task_line = Printf.sprintf "    Task: %s %s" row.id row.title in
   let compozy_lines =
-    match compozy_detail_for_row snapshot row with
-    | Some detail -> [ "    " ^ detail ]
+    match compozy_progress_for_row snapshot row with
+    | Some progress -> compozy_task_step_lines progress
     | None -> []
   in
   match matching_active_task snapshot row with
@@ -664,6 +687,7 @@ let task_detail_panel ?terminal_size ?(interaction = default_interaction) (snaps
           Printf.sprintf "Task: %s %s" row.id row.title;
           "State: " ^ state_token row.state;
         ]
+        @ (match compozy_progress_for_row snapshot row with Some progress -> compozy_task_step_lines progress | None -> [])
         @ optional_join "Issue metadata: " issue_metadata
         @ optional_join "Stage state: " stage_state
         @ optional_join "Harness identity: " harness_identity
