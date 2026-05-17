@@ -1154,6 +1154,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -1243,6 +1244,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -1359,6 +1361,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -1469,6 +1472,7 @@ let test_config_parses_ready_status_and_preserves_project_defaults () =
 }|};
       let config = Config.from_settings_file ~workspace_root:root settings in
       Alcotest.(check string) "ready status" "Ready for Intake" config.tracker.ready_status;
+      Alcotest.(check bool) "ready status explicit" true config.tracker.ready_status_explicit;
       Alcotest.(check (list string)) "active states default" Config.default_active_states
         config.tracker.active_states;
       Alcotest.(check (list string)) "terminal states default"
@@ -1493,6 +1497,7 @@ let test_config_defaults_missing_ready_status_without_mutating_settings () =
       let before = Util.read_file settings in
       let config = Config.from_settings_file ~workspace_root:root settings in
       Alcotest.(check string) "default ready status" Config.default_ready_status config.tracker.ready_status;
+      Alcotest.(check bool) "ready status default is not opt-in" false config.tracker.ready_status_explicit;
       Alcotest.(check string) "settings unchanged" before (Util.read_file settings))
 
 let test_config_parses_minibeads_tracker_defaults () =
@@ -2886,6 +2891,7 @@ let test_project_status_order_uses_transition_flow () =
       active_states = [ "Backlog"; "Todo"; "To-Do"; "In progress"; "In Progress"; "In review" ];
       terminal_states = [ "Done"; "Closed"; "Cancelled" ];
       ready_status = Config.default_ready_status;
+              ready_status_explicit = true;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -4480,6 +4486,7 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -6122,6 +6129,7 @@ let test_orchestrator_notifies_each_state_mutation () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6175,6 +6183,7 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6292,6 +6301,7 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6417,6 +6427,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6535,6 +6546,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -6744,14 +6756,22 @@ let test_issue_tracker_admission_decision_preserves_state_helpers () =
       let active = tracker.first_admission (issue "Todo") in
       let terminal = tracker.first_admission (issue "Done") in
       let inactive = tracker.first_admission (issue "Backlog") in
+      let explicit_tracker =
+        Issue_tracker.make { config with Config.tracker = { config.tracker with ready_status_explicit = true } }
+      in
+      let explicit_ready = explicit_tracker.first_admission (issue config.tracker.ready_status) in
+      let explicit_active = explicit_tracker.first_admission (issue "Todo") in
       Alcotest.(check bool) "active remains active" true (tracker.is_active "Todo");
       Alcotest.(check bool) "terminal remains terminal" true (tracker.is_terminal "Done");
-      Alcotest.(check bool) "ready admission eligible" true ready.Issue_tracker.eligible;
-      Alcotest.(check bool) "active non-ready admission rejected" false active.Issue_tracker.eligible;
+      Alcotest.(check bool) "legacy default ready status is not an active admission state" false
+        ready.Issue_tracker.eligible;
+      Alcotest.(check bool) "explicit ready admission eligible" true explicit_ready.Issue_tracker.eligible;
+      Alcotest.(check bool) "legacy active admission preserved" true active.Issue_tracker.eligible;
+      Alcotest.(check bool) "explicit active non-ready admission rejected" false explicit_active.Issue_tracker.eligible;
       Alcotest.(check bool) "terminal admission rejected" false terminal.Issue_tracker.eligible;
       Alcotest.(check bool) "inactive admission rejected" false inactive.Issue_tracker.eligible;
-      Alcotest.(check bool) "active non-ready reason names ready status" true
-        (contains_substring active.Issue_tracker.reason config.tracker.ready_status))
+      Alcotest.(check bool) "explicit active non-ready reason names ready status" true
+        (contains_substring explicit_active.Issue_tracker.reason config.tracker.ready_status))
 
 let test_issue_tracker_ready_status_reaches_github_and_compozy_adapters () =
   with_temp_dir "symphony-issue-tracker-ready-status-" (fun root ->
@@ -7148,6 +7168,7 @@ let test_github_project_field_parsing () =
       active_states = [ "Todo"; "In Progress" ];
       terminal_states = [ "Done" ];
       ready_status = Config.default_ready_status;
+              ready_status_explicit = true;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -7213,6 +7234,7 @@ let test_github_active_state_filtering () =
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
       ready_status = Config.default_ready_status;
+              ready_status_explicit = true;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -7239,6 +7261,14 @@ let test_github_active_state_filtering () =
   in
   Alcotest.(check bool) "todo included" true
     (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node "Todo")));
+  Alcotest.(check bool) "ready status included for opt-in contract" true
+    (Option.is_some
+       (Github_tracker.issue_from_project_node ~config:base_config (node Config.default_ready_status)));
+  Alcotest.(check bool) "ready status excluded for legacy contract" true
+    (Option.is_none
+       (Github_tracker.issue_from_project_node
+          ~config:{ base_config with Config.ready_status_explicit = false }
+          (node Config.default_ready_status)));
   Alcotest.(check bool) "done visible" true
     (Option.is_some (Github_tracker.issue_from_project_node ~config:base_config (node "Done")));
   Alcotest.(check bool) "closed done visible" true
@@ -7269,6 +7299,7 @@ let test_github_empty_project_field_values_are_ignored () =
       active_states = [ "To-Do" ];
       terminal_states = [ "Done" ];
       ready_status = Config.default_ready_status;
+              ready_status_explicit = true;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -7312,6 +7343,7 @@ let test_github_status_metadata_parsing () =
       active_states = [ "Todo" ];
       terminal_states = [ "Done" ];
       ready_status = Config.default_ready_status;
+              ready_status_explicit = true;
       project_status_field = "Status";
       project_status_on_dispatch = Some "In progress";
       project_status_on_success = Some "In review";
@@ -7396,6 +7428,7 @@ let stage_capacity_config root ~global_cap =
         active_states = [ "Backlog"; "Todo"; "In progress"; "In review" ];
         terminal_states = [ "Done"; "Human attention" ];
         ready_status = "Todo";
+              ready_status_explicit = true;
         project_status_field = "Status";
         project_status_on_dispatch = Some "In progress";
         project_status_on_success = Some "Done";
@@ -7496,6 +7529,7 @@ let test_orchestrator_dispatch_limits () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -7716,6 +7750,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
               active_states = [ "Todo"; "In progress"; "In review" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "Done";
@@ -7840,6 +7875,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -7968,6 +8004,7 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = Config.default_ready_status;
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8111,6 +8148,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "Done";
@@ -8172,6 +8210,7 @@ let test_orchestrator_retries_failed_agent () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8230,6 +8269,7 @@ let test_github_child_failure_retry_behavior_unchanged () =
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8330,6 +8370,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = None;
@@ -8404,6 +8445,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
               active_states = [ "Todo"; "In progress" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8472,6 +8514,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
               ready_status = "In review";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -8559,7 +8602,7 @@ let test_orchestrator_archives_dispatch_prompt () =
   with_temp_dir "symphony-prompt-archive-" (fun root ->
 	      let config =
 	        let config = github_issue_tracker_config root in
-	        { config with Config.tracker = { config.tracker with ready_status = "Todo" } }
+        { config with Config.tracker = { config.tracker with ready_status = "Todo"; ready_status_explicit = true } }
 	      in
       let issue = Issue.empty ~id:"I42" ~identifier:"#42" ~title:"Archive prompt" ~state:"Todo" in
       let current_status = ref "Todo" in
@@ -8627,6 +8670,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = Some "In review";
@@ -8764,6 +8808,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "Todo";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = Some "In review";
@@ -8844,6 +8889,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
         active_states = [ "Todo" ];
         terminal_states = [ "Done" ];
         ready_status = "Todo";
+              ready_status_explicit = true;
         project_status_field = "Status";
         project_status_on_dispatch = None;
         project_status_on_success = Some "In review";
@@ -9098,6 +9144,7 @@ let compozy_test_config root compozy_root =
         active_states = [ "pending"; "in_progress" ];
         terminal_states = [ "completed"; "failed"; "skipped" ];
         ready_status = Config.default_ready_status;
+              ready_status_explicit = true;
         project_status_field = "Status";
         project_status_on_dispatch = None;
         project_status_on_success = Some "completed";
@@ -9183,7 +9230,7 @@ let write_compozy_prd_run compozy_root slug title =
 
 let task04_compozy_config root compozy_root ready_status =
   let config = compozy_test_config root compozy_root in
-  { config with Config.tracker = { config.tracker with ready_status } }
+  { config with Config.tracker = { config.tracker with ready_status; ready_status_explicit = true } }
 
 let intake_evaluation state identifier =
   match
@@ -9274,6 +9321,34 @@ let test_orchestrator_queued_item_waits_until_ready_status () =
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
       | None -> Alcotest.fail "expected ordered queue state"))
 
+let test_orchestrator_preserves_legacy_compozy_task_list_admission () =
+  with_temp_dir "symphony-compozy-legacy-task-list-intake-" (fun root ->
+      init_repo root "feature/start";
+      let ready_status = "Ready for Intake" in
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "legacy-task-list-feature" in
+      Util.mkdir_p prd_dir;
+      write_compozy_task ~title:"Legacy task list feature" (Filename.concat prd_dir "task_01.md");
+      Util.write_file (Filename.concat prd_dir "_tasks.md") "# Run task list\n\n| # | Title | Status |\n";
+      commit_compozy_root root "legacy-task-list-compozy-run";
+      ignore_runtime_home root;
+      let config = task04_compozy_config root compozy_root ready_status in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator = Orchestrator.make ~launch ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check (list string)) "legacy task-list run launches" [ "compozy:legacy-task-list-feature" ]
+        (List.rev !launched);
+      let intake = intake_evaluation state "compozy:legacy-task-list-feature" in
+      Alcotest.(check bool) "legacy task-list intake is eligible" true intake.eligible;
+      Alcotest.(check string) "legacy task-list intake state" "ready" intake.state;
+      Alcotest.(check bool) "legacy task-list reason names compatibility path" true
+        (option_exists (fun reason -> contains_substring reason "preserving legacy task-step admission") intake.reason))
+
 let test_orchestrator_projects_parse_blocked_intake_evaluation () =
   with_temp_dir "symphony-compozy-intake-parse-blocked-" (fun root ->
       init_repo root "feature/start";
@@ -9282,7 +9357,7 @@ let test_orchestrator_projects_parse_blocked_intake_evaluation () =
       let prd_dir = Filename.concat compozy_root "parse-blocked-feature" in
       Util.mkdir_p prd_dir;
       write_compozy_task ~title:"Parse blocked feature" (Filename.concat prd_dir "task_01.md");
-      Util.write_file (Filename.concat prd_dir "_tasks.md") "# Run task list\n\n| # | Title | Status |\n";
+      Util.write_file (Filename.concat prd_dir "_tasks.md") "Status:\n";
       commit_compozy_root root "parse-blocked-compozy-run";
       ignore_runtime_home root;
       let config = task04_compozy_config root compozy_root ready_status in
@@ -10209,6 +10284,7 @@ let compozy_admission_test_config root compozy_root ready_status =
       {
         config.tracker with
         ready_status;
+        ready_status_explicit = true;
         active_states = List.sort_uniq String.compare (config.tracker.active_states @ [ "in_review" ]);
       };
   }
@@ -12075,6 +12151,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
               active_states = [ "Todo" ];
               terminal_states = [ "Done" ];
               ready_status = "In review";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = None;
               project_status_on_success = Some "In review";
@@ -12362,6 +12439,7 @@ let test_orchestrator_commits_stage_before_success_status () =
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               ready_status = "In progress";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -12515,6 +12593,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
               active_states = [ "In review" ];
               terminal_states = [ "Done" ];
               ready_status = "In review";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "Done";
@@ -12591,6 +12670,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               ready_status = "In progress";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -12694,6 +12774,7 @@ let test_stage_commit_requires_code_changes () =
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               ready_status = "In progress";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -12759,6 +12840,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
               active_states = [ "In progress" ];
               terminal_states = [ "Done" ];
               ready_status = "In progress";
+              ready_status_explicit = true;
               project_status_field = "Status";
               project_status_on_dispatch = Some "In progress";
               project_status_on_success = Some "In review";
@@ -12862,6 +12944,7 @@ let base_orchestrator_config root git =
         active_states = [ "Todo"; "In progress" ];
         terminal_states = [ "Done" ];
         ready_status = "Todo";
+              ready_status_explicit = true;
         project_status_field = "Status";
         project_status_on_dispatch = Some "In progress";
         project_status_on_success = Some "In review";
@@ -13326,6 +13409,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
 	              base_config.tracker with
 	              active_states = [ "Backlog"; "Todo" ];
 	              ready_status = "Backlog";
+              ready_status_explicit = true;
 	              project_status_on_dispatch = None;
 	              project_status_on_success = Some "Done";
 	            };
@@ -15629,6 +15713,8 @@ let () =
             test_orchestrator_filters_first_admission_by_tracker_decision;
           Alcotest.test_case "keeps queued work pending until ready status" `Quick
             test_orchestrator_queued_item_waits_until_ready_status;
+          Alcotest.test_case "preserves legacy Compozy task-list admission" `Quick
+            test_orchestrator_preserves_legacy_compozy_task_list_admission;
           Alcotest.test_case "projects parse-blocked intake evaluations" `Quick
             test_orchestrator_projects_parse_blocked_intake_evaluation;
           Alcotest.test_case "preserves admitted work after ready status changes" `Quick

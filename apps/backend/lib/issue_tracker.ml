@@ -111,6 +111,10 @@ let ready_status_first_admission ~ready_status ~is_terminal (issue : Issue.t) =
           ready_status;
     }
 
+let configured_first_admission ~ready_status ~ready_status_explicit ~is_active ~is_terminal =
+  if ready_status_explicit then ready_status_first_admission ~ready_status ~is_terminal
+  else active_state_first_admission ~ready_status ~is_active ~is_terminal
+
 let github_poll_result f =
   try Ok (f ()) with
   | Github_tracker.Tracker_rate_limited (message, retry_after_ms) -> Error (Rate_limited (message, retry_after_ms))
@@ -172,7 +176,9 @@ let github ?(fetch_candidates = Github_tracker.fetch_candidate_issues)
     update_status = (fun issue status -> update_status tracker issue status);
     readiness_gaps = (fun () -> readiness_gaps config |> List.map runtime_gap_of_config_gap);
     normalize_identifier = github_normalize_identifier;
-    first_admission = ready_status_first_admission ~ready_status:config.tracker.ready_status ~is_terminal;
+    first_admission =
+      configured_first_admission ~ready_status:config.tracker.ready_status
+        ~ready_status_explicit:config.tracker.ready_status_explicit ~is_active ~is_terminal;
     is_active;
     is_terminal;
   }
@@ -295,6 +301,10 @@ let compozy_not_runnable_reason config (run : Compozy_tasks_tracker.prd_run) (li
         lifecycle.dispatch_state
   | _ -> "no runnable Compozy Task Step is available"
 
+let legacy_compozy_ready_summary_absent error =
+  Util.starts_with ~prefix:"missing _tasks.md" error
+  || Util.starts_with ~prefix:"missing run-level Symphony-ready Status" error
+
 let compozy_issue_of_prd_run run (lifecycle : Compozy_lifecycle.t) =
   let issue = Compozy_tasks_tracker.issue_of_prd_run run in
   { issue with Issue.state = lifecycle.dispatch_state }
@@ -379,6 +389,34 @@ let compozy config =
   in
   let is_active = compozy_status_is_active config in
   let is_terminal = compozy_status_is_terminal config in
+  let runnable_admission ~identifier ~ready_detail run lifecycle =
+    if not (compozy_run_is_candidate config run lifecycle) then
+      {
+        eligible = false;
+        reason =
+          Printf.sprintf "%s, but %s is not runnable: %s." ready_detail identifier
+            (compozy_not_runnable_reason config run lifecycle);
+      }
+    else if is_terminal lifecycle.dispatch_state then
+      {
+        eligible = false;
+        reason =
+          Printf.sprintf "%s, but lifecycle dispatch state %S is terminal for %s." ready_detail
+            lifecycle.dispatch_state identifier;
+      }
+    else if not (is_active lifecycle.dispatch_state) then
+      {
+        eligible = false;
+        reason =
+          Printf.sprintf "%s, but lifecycle dispatch state %S is not dispatchable for %s." ready_detail
+            lifecycle.dispatch_state identifier;
+      }
+    else
+      {
+        eligible = true;
+        reason = Printf.sprintf "%s and %s satisfies existing runnable-run conditions." ready_detail identifier;
+      }
+  in
   let first_admission issue =
     let raw_identifier =
       match Util.trim issue.Issue.identifier with "" -> issue.Issue.id | identifier -> identifier
@@ -398,10 +436,18 @@ let compozy config =
                   Compozy_tasks_tracker.ready_summary_of_prd_run ~compozy_root:config.Config.tracker.compozy_root run
                 with
                 | Error error ->
-                    {
-                      eligible = false;
-                      reason = Printf.sprintf "Compozy _tasks.md readiness parse failed for %s: %s" identifier error;
-                    }
+                    if legacy_compozy_ready_summary_absent error then
+                      runnable_admission ~identifier
+                        ~ready_detail:
+                          (Printf.sprintf
+                             "Compozy _tasks.md has no run-level Symphony-ready Status for %s; preserving legacy task-step admission"
+                             identifier)
+                        run lifecycle
+                    else
+                      {
+                        eligible = false;
+                        reason = Printf.sprintf "Compozy _tasks.md readiness parse failed for %s: %s" identifier error;
+                      }
                 | Ok summary ->
                     let observed_ready_status = Util.trim summary.Compozy_tasks_tracker.ready_status in
                     let configured_ready_status = Util.trim config.Config.tracker.ready_status in
@@ -413,38 +459,13 @@ let compozy config =
                             "Compozy _tasks.md status %S does not match configured Symphony-ready Status %S for %s."
                             observed_ready_status configured_ready_status identifier;
                       }
-                    else if not (compozy_run_is_candidate config run lifecycle) then
-                      {
-                        eligible = false;
-                        reason =
-                          Printf.sprintf
-                            "Compozy _tasks.md status %S matches configured Symphony-ready Status, but %s is not runnable: %s."
-                            observed_ready_status identifier (compozy_not_runnable_reason config run lifecycle);
-                      }
-                    else if is_terminal lifecycle.dispatch_state then
-                      {
-                        eligible = false;
-                        reason =
-                          Printf.sprintf
-                            "Compozy _tasks.md status %S matches configured Symphony-ready Status, but lifecycle dispatch state %S is terminal for %s."
-                            observed_ready_status lifecycle.dispatch_state identifier;
-                      }
-                    else if not (is_active lifecycle.dispatch_state) then
-                      {
-                        eligible = false;
-                        reason =
-                          Printf.sprintf
-                            "Compozy _tasks.md status %S matches configured Symphony-ready Status, but lifecycle dispatch state %S is not dispatchable for %s."
-                            observed_ready_status lifecycle.dispatch_state identifier;
-                      }
                     else
-                      {
-                        eligible = true;
-                        reason =
-                          Printf.sprintf
-                            "Compozy _tasks.md status %S matches configured Symphony-ready Status and %s satisfies existing runnable-run conditions."
-                            observed_ready_status identifier;
-                      })))
+                      runnable_admission ~identifier
+                        ~ready_detail:
+                          (Printf.sprintf
+                             "Compozy _tasks.md status %S matches configured Symphony-ready Status"
+                             observed_ready_status)
+                        run lifecycle)))
   in
   {
     kind = "compozy_tasks";

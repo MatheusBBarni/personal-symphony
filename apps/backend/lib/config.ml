@@ -12,6 +12,7 @@ type tracker = {
   active_states : string list;
   terminal_states : string list;
   ready_status : string;
+  ready_status_explicit : bool;
   project_status_field : string;
   project_status_on_dispatch : string option;
   project_status_on_success : string option;
@@ -413,6 +414,7 @@ let from_workflow workflow =
     (match Simple_yaml.get_list "terminal_states" tracker_raw with [] -> default_terminal_states | states -> states)
     |> add_string_ci default_git.merge_attention_status
   in
+  let ready_status = Simple_yaml.get_string "ready_status" tracker_raw in
   let workspace_root =
     Simple_yaml.get_string "root" workspace_raw
     |> Option.value ~default:(Filename.concat (Filename.get_temp_dir_name ()) "symphony_workspaces")
@@ -447,7 +449,8 @@ let from_workflow workflow =
         compozy_max_task_step_retries = default_compozy_max_task_step_retries;
         active_states;
         terminal_states;
-        ready_status = Option.value (Simple_yaml.get_string "ready_status" tracker_raw) ~default:default_ready_status;
+        ready_status = Option.value ready_status ~default:default_ready_status;
+        ready_status_explicit = Option.is_some ready_status;
         project_status_field = Option.value (Simple_yaml.get_string "project_status_field" tracker_raw) ~default:"Status";
         project_status_on_dispatch =
           Some (Option.value (Simple_yaml.get_string "project_status_on_dispatch" tracker_raw) ~default:default_dispatch_status);
@@ -1331,6 +1334,16 @@ let from_settings_file ~workspace_root path =
     json_string_list "terminalStates" project_raw ~default:default_terminal_states
     |> add_string_ci merge_attention_status
   in
+  let ready_status_member = member "readyStatus" project_raw in
+  let ready_status_explicit =
+    match ready_status_member with `String _ | `Int _ -> true | _ -> false
+  in
+  let ready_status =
+    match ready_status_member with
+    | `String status -> status
+    | `Int status -> string_of_int status
+    | _ -> default_ready_status
+  in
   let workspace_root_value =
     json_string "root" workspace_raw ~default:".symphony/workspaces" |> expand_path ~base_dir:workspace_root
   in
@@ -1373,7 +1386,8 @@ let from_settings_file ~workspace_root path =
             (json_int "maxTaskStepRetries" compozy_raw ~default:default_compozy_max_task_step_retries);
         active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
         terminal_states;
-        ready_status = json_string "readyStatus" project_raw ~default:default_ready_status |> Util.trim;
+        ready_status = Util.trim ready_status;
+        ready_status_explicit;
         project_status_field = json_string "statusField" project_raw ~default:"Status";
         project_status_on_dispatch =
           Some (Option.value (json_optional_string "startStatus" project_raw) ~default:default_dispatch_status);
