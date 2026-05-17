@@ -324,6 +324,43 @@ definitions. Stage-level `stageAgents.stages[].harness` is also legacy input; mo
 If setup is incomplete, the Terminal Console still starts and prints Readiness Gaps with remediation
 steps. Dispatch remains disabled until those gaps are resolved.
 
+### Optional Docker Sandbox
+
+Sandboxing is a repository-level Runtime Settings boundary for Workspace Repositories that should run
+agent work through Docker instead of direct host Agent Harness execution. It is optional and disabled
+by default. Docker is the only supported sandbox type in V1:
+
+```json
+{
+  "sandbox": {
+    "enabled": false,
+    "type": "docker",
+    "image": "ghcr.io/your-org/symphony-agent:latest",
+    "bootstrapCommands": [],
+    "persistent": true,
+    "networkEnabled": false,
+    "cpuLimit": 2,
+    "memoryMb": 4096
+  }
+}
+```
+
+Set `sandbox.enabled` to `true` only after replacing `sandbox.image` with the Docker image for the
+Workspace Repository. When sandboxing is enabled, Symphony treats the Sandbox as required for agent
+execution in that repository. Missing required settings, unsupported `sandbox.type` values, Docker
+availability problems, or unhealthy sandbox state are Readiness Gaps and block dispatch; Symphony does
+not silently fall back to host execution.
+
+`sandbox.bootstrapCommands` is a list of non-empty shell commands that run only when Symphony creates
+or recreates the repository-scoped Docker container. V1 requires `sandbox.persistent: true` so repeat
+runs can reuse the named container. `sandbox.networkEnabled` makes network access explicit, and
+`sandbox.cpuLimit` / `sandbox.memoryMb` must be positive integers.
+
+Runtime State snapshots include the running-work fields `sandbox_enabled`, `sandbox_provider`, and
+`sandbox_reuse_outcome`. The reuse outcome is one of `created`, `reused`, or `recreated`; these
+fields are the V1 visibility surface for confirming whether a sandboxed run used a fresh, warm, or
+refreshed container.
+
 For the GitHub Tracker, readiness includes the configured owner, Workspace Repository name, GitHub
 Project number, status field, and token environment variable. For Local Issue Tracker runs,
 GitHub owner, repo, Project, and token settings are not required. The local tracker readiness checks

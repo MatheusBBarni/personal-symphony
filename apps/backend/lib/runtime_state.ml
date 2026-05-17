@@ -7,6 +7,9 @@ type running = {
   stage_agent : string option;
   harness_name : string option;
   harness_kind : string option;
+  sandbox_enabled : bool option;
+  sandbox_provider : string option;
+  sandbox_reuse_outcome : string option;
   stage_states : string list;
   session_id : string option;
   turn_count : int;
@@ -212,6 +215,9 @@ let running_to_yojson state row =
       ("stage_agent", (match row.stage_agent with Some s -> `String s | None -> `Null));
       ("harness_name", (match row.harness_name with Some s -> `String s | None -> `Null));
       ("harness_kind", (match row.harness_kind with Some s -> `String s | None -> `Null));
+      ("sandbox_enabled", (match row.sandbox_enabled with Some enabled -> `Bool enabled | None -> `Null));
+      ("sandbox_provider", (match row.sandbox_provider with Some s -> `String s | None -> `Null));
+      ("sandbox_reuse_outcome", (match row.sandbox_reuse_outcome with Some s -> `String s | None -> `Null));
       ("stage_states", `List (List.map (fun state -> `String state) row.stage_states));
       ("session_id", (match row.session_id with Some s -> `String s | None -> `Null));
       ("turn_count", `Int row.turn_count);

@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: Add Sandbox Runtime Settings And Readiness Gaps
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 01: Add Sandbox Runtime Settings And Readiness Gaps
@@ -27,11 +28,11 @@ Add the V1 `sandbox` settings block to the repository-owned **Runtime Settings**
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add typed backend config support for the V1 sandbox settings shape.
-- [ ] 1.2 Parse sandbox settings from `.symphony/settings.json` using existing top-level parser patterns.
-- [ ] 1.3 Add sandbox-specific readiness validation and remediation messages gated by `sandbox.enabled`.
-- [ ] 1.4 Ensure runtime readiness surfaces sandbox gaps consistently in terminal and web readiness states.
-- [ ] 1.5 Add backend tests covering disabled, valid, and invalid sandbox settings cases.
+- [x] 1.1 Add typed backend config support for the V1 sandbox settings shape.
+- [x] 1.2 Parse sandbox settings from `.symphony/settings.json` using existing top-level parser patterns.
+- [x] 1.3 Add sandbox-specific readiness validation and remediation messages gated by `sandbox.enabled`.
+- [x] 1.4 Ensure runtime readiness surfaces sandbox gaps consistently in terminal and web readiness states.
+- [x] 1.5 Add backend tests covering disabled, valid, and invalid sandbox settings cases.
 
 ## Implementation Details
 Reference the TechSpec sections "System Architecture", "Implementation Design", and "Testing Approach". This task should stop at config and readiness semantics and must not introduce Docker launch behavior yet.

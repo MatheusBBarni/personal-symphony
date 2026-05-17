@@ -73,8 +73,12 @@ The repository-owned files inside the Runtime Home that define Personal Symphony
 _Avoid_: workflow file, harness config
 
 **Runtime Settings**:
-The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, Harness, logical agent, server, and path configuration.
+The `settings.json` portion of the Runtime Contract that defines tracker, project, orchestration, Harness, logical agent, Sandbox, server, and path configuration.
 _Avoid_: config, preferences
+
+**Sandbox**:
+An optional Runtime Settings execution boundary that, when enabled for a Workspace Repository, requires agent work to run through the configured Docker sandbox instead of direct host Agent Harness execution. Docker is the only V1 Sandbox type, and unavailable or unhealthy Sandbox readiness blocks dispatch instead of falling back to host execution.
+_Avoid_: container Harness, stage sandbox, per-task sandbox
 
 **Issue Tracker**:
 The configured source of Workspace Repository issue records that Personal Symphony polls and updates during orchestration.
@@ -384,6 +388,9 @@ _Avoid_: reinitialize, reset
 - A **Runtime Home** contains the **Runtime Contract**, user-editable settings, and internal state.
 - The **Runtime Contract** contains **Runtime Settings**.
 - Runtime Settings select one **Issue Tracker** for orchestration.
+- Runtime Settings may define a repository-level **Sandbox** under `sandbox`.
+- A **Sandbox** defaults to disabled. When `sandbox.enabled` is `true`, `sandbox.type` must be `docker`.
+- A sandbox-enabled **Workspace Repository** must block dispatch with **Readiness Gaps** when the Docker Sandbox is unavailable, unsupported, or missing required settings.
 - The **GitHub Tracker** remains the default Issue Tracker.
 - A **Symphony-ready Status** controls first admission into orchestration; it does not replace queue ordering or post-admission lifecycle behavior.
 - A **Local Issue Tracker** stores issue records in **Local Issue Files** owned by the Workspace Repository.
@@ -402,6 +409,7 @@ _Avoid_: reinitialize, reset
 - A **Runtime Home** contains one **Environment Template** and may contain one **Local Environment**.
 - A **Runtime Home** may contain **Runtime State**.
 - **Runtime State** may include an **Agent Prompt Archive** for launch debugging; it is ignored Runtime Diagnostics and not part of the **Runtime Contract**.
+- **Runtime State** may include Sandbox metadata for running work: whether sandboxing is enabled, the provider, and whether the repository-scoped container was created, reused, or recreated.
 - A normal `symphony` run opens the read-first **Terminal Console** as the default Runtime State surface.
 - `symphony --web` opens the **Web Dashboard** instead of the foreground **Terminal Console**.
 - `symphony --once` prints non-interactive terminal output and exits without starting the foreground **Terminal Console** loop.

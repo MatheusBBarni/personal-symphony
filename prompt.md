@@ -1,400 +1,638 @@
-/goal {"kind":"Stage Goal Context","issue_identifier":"compozy:queue-flag-compozy-tasks","title":"Compozy PRD run: queue-flag-compozy-tasks","description":null,"comments":[],"url":null,"current_project_status":"in_review","labels":[],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
+You are the Engineer agent for the Symphony Orchestrator Repository.
+
+You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
+
+Responsibilities:
+- Implement only the scoped issue.
+- Use CONTEXT.md terms and follow AGENTS.md.
+- Prefer existing module boundaries and tests over new abstractions.
+- Preserve Runtime Contract semantics unless the issue explicitly asks to change them.
+- Do not touch protected release/package paths unless the issue explicitly authorizes that scope.
+- Edit ReScript .res sources only; never commit generated .res.js files.
+- Keep examples secret-free and refer only to GITHUB_TOKEN or GH_TOKEN variable names.
+- Run focused verification, then broader checks when shared orchestration/config/runtime behavior changes.
+
+Stage Commit is enabled for this stage. Leave the worktree ready for a local commit boundary before review.
 
 ---
 
-You are the Reviewer agent for the Symphony Orchestrator Repository.
+Stage agent: engineer
 
-Review completed engineer work before it moves to Done.
+# Compozy Task Step
 
-Review focus:
-- Correctness, regressions, missing tests, readiness gaps, race conditions, and edge cases.
-- Compliance with CONTEXT.md terminology and AGENTS.md boundaries.
-- Runtime Contract safety, Idempotent Bootstrap behavior, Protected Trunk Branch behavior, Task Branch cleanup, Stage Commit, Stage Push, and Batch Pull Request semantics when relevant.
-- Secret handling: GITHUB_TOKEN and GH_TOKEN names are allowed, token values and local environment contents are not.
-- Frontend source hygiene: .res edits only, no committed generated .res.js files.
-- Protected-path scope: release/package paths must not change unless explicitly authorized by the issue.
+Run: compozy:optional-docker-sandbox
+PRD directory: optional-docker-sandbox
+Current task file: task_06.md
+Current task title: Update Runtime Contract Defaults, Glossary, And Docs
 
-Run focused checks when practical. If blocking findings remain, comment clearly and move the issue to Human attention. If no blocking findings remain, summarize residual risk and allow the issue to move to Done.
+## Current Task (`task_06.md`)
+
+---
+status: in_progress
+title: Update Runtime Contract Defaults, Glossary, And Docs
+type: docs
+complexity: medium
+dependencies:
+  - task_01
+  - task_03
+  - task_05
+
 
 ---
 
-Stage agent: reviewer
+# Task 06: Update Runtime Contract Defaults, Glossary, And Docs
 
-# Compozy PRD Run Stage
+## Overview
+Update bootstrap defaults, glossary entries, and operator-facing documentation so the final sandbox contract matches implemented behavior. This task should only land after the runtime settings, launch behavior, and user-visible sandbox state have settled, especially because changing `runtime_home.ml` defaults is an ask-first area in this repository.
 
-Run: compozy:queue-flag-compozy-tasks
-PRD directory: queue-flag-compozy-tasks
-Task step status: completed
-Completed task steps: 4/4
+<critical>
+- ALWAYS READ the PRD and TechSpec before starting
+- REFERENCE TECHSPEC for implementation details — do not duplicate here
+- FOCUS ON "WHAT" — describe what needs to be accomplished, not how
+- MINIMIZE CODE — show code only to illustrate current structure or problem areas
+- TESTS REQUIRED — every task MUST include tests in deliverables
+</critical>
 
-## Completed Compozy Task Steps
+<requirements>
+- Bootstrap examples MUST remain secret-free and idempotent.
+- Runtime contract docs MUST reflect the final sandbox settings names and user-visible behavior.
+- If sandbox introduces stable product terminology, `CONTEXT.md` MUST be updated to preserve glossary consistency.
+- Documentation and bootstrap assertions MUST match the implemented Runtime Settings shape and approved V1 visibility model.
+</requirements>
 
-- task_01.md: Add tracker-aware Ordered Queue resolution primitives
-- task_02.md: Wire readiness-first queue diagnostics for bare Compozy slugs
-- task_03.md: Refactor Ordered Queue orchestration to use raw state and resolved identifiers
-- task_04.md: Update queue shortcut docs and CLI help
+## Subtasks
+- [ ] 6.1 Update embedded bootstrap `settings.json` examples with the approved sandbox fields.
+- [ ] 6.2 Update glossary or domain language in `CONTEXT.md` if sandbox becomes a stable runtime term.
+- [ ] 6.3 Update README or ADR references that explain Runtime Settings and runtime behavior.
+- [ ] 6.4 Extend docs/bootstrap assertions to cover the new runtime contract examples.
+- [ ] 6.5 Verify docs remain secret-free and consistent with implemented behavior.
+
+## Implementation Details
+Reference the TechSpec sections "High-Level Technical Constraints", "Impact Analysis", and "Architecture Decision Records". This task must preserve the project’s idempotent bootstrap behavior and glossary discipline.
+
+### Relevant Files
+- `/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/runtime_home.ml` — owns embedded bootstrap defaults and idempotent Runtime Contract creation.
+- `/Users/matheusbbarni/projects/symphony-orchestrator/CONTEXT.md` — glossary source of truth for stable product terminology.
+- `/Users/matheusbbarni/projects/symphony-orchestrator/README.md` — operator-facing Runtime Settings and runtime behavior documentation.
+- `/Users/matheusbbarni/projects/symphony-orchestrator/docs/adr/0021-agent-harness-runtime-settings.md` — existing ADR context for runtime settings evolution.
+- `/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/test/test_backend.ml` — contains bootstrap/docs assertions to extend.
+
+### Dependent Files
+- `/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/config.ml` — docs must match the implemented sandbox settings shape.
+- `/Users/matheusbbarni/projects/symphony-orchestrator/apps/frontend/src/Pages/Dashboard.res` — user-visible docs should match final dashboard behavior.
+
+### Related ADRs
+- [ADR-001: Scope V1 Sandbox as an Optional Docker Execution Boundary](../adrs/adr-001.md) — Establishes Docker-only V1 scope and runtime contract direction.
+- [ADR-002: Use Repository-Level Opt-In With Strict Sandbox Readiness](../adrs/adr-002.md) — Requires no fallback for enabled repositories.
+- [ADR-003: Model Sandbox as a Repository-Owned Runtime Settings Block With Startup Readiness Gating](../adrs/adr-003.md) — Defines the `sandbox.enabled` contract.
+- [ADR-004: Attach Sandboxing at the Launch Boundary With Reusable Repository-Scoped Containers](../adrs/adr-004.md) — Defines user-visible execution and reuse behavior that docs must match.
+
+## Deliverables
+- Updated bootstrap Runtime Contract examples.
+- Updated glossary and operator-facing documentation.
+- Extended docs/bootstrap assertions covering sandbox examples.
+- Unit tests with 80%+ coverage **(REQUIRED)**
+- Integration tests for bootstrap/docs consistency **(REQUIRED)**
+
+## Tests
+- Unit tests:
+  - [ ] Bootstrap example generation includes the approved sandbox settings shape without secrets.
+  - [ ] Existing bootstrap idempotency behavior remains unchanged for user-edited files.
+  - [ ] Docs assertions validate the sandbox-enabled Runtime Contract examples.
+- Integration tests:
+  - [ ] Runtime home bootstrap produces the expected sandbox-capable `settings.json` example for a new repository.
+  - [ ] README and glossary updates remain consistent with the implemented runtime contract semantics.
+  - [ ] Existing docs/runtime-home test suites still pass after sandbox documentation updates.
+- Test coverage target: >=80%
+- All tests must pass
+
+## Success Criteria
+- All tests passing
+- Test coverage >=80%
+- Runtime Contract examples and docs match the final sandbox implementation.
+- Bootstrap remains idempotent and secret-free after sandbox documentation changes.
 
 ## PRD (`_prd.md`)
 
-# Queue Flag With Compozy Tasks
+# Optional Docker Sandbox for Local Agent Execution
 
 ## Overview
 
-Personal Symphony should let a **Workspace Repository** operator queue known **Compozy PRD Runs** by passing bare slugs to `--queue` when `.symphony/settings.json` selects the Compozy-backed **Issue Tracker**.
+Optional Docker Sandbox for Local Agent Execution gives an existing Personal Symphony user a safer way to run autonomous agents in a **Workspace Repository** on a personal machine. When a repository opts in, Symphony should run agent work inside an explicit Docker-based execution boundary rather than directly on the host.
 
-Today, the operator must translate a known run name such as `queue-flag-with-compozy-tasks` into the stable selector form `compozy:queue-flag-with-compozy-tasks`. The proposed product change shortens that step for ad hoc local terminal use while preserving the current **Ordered Queue** contract, selected-tracker validation rules, and canonical internal identifiers.
-
-The value is simple: make a frequent operator command faster and more natural without broadening the product into a general selector redesign.
+The product value is higher local trust without forcing users into remote infrastructure. The MVP is designed for existing Symphony users who want to keep using their normal repository workflow, but want stronger confidence before letting agents operate freely across planning, execution, and review stages. The feature should remain optional because not every operator needs the same protection model, especially when running on disposable VPS infrastructure.
 
 ## Goals
 
-- Reduce the command length and cognitive overhead for queuing known **Compozy PRD Runs** from the terminal.
-- Preserve the current meaning of **Ordered Queue** and keep queue validation aligned with the selected **Issue Tracker**.
-- Make the Compozy-backed queue experience feel native to `.compozy/tasks/<task_name>/` naming rather than requiring manual selector translation.
-- Keep existing GitHub, minibeads, and canonical Compozy queue behavior stable.
-- Provide clear feedback when an operator tries to use bare Compozy slugs while another tracker mode is selected.
+- Increase willingness to run autonomous agents locally in repositories that currently rely on direct host execution.
+- Give existing Symphony users one clear repository-level trust model: if sandboxing is enabled, agent runs in that repository are sandboxed.
+- Keep setup friction low enough that a current user can enable sandboxing in a repository without feeling like they are adopting a separate platform.
+- Make sandbox readiness visible and actionable so users understand why Symphony is blocked when sandboxing is unavailable or unhealthy.
+- Establish a product foundation for future safety and policy features without expanding MVP scope into a broader environment-management product.
+
+Target outcomes:
+- At least 25% of local-machine dogfooding repositories enable sandboxing within 90 days of release.
+- At least 70% of users who enable sandboxing continue using it for at least 14 days.
+- At least 90% of representative local task flows that succeed in host mode also succeed in sandbox mode during dogfooding.
+- Zero confirmed sandboxed host writes outside approved mounted repository paths.
 
 ## User Stories
 
-- As a solo operator using a Compozy-backed **Workspace Repository**, I want to type known run slugs directly into `--queue` so that I can start an ad hoc run with less friction.
-- As a solo operator who already recognizes `.compozy/tasks/<task_name>/` names, I want the queue command to match those names so that I do not need to mentally translate them into another format.
-- As a solo operator working in the terminal, I want queue input errors to explain tracker mismatch clearly so that I can correct the command quickly.
-- As a maintainer of existing Symphony workflows, I want this improvement to leave other tracker modes and existing canonical selectors unchanged so that current usage does not regress.
+### Primary Persona: Existing Symphony User on a Personal Machine
+
+- As an existing Symphony user, I want to enable sandboxing for a repository so that I feel safer running autonomous agents locally.
+- As an existing Symphony user, I want Symphony to apply sandboxing consistently across agent work in that repository so that I do not have to reason about mixed safety modes.
+- As an existing Symphony user, I want Symphony to block agent execution when sandboxing is unavailable so that I am not surprised by silent fallback to host execution.
+- As an existing Symphony user, I want the product to be fast enough after initial setup that sandboxing feels usable for normal daily work.
+
+### Secondary Persona: Trust-Conscious Operator
+
+- As a trust-conscious operator, I want clear product language about what sandboxing does and does not protect so that I can decide when to use it.
+- As a trust-conscious operator, I want visible runtime status showing whether a run is sandboxed so that I can confirm the repository is operating as expected.
+
+### Edge Case Persona: VPS or Disposable Host User
+
+- As an operator on disposable infrastructure, I want sandboxing to remain optional so that I am not forced into unnecessary local safety overhead.
 
 ## Core Features
 
-- **Compozy bare-slug queue entry**  
-  When the selected **Issue Tracker** is the Compozy-backed tracker, `--queue` accepts a comma-separated list of bare **Compozy PRD Run** slugs.
+### 1. Repository-Level Opt-In Sandbox Mode
 
-- **Tracker-aware eligibility**  
-  The shorter queue format is only available when the active tracker mode is Compozy-backed, keeping the user-facing rule aligned with the selected **Issue Tracker**.
+A **Workspace Repository** can opt into sandboxed execution through the **Runtime Settings** in the **Runtime Contract**. This is a repository-owned choice, not an ad hoc per-run behavior.
 
-- **Guided mismatch feedback**  
-  If an operator uses bare Compozy slugs while another tracker mode is selected, Symphony explains the mismatch and points the operator to the correct selector style.
+Why it matters:
+- Keeps the trust decision visible and durable.
+- Aligns with the way Symphony already uses repository-owned runtime configuration.
+- Reduces ambiguity for teams and repeat users.
 
-- **Fail-fast queue acceptance**  
-  The queue is accepted only when every supplied slug is valid for the active Compozy-backed tracker context and each referenced run is eligible for dispatch.
+MVP requirements:
+- A repository can enable or disable sandboxing explicitly.
+- Sandbox activation is easy to discover and explain.
+- The product language makes clear that sandboxing is optional and intended primarily for local-machine trust improvement.
 
-- **Compatibility preservation**  
-  Existing canonical Compozy selectors and non-Compozy queue flows remain supported with their current behavior.
+### 2. Docker-Only MVP Provider
 
-- **Documentation refresh**  
-  User-facing examples for `--queue` and Compozy-backed tracking explain the shorter input path and its boundaries.
+The MVP supports one sandbox mode: Docker.
+
+Why it matters:
+- Keeps scope small enough to ship credibly.
+- Matches mainstream user expectations around containerized execution.
+- Avoids confusing provider comparisons in the first release.
+
+MVP requirements:
+- The product clearly communicates that Docker is the only supported sandbox mode in V1.
+- Unsupported or unavailable sandbox conditions are treated as readiness problems, not silent degradations.
+- Users understand whether the repository is in host mode or sandbox mode.
+
+### 3. All-Stage Coverage Within an Opted-In Repository
+
+When sandboxing is enabled for a repository, the MVP product promise is that agent execution in that repository uses the sandbox across the repository’s agent workflow rather than only for selected stages.
+
+Why it matters:
+- Strengthens the trust promise.
+- Avoids a fragmented “sometimes sandboxed, sometimes not” mental model.
+- Supports the business goal of increasing willingness to run autonomous agents locally.
+
+MVP requirements:
+- The repository-level state is clear in product surfaces.
+- Users are not expected to manage stage-by-stage activation in MVP.
+- The product avoids presenting partial protection as full protection.
+
+### 4. Strict Readiness and Blocking Behavior
+
+If sandboxing is enabled but not usable, Symphony blocks agent execution and tells the user what needs to be fixed.
+
+Why it matters:
+- Preserves trust in the product promise.
+- Prevents accidental fallback to the less trusted host model.
+- Turns sandbox health into a visible operational state rather than a hidden implementation detail.
+
+MVP requirements:
+- Users receive clear readiness or remediation messaging.
+- Blocked runs are understandable from the terminal and dashboard surfaces.
+- The blocked state is framed as protection working as intended, not generic failure.
+
+### 5. Warm, Reusable Experience
+
+The sandbox should feel fast enough for repeated use after setup. Users should not feel punished for choosing the safer mode.
+
+Why it matters:
+- Speed strongly affects whether users keep the feature enabled.
+- Competitor patterns show strong user expectation for warm environment reuse.
+- The adoption goal depends on usability, not only on safety claims.
+
+MVP requirements:
+- First-time setup can be slower, but repeat repository runs should feel materially faster.
+- The product should communicate whether it is reusing or recreating the sandboxed environment.
+- Reuse behavior should feel deterministic from the user’s perspective.
+
+### 6. Visible Trust Boundary
+
+Users should understand that sandboxing changes the execution environment, and they should be able to confirm when it is active.
+
+Why it matters:
+- Trust comes from clear product behavior, not just from configuration.
+- A visible boundary reduces uncertainty during adoption.
+- It reinforces that sandboxing is a user-facing capability, not hidden infrastructure.
+
+MVP requirements:
+- Symphony surfaces whether current work is sandboxed.
+- Users can tell when sandbox readiness is preventing a run.
+- Product wording explains the intended protection in plain terms.
 
 ## User Experience
 
-The primary journey is an ad hoc local terminal flow.
+### Primary Journey: Existing User Enables Sandboxing for a Repository
 
-1. The operator works in a **Workspace Repository** that already uses the Compozy-backed **Issue Tracker**.
-2. They know the names of one or more **Compozy PRD Runs** from `.compozy/tasks/<task_name>/`.
-3. They run a short queue command using those slugs separated by commas.
-4. Symphony evaluates the request in the context of the active tracker mode.
-5. If the input is valid, the **Ordered Queue** starts with the same queue-order behavior operators already expect.
-6. If the input is invalid, Symphony stops early and explains the issue in language that helps the operator recover quickly.
+1. The user is already running Symphony in a repository and wants a safer local execution mode.
+2. The user enables sandboxing in the repository’s **Runtime Settings**.
+3. Symphony checks whether sandbox prerequisites are satisfied before agent work begins.
+4. If sandboxing is healthy, agent work proceeds under the sandboxed execution mode.
+5. If sandboxing is unavailable or unhealthy, Symphony blocks execution and explains what must be fixed.
+6. On later runs, the user sees a faster repeat experience and clear confirmation that the repository is still operating in sandbox mode.
 
-The UX priority is speed and clarity for a known command, not discoverability through a new interface. Documentation and CLI messaging should make the boundary obvious: bare slugs are a Compozy-backed queue shortcut, not a universal selector format.
+### UX Principles
 
-Accessibility and usability considerations:
+- Prefer one clear repository-level decision over multiple partial toggles.
+- Keep the setup path opinionated and readable.
+- Explain the safety promise in user language, not infrastructure language.
+- Make blocked readiness states actionable, not opaque.
+- Show sandbox status consistently in runtime surfaces.
 
-- Error feedback should be short, explicit, and readable in a terminal context.
-- Queue input rules should be easy to understand from CLI help and README examples.
-- Operators should not need to inspect internals to understand why a bare slug was rejected.
+### Discoverability and Onboarding
+
+- Existing Symphony users should understand when sandboxing is worth enabling.
+- The product should position sandboxing as especially useful for local-machine agent use.
+- The first successful sandboxed run should reinforce that the safer mode is usable, not merely theoretical.
+
+### Accessibility and Clarity
+
+- Status messaging should be concise and readable in both terminal and dashboard contexts.
+- Warning and blocked states should distinguish “protection is active and preventing unsafe execution” from ordinary task failures.
+- Product copy should avoid overstating isolation guarantees.
 
 ## High-Level Technical Constraints
 
-- The feature must remain rooted in the **Workspace Repository** runtime model and selected **Issue Tracker** semantics.
-- The product must preserve the existing **Ordered Queue** behavior around order, readiness validation, and queue resume expectations.
-- The change must not weaken existing compatibility for GitHub or minibeads tracker modes.
-- Queue validation must continue to protect operators from starting a run with invalid or ineligible queue entries.
-- User-facing documentation must avoid secret values and preserve existing Runtime Contract boundaries.
+- The feature must fit the existing repository-owned **Runtime Contract** model in `.symphony/settings.json`.
+- The feature must preserve the root requirement that Symphony runs from the root of a **Workspace Repository**.
+- The feature must respect existing repository safety expectations, including protected-path behavior and explicit runtime configuration.
+- The MVP must preserve acceptable repeat-run performance from a user perspective after initial setup.
+- The MVP must support clear readiness diagnostics and runtime visibility across existing terminal and dashboard surfaces.
+- The product must avoid requiring secret values in repository-owned examples or documentation.
 
 ## Non-Goals (Out of Scope)
 
-- Simplifying selector input for GitHub or minibeads tracker modes.
-- Redesigning selector behavior across all selector-based flows.
-- Changing **Task Branch**, retry, dispatch, completion, or **Runtime State** semantics.
-- Adding partial-success queue behavior for invalid mixed input.
-- Introducing a new UI surface for building queues.
-- Expanding MVP scope beyond `--queue` to other operator commands.
+- Supporting multiple sandbox providers in MVP.
+- Offering remote sandbox execution, Kubernetes-backed environments, or Compose-style orchestrated environments.
+- Allowing silent fallback from sandbox mode to host execution in a sandbox-enabled repository.
+- Introducing stage-by-stage or harness-by-harness activation as the main MVP experience.
+- Turning Symphony into a full development-environment management platform.
+- Solving every host-safety concern purely through sandboxing without relying on existing repository safety policies.
 
 ## Phased Rollout Plan
 
 ### MVP (Phase 1)
 
-- Support bare Compozy slugs in `--queue` for the Compozy-backed **Issue Tracker**.
-- Keep the MVP focused on ad hoc local terminal use.
-- Provide guided mismatch feedback when the wrong tracker mode is active.
-- Preserve current behavior for all existing non-MVP queue inputs.
+- Repository-level opt-in sandbox mode
+- Docker as the only supported sandbox type
+- All-stage sandboxed execution within an opted-in repository
+- Strict readiness checks with blocking behavior
+- Clear runtime visibility for sandboxed versus blocked runs
+- Warm repeat-run experience after setup
 
 Success criteria to proceed:
-
-- Operators can queue known **Compozy PRD Runs** with shorter commands.
-- Existing queue behavior remains stable for current users.
-- Documentation clearly explains when the shortcut does and does not apply.
+- Local dogfooding shows meaningful willingness to enable the feature.
+- Repeat-run speed is good enough that users keep sandboxing enabled.
+- Blocked readiness states are understandable and fixable.
 
 ### Phase 2
 
-- Evaluate whether the same ergonomics should apply to other selector-based Compozy flows.
-- Refine error guidance based on real operator confusion patterns.
-- Improve documentation examples for mixed Symphony environments with different tracker kinds.
+- Better onboarding and clearer product guidance around when to enable sandboxing
+- Improved visibility into reuse, reset, and readiness history
+- More refined trust messaging based on dogfooding feedback
+- Broader support for repository types with different toolchain needs
 
 Success criteria to proceed:
-
-- Real usage shows that operators want the same shorthand beyond `--queue`.
-- Support questions or dogfood feedback indicate recurring confusion worth smoothing.
+- Users can self-serve onboarding more reliably.
+- Sandbox-related support requests decrease as guidance improves.
+- Adoption remains sticky beyond early experiments.
 
 ### Phase 3
 
-- Consider a broader product decision on whether selector ergonomics should become more uniform across Compozy-backed flows.
-- Reassess whether the product should offer saved or previewable queue inputs for repeat use.
+- Expanded sandbox policy capabilities if validated by user demand
+- Potential additional activation models or execution modes if they improve clarity rather than fragment it
+- Stronger trust and policy surfaces built on proven MVP behavior
 
 Long-term success criteria:
-
-- Selector ergonomics feel consistent where consistency adds value, without weakening tracker-specific clarity.
+- Sandboxed local execution becomes a normal and trusted way to run Symphony locally.
+- Future safety features build on this model rather than replacing it.
 
 ## Success Metrics
 
-- Queue command brevity for Compozy-backed ad hoc runs improves by at least 15% for multi-run commands.
-- Operators can successfully queue known **Compozy PRD Runs** using bare slugs in the primary local terminal flow.
-- Queue-entry attempts involving bare slugs fail with guided mismatch feedback when the wrong tracker mode is active.
-- Existing non-Compozy queue flows show no user-facing regression.
-- Documentation examples for Compozy-backed queue usage remain accurate and easy to follow.
+- Sandbox adoption rate among local-machine repositories
+- Percentage of users who keep sandboxing enabled after initial setup
+- Warm-start time for repeat sandboxed runs
+- Success parity between representative host-mode and sandbox-mode runs
+- Rate of sandbox-readiness blocks resolved without abandoning the feature
+- Confirmed host-safety incidents for sandboxed runs
+- Qualitative user confidence signal from dogfooding and user interviews
 
 ## Risks and Mitigations
 
-- **Risk: Users assume bare slugs should work everywhere.**  
-  Mitigation: Make the Compozy-only boundary explicit in CLI help, README examples, and error messages.
+- **Adoption risk:** Users may see sandboxing as too much setup for too little value.
+  Mitigation: Keep activation opinionated, explain the value clearly, and optimize for existing-user enablement rather than generic platform flexibility.
 
-- **Risk: The feature feels too small to justify product attention.**  
-  Mitigation: Keep the PRD tightly scoped and tie success directly to a high-frequency operator workflow.
+- **Trust risk:** Users may misunderstand what sandboxing protects and assume stronger guarantees than the product provides.
+  Mitigation: Use precise product language and visible runtime status to explain the boundary clearly.
 
-- **Risk: Operators remain unsure which queue syntax to use in multi-tracker contexts.**  
-  Mitigation: Use guided mismatch feedback that explains the active tracker context and the expected input style.
+- **Readiness friction risk:** Blocking behavior may frustrate users if prerequisites are hard to satisfy.
+  Mitigation: Make remediation guidance clear and keep the MVP setup path narrow.
 
-- **Risk: Future requests expand scope prematurely into a larger selector redesign.**  
-  Mitigation: Preserve the MVP narrative as a focused queue shortcut and defer broader selector consistency work to later phases.
+- **Performance perception risk:** If repeat runs still feel slow, users may disable the feature even if they value the safety model.
+  Mitigation: Prioritize warm repeat-run experience as a core product outcome, not an implementation afterthought.
+
+- **Competitive framing risk:** The feature may be perceived as catching up rather than differentiating.
+  Mitigation: Emphasize Symphony’s repository-owned trust model and consistent local workflow rather than generic container support.
 
 ## Architecture Decision Records
 
-- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving canonical internal identifiers.
-- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
+- [ADR-001: Scope V1 Sandbox as an Optional Docker Execution Boundary](adrs/adr-001.md) — V1 uses one optional Docker provider with explicit lifecycle and constrained persistence.
+- [ADR-002: Use Repository-Level Opt-In With Strict Sandbox Readiness](adrs/adr-002.md) — Sandbox-enabled repositories block execution when sandboxing is unavailable rather than falling back to host mode.
 
 ## Open Questions
 
-- Should bare Compozy slugs remain `--queue`-only after MVP, or later extend to other selector-based flows?
-- What documentation example set best prevents confusion for operators who switch between Compozy-backed and non-Compozy tracker modes?
+- Should the product language use “sandbox,” “isolated execution,” or another term as the primary user-facing label?
+- How much first-run setup latency will existing users tolerate before the feature feels too heavy?
+- Which repository types or toolchain profiles should be prioritized first for dogfooding and rollout confidence?
+- What minimum readiness explanation is required for users to trust a blocked run instead of bypassing the feature?
+- Should future rollout phases preserve the repository-wide activation model exclusively, or leave room for narrower activation patterns if user demand is strong?
 
 ## TechSpec (`_techspec.md`)
 
-# Queue Flag With Compozy Tasks TechSpec
+# Optional Docker Sandbox for Local Agent Execution
 
 ## Executive Summary
 
-Implement the PRD by keeping `Ordered_queue.parse` tracker-agnostic, then adding a shared post-settings queue-resolution step that interprets bare Compozy slugs only when `.symphony/settings.json` selects `tracker.kind = "compozy_tasks"`. The queue keeps the operator-facing identifier text for state and resume, while readiness, lookup, and dispatch operate on ephemeral canonical identifiers.
+This feature adds an optional, repository-owned Docker sandbox to Personal Symphony by extending the existing **Runtime Settings**, **Readiness Gap**, and launch-path architecture instead of introducing a second orchestration model. When `sandbox.enabled` is `true`, Symphony validates sandbox prerequisites during config/runtime readiness, blocks orchestration if those prerequisites are not met, and launches the selected **Agent Harness** inside a repository-scoped Docker container while preserving existing **Agent Worktree**, **Task Branch**, prompt, log, and retry semantics.
 
-The primary trade-off is deliberate: preserving raw bare slugs in queue state makes the shortcut feel native and keeps readiness messages close to what the operator typed, but it means queue resume stays input-style-sensitive. Restarting with `example-feature` is not the same queue run as restarting with `compozy:example-feature`.
+The primary technical trade-off is explicit: V1 favors a narrow integration with existing launch and readiness seams over a larger execution abstraction. That keeps the implementation reversible and aligned with current architecture, but it also means Docker-specific behavior remains close to orchestrator and config code in V1.
 
 ## System Architecture
 
 ### Component Overview
 
-| Component | Responsibility | Boundary |
-| --- | --- | --- |
-| `Ordered_queue` | Parse structurally valid queue tokens and resolve them against the selected tracker after config load. | Must stay tracker-agnostic at parse time. |
-| `Issue_tracker` | Normalize tracker-specific identifiers and validate dispatchability. | Compozy adapter gains bare-slug normalization support; GitHub and minibeads behavior stays stable. |
-| `Runtime_readiness` | Surface queue mismatch and invalid-entry feedback as **Readiness Gaps** before orchestration starts. | Owns startup reporting, not dispatch-time recovery. |
-| `Orchestrator` | Use resolved canonical identifiers for queue ordering, matching, and dispatch while persisting raw queue identifiers in queue state. | Must preserve current **Ordered Queue** semantics and resume behavior. |
-| `Runtime_state` | Keep the existing queue JSON shape while allowing Compozy bare-slug queue entries to appear as typed by the operator. | No new queue fields in MVP. |
-| Docs / CLI help | Explain the Compozy-only shortcut and guided mismatch behavior. | Must not imply a global selector redesign. |
+- `Config` in [config.ml](/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/config.ml): parse `sandbox` from the **Runtime Settings**, validate static shape, and emit sandbox-related **Readiness Gaps** only when `sandbox.enabled = true`.
+- `Runtime_readiness` and `Runtime_policy` in [runtime_readiness.ml](/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/runtime_readiness.ml) and [runtime_policy.ml](/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/runtime_policy.ml): aggregate sandbox gaps into the existing startup/runtime blocking path so Terminal Console and Web Dashboard both show the same blocked state.
+- New `Sandbox_runtime` helper module: plan Docker command lines, derive repository-scoped container identity, inspect reuse health, run first-create bootstrap commands, and return launch metadata to orchestrator. This is one new backend helper file, not a new subsystem.
+- `Orchestrator` in [orchestrator.ml](/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/orchestrator.ml): keep ownership of worktree creation, prompt writing, stdout/stderr files, and child tracking; wrap `shell_launch` with sandbox-aware command construction when sandboxing is enabled.
+- `Runtime_home` in [runtime_home.ml](/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/runtime_home.ml): add secret-free sandbox examples to bootstrap defaults while preserving idempotent file creation.
+- `Runtime_state`, `Server`, and dashboard projection in [runtime_state.ml](/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/runtime_state.ml), [server.ml](/Users/matheusbbarni/projects/symphony-orchestrator/apps/backend/lib/server.ml), and [RuntimeStateSnapshot.res](/Users/matheusbbarni/projects/symphony-orchestrator/apps/frontend/lib/ocaml/RuntimeStateSnapshot.res): surface sandbox readiness and moderate running-state visibility.
 
-Data flow:
+### Data Flow
 
-1. `parse_ordered_queue_arg` builds a queue from structurally valid raw tokens.
-2. Runtime startup loads `.symphony/settings.json` and selects the active tracker.
-3. A shared queue-resolution helper uses `tracker.normalize_identifier` to resolve each entry into a canonical identifier or a readiness error.
-4. `Runtime_readiness` reports tracker mismatch, mixed-style Compozy input, duplicate resolved identifiers, and undispatchable runs as **Readiness Gaps**.
-5. `Orchestrator` uses resolved canonical identifiers for lookup and ordering, while persisted queue state keeps raw queue identifiers.
-6. Queue resume compares the raw queue sequence, not the resolved canonical sequence.
+1. Symphony loads the **Runtime Contract** from `.symphony/settings.json`.
+2. `Config` parses `sandbox`; if `sandbox.enabled = true`, it validates shape and local prerequisites.
+3. `Runtime_readiness.state` adds sandbox readiness gaps to the existing runtime snapshot.
+4. `Runtime_policy.action` blocks orchestration if any readiness gaps remain.
+5. When orchestration runs, `Orchestrator` prepares the **Agent Worktree** as usual.
+6. Launch logic asks `Sandbox_runtime` for either a host launch plan or a Docker launch plan.
+7. The selected **Agent Harness** still reads the prompt from the worktree and writes `stdout.log` / `stderr.log` in the same worktree.
+8. Running-state snapshots include sandbox summary fields for terminal and dashboard projection.
 
 ## Implementation Design
 
 ### Core Interfaces
 
-Actual implementation is OCaml. The Go structs below are compact schema sketches for the key boundary.
-
 ```go
-type QueueEntry struct {
-    QueueIdentifier string
-}
-
-type ResolvedQueueEntry struct {
-    QueueIdentifier     string
-    CanonicalIdentifier string
+type SandboxConfig struct {
+    Enabled           bool
+    Type              string
+    Image             string
+    BootstrapCommands []string
+    Persistent        bool
+    NetworkEnabled    bool
+    CPULimit          int
+    MemoryMB          int
 }
 ```
 
 ```go
-type QueueResolver interface {
-    Resolve(queue []QueueEntry) ([]ResolvedQueueEntry, error)
+type SandboxRuntime interface {
+    ReadinessGaps(cfg SandboxConfig, repoRoot string) []ReadinessGap
+    EnsureLaunchPlan(cfg SandboxConfig, repoRoot string, worktree string, command string) (SandboxLaunchPlan, error)
 }
 ```
+
+```go
+type SandboxLaunchPlan struct {
+    Command      string
+    Provider     string
+    ReuseOutcome string
+    Container    string
+}
+```
+
+Error handling conventions:
+- Static config errors become `Config.readiness_gap` entries.
+- Environment and health probe failures that can be detected pre-run become runtime readiness gaps.
+- Launch-time Docker failures return `Error string` through the existing launch flow and follow current retry/attention behavior.
 
 ### Data Models
 
-#### Ordered Queue Entry
+#### Runtime Settings
 
-Keep the existing queue-state shape conceptually centered on one identifier field, but change its meaning for the Compozy shortcut path:
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `sandbox.enabled` | `bool` | yes | Main repository toggle. If `false`, sandboxing is ignored entirely. |
+| `sandbox.type` | `string` | yes when enabled | V1 accepts only `docker`. |
+| `sandbox.image` | `string` | yes when enabled | Base image used for the repository-scoped sandbox container. |
+| `sandbox.bootstrapCommands` | `string[]` | no | Runs only on first container creation or explicit recreation. |
+| `sandbox.persistent` | `bool` | yes when enabled | V1 should require `true` because the selected reuse model is named-container reuse. |
+| `sandbox.networkEnabled` | `bool` | yes when enabled | Explicit user-facing boundary. |
+| `sandbox.cpuLimit` | `int` | yes when enabled | Positive integer. |
+| `sandbox.memoryMb` | `int` | yes when enabled | Positive integer. |
 
-- For GitHub and minibeads inputs, the stored identifier remains the canonical queue identifier as today.
-- For bare Compozy slug input, the stored identifier remains the original slug text.
-- Downstream canonical issue identity is resolved separately and never inferred from persisted queue state alone.
+#### Internal Backend Model
 
-#### Resolved Queue Entry
-
-Add an internal resolved queue representation used only after tracker selection:
-
-| Field | Type | Purpose |
+| Entity | Fields | Purpose |
 | --- | --- | --- |
-| `queue_identifier` | string | Raw or queue-state identifier shown to the operator |
-| `canonical_identifier` | string | Canonical tracker identifier used for lookup and dispatch |
+| `Config.sandbox` | parsed settings record | Effective sandbox configuration for the **Workspace Repository** |
+| `Sandbox_instance` | `container_name`, `repository_root_hash`, `config_hash`, `image`, `created_at` | Derived runtime identity for the reusable repository-scoped container |
+| `Sandbox_launch_plan` | `command`, `provider`, `reuse_outcome`, `container_name` | One launch decision returned to orchestrator |
+| `Runtime_state.running.sandbox_*` | enabled/provider/reuse outcome | Moderate runtime visibility for running tasks |
 
-#### Compozy Normalization Rules
+#### Runtime State Additions
 
-When `tracker.kind = "compozy_tasks"`:
+| Field | Location | Type |
+| --- | --- | --- |
+| `sandbox_enabled` | running issue row | `bool option` |
+| `sandbox_provider` | running issue row | `string option` |
+| `sandbox_reuse_outcome` | running issue row | `string option` |
 
-- `example-feature` resolves to `compozy:example-feature`
-- `compozy:example-feature` remains a valid legacy canonical selector
-- mixed bare and canonical Compozy selectors in the same queue are rejected in MVP
-- task-step-like selectors such as `compozy:task_01` remain invalid at the **Compozy PRD Run** boundary
-
-When `tracker.kind != "compozy_tasks"`:
-
-- bare opaque tokens fail readiness with a guided tracker-mismatch message
-- existing GitHub and minibeads normalization rules remain unchanged
-
-#### Runtime State
-
-No new queue JSON fields are required. Existing `ordered_queue.entries[].issue_identifier` remains the serialized field, but for Compozy bare-slug queues it now contains the raw slug text. This preserves the approved queue-state behavior and keeps existing frontend/backend parsing compatible.
+`reuse_outcome` allowed values:
+- `created`
+- `reused`
+- `recreated`
 
 ### API Endpoints
 
-No new HTTP endpoint is required.
+V1 adds no new user-initiated API surface.
 
-Existing Runtime State endpoints continue to expose ordered queue state:
+Existing internal runtime-state surfaces will be extended:
+- `GET /api/v1/state`
+- WebSocket `GET /api/v1/state/live`
 
-| Method | Path | Change |
-| --- | --- | --- |
-| GET | `/api/v1/state` | Existing queue shape stays intact; Compozy bare-slug queues expose raw slug identifiers in queue entries. |
-| GET | `/api/v1/state/live` | Same shape as snapshot state. |
+Response changes:
+- running issue objects gain sandbox summary fields
+- readiness gaps may include sandbox-related requirements such as `sandbox.type`, `sandbox.image`, `sandbox.install`, or `sandbox.health`
+
+No request payload changes are required.
 
 ## Integration Points
 
-| Integration Point | Design |
-| --- | --- |
-| `main.ml` startup path | Parse the queue before config load, then resolve it after tracker selection for readiness and orchestration. |
-| `Issue_tracker.normalize_identifier` | Reuse the selected tracker hook as the canonical normalization boundary. |
-| `README.md` and CLI help | Update queue examples and mismatch guidance without changing other tracker documentation. |
-| Existing queue resume state | Preserve raw sequence matching for bare-slug queue runs. |
-| Existing canonical Compozy tests | Keep canonical `compozy:<task_name>` flows valid to avoid regression. |
+### Docker CLI / Local Docker Engine
+
+- Purpose: create, inspect, start, and execute commands inside the repository-scoped sandbox container.
+- Invocation approach: reuse local shell/process execution helpers already used elsewhere in backend code.
+- Auth model: no application-level auth; relies on local Docker access already granted to the operator environment.
+- Failure handling: sandbox availability or daemon failures should surface as readiness gaps when detectable before orchestration; launch-time failures should use existing task failure handling.
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
-| --- | --- | --- | --- |
-| `apps/backend/lib/ordered_queue.ml` | Modified | Current parser assumes canonical identifiers and duplicates are resolved immediately. | Add opaque bare-token support, tracker-aware resolution helpers, and resolved-duplicate checks. |
-| `apps/backend/lib/issue_tracker.ml` | Modified | Compozy normalization currently accepts canonical selectors only. | Allow Compozy bare-slug normalization after tracker selection while keeping GitHub/minibeads unchanged. |
-| `apps/backend/lib/runtime_readiness.ml` | Modified | Queue validation currently assumes parsed identifiers are already canonical. | Validate through resolved queue entries and emit guided mismatch remediation. |
-| `apps/backend/lib/orchestrator.ml` | Modified | Queue ordering and resume currently compare canonical identifiers directly. | Use resolved canonical identifiers for dispatch matching while preserving raw queue state for resume. |
-| `apps/backend/bin/main.ml` | Modified | Startup currently separates parse problems from readiness validation. | Keep structural parse failures early and route tracker-aware queue problems into readiness. |
-| `apps/backend/lib/cli_command.ml` | Modified | `--queue` help still describes generic issue identifiers only. | Document Compozy bare-slug shortcut scope. |
-| `README.md` | Modified | Current docs require `compozy:<task_name>` in selector-based flows. | Add `--queue` MVP shortcut examples and tracker-mismatch guidance. |
-| `apps/backend/test/test_backend.ml` | Modified | Existing tests cover canonical queue parsing and canonical queue resume. | Add bare-slug parser, readiness, orchestration, and resume coverage near existing queue tests. |
+|-----------|-------------|---------------------|-----------------|
+| `apps/backend/lib/config.ml` | modified | Add `sandbox` record, JSON parsing, validation, and readiness rules; medium risk because config is central | Extend types, parser, and readiness checks |
+| `apps/backend/lib/runtime_readiness.ml` | modified | Add sandbox runtime checks when enabled; low-medium risk | Aggregate sandbox runtime readiness |
+| `apps/backend/lib/runtime_policy.ml` | modified | No semantic redesign, but sandbox gaps must block orchestration; low risk | Reuse existing readiness action |
+| `apps/backend/lib/orchestrator.ml` | modified | Wrap host launch with sandbox-aware launch plan while preserving worktree/log semantics; medium-high risk | Integrate `Sandbox_runtime` plan into launch path |
+| `apps/backend/lib/runtime_home.ml` | modified | Add sandbox examples without breaking idempotent bootstrap; low risk | Update embedded `settings.json` example |
+| `apps/backend/lib/runtime_state.ml` | modified | Add sandbox fields to running-state payload; low risk | Extend snapshot schema |
+| `apps/backend/lib/server.ml` | modified | Snapshot endpoints inherit new state fields; low risk | No route changes, only payload propagation |
+| `apps/frontend/lib/ocaml/RuntimeStateSnapshot.res` | modified | Map new sandbox fields into dashboard snapshot model; low risk | Extend snapshot conversion |
+| `apps/frontend/src/Pages/Dashboard.res` | modified | Display moderate sandbox status and reuse outcome; low risk | Add concise UI treatment |
+| `apps/backend/test/test_backend.ml` | modified | Add config, readiness, launch, state, and dashboard snapshot tests; medium risk due to file size | Extend targeted existing suites |
+| `apps/backend/lib/sandbox_runtime.ml` | new | Small helper for Docker-specific planning and health checks; low-medium risk | Add new helper file and focused tests |
+| `CONTEXT.md` | modified | New runtime term(s) such as sandbox may need glossary coverage | Add or update domain language if implementation introduces stable terms |
 
 ## Testing Approach
 
 ### Unit Tests
 
-- `Ordered_queue.parse` accepts bare opaque tokens while still rejecting empty entries, URLs, and cross-repository references.
-- Resolved duplicate detection catches canonical collisions such as `20` and `#20`, `MB-020` and `mb-20`, and repeated bare Compozy slugs.
-- Compozy `normalize_identifier` accepts both `example-feature` and `compozy:example-feature`.
-- Mixed bare and canonical Compozy queue input is rejected in MVP.
-- Guided tracker-mismatch remediation is produced when bare Compozy slugs are used under GitHub or minibeads tracker modes.
-- Canonical Compozy queue validation remains unchanged.
+- `Config` parsing:
+  - parses `sandbox.enabled`
+  - requires Docker-only `sandbox.type`
+  - validates required fields only when enabled
+  - rejects invalid bootstrap command entries
+  - emits no sandbox gaps when disabled
+- `Sandbox_runtime`:
+  - derives deterministic container name from **Workspace Repository**
+  - computes recreate vs reuse based on config hash and health
+  - builds expected Docker command with worktree-mounted stdout/stderr semantics
+- `Runtime_state`:
+  - serializes sandbox running fields correctly
+  - omits fields when sandboxing is disabled
 
 ### Integration Tests
 
-- A Compozy bare-slug queue validates successfully without GitHub Project membership.
-- Orchestrator dispatches a Compozy bare-slug **Ordered Queue** only in the requested order.
-- Runtime State persists raw bare-slug queue identifiers during a Compozy queue run.
-- Restarting with the same bare-slug queue resumes queue progress.
-- Restarting with canonical Compozy selectors after a bare-slug run starts a new queue run rather than resuming.
-- A bare-slug queue under a non-Compozy tracker reports a **Readiness Gap** and does not begin orchestration.
-- Existing canonical `compozy:<task_name>` queue tests continue to pass.
+- readiness:
+  - sandbox-enabled config blocks runtime when Docker executable/daemon/image requirements fail
+  - sandbox-disabled config behaves exactly like today
+- launch:
+  - sandbox-enabled launch still runs in the **Agent Worktree**
+  - prompt file is still read from the worktree
+  - `stdout.log` and `stderr.log` still appear under the same worktree
+  - selected **Agent Harness** identity remains correct
+- state surfaces:
+  - `GET /api/v1/state` includes sandbox fields
+  - `/api/v1/state/live` snapshots include sandbox fields
+  - readiness snapshot includes sandbox-specific gaps
+- invariants:
+  - protected-path behavior remains unchanged
+  - **Task Branch** and **Agent Worktree** semantics remain unchanged
+
+Environment dependencies:
+- unit tests should stub Docker command execution
+- integration-style tests can use injected `launch` and shell helpers, following existing orchestrator test patterns instead of requiring a real Docker daemon in CI
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Add queue-resolution data types and helper functions in `Ordered_queue` - no dependencies.
-2. Update `Ordered_queue.parse` to accept opaque bare tokens while preserving current structural rejection rules - depends on step 1.
-3. Extend Compozy tracker normalization to accept bare slugs after tracker selection - depends on step 1.
-4. Route queue validation through resolved queue entries in `Runtime_readiness` - depends on steps 1 and 3.
-5. Update `main.ml` startup wiring so tracker-aware queue failures surface as readiness output - depends on steps 2 and 4.
-6. Refactor `Orchestrator` queue matching and ordering to use resolved canonical identifiers while persisting raw queue state - depends on steps 1, 3, and 4.
-7. Update CLI help and README examples for the Compozy shortcut - depends on steps 4 and 6.
-8. Add unit coverage for parse, resolution, and readiness cases - depends on steps 2 through 5.
-9. Add end-to-end orchestration and resume coverage for bare-slug queues - depends on steps 6 and 8.
-10. Run focused backend verification - depends on steps 1 through 9.
+1. Extend `Config` with sandbox types, parser, and readiness validation - no dependencies.
+2. Extend `Runtime_readiness` to add sandbox runtime checks when `sandbox.enabled = true` - depends on step 1.
+3. Add `sandbox_runtime.ml` with container identity, health, bootstrap, and command-plan helpers - depends on step 1.
+4. Integrate sandbox-aware launch planning into `Orchestrator.shell_launch` while preserving current worktree/log/session semantics - depends on steps 1 and 3.
+5. Add sandbox fields to `Runtime_state` and snapshot serialization - depends on step 4.
+6. Extend `server.ml`, `RuntimeStateSnapshot.res`, and `Dashboard.res` for moderate runtime visibility - depends on step 5.
+7. Update `runtime_home.ml` bootstrap examples and any required glossary/docs - depends on step 1.
+8. Add and refine backend/frontend tests across config, readiness, launch, runtime state, and dashboard projections - depends on steps 1 through 6.
 
 ### Technical Dependencies
 
-- Existing `Issue_tracker.normalize_identifier` contract remains the selected-tracker normalization boundary.
-- Existing **Runtime State** queue schema remains in place; no frontend schema migration is required for MVP.
-- Existing queue resume behavior in `Orchestrator` must be updated carefully because it currently assumes canonical identifier sequences.
-- Work stays inside the current backend module layout; no new package or directory is required.
+- Local Docker CLI must be detectable when sandboxing is enabled.
+- Docker daemon reachability must be probeable from runtime readiness code.
+- The chosen image contract must support the selected **Agent Harness** command set.
+- If stable new runtime terms are introduced, `CONTEXT.md` must be updated to preserve domain language consistency.
 
 ## Monitoring and Observability
 
-- Startup readiness output should distinguish structural parse errors from tracker-aware queue mismatch errors.
-- Queue-related logs should include both the queue-state identifier and the resolved canonical identifier when a Compozy bare slug is resolved.
-- Ordered queue skipped or invalid-entry output should continue to show the operator-facing queue identifier.
-- Existing Runtime State queue projections remain the primary operator-visible queue status surface.
+- Key metrics:
+  - count of sandbox readiness gaps by requirement
+  - count of sandbox launches by provider
+  - reuse outcome counts: `created`, `reused`, `recreated`
+  - sandbox launch failure count
+- Log events:
+  - sandbox readiness evaluation result
+  - container create/reuse/recreate decision
+  - bootstrap command execution start/finish
+  - sandbox launch command plan summary without secrets
+- Alerting thresholds:
+  - repeated sandbox launch failures for the same **Workspace Repository**
+  - high recreate rate indicating unstable reuse
+  - bootstrap command failures on first-create paths
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- Decision: keep `Ordered_queue.parse` generic and move Compozy meaning behind post-settings queue resolution.  
-  Rationale: matches the selected tracker boundary and avoids Compozy-specific parser logic.  
-  Trade-off: queue validation becomes two-phase instead of parse-only.
+- Decision: keep sandboxing as a top-level **Runtime Settings** block rather than a new **Agent Harness** kind.
+  Rationale: sandboxing is repository-level execution policy, not logical-agent backend selection.
+  Trade-off: less future abstraction in V1.
+  Alternatives rejected: harness-kind modeling, launch-only implicit config.
 
-- Decision: preserve raw bare-slug text in queue state and resume keys.  
-  Rationale: keeps state aligned with what the operator typed and with the approved terminal-first workflow.  
-  Trade-off: equivalent raw and canonical selector forms no longer resume the same queue run.
+- Decision: enforce sandbox readiness primarily through `Config.readiness_gaps` and `Runtime_readiness` when `sandbox.enabled = true`.
+  Rationale: preserves strict blocking across CLI, Terminal Console, and Web Dashboard.
+  Trade-off: more startup validation code.
+  Alternatives rejected: launch-only validation.
 
-- Decision: emit guided bare-slug tracker mismatch as a **Readiness Gap**.  
-  Rationale: readiness has the selected tracker context and already owns startup blocking feedback.  
-  Trade-off: some invalid inputs now fail at readiness rather than parse time.
+- Decision: attach sandboxing at the launch boundary and preserve orchestrator ownership.
+  Rationale: current `launch` seam is already strong and minimizes regression risk.
+  Trade-off: some Docker-specific logic remains close to orchestrator.
+  Alternatives rejected: full execution subsystem rewrite.
 
-- Decision: add end-to-end orchestration coverage, including resume behavior for bare-slug queues.  
-  Rationale: the change touches parser, readiness, runtime state, and dispatch matching in one flow.  
-  Trade-off: broader test setup than a parser-only change.
+- Decision: reuse a named container per **Workspace Repository** and run bootstrap commands only on first create or explicit recreation.
+  Rationale: matches the selected warm-start model.
+  Trade-off: introduces container lifecycle drift risks that must be constrained.
+  Alternatives rejected: per-run fresh containers.
 
 ### Known Risks
 
-- Raw queue state and resolved canonical identifiers may drift if resolution logic is duplicated.  
-  Mitigation: use one shared resolution helper from readiness and orchestration.
+- Repository-scoped container reuse can accumulate stale state.
+  Mitigation: derive config hash, recreate on mismatch, and surface `reuse_outcome`.
 
-- Mixed-style Compozy queue input could confuse operators and complicate duplicate rules.  
-  Mitigation: reject mixed bare and canonical Compozy input in MVP.
+- Startup readiness and launch-time reality can diverge if checks are incomplete.
+  Mitigation: keep static checks in readiness and treat launch failures as explicit task failures with clear diagnostics.
 
-- Preserving raw queue identifiers may surprise operators who expect bare and canonical restarts to resume the same queue.  
-  Mitigation: document the resume behavior explicitly and cover it with end-to-end tests.
+- Bootstrap commands can become an uncontrolled mutation surface.
+  Mitigation: limit them to first-create/recreate semantics and validate them as a list of non-empty commands.
+
+- Dashboard visibility can become noisy.
+  Mitigation: keep V1 to moderate fields only: enabled, provider, reuse outcome.
 
 ## Architecture Decision Records
 
-- [ADR-001: Compozy Queue Slug Scope](adrs/adr-001.md) — Scopes bare Compozy slug support to `compozy_tasks` queue input while preserving downstream canonical identifiers.
-- [ADR-002: Focused Compozy Queue Shortcut](adrs/adr-002.md) — Chooses a narrow `--queue` shortcut MVP over a broader selector simplification effort.
-- [ADR-003: Tracker-Aware Ordered Queue Resolution](adrs/adr-003.md) — Separates raw queue state from post-settings canonical resolution and preserves raw input for resume.
-- [ADR-004: Readiness-First Queue Diagnostics](adrs/adr-004.md) — Places guided tracker-mismatch feedback in startup readiness instead of parse-time or dispatch-time failures.
+- [ADR-001: Scope V1 Sandbox as an Optional Docker Execution Boundary](adrs/adr-001.md) — V1 uses one optional Docker provider with explicit lifecycle and constrained persistence.
+- [ADR-002: Use Repository-Level Opt-In With Strict Sandbox Readiness](adrs/adr-002.md) — Sandbox-enabled repositories block execution when sandboxing is unavailable rather than falling back to host mode.
+- [ADR-003: Model Sandbox as a Repository-Owned Runtime Settings Block With Startup Readiness Gating](adrs/adr-003.md) — `sandbox.enabled` governs a top-level settings block and readiness only applies when enabled.
+- [ADR-004: Attach Sandboxing at the Launch Boundary With Reusable Repository-Scoped Containers](adrs/adr-004.md) — sandbox execution wraps the existing launch path and reuses one named container per repository.
 

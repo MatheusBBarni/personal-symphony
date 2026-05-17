@@ -1843,23 +1843,57 @@ let spawn_shell_command command =
        with _ -> Unix._exit 127)
   | pid -> pid
 
+let failed_launch_command ~workspace_path ~stdout_path ~stderr_path error =
+  Printf.sprintf "cd %s && : > %s && printf %s %s > %s; exit 1" (Util.shell_quote workspace_path)
+    (Util.shell_quote stdout_path) (Util.shell_quote "%s\n") (Util.shell_quote error) (Util.shell_quote stderr_path)
+
+let sandbox_event_suffix (plan : Sandbox_runtime.launch_plan) =
+  match plan.provider with
+  | None -> ""
+  | Some provider ->
+      let reuse =
+        match plan.reuse_outcome with
+        | Some reuse_outcome -> " sandbox_reuse_outcome=" ^ reuse_outcome
+        | None -> ""
+      in
+      let container =
+        match plan.container_name with
+        | Some container_name -> " sandbox_container=" ^ container_name
+        | None -> ""
+      in
+      " sandbox_provider=" ^ provider ^ reuse ^ container
+
+let launch_event_field key event =
+  let prefix = key ^ "=" in
+  event |> String.split_on_char ' ' |> List.rev |> List.find_map (Util.drop_prefix ~prefix)
+
+let sandbox_metadata_from_launch (config : Config.t) event =
+  if config.sandbox.enabled then
+    (Some true, launch_event_field "sandbox_provider" event, launch_event_field "sandbox_reuse_outcome" event)
+  else (None, None, None)
+
 let shell_launch ~stage ~config ~workspace ~prompt ~issue =
   let stage = match stage with Some _ -> stage | None -> stage_for_issue config issue in
   let harness = Option.value (Config.selected_agent_harness config stage) ~default:(Config.default_agent_harness config) in
   let prompt_path = write_prompt workspace prompt in
   let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
   let stderr_path = Filename.concat workspace.Workspace.path "stderr.log" in
-  let command =
-    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.Workspace.path) (render_harness_command harness)
-      (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path)
+  let plan =
+    Sandbox_runtime.launch_plan ~config ~workspace_path:workspace.Workspace.path ~harness_command:(render_harness_command harness)
+      ~prompt_path ~stdout_path ~stderr_path
+  in
+  let command, event_suffix =
+    match plan with
+    | Ok plan -> (plan.command, sandbox_event_suffix plan)
+    | Error error -> (failed_launch_command ~workspace_path:workspace.Workspace.path ~stdout_path ~stderr_path error, " sandbox_error=plan")
   in
   let pid = spawn_shell_command command in
   {
     pid = Some pid;
     session_id = Some (Printf.sprintf "pid:%d" pid);
     event =
-      Printf.sprintf "launched issue=%s repository=%s workspace=%s" issue.Issue.identifier config.repository_root
-        workspace.Workspace.path;
+      Printf.sprintf "launched issue=%s repository=%s workspace=%s%s" issue.Issue.identifier config.repository_root
+        workspace.Workspace.path event_suffix;
     stdout_path = Some stdout_path;
     stderr_path = Some stderr_path;
   }
@@ -3050,12 +3084,18 @@ let dispatch_issue orchestrator issue =
             let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
             let now = Util.now_iso8601 () in
             let stage_agent, stage_states = selected_stage_fields stage in
+            let sandbox_enabled, sandbox_provider, sandbox_reuse_outcome =
+              sandbox_metadata_from_launch orchestrator.config launched.event
+            in
             let row =
               {
                 Runtime_state.issue;
                 stage_agent;
                 harness_name = Some harness.name;
                 harness_kind = Some harness.kind;
+                sandbox_enabled;
+                sandbox_provider;
+                sandbox_reuse_outcome;
                 stage_states;
                 session_id = launched.session_id;
                 turn_count = 0;
