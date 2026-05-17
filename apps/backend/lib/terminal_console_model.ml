@@ -235,13 +235,21 @@ let readiness_row (gap : Runtime_state.readiness_gap) =
   { requirement = sanitize gap.requirement; remediation = sanitize gap.remediation }
 
 let queue_row (entry : Runtime_state.ordered_queue_entry) =
-  let skip_reason = sanitize_option entry.skip_reason in
+  let reason = sanitize_option entry.skip_reason in
+  let detail =
+    match (String.lowercase_ascii entry.state, reason) with
+    | _, None -> None
+    | "failed", Some reason -> Some ("failure reason " ^ reason)
+    | "attention", Some reason -> Some ("attention reason " ^ reason)
+    | "skipped", Some reason -> Some ("skip reason " ^ reason)
+    | _, Some reason -> Some ("reason " ^ reason)
+  in
   {
     id = sanitize entry.issue_identifier;
     title = sanitize (Option.value entry.title ~default:entry.issue_identifier);
     state = sanitize entry.state;
-    detail = Option.map (fun reason -> "skip reason " ^ reason) skip_reason;
-    error = skip_reason;
+    detail;
+    error = reason;
     goal_usage = None;
     context_status = None;
   }
@@ -275,8 +283,18 @@ let first_pending_queue_entry state =
 
 let queue_has_pending state = Option.is_some (first_pending_queue_entry state)
 
+let queue_has_attention state =
+  match state.Runtime_state.ordered_queue with
+  | None -> false
+  | Some queue ->
+      List.exists
+        (fun (entry : Runtime_state.ordered_queue_entry) ->
+          match String.lowercase_ascii entry.state with "attention" | "failed" -> true | _ -> false)
+        queue.entries
+
 let display_mode state =
   if state.Runtime_state.issue_errors <> [] then "attention"
+  else if queue_has_attention state then "attention"
   else if state.retrying <> [] then "retrying"
   else if state.running <> [] then "running"
   else if state.readiness_gaps <> [] then "readiness_blocked"

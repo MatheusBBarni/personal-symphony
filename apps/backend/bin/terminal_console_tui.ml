@@ -176,11 +176,12 @@ let is_state state (row : Projection.task_row) = String.lowercase_ascii row.stat
 let state_rank state =
   match String.lowercase_ascii state with
   | "attention" -> 0
-  | "retrying" -> 1
-  | "running" -> 2
-  | "pending" -> 3
-  | "completed" -> 4
-  | "skipped" -> 5
+  | "failed" -> 1
+  | "retrying" -> 2
+  | "running" -> 3
+  | "pending" -> 4
+  | "completed" -> 5
+  | "skipped" -> 6
   | _ -> 6
 
 let ordered_rows rows =
@@ -340,6 +341,7 @@ let state_token state =
   | "running" -> "RUNNING"
   | "retrying" -> "RETRYING"
   | "attention" -> "ATTENTION"
+  | "failed" -> "FAILED"
   | "readiness_blocked" -> "READINESS BLOCKED"
   | "pending" -> "PENDING"
   | "completed" -> "COMPLETED"
@@ -462,6 +464,8 @@ let queue_row_line ?(next = false) ?compozy_detail (row : Projection.task_row) =
   let detail =
     match row.error with
     | Some reason when String.lowercase_ascii row.state = "skipped" -> Some ("skip reason: " ^ reason)
+    | Some reason when String.lowercase_ascii row.state = "failed" -> Some ("failure reason: " ^ reason)
+    | Some reason when String.lowercase_ascii row.state = "attention" -> Some ("attention reason: " ^ reason)
     | _ -> row.detail
   in
   let detail =
