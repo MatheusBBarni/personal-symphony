@@ -352,9 +352,10 @@ availability problems, or unhealthy sandbox state are Readiness Gaps and block d
 not silently fall back to host execution.
 
 `sandbox.bootstrapCommands` is a list of non-empty shell commands that run only when Symphony creates
-or recreates the repository-scoped Docker container. V1 requires `sandbox.persistent: true` so repeat
-runs can reuse the named container. `sandbox.networkEnabled` makes network access explicit, and
-`sandbox.cpuLimit` / `sandbox.memoryMb` must be positive integers.
+or recreates the Agent Worktree-scoped Docker container. V1 requires `sandbox.persistent: true` so
+restarts of the same work item can reuse the named container without sharing it with concurrent Agent
+Worktrees. `sandbox.networkEnabled` makes network access explicit, and `sandbox.cpuLimit` /
+`sandbox.memoryMb` must be positive integers.
 
 Runtime State snapshots include the running-work fields `sandbox_enabled`, `sandbox_provider`, and
 `sandbox_reuse_outcome`. The reuse outcome is one of `created`, `reused`, or `recreated`; these

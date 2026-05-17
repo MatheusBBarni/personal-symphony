@@ -126,6 +126,9 @@ type runningIssue = {
   context_status: option<contextStatus>,
   harness_name: option<string>,
   harness_kind: option<string>,
+  sandbox_enabled: option<bool>,
+  sandbox_provider: option<string>,
+  sandbox_reuse_outcome: option<string>,
 }
 
 type runtimeState = {
@@ -223,6 +226,24 @@ let harnessIdentityForIssue = (state, issueId) => {
   }
 }
 
+let sandboxForIssue = (state, issueId) => {
+  switch arrayOrEmpty(state.running)->Array.find(issue => issue.issue_id == issueId) {
+  | Some(issue) =>
+    switch issue.sandbox_enabled {
+    | Some(true) =>
+      let provider = stringOrFallback(issue.sandbox_provider, "sandbox")
+      let reuseOutcome = stringOrEmpty(issue.sandbox_reuse_outcome)
+      if reuseOutcome == "" {
+        provider
+      } else {
+        provider ++ " " ++ reuseOutcome
+      }
+    | Some(false) | None => ""
+    }
+  | None => ""
+  }
+}
+
 let orderedQueueEntries = state =>
   switch state.ordered_queue {
   | Some(queue) =>
@@ -280,6 +301,7 @@ let snapshotFromState = state => {
       goalUsage: goalUsageForIssue(state, issue.issue_id),
       contextStatus: contextStatusForIssue(state, issue.issue_id),
       harnessIdentity: harnessIdentityForIssue(state, issue.issue_id),
+      sandbox: sandboxForIssue(state, issue.issue_id),
     }
   }),
 }

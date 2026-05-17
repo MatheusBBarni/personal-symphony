@@ -81,9 +81,15 @@ let digest_prefix = (value, length) => {
   String.sub(digest, 0, min(length, String.length(digest)));
 };
 
-let container_name = (~repository_root, ~sandbox) => {
+let path_identity = path =>
+  try(Unix.realpath(path)) {
+  | _ => path
+  };
+
+let container_name = (~repository_root, ~workspace_path, ~sandbox) => {
   ignore(sandbox);
-  "symphony-sandbox-" ++ digest_prefix(repository_root, 24);
+  "symphony-sandbox-"
+  ++ digest_prefix(path_identity(repository_root) ++ "\000" ++ path_identity(workspace_path), 24);
 };
 
 let docker_executable = () =>
@@ -179,6 +185,7 @@ let docker_run_command =
     (
       ~container_name,
       ~repository_root,
+      ~workspace_path,
       ~config_hash,
       ~image,
       ~mount_paths,
@@ -200,6 +207,8 @@ let docker_run_command =
       container_name,
       "--label",
       "personal-symphony.repository-root-hash=" ++ digest_prefix(repository_root, 24),
+      "--label",
+      "personal-symphony.workspace-path-hash=" ++ digest_prefix(path_identity(workspace_path), 24),
       "--label",
       "personal-symphony.sandbox-config-hash=" ++ config_hash,
       "--cpus",
@@ -245,7 +254,7 @@ let docker_launch_command =
     ) {
     | (Ok(image), Ok(true), Ok(network_enabled), Ok(cpu_limit), Ok(memory_mb)) =>
       let mount_paths = mount_paths(~repository_root=config.repository_root, ~workspace_path);
-      let container_name = container_name(~repository_root=config.repository_root, ~sandbox);
+      let container_name = container_name(~repository_root=config.repository_root, ~workspace_path, ~sandbox);
       let config_hash = digest_prefix(sandbox_fingerprint(sandbox, mount_paths), 32);
       let inspect_container = docker_command(["container", "inspect", container_name]);
       let inspect_config =
@@ -263,6 +272,7 @@ let docker_launch_command =
         docker_run_command(
           ~container_name,
           ~repository_root=config.repository_root,
+          ~workspace_path,
           ~config_hash,
           ~image,
           ~mount_paths,
@@ -363,7 +373,9 @@ let launch_plan =
         command,
         provider: Some("docker"),
         reuse_outcome: Some(reuse_outcome),
-        container_name: Some(container_name(~repository_root=config.repository_root, ~sandbox=config.sandbox)),
+        container_name: Some(
+          container_name(~repository_root=config.repository_root, ~workspace_path, ~sandbox=config.sandbox),
+        ),
       })
     | Error(_) as error => error
     };

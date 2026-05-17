@@ -1193,7 +1193,8 @@ let launch_test_config ?(sandbox = Config.default_sandbox) ?(codex_command = "ca
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
-let write_fake_docker ?(exec_exit = 0) root =
+let write_fake_docker ?(exec_exit = 0) ?(info_exit = 0) ?(image_inspect_exit = 0) ?(probe_exit = 0)
+    ?(ps_names = "") ?(health = "running") root =
   let bin = Filename.concat root "fake-bin" in
   Util.mkdir_p bin;
   let log = Filename.concat root "docker.log" in
@@ -1207,6 +1208,34 @@ state="${FAKE_DOCKER_STATE}"
 printf '%s\n' "$*" >> "$log"
 
 case "${1:-}" in
+  --version)
+    echo "Docker version 25.0.0"
+    exit 0
+    ;;
+  info)
+    if [ "${FAKE_DOCKER_INFO_EXIT}" != "0" ]; then
+      echo "fake docker daemon unavailable" >&2
+      exit "${FAKE_DOCKER_INFO_EXIT}"
+    fi
+    echo "25.0.0"
+    exit 0
+    ;;
+  image)
+    if [ "${2:-}" = "inspect" ]; then
+      if [ "${FAKE_DOCKER_IMAGE_INSPECT_EXIT}" != "0" ]; then
+        echo "fake docker image unavailable" >&2
+        exit "${FAKE_DOCKER_IMAGE_INSPECT_EXIT}"
+      fi
+      echo "[]"
+      exit 0
+    fi
+    ;;
+  ps)
+    if [ "${FAKE_DOCKER_PS_NAMES}" != "" ]; then
+      printf '%s\n' "${FAKE_DOCKER_PS_NAMES}"
+    fi
+    exit 0
+    ;;
   container)
     if [ "${2:-}" = "inspect" ]; then
       test -f "$state"
@@ -1219,6 +1248,10 @@ case "${1:-}" in
         echo true
         exit 0
       fi
+      if [ "${3:-}" = "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}" ]; then
+        echo "${FAKE_DOCKER_HEALTH}"
+        exit 0
+      fi
       if [ -f "$state" ]; then
         cat "$state"
         exit 0
@@ -1227,6 +1260,15 @@ case "${1:-}" in
     fi
     ;;
   run)
+    for arg in "$@"; do
+      if [ "$arg" = "--rm" ]; then
+        if [ "${FAKE_DOCKER_PROBE_EXIT}" != "0" ]; then
+          echo "fake docker image probe failure" >&2
+          exit "${FAKE_DOCKER_PROBE_EXIT}"
+        fi
+        exit 0
+      fi
+    done
     config_hash=""
     previous=""
     while [ "$#" -gt 0 ]; do
@@ -1280,10 +1322,21 @@ echo "unexpected docker invocation: $*" >&2
 exit 64
 |};
   Unix.chmod docker 0o755;
-  (bin, docker, log, state, string_of_int exec_exit)
+  ( bin,
+    docker,
+    log,
+    state,
+    string_of_int exec_exit,
+    string_of_int info_exit,
+    string_of_int image_inspect_exit,
+    string_of_int probe_exit,
+    ps_names,
+    health )
 
-let with_fake_docker ?exec_exit root f =
-  let bin, docker, log, state, exec_exit = write_fake_docker ?exec_exit root in
+let with_fake_docker ?exec_exit ?info_exit ?image_inspect_exit ?probe_exit ?ps_names ?health root f =
+  let bin, docker, log, state, exec_exit, info_exit, image_inspect_exit, probe_exit, ps_names, health =
+    write_fake_docker ?exec_exit ?info_exit ?image_inspect_exit ?probe_exit ?ps_names ?health root
+  in
   let path = match Sys.getenv_opt "PATH" with Some path -> bin ^ ":" ^ path | None -> bin in
   with_env
     [
@@ -1292,6 +1345,11 @@ let with_fake_docker ?exec_exit root f =
       ("FAKE_DOCKER_LOG", log);
       ("FAKE_DOCKER_STATE", state);
       ("FAKE_DOCKER_EXEC_EXIT", exec_exit);
+      ("FAKE_DOCKER_INFO_EXIT", info_exit);
+      ("FAKE_DOCKER_IMAGE_INSPECT_EXIT", image_inspect_exit);
+      ("FAKE_DOCKER_PROBE_EXIT", probe_exit);
+      ("FAKE_DOCKER_PS_NAMES", ps_names);
+      ("FAKE_DOCKER_HEALTH", health);
     ]
     (fun () -> f log)
 
@@ -1343,7 +1401,7 @@ let test_sandbox_runtime_enabled_builds_docker_launch_plan () =
               (match changed_plan with
               | Error error -> Alcotest.fail error
               | Ok changed_plan ->
-                  Alcotest.(check (option string)) "container identity stays repository-scoped" plan.container_name
+                  Alcotest.(check (option string)) "container identity stays Agent Worktree-scoped" plan.container_name
                     changed_plan.container_name);
               Alcotest.(check bool) "uses docker exec" true
                 (contains_substring plan.command (Util.shell_quote (Sys.getenv "SYMPHONY_DOCKER_BIN") ^ " 'exec' '-i'"));
@@ -1381,6 +1439,33 @@ let test_sandbox_runtime_reports_reuse_outcomes () =
           in
           let recreated = plan_for changed_config in
           Alcotest.(check (option string)) "config change recreates" (Some "recreated") recreated.reuse_outcome))
+
+let test_sandbox_runtime_uses_agent_worktree_scoped_container_names () =
+  with_temp_dir "symphony-sandbox-worktree-containers-" (fun root ->
+      with_fake_docker root (fun _docker_log ->
+          let config = launch_test_config root ~sandbox:docker_sandbox ~codex_command:"cat" in
+          let prompt_path workspace_path =
+            let prompt_path = Filename.concat workspace_path "prompt.md" in
+            Util.write_file prompt_path "Issue";
+            prompt_path
+          in
+          let plan_for workspace_path =
+            Util.mkdir_p workspace_path;
+            match
+              Sandbox_runtime.launch_plan ~config ~workspace_path ~harness_command:"cat"
+                ~prompt_path:(prompt_path workspace_path)
+                ~stdout_path:(Filename.concat workspace_path "stdout.log")
+                ~stderr_path:(Filename.concat workspace_path "stderr.log")
+            with
+            | Ok plan -> plan
+            | Error error -> Alcotest.fail error
+          in
+          let first = plan_for (Filename.concat root "workspaces/_1") in
+          let second = plan_for (Filename.concat root "workspaces/_2") in
+          Alcotest.(check bool) "first container named" true (Option.is_some first.container_name);
+          Alcotest.(check bool) "second container named" true (Option.is_some second.container_name);
+          Alcotest.(check bool) "container identity is Agent Worktree-scoped" true
+            (first.container_name <> second.container_name)))
 
 let test_shell_launch_runs_agent_in_agent_worktree () =
   with_temp_dir "symphony-launch-root-" (fun root ->
@@ -2489,6 +2574,7 @@ let test_config_sandbox_disabled_ignores_incomplete_fields () =
 
 let test_config_sandbox_valid_docker_settings () =
   with_temp_dir "symphony-sandbox-valid-" (fun root ->
+      with_fake_docker root (fun _docker_log ->
       let config =
         write_sandbox_settings root
           ~sandbox:
@@ -2513,7 +2599,49 @@ let test_config_sandbox_valid_docker_settings () =
       Alcotest.(check (option bool)) "network" (Some false) config.sandbox.network_enabled;
       Alcotest.(check (option int)) "cpu" (Some 2) config.sandbox.cpu_limit;
       Alcotest.(check (option int)) "memory" (Some 4096) config.sandbox.memory_mb;
-      Alcotest.(check (list string)) "sandbox gaps" [] (Config.readiness_gaps config |> sandbox_requirements))
+      Alcotest.(check (list string)) "sandbox gaps" [] (Config.readiness_gaps config |> sandbox_requirements)))
+
+let valid_sandbox_settings =
+  {|{
+  "enabled": true,
+  "type": "docker",
+  "image": "ghcr.io/acme/symphony-agent:latest",
+  "persistent": true,
+  "networkEnabled": false,
+  "cpuLimit": 2,
+  "memoryMb": 4096
+}|}
+
+let sandbox_gap requirements requirement = List.exists (( = ) requirement) requirements
+
+let test_config_sandbox_reports_missing_docker_binary_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-missing-docker-" (fun root ->
+      with_env [ ("SYMPHONY_DOCKER_BIN", Filename.concat root "missing-docker") ] (fun () ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "docker binary gap" true (sandbox_gap requirements "sandbox.docker")))
+
+let test_config_sandbox_reports_unreachable_docker_daemon_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-docker-daemon-" (fun root ->
+      with_fake_docker root ~info_exit:1 (fun _docker_log ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "docker daemon gap" true
+            (sandbox_gap requirements "sandbox.dockerDaemon")))
+
+let test_config_sandbox_reports_unusable_image_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-image-probe-" (fun root ->
+      with_fake_docker root ~probe_exit:42 (fun _docker_log ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "image gap" true (sandbox_gap requirements "sandbox.image")))
+
+let test_config_sandbox_reports_unhealthy_existing_container_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-unhealthy-container-" (fun root ->
+      with_fake_docker root ~ps_names:"symphony-sandbox-stale" ~health:"unhealthy" (fun _docker_log ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "sandbox state gap" true (sandbox_gap requirements "sandbox.state")))
 
 let test_config_sandbox_enabled_requires_docker_fields () =
   with_temp_dir "symphony-sandbox-missing-fields-" (fun root ->
@@ -3496,6 +3624,7 @@ let test_runtime_contract_docs_cover_sandbox_settings () =
       "`sandbox.enabled`";
       "Readiness Gaps and block dispatch";
       "not silently fall back to host execution";
+      "Agent Worktree-scoped Docker container";
       "`sandbox_enabled`";
       "`sandbox_provider`";
       "`sandbox_reuse_outcome`";
@@ -3510,6 +3639,7 @@ let test_runtime_contract_docs_cover_sandbox_settings () =
       "Runtime Settings may define a repository-level **Sandbox** under `sandbox`";
       "sandbox-enabled **Workspace Repository**";
       "blocking **Readiness Gaps**";
+      "Agent Worktree-scoped Docker container";
       "created, reused, or recreated";
     ];
   List.iter
@@ -3519,6 +3649,7 @@ let test_runtime_contract_docs_cover_sandbox_settings () =
       "top-level `sandbox` block";
       "`sandbox.enabled` is `true`";
       "`sandbox.type` must be `docker`";
+      "live Docker availability";
       "must not become an Agent Harness kind";
     ]
 
@@ -15330,6 +15461,8 @@ let () =
             test_sandbox_runtime_enabled_builds_docker_launch_plan;
           Alcotest.test_case "sandbox launch plan reports reuse outcomes" `Quick
             test_sandbox_runtime_reports_reuse_outcomes;
+          Alcotest.test_case "sandbox containers are Agent Worktree-scoped" `Quick
+            test_sandbox_runtime_uses_agent_worktree_scoped_container_names;
           Alcotest.test_case "runs agent in agent worktree" `Quick test_shell_launch_runs_agent_in_agent_worktree;
           Alcotest.test_case "selects PI harness for stage agent" `Quick test_shell_launch_selects_pi_harness_for_stage_agent;
           Alcotest.test_case "runs sandboxed agent in agent worktree" `Quick
@@ -15518,6 +15651,14 @@ let () =
             test_config_sandbox_disabled_ignores_incomplete_fields;
           Alcotest.test_case "parses valid Docker sandbox settings" `Quick
             test_config_sandbox_valid_docker_settings;
+          Alcotest.test_case "reports missing Docker binary readiness" `Quick
+            test_config_sandbox_reports_missing_docker_binary_as_readiness_gap;
+          Alcotest.test_case "reports unreachable Docker daemon readiness" `Quick
+            test_config_sandbox_reports_unreachable_docker_daemon_as_readiness_gap;
+          Alcotest.test_case "reports unusable Docker image readiness" `Quick
+            test_config_sandbox_reports_unusable_image_as_readiness_gap;
+          Alcotest.test_case "reports unhealthy Docker sandbox state readiness" `Quick
+            test_config_sandbox_reports_unhealthy_existing_container_as_readiness_gap;
           Alcotest.test_case "requires Docker sandbox fields when enabled" `Quick
             test_config_sandbox_enabled_requires_docker_fields;
           Alcotest.test_case "reports unsupported sandbox type readiness" `Quick

@@ -1802,6 +1802,131 @@ let allowed_loop_start_branch_policy_gap config =
 let sandbox_has_validation_error sandbox requirement =
   List.exists (fun (error : sandbox_validation_error) -> error.requirement = requirement) sandbox.validation_errors
 
+type sandbox_shell_result = { code : int; output : string }
+
+let sandbox_run_shell command =
+  let ic = Unix.open_process_in (command ^ " 2>&1") in
+  let buffer = Buffer.create 128 in
+  let rec read_lines () =
+    try
+      Buffer.add_string buffer (input_line ic);
+      Buffer.add_char buffer '\n';
+      read_lines ()
+    with End_of_file -> ()
+  in
+  read_lines ();
+  let code =
+    match Unix.close_process_in ic with
+    | Unix.WEXITED code -> code
+    | Unix.WSIGNALED signal -> 128 + signal
+    | Unix.WSTOPPED signal -> 128 + signal
+  in
+  { code; output = Buffer.contents buffer |> Util.trim }
+
+let sandbox_docker_executable () =
+  match Sys.getenv_opt "SYMPHONY_DOCKER_BIN" with
+  | Some command when Util.trim command <> "" -> Util.trim command
+  | _ -> "docker"
+
+let sandbox_docker_command args =
+  String.concat " " (List.map Util.shell_quote (sandbox_docker_executable () :: args))
+
+let sandbox_docker_success args = (sandbox_run_shell (sandbox_docker_command args)).code = 0
+
+let sandbox_hash value =
+  let digest = Digest.to_hex (Digest.string value) in
+  String.sub digest 0 (min 24 (String.length digest))
+
+let sandbox_static_ready sandbox =
+  sandbox.validation_errors = []
+  &&
+  match
+    (sandbox.type_, sandbox.image, sandbox.persistent, sandbox.network_enabled, sandbox.cpu_limit, sandbox.memory_mb)
+  with
+  | Some "docker", Some image, Some true, Some _, Some cpu_limit, Some memory_mb ->
+      Util.trim image <> "" && cpu_limit > 0 && memory_mb > 0
+  | _ -> false
+
+let sandbox_existing_container_names config =
+  let root_hash = sandbox_hash config.repository_root in
+  let result =
+    sandbox_run_shell
+      (sandbox_docker_command
+         [
+           "ps";
+           "-a";
+           "--filter";
+           "label=personal-symphony.repository-root-hash=" ^ root_hash;
+           "--format";
+           "{{.Names}}";
+         ])
+  in
+  if result.code <> 0 then Error result.output
+  else
+    Ok
+      (result.output |> Util.split_lines
+      |> List.map Util.trim
+      |> List.filter (fun name -> name <> ""))
+
+let sandbox_container_health name =
+  let result =
+    sandbox_run_shell
+      (sandbox_docker_command
+         [
+           "inspect";
+           "-f";
+           "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}";
+           name;
+         ])
+  in
+  if result.code <> 0 then Error result.output else Ok (Util.trim result.output)
+
+let sandbox_container_state_is_usable status =
+  List.exists (( = ) status) [ "running"; "created"; "exited"; "healthy" ]
+
+let sandbox_existing_state_gaps config add =
+  match sandbox_existing_container_names config with
+  | Error _ ->
+      add "sandbox.state" "Docker sandbox state could not be inspected. Remove stale Symphony sandbox containers and retry."
+  | Ok names ->
+      List.iter
+        (fun name ->
+          match sandbox_container_health name with
+          | Ok status when sandbox_container_state_is_usable status -> ()
+          | Ok status when status <> "" ->
+              add "sandbox.state"
+                (Printf.sprintf
+                   "Existing Docker sandbox container %s is %s. Remove or repair stale Symphony sandbox containers before dispatch."
+                   name status)
+          | Ok _ | Error _ ->
+              add "sandbox.state"
+                (Printf.sprintf
+                   "Existing Docker sandbox container %s could not be health-checked. Remove stale Symphony sandbox containers before dispatch."
+                   name))
+        names
+
+let sandbox_live_readiness_gaps config add =
+  let sandbox = config.sandbox in
+  if sandbox.enabled && sandbox_static_ready sandbox then
+    if not (sandbox_docker_success [ "--version" ]) then
+      add "sandbox.docker"
+        "Install the Docker CLI or set SYMPHONY_DOCKER_BIN to an executable Docker-compatible client."
+    else if not (sandbox_docker_success [ "info"; "--format"; "{{.ServerVersion}}" ]) then
+      add "sandbox.dockerDaemon" "Start Docker Desktop or the Docker daemon so sandbox readiness can inspect the server."
+    else
+      let image = Option.get sandbox.image in
+      if not (sandbox_docker_success [ "image"; "inspect"; image ]) then
+        add "sandbox.image"
+          "Pull or build the configured sandbox.image locally before dispatch so Docker can start the sandbox container."
+      else if
+        not
+          (sandbox_docker_success
+             [ "run"; "--rm"; "--network"; "none"; "--entrypoint"; "/bin/sh"; image; "-lc"; "true" ])
+      then
+        add "sandbox.image"
+          "Use a sandbox.image that can start /bin/sh for non-interactive Agent Harness execution."
+      else sandbox_existing_state_gaps config add
+
 let sandbox_readiness_gaps config add =
   let sandbox = config.sandbox in
   if sandbox.enabled then (
@@ -1839,11 +1964,12 @@ let sandbox_readiness_gaps config add =
     | None ->
         add_if_no_validation_error "sandbox.cpuLimit"
           "Set sandbox.cpuLimit to a positive integer CPU limit for sandboxed execution.");
-    match sandbox.memory_mb with
+    (match sandbox.memory_mb with
     | Some _ -> ()
     | None ->
         add_if_no_validation_error "sandbox.memoryMb"
-          "Set sandbox.memoryMb to a positive integer memory limit for sandboxed execution.")
+          "Set sandbox.memoryMb to a positive integer memory limit for sandboxed execution.");
+    sandbox_live_readiness_gaps config add)
 
 let readiness_gaps config =
   let gaps = ref [] in
