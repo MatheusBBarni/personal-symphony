@@ -63,6 +63,18 @@ type server = { host : string; port : int option }
 type protected_path_pattern = { name : string; pattern : string; reason : string option }
 type protected_path_authorization = { issue_section : string }
 type protected_paths = { patterns : protected_path_pattern list; authorization : protected_path_authorization }
+type sandbox_validation_error = { requirement : string; remediation : string }
+type sandbox = {
+  enabled : bool;
+  type_ : string option;
+  image : string option;
+  bootstrap_commands : string list;
+  persistent : bool option;
+  network_enabled : bool option;
+  cpu_limit : int option;
+  memory_mb : int option;
+  validation_errors : sandbox_validation_error list;
+}
 type pull_request = {
   enabled : bool;
   mode : string;
@@ -129,6 +141,7 @@ type t = {
   server : server;
   pull_request : pull_request;
   protected_paths : protected_paths;
+  sandbox : sandbox;
   stage_agents : stage_agents;
 }
 
@@ -168,6 +181,18 @@ let default_server_host = "127.0.0.1"
 let default_server = { host = default_server_host; port = None }
 let default_protected_path_authorization = { issue_section = "Protected Path Authorization" }
 let default_protected_paths = { patterns = []; authorization = default_protected_path_authorization }
+let default_sandbox =
+  {
+    enabled = false;
+    type_ = None;
+    image = None;
+    bootstrap_commands = [];
+    persistent = None;
+    network_enabled = None;
+    cpu_limit = None;
+    memory_mb = None;
+    validation_errors = [];
+  }
 let default_pull_request =
   {
     enabled = false;
@@ -477,6 +502,7 @@ let from_workflow workflow =
       };
     pull_request = default_pull_request;
     protected_paths = default_protected_paths;
+    sandbox = default_sandbox;
     stage_agents = { enabled = false; root = Filename.concat workflow.dir ".symphony/agents"; default_agent = None; stages = [] };
   }
 
@@ -556,6 +582,117 @@ let json_optional_string name json =
 
 let json_object_list name json =
   match member name json with `List values -> values | _ -> []
+
+let sandbox_validation_error requirement remediation : sandbox_validation_error = { requirement; remediation }
+
+let json_sandbox_enabled raw =
+  match raw with
+  | `Null -> false
+  | `Bool value -> value
+  | `String value -> (
+      match Util.trim value |> String.lowercase_ascii with
+      | "true" -> true
+      | "false" -> false
+      | _ -> raise (Invalid_config "sandbox.enabled must be a boolean"))
+  | _ -> raise (Invalid_config "sandbox.enabled must be a boolean")
+
+let json_sandbox_optional_string path raw =
+  match raw with
+  | `Null -> (None, [])
+  | `String value -> (
+      match Util.trim value with
+      | "" -> (None, [ sandbox_validation_error path (path ^ " must not be empty.") ])
+      | trimmed -> (Some trimmed, []))
+  | _ -> (None, [ sandbox_validation_error path (path ^ " must be a string.") ])
+
+let json_sandbox_optional_bool path raw =
+  match raw with
+  | `Null -> (None, [])
+  | `Bool value -> (Some value, [])
+  | `String value -> (
+      match Util.trim value |> String.lowercase_ascii with
+      | "true" -> (Some true, [])
+      | "false" -> (Some false, [])
+      | _ -> (None, [ sandbox_validation_error path (path ^ " must be a boolean.") ]))
+  | _ -> (None, [ sandbox_validation_error path (path ^ " must be a boolean.") ])
+
+let json_sandbox_optional_positive_int path raw =
+  match raw with
+  | `Null -> (None, [])
+  | `Int value when value > 0 -> (Some value, [])
+  | `String value -> (
+      match Util.trim value |> int_of_string_opt with
+      | Some parsed when parsed > 0 -> (Some parsed, [])
+      | _ -> (None, [ sandbox_validation_error path (path ^ " must be positive.") ]))
+  | `Int _ -> (None, [ sandbox_validation_error path (path ^ " must be positive.") ])
+  | _ -> (None, [ sandbox_validation_error path (path ^ " must be an integer.") ])
+
+let json_sandbox_bootstrap_commands raw =
+  match raw with
+  | `Null -> ([], [])
+  | `List values ->
+      let commands = ref [] in
+      let errors = ref [] in
+      List.iteri
+        (fun index value ->
+          let path = Printf.sprintf "sandbox.bootstrapCommands[%d]" index in
+          match value with
+          | `String command -> (
+              match Util.trim command with
+              | "" ->
+                  errors :=
+                    sandbox_validation_error path
+                      "Set sandbox.bootstrapCommands to a list of non-empty shell commands."
+                    :: !errors
+              | trimmed -> commands := trimmed :: !commands)
+          | _ ->
+              errors :=
+                sandbox_validation_error path
+                  "Set sandbox.bootstrapCommands to a list of non-empty shell commands."
+                :: !errors)
+        values;
+      (List.rev !commands, List.rev !errors)
+  | _ ->
+      ( [],
+        [
+          sandbox_validation_error "sandbox.bootstrapCommands"
+            "Set sandbox.bootstrapCommands to a list of non-empty shell commands.";
+        ] )
+
+let json_sandbox raw =
+  match raw with
+  | `Null -> default_sandbox
+  | `Assoc _ ->
+      let enabled = json_sandbox_enabled (member "enabled" raw) in
+      if not enabled then { default_sandbox with enabled = false }
+      else
+        let type_, type_errors = json_sandbox_optional_string "sandbox.type" (member "type" raw) in
+        let type_ = Option.map (fun value -> Util.trim value |> String.lowercase_ascii) type_ in
+        let image, image_errors = json_sandbox_optional_string "sandbox.image" (member "image" raw) in
+        let bootstrap_commands, bootstrap_errors = json_sandbox_bootstrap_commands (member "bootstrapCommands" raw) in
+        let persistent, persistent_errors =
+          json_sandbox_optional_bool "sandbox.persistent" (member "persistent" raw)
+        in
+        let network_enabled, network_errors =
+          json_sandbox_optional_bool "sandbox.networkEnabled" (member "networkEnabled" raw)
+        in
+        let cpu_limit, cpu_errors = json_sandbox_optional_positive_int "sandbox.cpuLimit" (member "cpuLimit" raw) in
+        let memory_mb, memory_errors =
+          json_sandbox_optional_positive_int "sandbox.memoryMb" (member "memoryMb" raw)
+        in
+        {
+          enabled;
+          type_;
+          image;
+          bootstrap_commands;
+          persistent;
+          network_enabled;
+          cpu_limit;
+          memory_mb;
+          validation_errors =
+            type_errors @ image_errors @ bootstrap_errors @ persistent_errors @ network_errors @ cpu_errors @ memory_errors;
+        }
+  | _ -> raise (Invalid_config "sandbox must be an object")
 
 let harness_named name (harnesses : agent_harness list) =
   List.find_opt (fun (harness : agent_harness) -> harness.name = name) harnesses
@@ -1318,6 +1455,7 @@ let from_settings_file ~workspace_root path =
   let server_raw = member "server" root in
   let pull_request_raw = member "pullRequest" root in
   let paths_raw = member "paths" root in
+  let sandbox_raw = member "sandbox" root in
   let stage_agents_raw = member "stageAgents" root in
   let kind = json_string "kind" tracker_raw ~default:"github" |> parse_tracker_kind in
   let api_key_env = json_string "apiKeyEnv" tracker_raw ~default:"GITHUB_TOKEN" in
@@ -1429,6 +1567,7 @@ let from_settings_file ~workspace_root path =
         body = json_string "body" pull_request_raw ~default:default_pull_request.body;
       };
     protected_paths = json_protected_paths paths_raw;
+    sandbox = json_sandbox sandbox_raw;
     stage_agents =
       {
         enabled = json_bool "enabled" stage_agents_raw ~default:true;
@@ -1660,6 +1799,184 @@ let allowed_loop_start_branch_policy_gap config =
                   allowed;
             })
 
+let sandbox_has_validation_error sandbox requirement =
+  List.exists (fun (error : sandbox_validation_error) -> error.requirement = requirement) sandbox.validation_errors
+
+type sandbox_shell_result = { code : int; output : string }
+
+let sandbox_run_shell command =
+  let ic = Unix.open_process_in (command ^ " 2>&1") in
+  let buffer = Buffer.create 128 in
+  let rec read_lines () =
+    try
+      Buffer.add_string buffer (input_line ic);
+      Buffer.add_char buffer '\n';
+      read_lines ()
+    with End_of_file -> ()
+  in
+  read_lines ();
+  let code =
+    match Unix.close_process_in ic with
+    | Unix.WEXITED code -> code
+    | Unix.WSIGNALED signal -> 128 + signal
+    | Unix.WSTOPPED signal -> 128 + signal
+  in
+  { code; output = Buffer.contents buffer |> Util.trim }
+
+let sandbox_docker_executable () =
+  match Sys.getenv_opt "SYMPHONY_DOCKER_BIN" with
+  | Some command when Util.trim command <> "" -> Util.trim command
+  | _ -> "docker"
+
+let sandbox_docker_command args =
+  String.concat " " (List.map Util.shell_quote (sandbox_docker_executable () :: args))
+
+let sandbox_docker_success args = (sandbox_run_shell (sandbox_docker_command args)).code = 0
+
+let sandbox_hash value =
+  let digest = Digest.to_hex (Digest.string value) in
+  String.sub digest 0 (min 24 (String.length digest))
+
+let sandbox_image_is_placeholder image =
+  image |> Util.trim |> String.split_on_char '/' |> List.exists is_placeholder
+
+let sandbox_static_ready sandbox =
+  sandbox.validation_errors = []
+  &&
+  match
+    (sandbox.type_, sandbox.image, sandbox.persistent, sandbox.network_enabled, sandbox.cpu_limit, sandbox.memory_mb)
+  with
+  | Some "docker", Some image, Some true, Some _, Some cpu_limit, Some memory_mb ->
+      Util.trim image <> "" && (not (sandbox_image_is_placeholder image)) && cpu_limit > 0 && memory_mb > 0
+  | _ -> false
+
+let sandbox_existing_container_names config =
+  let root_hash = sandbox_hash config.repository_root in
+  let result =
+    sandbox_run_shell
+      (sandbox_docker_command
+         [
+           "ps";
+           "-a";
+           "--filter";
+           "label=personal-symphony.repository-root-hash=" ^ root_hash;
+           "--format";
+           "{{.Names}}";
+         ])
+  in
+  if result.code <> 0 then Error result.output
+  else
+    Ok
+      (result.output |> Util.split_lines
+      |> List.map Util.trim
+      |> List.filter (fun name -> name <> ""))
+
+let sandbox_container_health name =
+  let result =
+    sandbox_run_shell
+      (sandbox_docker_command
+         [
+           "inspect";
+           "-f";
+           "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}";
+           name;
+         ])
+  in
+  if result.code <> 0 then Error result.output else Ok (Util.trim result.output)
+
+let sandbox_container_state_is_usable status =
+  List.exists (( = ) status) [ "running"; "created"; "exited"; "healthy" ]
+
+let sandbox_existing_state_gaps config add =
+  match sandbox_existing_container_names config with
+  | Error _ ->
+      add "sandbox.state" "Docker sandbox state could not be inspected. Remove stale Symphony sandbox containers and retry."
+  | Ok names ->
+      List.iter
+        (fun name ->
+          match sandbox_container_health name with
+          | Ok status when sandbox_container_state_is_usable status -> ()
+          | Ok status when status <> "" ->
+              add "sandbox.state"
+                (Printf.sprintf
+                   "Existing Docker sandbox container %s is %s. Remove or repair stale Symphony sandbox containers before dispatch."
+                   name status)
+          | Ok _ | Error _ ->
+              add "sandbox.state"
+                (Printf.sprintf
+                   "Existing Docker sandbox container %s could not be health-checked. Remove stale Symphony sandbox containers before dispatch."
+                   name))
+        names
+
+let sandbox_live_readiness_gaps config add =
+  let sandbox = config.sandbox in
+  if sandbox.enabled && sandbox_static_ready sandbox then
+    if not (sandbox_docker_success [ "--version" ]) then
+      add "sandbox.docker"
+        "Install the Docker CLI or set SYMPHONY_DOCKER_BIN to an executable Docker-compatible client."
+    else if not (sandbox_docker_success [ "info"; "--format"; "{{.ServerVersion}}" ]) then
+      add "sandbox.dockerDaemon" "Start Docker Desktop or the Docker daemon so sandbox readiness can inspect the server."
+    else
+      let image = Option.get sandbox.image in
+      if not (sandbox_docker_success [ "image"; "inspect"; image ]) then
+        add "sandbox.image"
+          "Pull or build the configured sandbox.image locally before dispatch so Docker can start the sandbox container."
+      else if
+        not
+          (sandbox_docker_success
+             [ "run"; "--rm"; "--network"; "none"; "--entrypoint"; "/bin/sh"; image; "-lc"; "true" ])
+      then
+        add "sandbox.image"
+          "Use a sandbox.image that can start /bin/sh for non-interactive Agent Harness execution."
+      else sandbox_existing_state_gaps config add
+
+let sandbox_readiness_gaps config add =
+  let sandbox = config.sandbox in
+  if sandbox.enabled then (
+    List.iter (fun (error : sandbox_validation_error) -> add error.requirement error.remediation) sandbox.validation_errors;
+    let add_if_no_validation_error requirement remediation =
+      if not (sandbox_has_validation_error sandbox requirement) then add requirement remediation
+    in
+    (match sandbox.type_ with
+    | Some "docker" -> ()
+    | Some _ ->
+        add "sandbox.type" "Set sandbox.type to docker. Docker is the only supported sandbox type in V1."
+    | None ->
+        add_if_no_validation_error "sandbox.type"
+          "Set sandbox.type to docker when sandbox.enabled is true.");
+    (match sandbox.image with
+    | Some image when sandbox_image_is_placeholder image ->
+        add_if_no_validation_error "sandbox.image"
+          "Replace the placeholder sandbox.image with the Docker image used for sandboxed agent execution."
+    | Some _ -> ()
+    | None ->
+        add_if_no_validation_error "sandbox.image"
+          "Set sandbox.image to the Docker image used for sandboxed agent execution.");
+    (match sandbox.persistent with
+    | Some true -> ()
+    | Some false ->
+        add_if_no_validation_error "sandbox.persistent"
+          "Set sandbox.persistent to true. V1 requires named-container reuse for sandboxed execution."
+    | None ->
+        add_if_no_validation_error "sandbox.persistent"
+          "Set sandbox.persistent to true when sandbox.enabled is true.");
+    (match sandbox.network_enabled with
+    | Some _ -> ()
+    | None ->
+        add_if_no_validation_error "sandbox.networkEnabled"
+          "Set sandbox.networkEnabled to true or false so the sandbox network boundary is explicit.");
+    (match sandbox.cpu_limit with
+    | Some _ -> ()
+    | None ->
+        add_if_no_validation_error "sandbox.cpuLimit"
+          "Set sandbox.cpuLimit to a positive integer CPU limit for sandboxed execution.");
+    (match sandbox.memory_mb with
+    | Some _ -> ()
+    | None ->
+        add_if_no_validation_error "sandbox.memoryMb"
+          "Set sandbox.memoryMb to a positive integer memory limit for sandboxed execution.");
+    sandbox_live_readiness_gaps config add)
+
 let readiness_gaps config =
   let gaps = ref [] in
   let add requirement remediation = gaps := { requirement; remediation } :: !gaps in
@@ -1676,6 +1993,7 @@ let readiness_gaps config =
     if config.tracker.api_key = None then
       add ("environment." ^ config.tracker.api_key_env)
         (Printf.sprintf "Export %s with a token that can read repository issues and project metadata." config.tracker.api_key_env));
+  sandbox_readiness_gaps config add;
   let selected_harnesses = readiness_agent_harnesses config in
   List.iter
     (fun path ->
