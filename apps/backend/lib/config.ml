@@ -432,14 +432,19 @@ let from_workflow workflow =
         | Some _ as token -> token
         | None -> Util.getenv_nonempty "GH_TOKEN")
   in
+  let ready_status = Simple_yaml.get_string "ready_status" tracker_raw in
   let active_states =
     match Simple_yaml.get_list "active_states" tracker_raw with [] -> default_active_states | states -> states
+  in
+  let active_states =
+    match ready_status with
+    | Some status when Util.trim status <> "" -> add_string_ci (Util.trim status) active_states
+    | _ -> active_states
   in
   let terminal_states =
     (match Simple_yaml.get_list "terminal_states" tracker_raw with [] -> default_terminal_states | states -> states)
     |> add_string_ci default_git.merge_attention_status
   in
-  let ready_status = Simple_yaml.get_string "ready_status" tracker_raw in
   let workspace_root =
     Simple_yaml.get_string "root" workspace_raw
     |> Option.value ~default:(Filename.concat (Filename.get_temp_dir_name ()) "symphony_workspaces")
@@ -1482,6 +1487,12 @@ let from_settings_file ~workspace_root path =
     | `Int status -> string_of_int status
     | _ -> default_ready_status
   in
+  let active_states =
+    let states = json_string_list "activeStates" project_raw ~default:default_active_states in
+    if kind = "github" && ready_status_explicit && Util.trim ready_status <> "" then
+      add_string_ci (Util.trim ready_status) states
+    else states
+  in
   let workspace_root_value =
     json_string "root" workspace_raw ~default:".symphony/workspaces" |> expand_path ~base_dir:workspace_root
   in
@@ -1522,7 +1533,7 @@ let from_settings_file ~workspace_root path =
         compozy_max_task_step_retries =
           positive "tracker.compozy.maxTaskStepRetries"
             (json_int "maxTaskStepRetries" compozy_raw ~default:default_compozy_max_task_step_retries);
-        active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
+        active_states;
         terminal_states;
         ready_status = Util.trim ready_status;
         ready_status_explicit;

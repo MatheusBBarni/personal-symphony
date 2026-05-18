@@ -1959,7 +1959,7 @@ let test_config_defaults_to_github_tracker_kind () =
       Alcotest.(check string) "repo" "widgets" config.tracker.repo;
       Alcotest.(check int) "project number" 7 config.tracker.project_number)
 
-let test_config_parses_ready_status_and_preserves_project_defaults () =
+let test_config_parses_ready_status_and_adds_github_visible_state () =
   with_temp_dir "symphony-settings-ready-status-" (fun root ->
       Util.mkdir_p (Filename.concat root ".symphony");
       let settings = Filename.concat root "settings.json" in
@@ -1971,7 +1971,8 @@ let test_config_parses_ready_status_and_preserves_project_defaults () =
       let config = Config.from_settings_file ~workspace_root:root settings in
       Alcotest.(check string) "ready status" "Ready for Intake" config.tracker.ready_status;
       Alcotest.(check bool) "ready status explicit" true config.tracker.ready_status_explicit;
-      Alcotest.(check (list string)) "active states default" Config.default_active_states
+      Alcotest.(check (list string)) "ready status is fetch-visible"
+        (Config.default_active_states @ [ "Ready for Intake" ])
         config.tracker.active_states;
       Alcotest.(check (list string)) "terminal states default"
         (Config.default_terminal_states @ [ Config.default_git.merge_attention_status ])
@@ -16711,8 +16712,8 @@ let () =
         [
           Alcotest.test_case "defaults omitted tracker kind to github" `Quick
             test_config_defaults_to_github_tracker_kind;
-          Alcotest.test_case "parses ready status and keeps project defaults" `Quick
-            test_config_parses_ready_status_and_preserves_project_defaults;
+          Alcotest.test_case "parses ready status as GitHub-visible state" `Quick
+            test_config_parses_ready_status_and_adds_github_visible_state;
           Alcotest.test_case "defaults missing ready status without mutating settings" `Quick
             test_config_defaults_missing_ready_status_without_mutating_settings;
           Alcotest.test_case "parses minibeads tracker defaults" `Quick
