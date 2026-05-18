@@ -830,6 +830,75 @@ let test_stage_goal_blank_loop_does_not_require_codex_goals () =
           Alcotest.(check bool) "no stdin gap" false
             (List.exists (fun (gap : Config.readiness_gap) -> gap.requirement = "codex.goalStdin") gaps)))
 
+let test_cursor_loop_readiness_checks_selected_loop_enabled_harness () =
+  with_temp_dir "symphony-cursor-loop-readiness-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          let write_settings ~command ~loop_enabled ~loop_command =
+            Util.write_file settings
+              (Printf.sprintf
+                 {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "cursor": {
+      "kind": "cursor",
+      "command": %s,
+      "loop": {"enabled": %b, "command": %s}
+    }
+  },
+  "agents": {
+    "engineer": {"harness": "cursor"}
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer", "goal": {"enabled": true}}
+    ]
+  }
+}|}
+                 (Yojson.Safe.to_string (`String command))
+                 loop_enabled
+                 (Yojson.Safe.to_string (`String loop_command)))
+          in
+          let requirements () =
+            Config.from_settings_file ~workspace_root:root settings
+            |> Config.readiness_gaps
+            |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+          in
+          let has requirement requirements = List.exists (( = ) requirement) requirements in
+          let failing_cursor = Filename.concat root "failing-cursor-loop.sh" in
+          Util.write_file failing_cursor "#!/bin/sh\ncat >/dev/null\nexit 2\n";
+          Unix.chmod failing_cursor 0o755;
+          write_settings ~command:failing_cursor ~loop_enabled:true ~loop_command:"/cursor-goal";
+          Alcotest.(check bool) "missing Cursor loop plugin blocks readiness" true
+            (has "harnesses.cursor.loop" (requirements ()));
+          let passing_cursor = Filename.concat root "passing-cursor-loop.sh" in
+          Util.write_file passing_cursor
+            "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in\n  /cursor-goal*) exit 0 ;;\n  *) exit 2 ;;\nesac\n";
+          Unix.chmod passing_cursor 0o755;
+          write_settings ~command:passing_cursor ~loop_enabled:true ~loop_command:"/cursor-goal";
+          Alcotest.(check bool) "Cursor loop plugin readiness passes" false
+            (has "harnesses.cursor.loop" (requirements ()));
+          let marker = Filename.concat root "cursor-loop-probed" in
+          let probe_cursor = Filename.concat root "probe-cursor-loop.sh" in
+          Util.write_file probe_cursor
+            (Printf.sprintf
+               "#!/bin/sh\nif [ \"$1\" = status ]; then exit 0; fi\ntouch %s\ncat >/dev/null\nexit 2\n"
+               (Util.shell_quote marker));
+          Unix.chmod probe_cursor 0o755;
+          write_settings ~command:probe_cursor ~loop_enabled:false ~loop_command:"/cursor-goal";
+          Alcotest.(check bool) "disabled Cursor loop has no loop gap" false
+            (has "harnesses.cursor.loop" (requirements ()));
+          Alcotest.(check bool) "disabled Cursor loop does not probe" false (Sys.file_exists marker);
+          write_settings ~command:probe_cursor ~loop_enabled:true ~loop_command:"   ";
+          Alcotest.(check bool) "blank Cursor loop command has no loop gap" false
+            (has "harnesses.cursor.loop" (requirements ()));
+          Alcotest.(check bool) "blank Cursor loop command does not probe" false (Sys.file_exists marker)))
+
 let test_config_parses_stage_skill_load_and_readiness () =
   let original_codex_home = Sys.getenv_opt "CODEX_HOME" in
   Fun.protect
@@ -1648,6 +1717,64 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
         (Util.read_file (Filename.concat workspace.path "pi.cwd") |> Util.trim);
       Alcotest.(check string) "pi prompt piped" "Issue #1"
         (Util.read_file (Filename.concat workspace.path "pi.prompt") |> Util.trim))
+
+let test_shell_launch_selects_cursor_harness_for_stage_agent () =
+  with_temp_dir "symphony-launch-cursor-root-" (fun root ->
+      let workspace_root = Filename.concat root "workspaces" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
+      let script = Filename.concat root "fake-cursor.sh" in
+      Util.write_file script
+        {|#!/bin/sh
+printf '%s\n' "$@" > cursor.args
+cat > cursor.prompt
+|};
+      Unix.chmod script 0o755;
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        (Printf.sprintf
+           {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "cursor": {
+      "kind": "cursor",
+      "command": %s,
+      "model": "cursor-default",
+      "reasoningEffort": "medium"
+    }
+  },
+  "agents": {
+    "engineer": {
+      "harness": "cursor",
+      "model": "cursor-override",
+      "reasoningEffort": "high"
+    }
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+           (Yojson.Safe.to_string
+              (`String (script ^ " --model <model> --reasoning <reasoning> --output-format stream-json"))));
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let stage =
+        match config.stage_agents.stages with [ stage ] -> stage | _ -> Alcotest.fail "expected one stage"
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+      let launched =
+        Orchestrator.shell_launch ~stage:(Some stage) ~config ~workspace ~prompt:"Issue #1" ~issue
+      in
+      (match launched.pid with
+      | Some pid -> ignore (Unix.waitpid [] pid)
+      | None -> Alcotest.fail "expected shell launch pid");
+      Alcotest.(check string) "cursor args" "--model\ncursor-override\n--reasoning\nhigh\n--output-format\nstream-json"
+        (Util.read_file (Filename.concat workspace.path "cursor.args") |> Util.trim);
+      Alcotest.(check string) "cursor prompt piped" "Issue #1"
+        (Util.read_file (Filename.concat workspace.path "cursor.prompt") |> Util.trim))
 
 let test_shell_launch_runs_sandboxed_agent_in_agent_worktree () =
   with_temp_dir "symphony-sandbox-launch-root-" (fun root ->
@@ -2996,6 +3123,181 @@ let test_config_parses_harnesses_and_logical_agents () =
       Alcotest.(check (option string)) "reviewer reasoning absent" None reviewer.reasoning_effort;
       Alcotest.(check (option int)) "reviewer turn timeout absent" None reviewer.turn_timeout_ms)
 
+let test_config_parses_cursor_harness_defaults_and_selection () =
+  with_temp_dir "symphony-cursor-harness-settings-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "cursor": {
+      "kind": "cursor"
+    }
+  },
+  "agents": {
+    "engineer": {
+      "harness": "cursor",
+      "model": "cursor-override",
+      "reasoningEffort": "high"
+    }
+  },
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let cursor =
+            match Config.harness_named "cursor" config.agent_harnesses with
+            | Some harness -> harness
+            | None -> Alcotest.fail "expected Cursor Harness"
+          in
+          Alcotest.(check string) "cursor kind" "cursor" cursor.kind;
+          Alcotest.(check string) "cursor default command" Config.default_cursor_command cursor.command;
+          Alcotest.(check string) "cursor default model" Config.default_model cursor.model;
+          Alcotest.(check string) "cursor default reasoning" Config.default_reasoning_effort
+            cursor.reasoning_effort;
+          Alcotest.(check bool) "cursor loop disabled" false cursor.loop_enabled;
+          Alcotest.(check string) "cursor loop command" "" cursor.loop_command;
+          match config.stage_agents.stages with
+          | [ stage ] -> (
+              match Config.selected_agent_harness config (Some stage) with
+              | Some selected ->
+                  Alcotest.(check string) "selected Harness" "cursor" selected.name;
+                  Alcotest.(check string) "selected kind" "cursor" selected.kind;
+                  Alcotest.(check string) "agent model override" "cursor-override" selected.model;
+                  Alcotest.(check string) "agent reasoning override" "high" selected.reasoning_effort;
+                  let requirements =
+                    Config.readiness_gaps config
+                    |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+                  in
+                  Alcotest.(check bool) "cursor kind accepted" false
+                    (List.exists (( = ) "harnesses.cursor.kind") requirements);
+                  Alcotest.(check bool) "cursor command defaulted" false
+                    (List.exists (( = ) "harnesses.cursor.command") requirements);
+                  Alcotest.(check bool) "cursor model defaulted" false
+                    (List.exists (( = ) "harnesses.cursor.model") requirements);
+                  Alcotest.(check bool) "cursor reasoning defaulted" false
+                    (List.exists (( = ) "harnesses.cursor.reasoningEffort") requirements)
+              | None -> Alcotest.fail "expected selected Cursor Harness")
+          | _ -> Alcotest.fail "expected one stage"))
+
+let test_cursor_harness_readiness_checks_selected_install_and_auth () =
+  with_temp_dir "symphony-cursor-readiness-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          let write_settings command =
+            Util.write_file settings
+              (Printf.sprintf
+                 {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "cursor": {
+      "kind": "cursor",
+      "command": %s
+    }
+  },
+  "agents": {"engineer": {"harness": "cursor"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+                 (Yojson.Safe.to_string (`String command)))
+          in
+          let requirements () =
+            Config.from_settings_file ~workspace_root:root settings
+            |> Config.readiness_gaps
+            |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+          in
+          let has requirement requirements = List.exists (( = ) requirement) requirements in
+          write_settings "/definitely/missing/cursor-agent -p --model <model> --output-format stream-json";
+          let missing_requirements = requirements () in
+          Alcotest.(check bool) "missing cursor executable" true
+            (has "harnesses.cursor.install" missing_requirements);
+          Alcotest.(check bool) "missing cursor auth not duplicated when install missing" false
+            (has "harnesses.cursor.auth" missing_requirements);
+          let unauthenticated_cursor = Filename.concat root "unauthenticated-cursor.sh" in
+          Util.write_file unauthenticated_cursor "#!/bin/sh\nif [ \"$1\" = status ]; then exit 2; fi\ncat >/dev/null\n";
+          Unix.chmod unauthenticated_cursor 0o755;
+          write_settings (unauthenticated_cursor ^ " -p --model <model> --output-format stream-json");
+          let auth_requirements = requirements () in
+          Alcotest.(check bool) "installed cursor avoids install gap" false
+            (has "harnesses.cursor.install" auth_requirements);
+          Alcotest.(check bool) "failed cursor status creates auth gap" true
+            (has "harnesses.cursor.auth" auth_requirements);
+          let authenticated_cursor = Filename.concat root "authenticated-cursor.sh" in
+          Util.write_file authenticated_cursor "#!/bin/sh\nif [ \"$1\" = status ]; then exit 0; fi\ncat >/dev/null\n";
+          Unix.chmod authenticated_cursor 0o755;
+          write_settings (authenticated_cursor ^ " -p --model <model> --output-format stream-json");
+          Alcotest.(check bool) "cursor status success avoids auth gap" false
+            (has "harnesses.cursor.auth" (requirements ()));
+          let fake_bin = Filename.concat root "fake-bin" in
+          Util.mkdir_p fake_bin;
+          let wrapped_probe_log = Filename.concat root "wrapped-probe.log" in
+          let fake_npx = Filename.concat fake_bin "npx" in
+          Util.write_file fake_npx
+            {|#!/bin/sh
+printf '%s\n' "$*" > "$WRAPPED_PROBE_LOG"
+case "$*" in
+  "cursor-agent status") exit 0 ;;
+  *) exit 2 ;;
+esac
+|};
+          Unix.chmod fake_npx 0o755;
+          with_env [ ("WRAPPED_PROBE_LOG", wrapped_probe_log) ] (fun () ->
+              write_settings (fake_npx ^ " cursor-agent -p --model <model> --output-format stream-json");
+              let wrapped_requirements = requirements () in
+              Alcotest.(check bool) "wrapped cursor launcher avoids install gap" false
+                (has "harnesses.cursor.install" wrapped_requirements);
+              Alcotest.(check bool) "wrapped cursor launcher avoids auth gap" false
+                (has "harnesses.cursor.auth" wrapped_requirements);
+              Alcotest.(check string) "wrapped cursor status command" "cursor-agent status\n"
+                (Util.read_file wrapped_probe_log))))
+
+let test_cursor_harness_readiness_ignores_unselected_harnesses () =
+  with_temp_dir "symphony-cursor-optional-readiness-" (fun root ->
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let agents_root = Filename.concat root ".symphony/agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "codex": {"kind": "codex", "command": "codex exec"},
+    "cursor": {
+      "kind": "cursor",
+      "command": "/definitely/missing/cursor-agent -p --model <model> --output-format stream-json"
+    }
+  },
+  "agents": {"engineer": {"harness": "codex"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|};
+          let requirements =
+            Config.from_settings_file ~workspace_root:root settings
+            |> Config.readiness_gaps
+            |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+          in
+          Alcotest.(check bool) "unselected cursor install ignored" false
+            (List.exists (( = ) "harnesses.cursor.install") requirements);
+          Alcotest.(check bool) "unselected cursor auth ignored" false
+            (List.exists (( = ) "harnesses.cursor.auth") requirements)))
+
 let test_config_loads_mixed_harness_settings_without_dispatch () =
   with_temp_dir "symphony-mixed-harness-settings-" (fun root ->
       Unix.putenv "GITHUB_TOKEN" "token";
@@ -3208,6 +3510,23 @@ let test_harness_command_rendering () =
   Alcotest.(check string) "claude tokens"
     "claude --model 'claude-opus-4-7' --reasoning 'xhigh' -p --output-format stream-json"
     (Orchestrator.render_harness_command claude);
+  let cursor =
+    {
+      Config.name = "cursor";
+      kind = "cursor";
+      command = "cursor-agent -p --model <model> --reasoning <reasoning> --output-format stream-json";
+      model = "gpt-5.5";
+      reasoning_effort = "high";
+      turn_timeout_ms = 1000;
+      read_timeout_ms = 100;
+      stall_timeout_ms = 1000;
+      loop_enabled = false;
+      loop_command = "";
+    }
+  in
+  Alcotest.(check string) "cursor tokens"
+    "cursor-agent -p --model 'gpt-5.5' --reasoning 'high' --output-format stream-json"
+    (Orchestrator.render_harness_command cursor);
   let codex =
     {
       Config.name = "codex";
@@ -3678,6 +3997,16 @@ let test_bootstrap_default_runtime_contract_shape () =
       Alcotest.(check string) "claude command" "claude -p --model <model> --output-format stream-json"
         (string [ "harnesses"; "claude"; "command" ]);
       Alcotest.(check bool) "claude loop disabled" false (bool [ "harnesses"; "claude"; "loop"; "enabled" ]);
+      Alcotest.(check string) "cursor kind" "cursor" (string [ "harnesses"; "cursor"; "kind" ]);
+      Alcotest.(check string) "cursor command" Config.default_cursor_command
+        (string [ "harnesses"; "cursor"; "command" ]);
+      Alcotest.(check bool) "cursor loop disabled" false (bool [ "harnesses"; "cursor"; "loop"; "enabled" ]);
+      Alcotest.(check string) "cursor force kind" "cursor" (string [ "harnesses"; "cursor-force"; "kind" ]);
+      Alcotest.(check string) "cursor force command"
+        "cursor-agent -p --force --model <model> --output-format stream-json"
+        (string [ "harnesses"; "cursor-force"; "command" ]);
+      Alcotest.(check bool) "cursor force loop disabled" false
+        (bool [ "harnesses"; "cursor-force"; "loop"; "enabled" ]);
       Alcotest.(check string) "pi kind" "pi" (string [ "harnesses"; "pi"; "kind" ]);
       Alcotest.(check string) "planner Harness" "codex" (string [ "agents"; "planner"; "harness" ]);
       Alcotest.(check string) "engineer Harness" "claude" (string [ "agents"; "engineer"; "harness" ]);
@@ -3693,9 +4022,9 @@ let test_bootstrap_default_runtime_contract_shape () =
         (fun secret_marker ->
           Alcotest.(check bool) ("no secret value marker " ^ secret_marker) false
             (contains_substring settings secret_marker))
-        [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ];
+        [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "CURSOR_API_KEY="; "GITHUB_TOKEN=" ];
       let config = Config.from_settings_file ~workspace_root:root home.settings_path in
-      Alcotest.(check int) "bootstrapped Harness definitions load" 3 (List.length config.agent_harnesses);
+      Alcotest.(check int) "bootstrapped Harness definitions load" 5 (List.length config.agent_harnesses);
       Alcotest.(check int) "bootstrapped logical agents load" 3 (List.length config.logical_agents);
       Alcotest.(check bool) "bootstrapped sandbox remains disabled" false config.sandbox.enabled;
       Alcotest.(check (list string)) "bootstrapped disabled sandbox has no gaps" []
@@ -3721,6 +4050,8 @@ let test_runtime_contract_docs_use_current_harness_examples () =
       "\"reviewer\": {";
       "\"harness\": \"pi\"";
       "\"command\": \"claude -p --model <model> --output-format stream-json\"";
+      "\"command\": \"cursor-agent -p --model <model> --output-format stream-json\"";
+      "\"command\": \"cursor-agent -p --force --model <model> --output-format stream-json\"";
       "\"command\": \"/goal\"";
     ];
   List.iter
@@ -3803,7 +4134,17 @@ let test_runtime_contract_docs_are_secret_free () =
     (fun secret_marker ->
       Alcotest.(check bool) ("no secret value marker " ^ secret_marker) false
         (contains_substring combined secret_marker))
-    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN="; "GH_TOKEN=" ]
+    [
+      "github_pat_";
+      "ghp_";
+      "sk-ant-";
+      "sk-proj-";
+      "xoxb-";
+      "ANTHROPIC_API_KEY=";
+      "CURSOR_API_KEY=";
+      "GITHUB_TOKEN=";
+      "GH_TOKEN=";
+    ]
 
 let test_terminal_console_docs_document_default_runtime_semantics () =
   let read path = Util.read_file (repository_file path) in
@@ -3934,7 +4275,10 @@ let test_project_adr_documents_migration_and_loop_semantics () =
       "stageAgents.stages[].harness";
       "loop.enabled";
       "loop.command";
-      "Bootstrap defaults enable Codex loop with `/goal` and disable Claude and PI loops";
+      "cursor-agent -p --model <model> --output-format stream-json";
+      "cursor-agent -p --force --model <model> --output-format stream-json";
+      "Cursor Harness readiness validation checks only selected Cursor Harnesses";
+      "Bootstrap defaults enable Codex loop with `/goal` and disable Claude, Cursor, and PI loops";
     ]
 
 let test_ordered_queue_docs_cover_compozy_shortcut () =
@@ -10100,6 +10444,10 @@ let test_harness ?(name = "codex") ?(kind = "codex") ?(command = "codex exec") ?
     loop_command;
   }
 
+let cursor_test_harness ?(command = "cursor-agent -p --model <model> --output-format stream-json")
+    ?(loop_enabled = true) ?(loop_command = "/cursor-goal") () =
+  test_harness ~name:"cursor" ~kind:"cursor" ~command ~loop_enabled ~loop_command ()
+
 let logical_agent_for_harness harness_name =
   {
     Config.name = "engineer";
@@ -10146,6 +10494,14 @@ let test_compose_prompt_uses_custom_codex_loop_command () =
       Alcotest.(check bool) "default loop command absent" false (String.starts_with ~prefix:"/goal " prompt);
       Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
 
+let test_compose_prompt_uses_configured_cursor_loop_command () =
+  with_temp_dir "symphony-goal-cursor-loop-" (fun root ->
+      let prompt = compose_stage_goal_prompt_for_harness root (cursor_test_harness ()) in
+      Alcotest.(check bool) "Cursor loop command first" true
+        (String.starts_with ~prefix:"/cursor-goal {\"kind\":\"Stage Goal Context\"" prompt);
+      Alcotest.(check bool) "default Codex loop command absent" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
 let test_compose_prompt_skips_disabled_claude_loop () =
   with_temp_dir "symphony-goal-claude-disabled-loop-" (fun root ->
       let prompt =
@@ -10154,6 +10510,16 @@ let test_compose_prompt_skips_disabled_claude_loop () =
              ~loop_enabled:false ~loop_command:"" ())
       in
       Alcotest.(check bool) "no loop command" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_compose_prompt_skips_disabled_cursor_loop () =
+  with_temp_dir "symphony-goal-cursor-disabled-loop-" (fun root ->
+      let prompt =
+        compose_stage_goal_prompt_for_harness root
+          (cursor_test_harness ~loop_enabled:false ~loop_command:"/cursor-goal" ())
+      in
+      Alcotest.(check bool) "no Cursor loop command" false (String.starts_with ~prefix:"/cursor-goal " prompt);
       Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
       Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
 
@@ -10176,6 +10542,52 @@ let test_orchestrator_dispatch_skips_disabled_claude_loop () =
       in
       Orchestrator.poll_once orchestrator;
       Alcotest.(check bool) "no loop handoff" false (contains_substring !captured_prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring !captured_prompt "Normal #1"))
+
+let test_orchestrator_dispatch_prepends_ready_cursor_loop () =
+  with_temp_dir "symphony-goal-cursor-ready-dispatch-" (fun root ->
+      let fake_cursor = Filename.concat root "ready-cursor-loop.sh" in
+      Util.write_file fake_cursor
+        "#!/bin/sh\ninput=$(cat)\ncase \"$input\" in\n  /cursor-goal*) exit 0 ;;\n  *) exit 2 ;;\nesac\n";
+      Unix.chmod fake_cursor 0o755;
+      let config =
+        stage_goal_config_for_harness root (cursor_test_harness ~command:fake_cursor ~loop_command:"/cursor-goal" ())
+      in
+      let requirements = Config.readiness_gaps config |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement) in
+      Alcotest.(check bool) "Cursor loop readiness passes" false
+        (List.exists (( = ) "harnesses.cursor.loop") requirements);
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "Cursor loop handoff first" true
+        (String.starts_with ~prefix:"/cursor-goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
+      Alcotest.(check bool) "normal prompt included" true (contains_substring !captured_prompt "Normal #1"))
+
+let test_orchestrator_dispatch_skips_disabled_cursor_loop () =
+  with_temp_dir "symphony-goal-cursor-disabled-dispatch-" (fun root ->
+      let config = stage_goal_config_for_harness root (cursor_test_harness ~loop_enabled:false ~loop_command:"/cursor-goal" ()) in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "no Cursor loop handoff" false
+        (String.starts_with ~prefix:"/cursor-goal " !captured_prompt);
+      Alcotest.(check bool) "no stage goal context" false (contains_substring !captured_prompt "Stage Goal Context");
       Alcotest.(check bool) "normal prompt included" true (contains_substring !captured_prompt "Normal #1"))
 
 let check_dispatch_exposes_harness_identity ~label harness =
@@ -10216,6 +10628,13 @@ let test_compose_prompt_skips_blank_loop_command () =
           (test_harness ~loop_enabled:true ~loop_command:"   " ())
       in
       Alcotest.(check bool) "no loop command" false (String.starts_with ~prefix:"/goal " prompt);
+      Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
+      Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
+
+let test_compose_prompt_skips_blank_cursor_loop_command () =
+  with_temp_dir "symphony-goal-cursor-blank-loop-" (fun root ->
+      let prompt = compose_stage_goal_prompt_for_harness root (cursor_test_harness ~loop_enabled:true ~loop_command:"   " ()) in
+      Alcotest.(check bool) "no Cursor loop command" false (String.starts_with ~prefix:"/cursor-goal " prompt);
       Alcotest.(check bool) "no stage goal context" false (contains_substring prompt "Stage Goal Context");
       Alcotest.(check bool) "normal prompt included" true (contains_substring prompt "Normal #1"))
 
@@ -13560,6 +13979,41 @@ let test_parse_claude_stream_message_tool_usage_and_ignores_invalid () =
       let ignored_activity = Orchestrator.parse_claude_stream_activity (Some stdout_path) None in
       Alcotest.(check bool) "unknown and malformed ignored" false ignored_activity.claude_seen)
 
+let test_parse_cursor_stream_message_tool_usage_and_ignores_invalid () =
+  with_temp_dir "symphony-cursor-stream-parse-" (fun root ->
+      let stdout_path = Filename.concat root "stdout.log" in
+      let stderr_path = Filename.concat root "stderr.log" in
+      Util.write_file stdout_path
+        {|{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"world"}]}}
+|};
+      Util.write_file stderr_path "not json\n{\"type\":\"unknown\"}\n";
+      let message_activity = Orchestrator.parse_cursor_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check bool) "message event seen" true message_activity.cursor_seen;
+      Alcotest.(check (option string)) "last message event" (Some "cursor_message")
+        message_activity.cursor_last_event;
+      Alcotest.(check (option string)) "message text accumulated" (Some "Hello world")
+        message_activity.cursor_last_message;
+      Util.write_file stdout_path
+        {|{"type":"tool_call","subtype":"completed","tool_call":{"writeToolCall":{"args":{"path":"summary.txt"}}}}
+|};
+      Util.write_file stderr_path "";
+      let tool_activity = Orchestrator.parse_cursor_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check (option string)) "tool event" (Some "cursor_tool_completed")
+        tool_activity.cursor_last_event;
+      Alcotest.(check (option string)) "tool message" (Some "Completed write") tool_activity.cursor_last_message;
+      Util.write_file stdout_path
+        {|{"type":"result","subtype":"success","usage":{"input_tokens":7,"output_tokens":11,"total_tokens":18},"result":"done"}
+|};
+      let usage_activity = Orchestrator.parse_cursor_stream_activity (Some stdout_path) (Some stderr_path) in
+      Alcotest.(check (option string)) "result event" (Some "cursor_result") usage_activity.cursor_last_event;
+      Alcotest.(check int) "usage input" 7 usage_activity.cursor_tokens.input_tokens;
+      Alcotest.(check int) "usage output" 11 usage_activity.cursor_tokens.output_tokens;
+      Alcotest.(check int) "usage total" 18 usage_activity.cursor_tokens.total_tokens;
+      Util.write_file stdout_path "not json\n{\"type\":\"unknown\"}\n";
+      let ignored_activity = Orchestrator.parse_cursor_stream_activity (Some stdout_path) None in
+      Alcotest.(check bool) "unknown and malformed ignored" false ignored_activity.cursor_seen)
+
 let test_claude_stream_dispatch_updates_activity_and_preserves_raw_logs () =
   with_temp_dir "symphony-claude-stream-dispatch-" (fun root ->
       let workspace_root = Filename.concat root "workspaces" in
@@ -13669,6 +14123,126 @@ printf '%s\n' 'raw stderr diagnostic' >&2
       Alcotest.(check int) "row input tokens" 3 row.tokens.input_tokens;
       Alcotest.(check int) "row output tokens" 5 row.tokens.output_tokens;
       Alcotest.(check int) "row total tokens" 8 row.tokens.total_tokens;
+      Alcotest.(check bool) "raw stdout remains available" true
+        (contains_substring
+           (Util.read_file (Option.get launched.stdout_path))
+           "raw stdout diagnostic");
+      Alcotest.(check bool) "raw stderr remains available" true
+        (contains_substring
+           (Util.read_file (Option.get launched.stderr_path))
+           "raw stderr diagnostic"))
+
+let test_cursor_stream_dispatch_updates_activity_and_preserves_raw_logs () =
+  with_temp_dir "symphony-cursor-stream-dispatch-" (fun root ->
+      let workspace_root = Filename.concat root "workspaces" in
+      let agents_root = Filename.concat root ".symphony/agents" in
+      Util.mkdir_p agents_root;
+      Util.write_file (Filename.concat agents_root "engineer.md") "Engineer";
+      let script = Filename.concat root "fake-cursor.sh" in
+      Util.write_file script
+        {|#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","model":"cursor-test"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working"}]}}'
+printf '%s\n' '{"type":"tool_call","subtype":"completed","tool_call":{"writeToolCall":{"args":{"path":"summary.txt"}}}}'
+printf '%s\n' '{"type":"result","subtype":"success","usage":{"input_tokens":7,"output_tokens":11,"total_tokens":18},"result":"done"}'
+printf '%s\n' 'raw stdout diagnostic'
+printf '%s\n' 'raw stderr diagnostic' >&2
+|};
+      Unix.chmod script 0o755;
+      let settings = Filename.concat root "settings.json" in
+      Util.write_file settings
+        (Printf.sprintf
+           {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "harnesses": {
+    "cursor": {
+      "kind": "cursor",
+      "command": %s,
+      "model": "gpt-5.5",
+      "reasoningEffort": "high"
+    }
+  },
+  "agents": {"engineer": {"harness": "cursor"}},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [{"states": ["Todo"], "agent": "engineer"}]
+  }
+}|}
+           (Yojson.Safe.to_string (`String script)));
+      let config = Config.from_settings_file ~workspace_root:root settings in
+      let stage =
+        match config.stage_agents.stages with [ stage ] -> stage | _ -> Alcotest.fail "expected one stage"
+      in
+      let harness =
+        match Config.selected_agent_harness config (Some stage) with
+        | Some harness -> harness
+        | None -> Alcotest.fail "expected selected Cursor Harness"
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+      let launched =
+        Orchestrator.shell_launch ~stage:(Some stage) ~config ~workspace ~prompt:"Implement #1" ~issue
+      in
+      (match launched.pid with
+      | Some pid -> ignore (Unix.waitpid [] pid)
+      | None -> Alcotest.fail "expected shell launch pid");
+      let orchestrator = Orchestrator.make ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.update_state orchestrator (fun state ->
+          {
+            state with
+            Runtime_state.running =
+              [
+                {
+                  Runtime_state.issue;
+                  stage_agent = Some "engineer";
+                  harness_name = Some "cursor";
+                  harness_kind = Some "cursor";
+                  sandbox_enabled = None;
+                  sandbox_provider = None;
+                  sandbox_reuse_outcome = None;
+                  stage_states = [ "Todo" ];
+                  session_id = launched.session_id;
+                  turn_count = 0;
+                  last_event = Some "launched";
+                  last_message = None;
+                  started_at = Util.now_iso8601 ();
+                  last_event_at = None;
+                  tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                  goal_usage = None;
+                };
+              ];
+          });
+      let child =
+        {
+          Orchestrator.pid = 0;
+          issue;
+          stage = Some stage;
+          harness;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = launched.stdout_path;
+          stderr_path = launched.stderr_path;
+          stdout_size = 0;
+          stderr_size = 0;
+        }
+      in
+      Orchestrator.refresh_child_output ~force:true orchestrator child;
+      let state = Orchestrator.get_state orchestrator in
+      let row =
+        match state.Runtime_state.running with [ row ] -> row | _ -> Alcotest.fail "expected one running row"
+      in
+      Alcotest.(check (option string)) "running row shows result event" (Some "cursor_result") row.last_event;
+      Alcotest.(check (option string)) "running row shows result message" (Some "done") row.last_message;
+      Alcotest.(check (option string)) "running row keeps harness kind" (Some "cursor") row.harness_kind;
+      Alcotest.(check int) "row input tokens" 7 row.tokens.input_tokens;
+      Alcotest.(check int) "row output tokens" 11 row.tokens.output_tokens;
+      Alcotest.(check int) "row total tokens" 18 row.tokens.total_tokens;
       Alcotest.(check bool) "raw stdout remains available" true
         (contains_substring
            (Util.read_file (Option.get launched.stdout_path))
@@ -16661,6 +17235,8 @@ let () =
             test_sandbox_runtime_uses_agent_worktree_scoped_container_names;
           Alcotest.test_case "runs agent in agent worktree" `Quick test_shell_launch_runs_agent_in_agent_worktree;
           Alcotest.test_case "selects PI harness for stage agent" `Quick test_shell_launch_selects_pi_harness_for_stage_agent;
+          Alcotest.test_case "selects Cursor harness for stage agent" `Quick
+            test_shell_launch_selects_cursor_harness_for_stage_agent;
           Alcotest.test_case "runs sandboxed agent in agent worktree" `Quick
             test_shell_launch_runs_sandboxed_agent_in_agent_worktree;
           Alcotest.test_case "sandbox uses selected stage harness" `Quick
@@ -16888,6 +17464,8 @@ let () =
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
           Alcotest.test_case "parses Harnesses and logical agents" `Quick
             test_config_parses_harnesses_and_logical_agents;
+          Alcotest.test_case "parses Cursor Harness defaults and selection" `Quick
+            test_config_parses_cursor_harness_defaults_and_selection;
           Alcotest.test_case "loads mixed-Harness Runtime Settings" `Quick
             test_config_loads_mixed_harness_settings_without_dispatch;
           Alcotest.test_case "resolves stage agents through logical agents" `Quick
@@ -16902,6 +17480,10 @@ let () =
             test_claude_harness_readiness_checks_selected_install_and_auth;
           Alcotest.test_case "ignores unselected Claude harness readiness" `Quick
             test_claude_harness_readiness_ignores_unselected_harnesses;
+          Alcotest.test_case "validates selected Cursor harness install and auth" `Quick
+            test_cursor_harness_readiness_checks_selected_install_and_auth;
+          Alcotest.test_case "ignores unselected Cursor harness readiness" `Quick
+            test_cursor_harness_readiness_ignores_unselected_harnesses;
           Alcotest.test_case "validates PI harness install and auth" `Quick
             test_pi_harness_readiness_checks_install_and_auth;
           Alcotest.test_case "ignores unselected PI harness readiness" `Quick
@@ -16933,6 +17515,8 @@ let () =
           Alcotest.test_case "disabled stage goal does not require codex goals" `Quick test_disabled_stage_goal_does_not_require_codex_goals;
           Alcotest.test_case "blank loop command does not require codex goals" `Quick
             test_stage_goal_blank_loop_does_not_require_codex_goals;
+          Alcotest.test_case "validates Cursor loop readiness for selected stage goals" `Quick
+            test_cursor_loop_readiness_checks_selected_loop_enabled_harness;
           Alcotest.test_case "parses stage skill load and readiness" `Quick test_config_parses_stage_skill_load_and_readiness;
           Alcotest.test_case "stage goal requires codex exec stdin support" `Quick test_stage_goal_requires_codex_exec_stdin_support;
           Alcotest.test_case "stage goal live stdin probe" `Quick test_stage_goal_live_stdin_probe;
@@ -17240,14 +17824,23 @@ let () =
           Alcotest.test_case "prepends stage goal handoff" `Quick test_orchestrator_prepends_stage_goal_handoff;
           Alcotest.test_case "uses default Codex loop command" `Quick test_compose_prompt_uses_default_codex_loop_command;
           Alcotest.test_case "uses custom Codex loop command" `Quick test_compose_prompt_uses_custom_codex_loop_command;
+          Alcotest.test_case "uses configured Cursor loop command" `Quick
+            test_compose_prompt_uses_configured_cursor_loop_command;
           Alcotest.test_case "skips disabled Claude loop" `Quick test_compose_prompt_skips_disabled_claude_loop;
+          Alcotest.test_case "skips disabled Cursor loop" `Quick test_compose_prompt_skips_disabled_cursor_loop;
           Alcotest.test_case "dispatch skips disabled Claude loop" `Quick
             test_orchestrator_dispatch_skips_disabled_claude_loop;
+          Alcotest.test_case "dispatch prepends ready Cursor loop" `Quick
+            test_orchestrator_dispatch_prepends_ready_cursor_loop;
+          Alcotest.test_case "dispatch skips disabled Cursor loop" `Quick
+            test_orchestrator_dispatch_skips_disabled_cursor_loop;
           Alcotest.test_case "dispatch exposes Codex harness identity" `Quick
             test_orchestrator_dispatch_exposes_codex_harness_identity;
           Alcotest.test_case "dispatch exposes Claude harness identity" `Quick
             test_orchestrator_dispatch_exposes_claude_harness_identity;
           Alcotest.test_case "skips blank loop command" `Quick test_compose_prompt_skips_blank_loop_command;
+          Alcotest.test_case "skips blank Cursor loop command" `Quick
+            test_compose_prompt_skips_blank_cursor_loop_command;
           Alcotest.test_case "wraps Compozy task-step prompt without GitHub prompt changes" `Quick
             test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change;
           Alcotest.test_case "relaunches Compozy task steps in one worktree" `Quick
@@ -17315,8 +17908,12 @@ let () =
           Alcotest.test_case "parses nested goal usage fields" `Quick test_parse_goal_usage_nested_usage_fields;
           Alcotest.test_case "parses Claude stream-json activity" `Quick
             test_parse_claude_stream_message_tool_usage_and_ignores_invalid;
+          Alcotest.test_case "parses Cursor stream-json activity" `Quick
+            test_parse_cursor_stream_message_tool_usage_and_ignores_invalid;
           Alcotest.test_case "updates activity from Claude stream-json logs" `Quick
             test_claude_stream_dispatch_updates_activity_and_preserves_raw_logs;
+          Alcotest.test_case "updates activity from Cursor stream-json logs" `Quick
+            test_cursor_stream_dispatch_updates_activity_and_preserves_raw_logs;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "renders stage commit classification messages" `Quick
             test_stage_commit_classification_renders_messages;

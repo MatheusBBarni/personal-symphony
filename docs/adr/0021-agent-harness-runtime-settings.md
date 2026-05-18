@@ -18,7 +18,7 @@ Runtime Settings define named Agent Harness definitions under `harnesses`. Each 
 
 Runtime Settings define logical agents under `agents`. A logical agent such as `planner`, `engineer`, or `reviewer` selects a Harness with `harness` and may override Harness execution defaults field by field.
 
-`kind: "codex"`, `kind: "claude"`, and `kind: "pi"` are distinct Harness implementations. Symphony must not infer Harness behavior only from the command string.
+`kind: "codex"`, `kind: "claude"`, `kind: "cursor"`, and `kind: "pi"` are distinct Harness implementations. Symphony must not infer Harness behavior only from the command string.
 
 The legacy Runtime Settings `codex` block remains supported as a backwards-compatible Codex Harness. Existing Workspace Repositories that define only the legacy `codex` block continue to load.
 
@@ -42,21 +42,37 @@ The first PI Harness uses PI non-interactive print mode with the default command
 pi --model <model> --thinking <reasoning> --print --no-session
 ```
 
+The first Cursor Harness uses Cursor CLI non-interactive execution with `stream-json` output:
+
+```sh
+cursor-agent -p --model <model> --output-format stream-json
+```
+
+Bootstrap also includes an explicit direct-write Cursor posture for operators who intentionally want it:
+
+```sh
+cursor-agent -p --force --model <model> --output-format stream-json
+```
+
 Command rendering replaces `<model>` and `<reasoning>` tokens for all supported harnesses. Codex keeps its existing command rendering behavior for legacy command shapes.
 
 Agent Harness launches run in their own process group. When a turn or stall timeout fires, Symphony terminates the process group so child agent processes do not survive and continue writing to the Agent Worktree after the task has moved to retry.
 
 Stall timeout activity is measured from agent output growth and Agent Worktree file modifications. This preserves the stall guard for inactive agents while allowing quiet non-interactive harnesses, such as PI print mode, to continue when they are actively changing files but have not emitted stdout or stderr yet.
 
-Stage Goal Handoff remains stage-gated by `stageAgents.stages[].goal.enabled`, but actual loop handoff is controlled by the selected Harness. When the selected Harness has `loop.enabled: true` and a non-empty `loop.command`, Symphony prepends that command with Stage Goal Context before the normal Agent Prompt. When loop is disabled or blank, Symphony runs the normal prompt. Bootstrap defaults enable Codex loop with `/goal` and disable Claude and PI loops.
+Stage Goal Handoff remains stage-gated by `stageAgents.stages[].goal.enabled`, but actual loop handoff is controlled by the selected Harness. When the selected Harness has `loop.enabled: true` and a non-empty `loop.command`, Symphony prepends that command with Stage Goal Context before the normal Agent Prompt. When loop is disabled or blank, Symphony runs the normal prompt. Bootstrap defaults enable Codex loop with `/goal` and disable Claude, Cursor, and PI loops.
 
 PI Harness readiness validation checks only PI Harnesses selected by enabled Stage Agent mappings. For those selected PI Harnesses, Symphony checks that the configured command executable is available and that PI has authentication for the configured model provider through a subscription login, stored auth file, command-line API key, or supported environment variable. Missing PI installation or auth is reported as a Readiness Gap before dispatch. Unused PI Harness definitions may remain in Runtime Settings without requiring every operator to install or authenticate PI.
 
 Claude Harness readiness validation checks only selected Claude Harnesses. For those selected Claude Harnesses, Symphony checks that the configured command executable is available and that Claude Code authentication is configured through Claude login state, `ANTHROPIC_API_KEY`, or Claude settings such as an API key helper. Runtime Settings and docs must reference only environment variable names, not secret values.
 
+Cursor Harness readiness validation checks only selected Cursor Harnesses. For those selected Cursor Harnesses, Symphony checks that the configured command executable is available and that Cursor CLI status succeeds through browser login or `CURSOR_API_KEY`.
+
+Cursor Harness loop readiness validation checks only selected loop-enabled Cursor Harnesses on stages with Stage Goal Handoff enabled. A selected loop-enabled Cursor Harness must accept its configured `loop.command` from standard input, which keeps plugin-backed Cursor loop entry explicit and prevents a configured command from being treated as working without evidence.
+
 ## Consequences
 
-PI and Claude can be selected explicitly without pretending to be `codex exec`.
+PI, Claude, and Cursor can be selected explicitly without pretending to be `codex exec`.
 
 Stage mappings keep one responsibility: route statuses to logical agents. Logical agents keep one responsibility: select Harnesses and role-level execution overrides. Harnesses keep one responsibility: define provider execution, defaults, and loop capability.
 

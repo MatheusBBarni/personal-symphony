@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Add Cursor Stream-JSON Activity Parsing And Runtime Visibility"
 type: backend
 complexity: high
 dependencies:
   - task_01
   - task_02
+
 ---
 
 # Task 04: Add Cursor Stream-JSON Activity Parsing And Runtime Visibility
@@ -32,11 +33,11 @@ and preserves raw logs so provider-specific parser gaps do not erase diagnostics
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add Cursor-specific `stream-json` parsing near the existing provider output-processing path.
-- [ ] 4.2 Feed parsed Cursor activity into the existing running-row fields without inventing a second runtime model.
-- [ ] 4.3 Preserve raw-log fallback behavior for incomplete or malformed Cursor output.
-- [ ] 4.4 Verify runtime JSON, Terminal Console detail rows, and dashboard state remain compatible with Cursor runs.
-- [ ] 4.5 Add targeted backend and live-state tests for structured Cursor activity.
+- [x] 4.1 Add Cursor-specific `stream-json` parsing near the existing provider output-processing path.
+- [x] 4.2 Feed parsed Cursor activity into the existing running-row fields without inventing a second runtime model.
+- [x] 4.3 Preserve raw-log fallback behavior for incomplete or malformed Cursor output.
+- [x] 4.4 Verify runtime JSON, Terminal Console detail rows, and dashboard state remain compatible with Cursor runs.
+- [x] 4.5 Add targeted backend and live-state tests for structured Cursor activity.
 
 ## Implementation Details
 Follow the same provider-local observability pattern used for Claude, but only as far as Cursor’s documented output
@@ -71,14 +72,14 @@ reuse existing runtime fields and keep raw-log fallback mandatory.
 
 ## Tests
 - Unit tests:
-  - [ ] Representative Cursor message output updates normalized `last_message`.
-  - [ ] Representative Cursor tool or phase output updates normalized `last_event`.
-  - [ ] Cursor token or usage output updates running-row token fields when present.
-  - [ ] Malformed `stream-json` lines are ignored safely.
-  - [ ] Raw-log fallback remains available even when parsing fails.
+  - [x] Representative Cursor message output updates normalized `last_message`.
+  - [x] Representative Cursor tool or phase output updates normalized `last_event`.
+  - [x] Cursor token or usage output updates running-row token fields when present.
+  - [x] Malformed `stream-json` lines are ignored safely.
+  - [x] Raw-log fallback remains available even when parsing fails.
 - Integration tests:
-  - [ ] A fake Cursor command emitting `stream-json` updates a running task with `harness_name: "cursor"` and useful activity fields.
-  - [ ] Frontend/runtime snapshot consumers continue to accept Cursor running rows without schema regressions.
+  - [x] A fake Cursor command emitting `stream-json` updates a running task with `harness_name: "cursor"` and useful activity fields.
+  - [x] Frontend/runtime snapshot consumers continue to accept Cursor running rows without schema regressions.
 - Test coverage target: >=80%
 - All tests must pass
 

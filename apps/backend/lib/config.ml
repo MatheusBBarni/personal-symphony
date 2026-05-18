@@ -174,6 +174,7 @@ let default_codex_loop_command = "/goal"
 let default_pi_model = "openai/gpt-5.5"
 let default_pi_command = "pi --model <model> --thinking <reasoning> --print --no-session"
 let default_claude_command = "claude -p --model <model> --output-format stream-json"
+let default_cursor_command = "cursor-agent -p --model <model> --output-format stream-json"
 let default_pull_request_title = "Symphony batch from <head_branch>"
 let default_pull_request_body = "Opened automatically by Symphony after orchestration became idle."
 let default_minibeads_root = ".beads"
@@ -729,12 +730,13 @@ type selected_harness_resolution =
   | Missing_referenced_harness of string
 
 let default_harness_kind name =
-  match name with "codex" -> "codex" | "pi" -> "pi" | "claude" -> "claude" | _ -> ""
+  match name with "codex" -> "codex" | "pi" -> "pi" | "claude" -> "claude" | "cursor" -> "cursor" | _ -> ""
 
 let default_harness_command = function
   | "codex" -> default_codex_command
   | "pi" -> default_pi_command
   | "claude" -> default_claude_command
+  | "cursor" -> default_cursor_command
   | _ -> ""
 
 let default_harness_model = function "pi" -> default_pi_model | _ -> default_model
@@ -1272,6 +1274,49 @@ let codex_goal_stdin_supported_harness (harness : agent_harness) =
 let codex_goal_stdin_supported config =
   codex_goal_stdin_supported_harness (harness_of_codex config.codex)
 
+let write_all fd text =
+  let rec loop offset =
+    if offset < String.length text then
+      let written = Unix.write_substring fd text offset (String.length text - offset) in
+      if written > 0 then loop (offset + written)
+  in
+  loop 0
+
+let run_stdin_probe ~timeout_seconds command input =
+  let input_read, input_write = Unix.pipe () in
+  Unix.set_close_on_exec input_write;
+  let pid =
+    Unix.create_process "/bin/sh"
+      [| "/bin/sh"; "-lc"; Printf.sprintf "exec %s >/dev/null 2>&1" command |]
+      input_read Unix.stdout Unix.stderr
+  in
+  Unix.close input_read;
+  (try write_all input_write input with Unix.Unix_error (Unix.EPIPE, _, _) -> ());
+  Unix.close input_write;
+  let deadline = Unix.gettimeofday () +. timeout_seconds in
+  let rec wait () =
+    match Unix.waitpid [ Unix.WNOHANG ] pid with
+    | 0, _ ->
+        if Unix.gettimeofday () >= deadline then (
+          (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+          ignore (Unix.waitpid [] pid);
+          false)
+        else (
+          Unix.sleepf 0.05;
+          wait ())
+    | _, Unix.WEXITED 0 -> true
+    | _, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _) -> false
+  in
+  wait ()
+
+let cursor_loop_stdin_supported_harness (harness : agent_harness) =
+  let command = Util.trim harness.command in
+  let loop_command = Util.trim harness.loop_command in
+  if command = "" || loop_command = "" then false
+  else
+    let probe = Printf.sprintf "%s Verify Cursor loop plugin support.\n\nReturn ok.\n" loop_command in
+    run_stdin_probe ~timeout_seconds:20. (harness_probe_command harness) probe
+
 let command_words command =
   String.split_on_char ' ' command |> List.filter (fun word -> Util.trim word <> "")
 
@@ -1295,6 +1340,47 @@ let executable_available executable =
     match Unix.system (Printf.sprintf "command -v %s >/dev/null 2>&1" (Util.shell_quote executable)) with
     | Unix.WEXITED 0 -> true
     | _ -> false
+
+let is_shell_word_char = function
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' | '.' -> true
+  | _ -> false
+
+let substring_at text index needle =
+  let needle_length = String.length needle in
+  index + needle_length <= String.length text
+  &&
+  let rec loop offset =
+    offset = needle_length || (text.[index + offset] = needle.[offset] && loop (offset + 1))
+  in
+  loop 0
+
+let cursor_agent_token_end command =
+  let token = "cursor-agent" in
+  let token_length = String.length token in
+  let command_length = String.length command in
+  let rec search index =
+    if index + token_length > command_length then None
+    else if substring_at command index token then
+      let before_ok = index = 0 || not (is_shell_word_char command.[index - 1]) in
+      let after_index = index + token_length in
+      let after_ok = after_index = command_length || not (is_shell_word_char command.[after_index]) in
+      if before_ok && after_ok then Some after_index else search (index + 1)
+    else search (index + 1)
+  in
+  search 0
+
+let cursor_status_command (harness : agent_harness) =
+  let command = harness_probe_command harness |> Util.trim in
+  match cursor_agent_token_end command with
+  | Some token_end -> Some (String.sub command 0 token_end ^ " status")
+  | None ->
+      harness_executable harness
+      |> Option.map (fun executable -> Printf.sprintf "%s status" (Util.shell_quote executable))
+
+let cursor_harness_auth_configured (harness : agent_harness) =
+  match cursor_status_command harness with
+  | Some command -> run_stdin_probe ~timeout_seconds:20. command ""
+  | None -> false
 
 let pi_agent_dir () =
   match Util.getenv_nonempty "PI_CODING_AGENT_DIR" with
@@ -2037,8 +2123,8 @@ let readiness_gaps config =
       in
       if Util.trim harness.name = "" then
         add "harnesses" "Harness identifiers in .symphony/settings.json must not be empty.";
-      if not (List.exists (( = ) harness.kind) [ "codex"; "claude"; "pi" ]) then
-        add (prefix ^ ".kind") "Set Harness kind to codex, claude, or pi.";
+      if not (List.exists (( = ) harness.kind) [ "codex"; "claude"; "cursor"; "pi" ]) then
+        add (prefix ^ ".kind") "Set Harness kind to codex, claude, cursor, or pi.";
       if Util.trim harness.command = "" then
         add (prefix ^ ".command") "Set the Harness command to a non-interactive launch command.";
       if Util.trim harness.model = "" then add (prefix ^ ".model") "Set the Harness model.";
@@ -2091,6 +2177,25 @@ let readiness_gaps config =
              ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, set CLAUDE_CODE_OAUTH_TOKEN for non-bare scripted runs, or \
              configure an apiKeyHelper through Claude settings."))
     selected_harnesses;
+  List.iter
+    (fun (harness : agent_harness) ->
+      if harness.kind = "cursor" && Util.trim harness.command <> "" then
+        let prefix =
+          if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "agents.cursor"
+        in
+        match harness_executable harness with
+        | Some executable when executable_available executable ->
+            if not (cursor_harness_auth_configured harness) then
+              add (prefix ^ ".auth")
+                "Configure Cursor authentication without storing secrets in Runtime Settings. Run `cursor-agent login` \
+                 or set CURSOR_API_KEY, then confirm the configured Cursor Harness status probe succeeds."
+        | Some executable ->
+            add (prefix ^ ".install")
+              (Printf.sprintf
+                 "Install Cursor CLI or update the Cursor Harness command so its executable is available: %s."
+                 executable)
+        | None -> ())
+    selected_harnesses;
   if config.tracker.active_states = [] then
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then
@@ -2140,6 +2245,27 @@ let readiness_gaps config =
       add "codex.goalStdin"
         "Use a Codex command that accepts the configured Harness loop command from standard input before enabling \
          Stage Goal Handoff.");
+  let cursor_stage_goal_harnesses =
+    if not config.stage_agents.enabled then []
+    else
+      config.stage_agents.stages
+      |> List.filter_map (fun stage ->
+             if not (stage_goal_enabled stage) then None
+             else
+               match selected_agent_harness config (Some stage) with
+               | Some harness when harness.kind = "cursor" && harness_loop_handoff_enabled harness -> Some harness
+               | _ -> None)
+  in
+  List.iter
+    (fun (harness : agent_harness) ->
+      if not (cursor_loop_stdin_supported_harness harness) then
+        let prefix =
+          if config.agent_harnesses_explicit then "harnesses." ^ harness.name else "agents.cursor"
+        in
+        add (prefix ^ ".loop")
+          "Install or enable the Cursor plugin that accepts the configured Harness loop command from standard input, \
+           or disable loop.enabled / clear loop.command for this Cursor Harness.")
+    cursor_stage_goal_harnesses;
   if config.stage_agents.enabled then (
     if not (Sys.file_exists config.stage_agents.root && Sys.is_directory config.stage_agents.root) then
       add "stageAgents.root" "Create .symphony/agents or set stageAgents.enabled to false.";

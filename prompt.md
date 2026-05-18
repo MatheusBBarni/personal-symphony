@@ -18,473 +18,594 @@ Stage Commit is enabled for this stage. Leave the worktree ready for a local com
 
 Stage agent: engineer
 
-# Compozy Task Step
+# Compozy PRD Run Stage
 
-Run: compozy:ready-for-symphony-intake
-PRD directory: ready-for-symphony-intake
-Current task file: task_05.md
-Current task title: Expose intake eligibility in Runtime State and dashboard
+Run: compozy:cursor-cli-harness-integration
+PRD directory: cursor-cli-harness-integration
+Task step status: completed
+Completed task steps: 6/6
 
-## Current Task (`task_05.md`)
+## Completed Compozy Task Steps
 
----
-status: in_progress
-title: "Expose intake eligibility in Runtime State and dashboard"
-type: frontend
-complexity: high
-dependencies:
-  - task_04
-
----
-
-# Task 05: Expose intake eligibility in Runtime State and dashboard
-
-## Overview
-Expose first-admission eligibility and blocking reasons through Runtime State so operators can tell why a work item will start, is waiting, or will not start. This task must keep intake explanations tracker-neutral and additive to existing Runtime State snapshots rather than replacing lifecycle, queue, or Compozy progress projections.
-
-<critical>
-- ALWAYS READ the PRD and TechSpec before starting
-- REFERENCE TECHSPEC for implementation details - do not duplicate here
-- FOCUS ON "WHAT" - describe what needs to be accomplished, not how
-- MINIMIZE CODE - show code only to illustrate current structure or problem areas
-- TESTS REQUIRED - every task MUST include tests in deliverables
-</critical>
-
-<requirements>
-- R1 MUST add a Runtime State projection for first-admission eligibility keyed to tracker-visible work items.
-- R2 MUST surface tracker-neutral reasons for ready, not-ready, queue-blocked, or parse-blocked intake states without rewriting lifecycle semantics.
-- R3 MUST keep frontend state decoding and dashboard rendering compatible with existing Runtime State snapshots.
-- R4 MUST preserve Ordered Queue and Compozy progress views while adding intake-specific operator visibility.
-- R5 MUST include backend and frontend test coverage for state serialization, snapshot decoding, and dashboard rendering of intake eligibility.
-</requirements>
-
-## Subtasks
-- [ ] 5.1 Add intake-eligibility projection fields to Runtime State serialization and live state output.
-- [ ] 5.2 Update frontend Runtime State decoding to understand the new intake-eligibility shape.
-- [ ] 5.3 Render tracker-neutral intake explanations in dashboard state views without collapsing existing lifecycle or queue status.
-- [ ] 5.4 Extend backend and frontend tests for state projection and UI rendering compatibility.
-
-## Implementation Details
-Reference the TechSpec "API Endpoints", "Runtime State Projection", and "Monitoring and Observability" sections. Keep this task focused on state projection and operator visibility; it should not change tracker semantics, queue policy, or run lifecycle ownership introduced by earlier tasks.
-
-### Relevant Files
-- `apps/backend/lib/runtime_state.ml` - Runtime State model and JSON projection that should gain intake-eligibility fields.
-- `apps/backend/lib/server.ml` - State API endpoints that must expose the new projection consistently.
-- `apps/frontend/src/RuntimeStateSnapshot.res` - Frontend decoder for Runtime State snapshots.
-- `apps/frontend/src/Pages/Dashboard.res` - Web Dashboard rendering of runtime status and tracker-facing explanations.
-- `apps/backend/test/test_backend.ml` - Backend state snapshot tests to extend with the new fields.
-
-### Dependent Files
-- `apps/backend/bin/terminal_console_runtime.ml` - Terminal Console consumers may reuse the new intake-eligibility messages.
-- `apps/backend/lib/terminal_console_model.ml` - Shared console projection may need the same intake-eligibility view as the dashboard.
-- `apps/frontend/src` - Other snapshot consumers may need decoding compatibility if they read shared Runtime State types.
-- `README.md` - Later docs task will explain new operator-facing intake diagnostics.
-
-### Related ADRs
-- [ADR-003: Put Symphony-ready status at the tracker boundary with exact-match first-admission semantics](adrs/adr-003.md) - Requires runtime visibility for first-admission rules.
-- [ADR-004: Read Compozy Symphony-ready status from _tasks.md while keeping task-step state separate](adrs/adr-004.md) - Intake visibility must not blur Compozy lifecycle and task-step semantics.
-
-## Deliverables
-- Runtime State projection for intake eligibility and blocking reasons.
-- Frontend decoding and dashboard rendering for tracker-neutral intake explanations.
-- Backend and frontend tests covering serialization, snapshot compatibility, and UI rendering.
-- Unit tests with 80%+ coverage **(REQUIRED)**
-- Integration tests for state and dashboard behavior **(REQUIRED)**
-
-## Tests
-- Unit tests:
-  - [ ] Runtime State JSON includes intake-eligibility fields for ready and non-ready tracker-visible items.
-  - [ ] Frontend Runtime State snapshot decoding accepts the new fields without breaking existing snapshots.
-  - [ ] Dashboard rendering distinguishes intake-blocked items from terminal or lifecycle-completed items.
-- Integration tests:
-  - [ ] Live state output shows queue-blocked or not-ready reasons while preserving Ordered Queue progress.
-  - [ ] Compozy runs with ready-status parse failures surface intake-specific explanations without replacing Compozy PRD Run progress rendering.
-- Test coverage target: >=80%
-- All tests must pass
-
-## Success Criteria
-- All tests passing
-- Test coverage >=80%
-- Operators can see why tracker-visible work is ready, blocked, or excluded from first admission.
-- Runtime State and dashboard consumers gain intake visibility without regressing existing queue or lifecycle views.
+- task_01.md: Add Cursor Harness Kind, Defaults, And Command Rendering
+- task_02.md: Add Cursor CLI Install And Auth Readiness Checks
+- task_03.md: Implement Cursor Loop Readiness And Goal Handoff Support
+- task_04.md: Add Cursor Stream-JSON Activity Parsing And Runtime Visibility
+- task_05.md: Update Bootstrap Runtime Contract Defaults For Cursor
+- task_06.md: Update Docs, Glossary, Project ADR, And Harness Onboarding Guidance
 
 ## PRD (`_prd.md`)
 
-# PRD: Ready-for-Symphony Intake
+# Cursor CLI Harness Integration PRD
 
 ## Overview
 
-Symphony should automatically start newly eligible work from the selected **Issue Tracker** in a **Workspace Repository** without requiring the operator to restart the running process. The MVP uses a standard Symphony-ready status convention as the visible control for when work should begin.
+Cursor CLI Harness Integration makes Symphony a clearer provider-choice product for operators who already run agent
+work through Cursor. It adds Cursor as a stable first-class `Agent Harness` inside the existing `Runtime Contract`, so
+a `Workspace Repository` can route any `Logical Agent` role to Cursor without abandoning Symphony's orchestration
+model, `Agent Worktree` isolation, `Task Branch` flow, or Runtime State visibility.
 
-This feature is for self-hosting engineers and small teams who keep Symphony running on a VPS or other long-lived environment. It is valuable because it removes restart friction, makes start timing predictable, and gives GitHub-backed and Compozy-backed workflows one shared product model.
+The value is practical rather than aspirational. Operators should be able to complete normal task flows on
+Cursor-selected roles using the same product concepts they already understand for other Harnesses. The product outcome
+is stronger provider neutrality: Cursor becomes a supported peer to existing Harnesses, while Symphony preserves one
+consistent user model for selection, readiness, observability, and rollout.
 
 ## Goals
 
-- Let Symphony start newly eligible work within one polling interval without restart.
-- Make tracker status the primary user-visible control for when work starts.
-- Give GitHub-backed and Compozy-backed workflows one consistent Symphony-ready concept.
-- Preserve confidence in existing **Task Branch**, **Agent Worktree**, stage, retry, and **Ordered Queue** behavior.
-- Keep “no ready work yet” as valid **Orchestration Idle** state rather than a failure condition.
+- Make Cursor a stable first-class `Agent Harness` option in Symphony's `Runtime Contract`.
+- Let operators assign Cursor to any `Logical Agent` role, not only `engineer`.
+- Enable operators who already use Cursor CLI to complete normal Symphony task flows without switching tools.
+- Preserve clear product boundaries between `harnesses`, `agents`, and `stageAgents`.
+- Strengthen Symphony's repeatable pattern for future Harness additions through a small onboarding or certification
+  checklist.
+
+Target outcomes:
+- Cursor-selected roles can complete normal task flows reliably enough for routine use.
+- Operators understand how to configure Cursor with low ambiguity.
+- Symphony's provider-choice story becomes stronger without fragmenting the product model.
 
 ## User Stories
 
-- As a solo self-hosting engineer, I want Symphony to notice newly ready work automatically so that I can leave it running without babysitting restarts.
-- As a small-team operator, I want one clear Symphony-ready status so that everyone can predict when work will start.
-- As a GitHub-backed operator, I want tracker status to control intake so that I do not need a second readiness mechanism.
-- As a Compozy-backed operator, I want local tracked work to follow the same Symphony-ready concept so that the product feels consistent across trackers.
-- As an operator who uses `--queue` occasionally, I want routine work to start from status alone while keeping queue-based ordering for exceptions.
+**Workspace Repository operator**
+
+- As a `Workspace Repository` operator, I want to select Cursor for any `Logical Agent` role so that Symphony fits the
+  agent tool I already use.
+- As a `Workspace Repository` operator, I want Cursor to look like a real supported Harness, not a hidden
+  compatibility path, so that I can adopt it confidently.
+- As a `Workspace Repository` operator, I want clear readiness and setup guidance so that I can get to a successful
+  run quickly.
+
+**Task supervisor**
+
+- As a task supervisor, I want Runtime State to show when Cursor is the selected Harness so that I can understand
+  which provider is running a task.
+- As a task supervisor, I want normal task progress and logs to remain visible when work runs on Cursor so that
+  provider choice does not reduce operational trust.
+
+**Product maintainer**
+
+- As a product maintainer, I want Cursor onboarding to follow the same Harness model as existing providers so that
+  future Harness additions become easier and less ad hoc.
+- As a product maintainer, I want the PRD to define clear non-goals so that provider support does not quietly expand
+  into unrelated product commitments.
 
 ## Core Features
 
-| # | Feature | Priority | Product Requirement |
-| --- | --- | --- | --- |
-| F1 | Standard Symphony-ready status | Critical | Symphony defines one standard ready status concept that means work is eligible to start automatically. |
-| F2 | Cross-tracker consistency | Critical | The same Symphony-ready concept applies to both the **GitHub Tracker** and the Compozy-backed **Local Issue Tracker**. |
-| F3 | Automatic start without restart | Critical | When a work item reaches the Symphony-ready status and capacity is available, Symphony starts it on a later polling cycle without restart. |
-| F4 | Healthy idle behavior | Critical | When no work item is in the Symphony-ready status, Symphony remains in valid **Orchestration Idle** state. |
-| F5 | Status-first operator control | High | Operators use tracker status as the main visible control for start timing instead of separate readiness markers. |
-| F6 | Queue compatibility | High | `--queue` remains available for exceptional ordering and does not disappear from the product model. |
-| F7 | Start-behavior visibility | High | Runtime feedback explains why a work item will start, is waiting, or will not start even when operators believe it is ready. |
+### F1: Stable First-Class Cursor Harness
+
+Symphony must present Cursor as a supported `Agent Harness` inside `harnesses`, with the same product-level status as
+other supported Harnesses.
+
+User capability:
+- Operators can define a Cursor Harness in Runtime Settings.
+- Cursor appears as a valid execution choice rather than an advanced workaround.
+- Product docs teach Cursor through the same Harness model already used elsewhere.
+
+### F2: Any Logical Agent Can Select Cursor
+
+Cursor support must be available to any `Logical Agent` role.
+
+User capability:
+- Operators can assign Cursor to `planner`, `engineer`, `reviewer`, or other logical roles they define.
+- Symphony does not frame Cursor as an `engineer`-only product path.
+- Provider choice remains role-based and explicit.
+
+### F3: Low-Ambiguity Setup Experience
+
+The product must make it clear how an operator gets from Runtime Settings to a successful Cursor-selected run.
+
+User capability:
+- Operators know where Cursor belongs in the `Runtime Contract`.
+- Operators receive clear readiness or setup feedback when Cursor is selected.
+- Operators can reach a first successful run with low configuration ambiguity.
+
+### F4: Normal Task-Flow Support
+
+Cursor-selected roles must be able to participate in the normal Symphony workflow.
+
+User capability:
+- Operators can use Cursor-selected roles in routine task execution.
+- Provider choice does not break the expected task-flow experience.
+- Cursor support is measured by successful use in ordinary work, not by a narrow demo path.
+
+### F5: Provider Visibility In Runtime State
+
+Cursor must be observable as a selected Harness in operator-facing runtime views.
+
+User capability:
+- Operators can tell when a task is running on Cursor.
+- Provider identity remains visible alongside normal task state.
+- Provider choice does not reduce day-to-day operational clarity.
+
+### F6: Cursor Examples In Bootstrap And Docs
+
+Runtime Contract examples must show Cursor as part of the supported Harness story.
+
+User capability:
+- Operators can copy or adapt a Cursor example from product-owned documentation or seeded defaults.
+- Cursor configuration is discoverable without reading backend source.
+- Docs reinforce the split between `harnesses`, `agents`, and `stageAgents`.
+
+### F7: Harness Onboarding Checklist
+
+The Cursor effort should leave behind a lightweight reusable checklist for future Harness additions.
+
+User capability:
+- Product maintainers can evaluate future Harness candidates against a repeatable set of product expectations.
+- Symphony reduces one-off provider decisions over time.
+- Cursor becomes a compounding product investment, not just a single-provider feature.
 
 ## User Experience
 
-A typical operator keeps Symphony running in a **Workspace Repository** while planning and refining work in the selected tracker. When a work item reaches the Symphony-ready status, the operator does not need to restart the process or rebuild routine intake commands. Symphony notices the newly eligible item on a later poll and starts work if capacity and normal dispatch rules allow it.
+Primary journey:
+1. An operator opens `.symphony/settings.json` or related Runtime Contract docs.
+2. They see Cursor presented as a supported `Agent Harness` alongside the existing provider model.
+3. They assign Cursor to one or more `Logical Agent` roles.
+4. Symphony guides them to readiness rather than leaving provider setup ambiguous.
+5. They dispatch normal work and observe Cursor-selected execution through the same Runtime State surfaces they already
+   use.
+6. They continue using Symphony's existing orchestration flow without needing a separate mental model for Cursor.
 
-For day-to-day use, the core experience is predictability. Operators should be able to look at tracker status and understand whether Symphony will pick something up soon, whether it is intentionally idle, or whether another rule is holding work back. This matters most for always-on usage, where the product should feel like a dependable intake loop rather than a command that must be re-triggered manually.
+Product experience principles:
+- Provider choice should feel native, not bolted on.
+- Role selection should remain simple and explicit.
+- Setup friction should be low enough that current Cursor users can adopt quickly.
+- Visibility should remain strong enough that operators trust mixed-Harness environments.
+- Discoverability should come from the Runtime Contract and product docs, not from tribal knowledge.
 
-For exceptional cases, operators can still use explicit queue ordering. The MVP should make routine work feel automatic while preserving deliberate control for special sequencing needs.
+Accessibility and clarity considerations:
+- Setup and readiness messages should be understandable by operators who know Symphony but do not know backend
+  internals.
+- Product wording should distinguish support scope from future ambitions.
+- Provider-specific examples should reinforce the same information architecture rather than creating a separate
+  Cursor-only UX.
 
 ## High-Level Technical Constraints
 
-- Preserve one selected **Issue Tracker** per **Workspace Repository**.
-- Preserve existing **Task Branch**, **Agent Worktree**, stage, retry, and completion behavior after work starts.
-- Preserve the distinction between status-based eligibility and queue-based ordering.
-- Keep GitHub-backed and Compozy-backed workflows aligned under the same product language.
-- Do not require operators to maintain a separate readiness marker for routine intake.
+- Cursor must fit the existing `Workspace Repository`-owned `Runtime Contract`.
+- Product examples must preserve the separation between `harnesses`, `agents`, and `stageAgents`.
+- Bootstrap must remain idempotent and must not overwrite user-edited runtime files.
+- Product guidance must reference only secret environment variable names, never secret values.
+- Provider support must preserve existing `Agent Worktree`, `Task Branch`, and Runtime State product semantics.
+- Observability must remain available even when provider-specific structured activity is incomplete.
 
-## Non-Goals
+## Non-Goals (Out of Scope)
 
-- Replacing `--queue` with a fully automatic prioritization system.
-- Supporting multiple trackers at the same time in one **Workspace Repository**.
-- Adding a second explicit readiness marker beside tracker status.
-- Introducing dynamic prioritization, scheduling policies, or auto-ordering in the MVP.
-- Changing in-flight work behavior based on new status edits after work has already started.
-- Building a broader dashboard control plane as part of this MVP.
+- Reframing Cursor as a hidden or experimental-only feature.
+- Limiting Cursor support to only one `Logical Agent` role in the product story.
+- Shipping Cursor background-agent or cloud-agent product behavior in this PRD.
+- Creating a broad new provider-capability framework for permissions, autonomy, or enterprise controls.
+- Promising complete semantic parity between Cursor and every existing Harness.
+- Automatically rewriting user Runtime Contract files.
+- Using this PRD to define implementation details, parser strategy, or backend architecture.
 
 ## Phased Rollout Plan
 
 ### MVP (Phase 1)
 
-- Define a standard Symphony-ready status concept.
-- Use tracker status as the main visible control for automatic start.
-- Start newly eligible work within one polling interval without restart.
-- Treat no ready work as valid **Orchestration Idle** state.
-- Preserve `--queue` for exceptional ordering.
+- Stable first-class Cursor Harness positioning in the Runtime Contract.
+- Cursor available to any `Logical Agent`.
+- Clear setup and readiness experience for Cursor-selected roles.
+- Normal task-flow support for routine operator use.
+- Runtime State provider visibility for Cursor.
+- Cursor examples in docs or seeded settings.
+- Initial Harness onboarding checklist for future providers.
 
-Success criteria: operators can leave Symphony running and see newly ready work start automatically without restart.
+Success criteria to proceed:
+- Operators can complete normal task flows on Cursor-selected roles.
+- Setup ambiguity is low enough that existing Cursor operators can adopt without deep source-code reading.
+- Runtime State makes Cursor-selected execution understandable in daily use.
 
 ### Phase 2
 
-- Improve operator-facing explanations for why a work item is waiting or not dispatchable.
-- Add clearer project guidance for adopting the Symphony-ready convention across trackers.
-- Improve confidence for teams mixing routine automatic intake with occasional queue-based ordering.
+- Improve discoverability and operator guidance for mixed-Harness environments.
+- Strengthen the reusable Harness onboarding checklist with examples and validation guidance.
+- Expand product documentation around role selection patterns and common provider-choice scenarios.
 
-Success criteria: operators report that start behavior is predictable from tracker status alone.
+Success criteria to proceed:
+- Operators can confidently mix Cursor with other Harnesses across different roles.
+- Product maintainers can use the onboarding checklist to evaluate another Harness candidate with less ad hoc work.
 
 ### Phase 3
 
-- Add product guidance and reporting around intake quality, routine throughput, and exceptions.
-- Explore higher-level workflow improvements that build on the status-driven intake model without collapsing it into a hidden queue system.
+- Mature Symphony's broader provider-choice narrative using lessons from Cursor adoption.
+- Evaluate whether additional provider-facing product surfaces are needed for richer mixed-Harness workflows.
+- Extend the onboarding pattern into a more formal provider-support playbook if repeated Harness additions justify it.
 
-Success criteria: Symphony-ready status becomes the default mental model for routine intake across supported trackers.
+Long-term success criteria:
+- Symphony can add future Harnesses without reshaping the core product model.
+- Provider choice becomes a durable product strength rather than a source of setup complexity.
 
 ## Success Metrics
 
-| Metric | Target |
-| --- | --- |
-| Ready-to-start latency | 90% of newly eligible work starts within one polling interval when capacity is available |
-| Restart avoidance | 95% reduction in restart-required admissions for routine work |
-| Routine queue avoidance | Most routine intake no longer requires `--queue`, while exceptions still can use it |
-| Predictability | Operators can correctly predict start behavior from tracker status in dogfood validation |
-| False-positive starts | Fewer than 1 unintended start per 100 Symphony-ready work items |
+- `>= 90%` of Cursor-selected task runs complete the normal dispatch-to-finish flow without setup or support failure in
+  dogfood use.
+- `<= 15 minutes` median time from opening Cursor setup docs to first successful Cursor-selected task flow for an
+  operator who already has Cursor installed.
+- `100%` of Cursor-selected running tasks show provider identity in Runtime State.
+- `>= 2` real `Workspace Repositories` adopt Cursor as part of normal role selection within 30 days of release.
+- `>= 80%` of surveyed or observed early adopters report that provider choice feels clear rather than ambiguous.
 
 ## Risks and Mitigations
 
-| Risk | Mitigation |
-| --- | --- |
-| Teams resist adopting a Symphony-ready status convention | Allow the product concept to stay stable while providing project-level compatibility guidance |
-| Operators expect status to control ordering as well as eligibility | Keep `--queue` as a distinct concept and explain that status controls start eligibility, not sequence |
-| Mixed tracker habits create confusion about what “ready” means | Use one shared Symphony-ready product concept across trackers |
-| Operators lose trust if a ready-looking item does not start | Improve runtime explanations for waiting, blocking, and non-dispatchable cases |
-| Teams overuse the ready status and flood intake | Keep routine intake simple and rely on normal capacity limits plus queue controls for exceptional cases |
+- **Adoption risk:** Operators may not trust Cursor if support looks partial or ambiguous.
+  - Mitigation: position Cursor as stable first-class support and keep the setup path explicit.
+
+- **Expectation risk:** Stable support language may create stronger expectations than the first rollout can satisfy.
+  - Mitigation: keep the supported scope narrow, define clear non-goals, and use phased rollout to control surface
+    area.
+
+- **Competitive risk:** If Symphony's provider-choice story feels weaker than other agent orchestration products,
+  Cursor support may not change adoption.
+  - Mitigation: focus the MVP on normal task-flow completion and operator clarity, not merely checkbox compatibility.
+
+- **Dependency risk:** Product confidence depends partly on external provider behavior and documentation staying usable.
+  - Mitigation: base the product promise on documented behaviors, preserve fallback visibility, and avoid
+    overspecifying parity claims.
+
+- **Scope creep risk:** Cursor support could quietly grow into unrelated autonomy or provider-platform work.
+  - Mitigation: keep future-oriented items explicitly out of scope and use the onboarding checklist to discipline
+    expansion.
 
 ## Architecture Decision Records
 
-- [ADR-001: Add explicit tracker-driven ready-for-symphony admission](./adrs/adr-001.md) — Initial idea-phase marker-based admission direction, later superseded.
-- [ADR-002: Use a standard Symphony-ready status convention across trackers](./adrs/adr-002.md) — The PRD decision: tracker status becomes the primary intake control.
+- [ADR-001: Cursor Harness As A Bounded Multi-Harness Extension](adrs/adr-001.md) — Accepts `kind: "cursor"` as a
+  first-class `Agent Harness` while keeping scope bounded and reusable.
+- [ADR-002: Stable First-Class Cursor Harness Product Posture](adrs/adr-002.md) — Commits the PRD to stable
+  first-class support for Cursor across any `Logical Agent` role.
 
 ## Open Questions
 
-- What exact user-facing status wording should Symphony standardize on for the ready state?
-- How should Runtime State explain cases where a Symphony-ready item is still not dispatchable because of other existing rules?
-- How much project-level compatibility should the MVP allow before the cross-tracker product story becomes too weak?
+- What default Cursor example should product docs emphasize first for operator setup clarity?
+- How prominently should the Harness onboarding checklist appear in operator-facing docs versus maintainer-facing
+  artifacts?
+- What product language best distinguishes "stable support" from "full semantic parity" without weakening user
+  confidence?
+- Are there specific mixed-Harness role combinations that deserve first-class documentation examples in the initial
+  release?
 
 ## TechSpec (`_techspec.md`)
 
-# Ready-for-Symphony Intake
+# Cursor CLI Harness Integration TechSpec
 
 ## Executive Summary
 
-This TechSpec adds a tracker-owned Symphony-ready status rule for first admission into orchestration without changing the existing polling loop, **Task Branch**, **Agent Worktree**, stage routing, retry flow, or **Ordered Queue** model. The core design extends the selected `Issue_tracker` boundary with a first-admission decision separate from the existing active and terminal status predicates. GitHub uses an exact configured ready status for first admission. Compozy reads a run-level ready status from `_tasks.md` while keeping `task_NN.md` frontmatter and **Compozy PRD Run Lifecycle** in their current roles.
+This change adds Cursor as a native `kind: "cursor"` `Agent Harness` inside Symphony's existing multi-Harness
+architecture. The implementation reuses the established `harnesses -> agents -> stageAgents` resolution path,
+selected-Harness readiness model, shell-based launch flow, Runtime State Harness identity, and Bootstrap-owned Runtime
+Contract examples. Cursor-specific behavior stays inside the same provider seams already used for Claude and PI.
 
-The primary trade-off is deliberate: this design adds a small new tracker contract and a new runtime-state projection instead of reusing the broader `activeStates` set or filtering ad hoc in `Orchestrator`. That costs some interface churn, but it preserves boundary integrity, keeps queue semantics stable, and avoids breaking post-admission lifecycle behavior just to enforce a narrow first-admission rule.
+The primary technical trade-off is explicit provider support versus shared-module complexity. A native Cursor Harness
+gives clear behavior, readiness, and observability without inventing a second provider system, but it adds new
+provider-specific branches to already dense backend modules such as `config.ml`, `orchestrator.ml`, and
+`test_backend.ml`. The design keeps scope narrow: Cursor uses CLI-driven auth readiness, `stream-json` as the
+canonical structured output path with raw-log fallback, operator-configured loop support through `loop.enabled` /
+`loop.command`, and targeted updates to Bootstrap, docs, and tests.
 
 ## System Architecture
 
 ### Component Overview
 
-| Component | Responsibility | Boundary |
-| --- | --- | --- |
-| `Config` | Parse the shared Symphony-ready status setting and preserve existing tracker, project, and stage settings. | Must not break current GitHub or Compozy Runtime Settings loading. |
-| `Issue_tracker` | Own first-admission eligibility at the selected tracker boundary. | `Orchestrator` should not implement tracker-specific ready-status logic itself. |
-| `Github_tracker` | Read GitHub Project status, determine exact ready-status matches for first admission, and continue exposing tracker-visible issues. | Must preserve current GraphQL shape and status-field behavior. |
-| `Compozy_tasks_tracker` | Parse `_tasks.md` run-level readiness, keep `task_NN.md` as task-step execution truth, and expose PRD-run eligibility inputs. | Must not replace task-step frontmatter or lifecycle metadata. |
-| `Compozy_lifecycle` | Continue owning run-level execution and PR-readiness state after admission. | Must stay distinct from `_tasks.md` intake status. |
-| `Runtime_readiness` / `Runtime_policy` | Allow startup with no ready work and keep structural readiness failures only. | “Nothing ready” is valid **Orchestration Idle**, not a readiness block. |
-| `Orchestrator` | Poll tracker-visible issues, use tracker-owned first-admission decisions for dispatch, and keep queue and stage behavior intact. | Must not become the new source of tracker semantics. |
-| `Runtime_state` / UI | Expose intake-eligibility explanations without changing the meaning of tracker status, queue state, or lifecycle state. | Frontend should render snapshot fields, not infer intake rules. |
+**Runtime Settings / Harness Parsing**
+- Module: `apps/backend/lib/config.ml`
+- Purpose: Parse `kind: "cursor"` inside `harnesses`, merge logical-agent overrides, define defaults, and surface
+  readiness gaps.
+- Boundary: Owns Runtime Contract interpretation and selected-Harness validation, not runtime execution itself.
 
-Data flow:
+**Harness Launch And Prompt Composition**
+- Module: `apps/backend/lib/orchestrator.ml`
+- Purpose: Render the selected Cursor command, compose prompt input, launch the process in an `Agent Worktree`, and
+  capture stdout/stderr.
+- Boundary: Owns dispatch-time behavior and runtime child process handling.
 
-1. Runtime loads `settings.json` and resolves the selected tracker plus the effective Symphony-ready status.
-2. `Runtime_readiness` validates structure only: tracker config, GitHub connectivity, Compozy root and parseability.
-3. The selected tracker fetches tracker-visible issues or runs.
-4. The tracker adapter computes first-admission eligibility for each visible work item.
-5. `Orchestrator` filters dispatch by tracker eligibility, running state, retry timing, stage capacity, and optional **Ordered Queue** membership.
-6. `Runtime_state` projects candidate visibility plus intake explanations for terminal and dashboard consumers.
-7. Existing post-admission lifecycle, retry, and completion logic continues unchanged.
+**Runtime State And Operator Visibility**
+- Modules: `apps/backend/lib/runtime_state.ml`, `apps/backend/lib/terminal_console_model.ml`,
+  `apps/frontend/src/RuntimeStateSnapshot.res`, `apps/frontend/src/Pages/Dashboard.res`
+- Purpose: Preserve Harness identity and, where supported, structured live activity for running Cursor tasks.
+- Boundary: Owns operator-facing visibility, not command execution or readiness probing.
+
+**Bootstrap And Runtime Contract Examples**
+- Module: `apps/backend/lib/runtime_home.ml`
+- Purpose: Seed bootstrapped `.symphony/settings.json` examples with Cursor support.
+- Boundary: Owns default Runtime Contract examples and idempotent Bootstrap behavior.
+
+**Documentation And Domain Language**
+- Files: `CONTEXT.md`, `README.md`, `docs/adr/0021-agent-harness-runtime-settings.md`
+- Purpose: Update glossary, supported Harness examples, and architectural documentation so Cursor is part of the
+  official model.
+- Boundary: Owns product-contract explanation rather than implementation behavior.
+
+**Backend Verification**
+- Module: `apps/backend/test/test_backend.ml`
+- Purpose: Extend parser, readiness, command rendering, loop, dispatch, and activity coverage for Cursor.
+- Boundary: Owns regression confidence across shared Harness code.
+
+### Data Flow
+
+1. Operator defines `harnesses.cursor` in `.symphony/settings.json`.
+2. `Config.from_settings_file` parses Cursor as a native Harness kind and merges role-level overrides from
+   `agents.<name>`.
+3. `Config.selected_agent_harness` resolves a stage to a logical agent and then to the Cursor Harness.
+4. `Config.readiness_gaps` performs selected-Harness Cursor install/auth/loop readiness before dispatch.
+5. `Orchestrator.compose_prompt` prepends loop handoff only when `loop.enabled` is true and Cursor loop readiness is
+   satisfied.
+6. `Orchestrator.shell_launch` renders the Cursor command, writes the prompt, and launches the child process with
+   stdout/stderr capture.
+7. Runtime refresh logic parses Cursor `stream-json` when available, otherwise falls back to raw logs.
+8. Runtime State and UI surfaces show `harness_name`, `harness_kind`, and activity updates for the running task.
 
 ## Implementation Design
 
 ### Core Interfaces
 
-```go
-type AdmissionDecision struct {
-    Eligible bool
-    Reason   string
-}
-
-type Tracker interface {
-    FetchCandidates() ([]Issue, error)
-    FirstAdmission(issue Issue) AdmissionDecision
-    IsActive(status string) bool
-    IsTerminal(status string) bool
-}
-```
-
-```go
-type CompozyReadySummary struct {
-    ReadyStatus string
-    Path        string
-}
-
-type IntakeEvaluation struct {
-    IssueIdentifier string
-    Eligible        bool
-    Reason          string
+```ocaml
+type agent_harness = {
+  name : string;
+  kind : string;
+  command : string;
+  model : string;
+  reasoning_effort : string;
+  turn_timeout_ms : int;
+  read_timeout_ms : int;
+  stall_timeout_ms : int;
+  loop_enabled : bool;
+  loop_command : string;
 }
 ```
+
+```ocaml
+type selected_harness_resolution =
+  | Resolved_harness of agent_harness
+  | Missing_logical_agent of string
+  | Missing_referenced_harness of string
+```
+
+```ocaml
+val selected_agent_harness : t -> stage_agent option -> agent_harness option
+val readiness_gaps : t -> readiness_gap list
+val render_harness_command : Config.agent_harness -> string
+```
+
+These interfaces already exist and should remain the primary contracts. The Cursor work extends them by:
+- adding `cursor` as an allowed `kind`
+- adding Cursor-specific default command and readiness behavior
+- optionally extending runtime activity parsing for Cursor output
 
 ### Data Models
 
-#### Runtime Settings
+**Runtime Settings Harness Entry**
+- Existing `agent_harness` record remains the primary data model.
+- Cursor uses the same fields as other Harnesses:
+  - `name`
+  - `kind = "cursor"`
+  - `command`
+  - `model`
+  - `reasoningEffort`
+  - `turnTimeoutMs`
+  - `readTimeoutMs`
+  - `stallTimeoutMs`
+  - `loop.enabled`
+  - `loop.command`
 
-Add a dedicated ready-status field to the shared tracker-facing project settings.
+**Logical Agent Mapping**
+- Existing `logical_agent` model remains unchanged.
+- Cursor support is driven through `agents.<name>.harness = "cursor"` or another named Cursor Harness.
 
-- Proposed effective config field: `project.readyStatus`
-- Type: `string`
-- Scope: selected tracker intake semantics
-- Purpose: exact-match first-admission status for GitHub and expected ready value for Compozy `_tasks.md`
-- Assumption for V1 draft: default effective value is `Ready for Symphony` until product wording is finalized
-
-This field is separate from:
-
-- `project.activeStates`: broader active or visible lifecycle states
-- `project.terminalStates`: terminal lifecycle states
-- `project.startStatus`, `reviewStatus`, `retryStatus`: stage transition targets
-
-#### Tracker Admission Decision
-
-Add a tracker-bound first-admission evaluation to avoid overloading `is_active`.
-
-- `eligible: bool`
-- `reason: string`
-- Responsibility: explain exact first-admission result for one tracker-visible issue or run
-
-#### Compozy Ready Summary
-
-Add a minimal parser for `.compozy/tasks/<slug>/_tasks.md`.
-
-- Source of truth: run-level intake status only
-- Expected content: one run-level ready-status summary that can be compared to `project.readyStatus`
-- Non-goals: task-step execution status, retry counters, failure metadata, PR-readiness metadata
-
-#### Runtime State Projection
-
-Add an optional intake-evaluation projection to `Runtime_state`.
-
-- `issue_identifier: string`
-- `eligible: bool`
-- `reason: string option`
-
-This keeps intake visibility separate from:
-
-- `issues`: tracker-visible work items
-- `ordered_queue`: queue state
-- `compozy_progress`: Compozy lifecycle and task-step progress
-- `issue_errors`: execution failures
+**Runtime State Running Row**
+- Existing `running` model already carries:
+  - `harness_name`
+  - `harness_kind`
+  - `last_event`
+  - `last_message`
+  - `tokens`
+- No schema expansion is required for minimal Cursor support if live activity can fit the current normalized fields.
 
 ### API Endpoints
 
-No new HTTP endpoint is required.
+No new external HTTP API endpoints are required.
 
-Existing state endpoints should expose the new intake-evaluation projection:
-
-| Method | Path | Change |
-| --- | --- | --- |
-| GET | `/api/v1/state` | Add optional intake-evaluation array keyed by issue identifier. |
-| GET | `/api/v1/state/live` | Stream the same additional intake-evaluation fields. |
+Existing backend state endpoints and WebSocket/live-state surfaces continue to serve Runtime State snapshots. Cursor
+support changes the contents of existing running-task rows rather than adding new resources.
 
 ## Integration Points
 
-| Integration Point | Design |
-| --- | --- |
-| GitHub GraphQL Project status | Continue using the configured single-select status field and compare its value to `project.readyStatus` for first admission. |
-| Compozy `_tasks.md` | Add a narrow run-level parser for the ready status without changing `task_NN.md` parsing. |
-| Existing queue validation | Queue entries remain subject to tracker first-admission eligibility before dispatch. |
-| Existing stage routing | Post-admission stage behavior continues to use current transition and lifecycle semantics. |
-| README and `CONTEXT.md` | Document **Symphony-ready Status** and its distinction from ordering and lifecycle state. |
+This design does not integrate with systems outside the codebase beyond the local Cursor CLI executable invoked by
+Symphony.
+
+The main external boundary is the local Cursor CLI command:
+- installation availability must be verified before dispatch
+- auth/status readiness must be checked through the Cursor CLI itself
+- `stream-json` output must be parsed defensively
+- loop support must validate the plugin-backed command path before dispatch when enabled
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
-| --- | --- | --- | --- |
-| `apps/backend/lib/config.ml` | modified | Add ready-status parsing and defaults; medium risk because config changes affect all tracker modes. | Add field parsing, validation, and tests. |
-| `apps/backend/lib/issue_tracker.ml` | modified | Extend tracker contract with first-admission evaluation; medium risk because all adapters depend on this seam. | Add admission-decision type and adapter implementations. |
-| `apps/backend/lib/github_tracker.ml` | modified | Add exact-match ready-status evaluation while preserving visible issue discovery; medium risk due to GitHub project-status assumptions. | Implement GitHub first-admission logic and tests. |
-| `apps/backend/lib/compozy_tasks_tracker.ml` | modified | Parse `_tasks.md` ready status and expose run-level intake inputs; medium risk due to new file parsing path. | Add parser, deterministic errors, and tests. |
-| `apps/backend/lib/compozy_lifecycle.ml` | modified | Keep lifecycle distinct from intake status and ensure reconciliation does not overwrite intake meaning; low to medium risk. | Update derivation or reconciliation only where needed. |
-| `apps/backend/lib/runtime_readiness.ml` | modified | Stop treating “no runnable or ready work” as a readiness gap; high semantic risk because startup behavior changes. | Separate structural gaps from empty-idle state. |
-| `apps/backend/lib/runtime_policy.ml` | modified | Preserve orchestrator start when there are zero ready items; low risk if readiness gaps are corrected upstream. | Keep policy aligned with new readiness semantics. |
-| `apps/backend/lib/orchestrator.ml` | modified | Filter first admission through tracker eligibility while keeping queue and post-admission behavior stable; high risk because dispatch semantics live here. | Use tracker admission decisions in dispatch and state projection. |
-| `apps/backend/lib/runtime_state.ml` | modified | Add intake-evaluation projection; medium risk due to API contract changes. | Extend JSON model and snapshot tests. |
-| `apps/frontend/src/RuntimeStateSnapshot.res` | modified | Decode new intake-evaluation fields; low to medium risk. | Extend snapshot parser. |
-| `apps/frontend/src/Pages/Dashboard.res` | modified | Render intake explanations without overloading lifecycle wording; low to medium risk. | Add tracker-neutral UI copy. |
-| `apps/backend/test/test_backend.ml` | modified | Most behavior changes concentrate here; low structural risk, high verification importance. | Add focused unit and integration coverage. |
-| `README.md` / `CONTEXT.md` / `docs/adr/0024-compozy-prd-run-lifecycle-semantics.md` | modified | Product semantics and Compozy lifecycle wording must stay coherent; medium documentation risk. | Update docs and ADR wording where semantics changed. |
+|-----------|-------------|---------------------|-----------------|
+| `apps/backend/lib/config.ml` | modified | Core Harness parsing and readiness logic; high shared-module risk | Add Cursor kind/defaults, CLI-driven auth readiness, and loop readiness |
+| `apps/backend/lib/orchestrator.ml` | modified | Launch path and runtime activity parsing; high behavioral risk | Add Cursor command rendering if needed, Cursor activity parsing, and loop-safe behavior |
+| `apps/backend/lib/runtime_home.ml` | modified | Bootstrap default Runtime Contract; product-contract risk | Add Cursor example while preserving idempotent Bootstrap |
+| `apps/backend/lib/runtime_state.ml` | modified or unchanged | Likely schema reuse, but verify normalized activity suffices | Confirm no new fields are needed |
+| `apps/backend/lib/terminal_console_model.ml` | modified or unchanged | Running-row detail already includes Harness identity | Verify Cursor activity is readable without model changes |
+| `apps/frontend/src/RuntimeStateSnapshot.res` | modified or unchanged | Existing runtime snapshot may already be sufficient | Verify frontend accepts Cursor Harness rows without schema change |
+| `apps/frontend/src/Pages/Dashboard.res` | modified or unchanged | Dashboard may only need display validation | Confirm Harness identity renders correctly |
+| `apps/backend/test/test_backend.ml` | modified | Large shared suite; regression risk | Add targeted Cursor tests near existing Harness cases |
+| `CONTEXT.md` | modified | Domain source of truth; required by repo rules | Add Cursor Harness terminology and semantics |
+| `README.md` | modified | Operator-facing setup surface | Add supported Cursor examples |
+| `docs/adr/0021-agent-harness-runtime-settings.md` | modified | Existing architecture ADR needs amendment for new supported kind | Update supported Harness set and semantics |
 
 ## Testing Approach
 
 ### Unit Tests
 
-- Config parsing accepts `project.readyStatus` and preserves existing defaults for unrelated fields.
-- GitHub admission returns eligible only when project status exactly matches the configured ready status.
-- GitHub visible-issue discovery still preserves terminal or already-managed visibility needed for ongoing lifecycle.
-- Compozy `_tasks.md` parsing returns a deterministic ready-status summary or deterministic parse failure.
-- Compozy first-admission logic requires both `_tasks.md` ready match and existing runnable-run conditions.
-- Queue validation rejects first-admission attempts for non-ready items even when listed in `--queue`.
-- Runtime readiness does not emit a gap when the tracker is structurally valid but nothing is ready.
+Focus areas:
+- `Config` parses `kind: "cursor"` and default Cursor command/loop behavior correctly.
+- `Config.selected_agent_harness` resolves Cursor through logical agents.
+- `Config.readiness_gaps` validates:
+  - selected-only Cursor install checks
+  - CLI-driven auth/status checks
+  - Cursor loop readiness when `loop.enabled` is true
+- `Orchestrator.render_harness_command` handles Cursor token replacement or provider-specific rendering correctly.
+- Cursor structured-output parsing normalizes `stream-json` into existing Runtime State activity fields.
+- Loop-disabled and loop-enabled Cursor prompts behave correctly.
+
+Mock and boundary strategy:
+- Use temporary settings files and fake shell commands as existing tests do for Claude/PI.
+- Use fake Cursor scripts that emit deterministic `stream-json` or status output.
+- Keep tests adjacent to current Harness coverage in `apps/backend/test/test_backend.ml`.
+
+Critical scenarios:
+- selected Cursor Harness with successful install/auth readiness
+- unselected Cursor Harness does not block readiness
+- loop-enabled Cursor Harness without plugin support fails readiness
+- loop-enabled Cursor Harness with plugin support prepends configured `loop.command`
+- Cursor `stream-json` parser ignores malformed lines and preserves raw-log fallback behavior
 
 ### Integration Tests
 
-- Startup with valid GitHub settings and zero ready issues enters **Orchestration Idle** rather than readiness-only mode.
-- Startup with valid Compozy settings and zero ready runs enters **Orchestration Idle** rather than readiness-only mode.
-- A GitHub issue moving into the configured ready status is dispatched on a later poll without restart.
-- A Compozy run whose `_tasks.md` changes to the configured ready status is dispatched on a later poll without restart.
-- A queued GitHub or Compozy item that is not ready remains pending and does not dispatch.
-- Runtime State JSON exposes intake evaluations and frontend snapshot decoding remains compatible.
-- Existing Compozy sequential step execution and lifecycle behavior remains unchanged after admission.
+Integration slices:
+- full config load with `harnesses.cursor`, `agents.<role>.harness`, and enabled stage routing
+- dispatch path that launches a fake Cursor command and updates Runtime State
+- bootstrapped settings content includes Cursor examples
+- Terminal Console / Runtime State JSON exposes Cursor `harness_name` and `harness_kind`
+
+Test data/setup:
+- temp Workspace Repository roots
+- fake `.symphony/agents/*.md` prompt files
+- fake Cursor binaries/scripts in PATH or explicit temp command paths
+- deterministic fake auth/status command responses
+
+Environment dependencies:
+- no real Cursor install required for tests
+- tests should not depend on user-local Cursor state
+- loop/plugin readiness must be simulated through fake command responses
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Add `project.readyStatus` parsing and validation in `Config` and update docs for the new Runtime Settings field. No dependencies.
-2. Extend `Issue_tracker` with a first-admission decision contract and update adapter signatures. Depends on step 1.
-3. Implement GitHub exact-match first-admission logic using the configured ready status while preserving visible issue discovery. Depends on steps 1 and 2.
-4. Add `_tasks.md` ready-status parsing and Compozy first-admission evaluation without changing task-step parsing. Depends on steps 1 and 2.
-5. Update `Runtime_readiness` and `Runtime_policy` so structurally valid trackers can start in **Orchestration Idle** with zero ready work. Depends on steps 1, 3, and 4.
-6. Update `Orchestrator` to use tracker admission decisions for first dispatch and queue admission checks while preserving post-admission behavior. Depends on steps 2, 3, 4, and 5.
-7. Extend `Runtime_state` plus dashboard snapshot decoding and rendering for intake evaluations. Depends on step 6.
-8. Add focused backend and frontend tests for config, tracker semantics, idle startup, queue interaction, and runtime-state projection. Depends on steps 3 through 7.
-9. Update `README.md`, `CONTEXT.md`, and any affected ADR wording so the documented semantics match the implementation. Depends on steps 1, 5, and 7.
+1. Add Cursor kind/defaults in `Config` and update supported-kind validation - no dependencies
+2. Add Cursor selected-Harness install/auth readiness in `Config` - depends on step 1
+3. Add Cursor loop-readiness checks tied to `loop.enabled` / `loop.command` - depends on steps 1-2
+4. Add Cursor command rendering adjustments in `Orchestrator` if the standard token replacement is insufficient - depends on steps 1-2
+5. Add Cursor `stream-json` parsing and running-row activity updates - depends on step 4
+6. Add targeted backend tests for parsing, readiness, loop, rendering, and dispatch - depends on steps 1-5
+7. Update Bootstrap defaults, glossary, README, and project ADR docs - depends on steps 1-6
+8. Verify frontend/dashboard and Terminal Console behavior with Cursor runtime rows - depends on steps 5-7
 
 ### Technical Dependencies
 
-- GitHub project-status GraphQL queries must continue returning the configured status field reliably.
-- Compozy `_tasks.md` needs a stable, documented run-level status format before implementation finalization.
-- Existing Compozy lifecycle semantics in `docs/adr/0024-compozy-prd-run-lifecycle-semantics.md` may need wording updates to distinguish intake status from run lifecycle.
-- Terminal and dashboard consumers depend on `Runtime_state` JSON compatibility and need synchronized snapshot updates.
+- A documented Cursor CLI command shape that works with stdin-fed non-interactive launch.
+- A documented Cursor CLI auth/status command usable for readiness probing.
+- A documented or validated `stream-json` event shape sufficient for normalized activity parsing.
+- A documented plugin-backed loop command path for Cursor when `loop.enabled` is true.
+- User-approved Bootstrap default change, which has already been provided in the clarification round.
 
 ## Monitoring and Observability
 
-- Track count of tracker-visible items versus first-admission-eligible items per poll.
-- Log ready-status mismatches with issue identifier, tracker kind, observed status, and configured ready status.
-- Log `_tasks.md` parse failures with PRD-run identifier and file path.
-- Surface structured runtime messages for:
-  - `not_ready_status`
-  - `queue_blocked_not_ready`
-  - `idle_no_ready_work`
-  - `compozy_ready_status_parse_failed`
-- Alert only on structural tracker failures or repeated parse failures, not on ordinary idle-with-no-ready-work states.
+Key metrics:
+- Cursor-selected readiness failure rate by requirement (`install`, `auth`, `loop`)
+- Cursor dispatch success rate
+- Cursor structured-output parse success rate
+- Cursor fallback-to-raw-log rate
+- Cursor loop-enabled dispatch success rate
+
+Log events and fields:
+- `harness_name=cursor`
+- `harness_kind=cursor`
+- Cursor readiness requirement identifiers
+- parsed Cursor last event and last message when structured output is available
+- loop-enabled readiness diagnostic details
+- raw stdout/stderr preservation path for troubleshooting
+
+Alerting and escalation:
+- repeated Cursor auth/readiness failures in dogfood environments
+- unexpected parse failure spikes after Cursor CLI upgrades
+- loop-enabled Cursor tasks consistently failing before first output
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- Decision: add a dedicated tracker-owned first-admission contract instead of reusing `activeStates`.
-  Rationale: first admission is narrower than general active or visible lifecycle semantics.
-  Trade-off: introduces interface changes across all tracker adapters.
-  Alternatives rejected: broad `activeStates` reuse, `Orchestrator`-local filtering.
+- **Decision:** Implement Cursor as a native Harness kind rather than a generic command shim.
+  - **Rationale:** Fits the accepted Runtime Contract and preserves provider-specific behavior in the right layer.
+  - **Trade-offs:** Adds complexity to shared backend modules.
+  - **Alternatives rejected:** PI-style compatibility-only path; broader generic refactor first.
 
-- Decision: GitHub first admission requires exact configured ready-status match.
-  Rationale: matches the selected product model and avoids ambiguous active-state behavior.
-  Trade-off: stricter migration for existing projects.
-  Alternatives rejected: broad active-state compatibility, mixed exact-or-legacy behavior.
+- **Decision:** Use Cursor CLI itself for auth/status readiness.
+  - **Rationale:** Matches the selected design choice and avoids weaker indirect heuristics as the main signal.
+  - **Trade-offs:** Couples readiness to a provider-owned CLI contract.
+  - **Alternatives rejected:** env/file-only auth detection; no preflight auth readiness.
 
-- Decision: Compozy reads ready status from `_tasks.md` while keeping task-step and lifecycle state separate.
-  Rationale: preserves a run-level local-tracker artifact without overloading execution files.
-  Trade-off: introduces another parsed file and semantic boundary to maintain.
-  Alternatives rejected: lifecycle-owned intake status, task-step-derived readiness.
+- **Decision:** Treat `stream-json` as the canonical Cursor output path.
+  - **Rationale:** Gives Cursor a structured observability contract comparable to Claude where supported.
+  - **Trade-offs:** Requires provider-specific parser maintenance.
+  - **Alternatives rejected:** `json` only; raw-log-only V1.
 
-- Decision: zero ready work is valid **Orchestration Idle** state, not a readiness failure.
-  Rationale: supports always-on runtime behavior and restartless polling.
-  Trade-off: startup readiness becomes structural-only rather than work-availability-driven.
-  Alternatives rejected: blocking startup until ready work exists, readiness-gap-but-still-run hybrid behavior.
+- **Decision:** Support Cursor loop entry through `loop.enabled` / `loop.command`.
+  - **Rationale:** Preserves the current Harness loop model and fits the plugin-backed Cursor path described by the user.
+  - **Trade-offs:** Requires new loop readiness checks beyond current Codex-only protection.
+  - **Alternatives rejected:** no loop support; Codex-style implicit loop parity.
 
-- Decision: `--queue` never bypasses the Symphony-ready rule for first admission.
-  Rationale: preserves queue as ordering or selection, not forced eligibility override.
-  Trade-off: queue users may need to update tracker status before dispatch.
-  Alternatives rejected: queue override semantics, order-only-after-ready filtering that weakens admission guarantees.
+- **Decision:** Add Cursor to bootstrapped settings examples.
+  - **Rationale:** Matches the approved product posture and reduces Runtime Contract ambiguity for new operators.
+  - **Trade-offs:** Changes default examples in a repo area marked “ask first.”
+  - **Alternatives rejected:** docs-only support; defer Bootstrap changes.
 
 ### Known Risks
 
-- The exact default ready-status string is still unresolved at the product level.
-  Mitigation: wire the field as explicit config and keep the default as a documented assumption until finalized.
+- **stdin/non-TTY incompatibility**
+  - Likelihood: medium
+  - Mitigation: validate the documented non-interactive Cursor command shape early and add a provider-local renderer if
+    required.
 
-- GitHub fetch behavior may need to distinguish “visible for lifecycle” from “eligible for first admission.”
-  Mitigation: keep those as separate adapter concepts and cover the distinction with integration tests.
+- **Cursor CLI contract drift**
+  - Likelihood: medium
+  - Mitigation: keep parsing defensive, preserve raw-log fallback, and isolate Cursor-specific readiness logic.
 
-- Compozy `_tasks.md` may drift from lifecycle or step status in operator mental models.
-  Mitigation: keep `_tasks.md` intake-only, project intake evaluation separately in Runtime State, and update docs.
+- **Loop false positives**
+  - Likelihood: medium
+  - Mitigation: add explicit readiness validation for loop-enabled Cursor Harnesses before dispatch instead of
+    inheriting Codex assumptions.
 
-- Runtime State may still not fully explain all non-dispatchable cases if intake evaluation remains too narrow.
-  Mitigation: start with first-admission explanations and expand only if dogfood feedback shows a real observability gap.
+- **Shared-module regression risk**
+  - Likelihood: high
+  - Mitigation: use targeted changes, add focused backend tests near existing Harness cases, and avoid refactoring
+    `test_backend.ml` structure.
+
+- **Bootstrap/example ambiguity between `--force` and non-`--force`**
+  - Likelihood: medium
+  - Mitigation: make the example posture explicit in docs and seeded settings rather than implying one safe default
+    without explanation.
 
 ## Architecture Decision Records
 
-- [ADR-001: Add explicit tracker-driven ready-for-symphony admission](./adrs/adr-001.md) — Initial marker-based idea direction, now superseded.
-- [ADR-002: Use a standard Symphony-ready status convention across trackers](./adrs/adr-002.md) — Establishes the PRD’s status-driven intake model.
-- [ADR-003: Put Symphony-ready status at the tracker boundary with exact-match first-admission semantics](./adrs/adr-003.md) — Keeps ready-status logic in tracker adapters and preserves queue semantics.
-- [ADR-004: Read Compozy Symphony-ready status from _tasks.md while keeping task-step state separate](./adrs/adr-004.md) — Uses `_tasks.md` as Compozy intake source without replacing task-step or lifecycle truth.
+- [ADR-001: Cursor Harness As A Bounded Multi-Harness Extension](adrs/adr-001.md) — Accepts `kind: "cursor"` as a
+  first-class `Agent Harness` while keeping scope bounded and reusable.
+- [ADR-002: Stable First-Class Cursor Harness Product Posture](adrs/adr-002.md) — Commits the PRD to stable
+  first-class support for Cursor across any `Logical Agent` role.
+- [ADR-003: Native Cursor Harness Technical Design](adrs/adr-003.md) — Chooses a native `cursor` Harness kind over a
+  compatibility shim or broader refactor.
+- [ADR-004: Cursor Output, Readiness, And Loop Contract](adrs/adr-004.md) — Sets `stream-json`, CLI-driven
+  readiness, explicit loop support, and dual command-posture handling as the core Cursor contract.
 

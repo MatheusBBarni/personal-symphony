@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Add Cursor CLI Install And Auth Readiness Checks"
 type: backend
 complexity: high
 dependencies:
   - task_01
+
 ---
 
 # Task 02: Add Cursor CLI Install And Auth Readiness Checks
@@ -31,11 +32,11 @@ the Cursor CLI itself as the primary readiness signal rather than a generic comm
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Add selected-only Cursor install readiness checks beside existing provider readiness logic.
-- [ ] 2.2 Add Cursor-CLI-driven auth or status probing for selected Cursor Harnesses.
-- [ ] 2.3 Normalize Cursor readiness requirements and remediation text for runtime display.
-- [ ] 2.4 Ensure unselected Cursor Harness definitions do not create install or auth blockers.
-- [ ] 2.5 Add targeted readiness tests for success, failure, and ignored-unselected cases.
+- [x] 2.1 Add selected-only Cursor install readiness checks beside existing provider readiness logic.
+- [x] 2.2 Add Cursor-CLI-driven auth or status probing for selected Cursor Harnesses.
+- [x] 2.3 Normalize Cursor readiness requirements and remediation text for runtime display.
+- [x] 2.4 Ensure unselected Cursor Harness definitions do not create install or auth blockers.
+- [x] 2.5 Add targeted readiness tests for success, failure, and ignored-unselected cases.
 
 ## Implementation Details
 Extend selected-Harness readiness in the same shared module used for Claude and PI. See TechSpec "Integration Points",
@@ -67,14 +68,14 @@ Cursor CLI as the source of truth, and must remain selected-Harness-only.
 
 ## Tests
 - Unit tests:
-  - [ ] A selected Cursor Harness with a missing executable produces a Cursor install readiness gap.
-  - [ ] A selected Cursor Harness with install present but missing CLI auth/state produces a Cursor auth readiness gap.
-  - [ ] A selected Cursor Harness with successful CLI auth/status check produces no Cursor auth gap.
-  - [ ] An unselected Cursor Harness does not produce install or auth gaps.
-  - [ ] Existing Claude and PI readiness behavior remains unchanged.
+  - [x] A selected Cursor Harness with a missing executable produces a Cursor install readiness gap.
+  - [x] A selected Cursor Harness with install present but missing CLI auth/state produces a Cursor auth readiness gap.
+  - [x] A selected Cursor Harness with successful CLI auth/status check produces no Cursor auth gap.
+  - [x] An unselected Cursor Harness does not produce install or auth gaps.
+  - [x] Existing Claude and PI readiness behavior remains unchanged.
 - Integration tests:
-  - [ ] Runtime readiness state includes the expected Cursor install requirement when a selected Cursor command is unavailable.
-  - [ ] Runtime readiness state includes the expected Cursor auth requirement when a selected Cursor CLI status probe fails.
+  - [x] Runtime readiness state includes the expected Cursor install requirement when a selected Cursor command is unavailable.
+  - [x] Runtime readiness state includes the expected Cursor auth requirement when a selected Cursor CLI status probe fails.
 - Test coverage target: >=80%
 - All tests must pass
 
