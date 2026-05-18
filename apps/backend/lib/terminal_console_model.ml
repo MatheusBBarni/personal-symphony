@@ -30,6 +30,7 @@ type compozy_progress = {
   run_id : string;
   slug : string;
   current_step : string option;
+  next_step : string option;
   completed : int;
   failed : int;
   skipped : int;
@@ -45,6 +46,7 @@ type t = {
   readiness : readiness_row list;
   queue : task_row list;
   compozy : compozy_progress option;
+  compozy_progresses : compozy_progress list;
   safe_aids : safe_aid list;
   last_error : string option;
 }
@@ -233,13 +235,21 @@ let readiness_row (gap : Runtime_state.readiness_gap) =
   { requirement = sanitize gap.requirement; remediation = sanitize gap.remediation }
 
 let queue_row (entry : Runtime_state.ordered_queue_entry) =
-  let skip_reason = sanitize_option entry.skip_reason in
+  let reason = sanitize_option entry.skip_reason in
+  let detail =
+    match (String.lowercase_ascii entry.state, reason) with
+    | _, None -> None
+    | "failed", Some reason -> Some ("failure reason " ^ reason)
+    | "attention", Some reason -> Some ("attention reason " ^ reason)
+    | "skipped", Some reason -> Some ("skip reason " ^ reason)
+    | _, Some reason -> Some ("reason " ^ reason)
+  in
   {
     id = sanitize entry.issue_identifier;
     title = sanitize (Option.value entry.title ~default:entry.issue_identifier);
     state = sanitize entry.state;
-    detail = Option.map (fun reason -> "skip reason " ^ reason) skip_reason;
-    error = skip_reason;
+    detail;
+    error = reason;
     goal_usage = None;
     context_status = None;
   }
@@ -252,13 +262,15 @@ let compozy_progress (progress : Runtime_state.compozy_progress) =
     run_id = sanitize progress.run_id;
     slug;
     current_step;
+    next_step = sanitize_option progress.next_step;
     completed = progress.completed;
     failed = progress.failed;
     skipped = progress.skipped;
     total = progress.total;
     summary =
-      Printf.sprintf "%s: %s (%d completed, %d failed, %d skipped, %d total)" slug step progress.completed
-        progress.failed progress.skipped progress.total;
+      let next = match sanitize_option progress.next_step with Some next -> " -> " ^ next | None -> "" in
+      Printf.sprintf "%s: %s%s (%d completed, %d failed, %d skipped, %d total)" slug step next
+        progress.completed progress.failed progress.skipped progress.total;
   }
 
 let first_pending_queue_entry state =
@@ -271,8 +283,18 @@ let first_pending_queue_entry state =
 
 let queue_has_pending state = Option.is_some (first_pending_queue_entry state)
 
+let queue_has_attention state =
+  match state.Runtime_state.ordered_queue with
+  | None -> false
+  | Some queue ->
+      List.exists
+        (fun (entry : Runtime_state.ordered_queue_entry) ->
+          match String.lowercase_ascii entry.state with "attention" | "failed" -> true | _ -> false)
+        queue.entries
+
 let display_mode state =
   if state.Runtime_state.issue_errors <> [] then "attention"
+  else if queue_has_attention state then "attention"
   else if state.retrying <> [] then "retrying"
   else if state.running <> [] then "running"
   else if state.readiness_gaps <> [] then "readiness_blocked"
@@ -355,6 +377,11 @@ let of_runtime_state state =
     match state.ordered_queue with Some queue -> List.map queue_row queue.entries | None -> []
   in
   let compozy = Option.map compozy_progress state.compozy_progress in
+  let compozy_progresses =
+    match List.map compozy_progress state.compozy_progresses with
+    | [] -> Option.to_list compozy
+    | progresses -> progresses
+  in
   {
     generated_at = Util.now_iso8601 ();
     mode;
@@ -363,6 +390,7 @@ let of_runtime_state state =
     readiness;
     queue;
     compozy;
+    compozy_progresses;
     safe_aids = safe_aids state;
     last_error = sanitize_option state.last_error;
   }

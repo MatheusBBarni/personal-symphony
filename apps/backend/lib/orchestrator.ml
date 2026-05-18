@@ -115,6 +115,15 @@ let render_dispatch_started issue =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch") (green "started")
     issue.Issue.identifier issue.title
 
+let render_compozy_task_started issue_identifier task_file previous_task_file =
+  match previous_task_file with
+  | Some previous_task_file ->
+      Printf.eprintf "%s%s %s %s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch")
+        (green "starting") issue_identifier (dim "task") task_file (dim "from") previous_task_file
+  | None ->
+      Printf.eprintf "%s%s %s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "dispatch")
+        (green "starting") issue_identifier (dim "task") task_file
+
 let render_dispatch_retrying ?task_file issue_identifier attempt error =
   match task_file with
   | Some task_file ->
@@ -283,26 +292,50 @@ let render_ordered_queue_skipped issue_identifier reason =
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (yellow "skipped")
     issue_identifier reason
 
+let render_ordered_queue_terminal state issue_identifier reason =
+  let style =
+    match state with
+    | "failed" -> red
+    | "attention" -> yellow
+    | "skipped" -> yellow
+    | _ -> dim
+  in
+  Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (style state)
+    issue_identifier reason
+
+let ordered_queue_terminal_details queue state =
+  queue.Runtime_state.entries
+  |> List.filter (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = state)
+  |> List.map (fun (entry : Runtime_state.ordered_queue_entry) ->
+         match entry.skip_reason with
+         | Some reason -> entry.issue_identifier ^ " (" ^ reason ^ ")"
+         | None -> entry.issue_identifier)
+
 let render_ordered_queue_finished queue =
   let completed =
     queue.Runtime_state.entries
     |> List.filter (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = "completed")
     |> List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier)
   in
-  let skipped =
-    queue.entries
-    |> List.filter (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = "skipped")
-    |> List.map (fun (entry : Runtime_state.ordered_queue_entry) ->
-           match entry.skip_reason with
-           | Some reason -> entry.issue_identifier ^ " (" ^ reason ^ ")"
-           | None -> entry.issue_identifier)
+  let skipped = ordered_queue_terminal_details queue "skipped" in
+  let failed = ordered_queue_terminal_details queue "failed" in
+  let attention = ordered_queue_terminal_details queue "attention" in
+  let outcome =
+    if skipped = [] && failed = [] && attention = [] then green "completed"
+    else if failed <> [] || attention <> [] then yellow "completed-with-attention"
+    else yellow "completed-with-skips"
   in
-  let outcome = if skipped = [] then green "completed" else yellow "completed-with-skips" in
   Printf.eprintf "%s%s %s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") outcome
     (dim "completed") (String.concat "," completed);
   if skipped <> [] then
     Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (yellow "skipped")
-      (String.concat "; " skipped)
+      (String.concat "; " skipped);
+  if failed <> [] then
+    Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (red "failed")
+      (String.concat "; " failed);
+  if attention <> [] then
+    Printf.eprintf "%s%s %s %s %s\n%!" clear_line (dim (clock_time ())) (cyan "ordered-queue") (yellow "attention")
+      (String.concat "; " attention)
 
 let render_startup_reconciliation category issue_identifier message =
   let label =
@@ -429,7 +462,10 @@ let queue_entry_allows_dispatch resolved_queue state issue =
         | None -> issue.Issue.identifier
       in
       match List.find_opt (fun (entry : Runtime_state.ordered_queue_entry) -> entry.issue_identifier = queue_identifier) queue.entries with
-      | Some entry when entry.state = "completed" || entry.state = "skipped" -> false
+      | Some entry -> (
+          match String.lowercase_ascii entry.state with
+          | "completed" | "skipped" | "failed" | "attention" -> false
+          | _ -> true)
       | _ -> true)
 
 let ordered_queue_finished orchestrator =
@@ -441,7 +477,10 @@ let ordered_queue_finished orchestrator =
       && orchestrator.state.retrying = []
       && orchestrator.children = []
       && List.for_all
-           (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state = "completed" || entry.state = "skipped")
+           (fun (entry : Runtime_state.ordered_queue_entry) ->
+             match String.lowercase_ascii entry.state with
+             | "completed" | "skipped" | "failed" | "attention" -> true
+             | _ -> false)
            queue.entries
 
 let entry_state_for_issue state issue_identifier =
@@ -450,7 +489,7 @@ let entry_state_for_issue state issue_identifier =
   let is_error (row : Runtime_state.issue_error) = row.issue_identifier = issue_identifier in
   if List.exists is_issue state.Runtime_state.running then Some "running"
   else if List.exists is_retry state.retrying then Some "retrying"
-  else if List.exists is_error state.issue_errors then Some "skipped"
+  else if List.exists is_error state.issue_errors then Some "attention"
   else None
 
 let ordered_queue_entry_needs_live_source (entry : Runtime_state.ordered_queue_entry) =
@@ -462,6 +501,22 @@ let ordered_queue_entry_is_stale_active (entry : Runtime_state.ordered_queue_ent
   match String.lowercase_ascii entry.state with
   | "running" | "retrying" -> true
   | _ -> false
+
+let queue_attention_status config status =
+  string_equal_ci status config.Config.git.merge_attention_status || string_equal_ci status "human_attention"
+  || string_equal_ci status "human attention"
+
+let queue_terminal_state_for_status config status =
+  let normalized = String.lowercase_ascii (Util.trim status) in
+  if queue_attention_status config status then "attention"
+  else match normalized with "failed" -> "failed" | "skipped" | "closed" -> "skipped" | _ -> "completed"
+
+let queue_terminal_reason_for_status config status =
+  match queue_terminal_state_for_status config status with
+  | "attention" -> Some "Issue is in a human attention state."
+  | "failed" -> Some "Issue is in a terminal failed state."
+  | "skipped" -> Some "Issue is in a terminal skipped state."
+  | _ -> None
 
 let retrying_due orchestrator issue =
   match Hashtbl.find_opt orchestrator.retry_due issue.Issue.id with
@@ -1843,23 +1898,57 @@ let spawn_shell_command command =
        with _ -> Unix._exit 127)
   | pid -> pid
 
+let failed_launch_command ~workspace_path ~stdout_path ~stderr_path error =
+  Printf.sprintf "cd %s && : > %s && printf %s %s > %s; exit 1" (Util.shell_quote workspace_path)
+    (Util.shell_quote stdout_path) (Util.shell_quote "%s\n") (Util.shell_quote error) (Util.shell_quote stderr_path)
+
+let sandbox_event_suffix (plan : Sandbox_runtime.launch_plan) =
+  match plan.provider with
+  | None -> ""
+  | Some provider ->
+      let reuse =
+        match plan.reuse_outcome with
+        | Some reuse_outcome -> " sandbox_reuse_outcome=" ^ reuse_outcome
+        | None -> ""
+      in
+      let container =
+        match plan.container_name with
+        | Some container_name -> " sandbox_container=" ^ container_name
+        | None -> ""
+      in
+      " sandbox_provider=" ^ provider ^ reuse ^ container
+
+let launch_event_field key event =
+  let prefix = key ^ "=" in
+  event |> String.split_on_char ' ' |> List.rev |> List.find_map (Util.drop_prefix ~prefix)
+
+let sandbox_metadata_from_launch (config : Config.t) event =
+  if config.sandbox.enabled then
+    (Some true, launch_event_field "sandbox_provider" event, launch_event_field "sandbox_reuse_outcome" event)
+  else (None, None, None)
+
 let shell_launch ~stage ~config ~workspace ~prompt ~issue =
   let stage = match stage with Some _ -> stage | None -> stage_for_issue config issue in
   let harness = Option.value (Config.selected_agent_harness config stage) ~default:(Config.default_agent_harness config) in
   let prompt_path = write_prompt workspace prompt in
   let stdout_path = Filename.concat workspace.Workspace.path "stdout.log" in
   let stderr_path = Filename.concat workspace.Workspace.path "stderr.log" in
-  let command =
-    Printf.sprintf "cd %s && %s < %s > %s 2> %s" (Util.shell_quote workspace.Workspace.path) (render_harness_command harness)
-      (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path)
+  let plan =
+    Sandbox_runtime.launch_plan ~config ~workspace_path:workspace.Workspace.path ~harness_command:(render_harness_command harness)
+      ~prompt_path ~stdout_path ~stderr_path
+  in
+  let command, event_suffix =
+    match plan with
+    | Ok plan -> (plan.command, sandbox_event_suffix plan)
+    | Error error -> (failed_launch_command ~workspace_path:workspace.Workspace.path ~stdout_path ~stderr_path error, " sandbox_error=plan")
   in
   let pid = spawn_shell_command command in
   {
     pid = Some pid;
     session_id = Some (Printf.sprintf "pid:%d" pid);
     event =
-      Printf.sprintf "launched issue=%s repository=%s workspace=%s" issue.Issue.identifier config.repository_root
-        workspace.Workspace.path;
+      Printf.sprintf "launched issue=%s repository=%s workspace=%s%s" issue.Issue.identifier config.repository_root
+        workspace.Workspace.path event_suffix;
     stdout_path = Some stdout_path;
     stderr_path = Some stderr_path;
   }
@@ -1884,6 +1973,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
       Runtime_state.empty ~workspace_repository_name ~tracker_kind:tracker.kind ~status_order:(Config.project_status_order config)
         ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
         ?compozy_progress:(Runtime_state.initial_compozy_progress config)
+        ~compozy_progresses:(Runtime_state.initial_compozy_progresses config)
         ();
     children = [];
     retry_due = Hashtbl.create 16;
@@ -1954,6 +2044,27 @@ let dispatch_retry_task_file ?workspace config issue =
     | Ok run -> Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) run.current_step
     | Error _ -> None
 
+let previous_compozy_step_file (step : Compozy_tasks_tracker.task_step) steps =
+  steps
+  |> List.fold_left
+       (fun previous (candidate : Compozy_tasks_tracker.task_step) ->
+         if candidate.index >= step.index then previous
+         else
+           match previous with
+           | None -> Some candidate
+           | Some previous when candidate.index > previous.index -> Some candidate
+           | Some _ -> previous)
+       None
+  |> Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file)
+
+let compozy_task_start_context config workspace issue =
+  match compozy_prd_run_for_workspace_issue config workspace issue with
+  | Error _ -> None
+  | Ok run -> (
+      match run.current_step with
+      | None -> None
+      | Some step -> Some (step.file, previous_compozy_step_file step run.steps))
+
 let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_tracker.prd_run)
     (step : Compozy_tasks_tracker.task_step) status =
   let compozy_root = compozy_workspace_root config workspace in
@@ -1965,15 +2076,29 @@ let update_compozy_workspace_step_status config workspace (run : Compozy_tasks_t
       Compozy_tasks_tracker.update_status ~compozy_root path status
 
 let update_compozy_progress orchestrator run =
+  let progress = Runtime_state.compozy_progress_of_prd_run_for_runtime orchestrator.config run in
+  let upsert_progress progresses =
+    let replaced = ref false in
+    let progresses =
+      List.map
+        (fun existing ->
+          if existing.Runtime_state.run_id = progress.run_id then (
+            replaced := true;
+            progress)
+          else existing)
+        progresses
+    in
+    if !replaced then progresses else progress :: progresses
+  in
   update_state orchestrator (fun state ->
     {
       state with
-      Runtime_state.compozy_progress =
-        Some (Runtime_state.compozy_progress_of_prd_run_for_runtime orchestrator.config run);
+      Runtime_state.compozy_progress = Some progress;
+      compozy_progresses = upsert_progress state.compozy_progresses;
     })
 
-let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?skipped ?(skip_missing = false) ~candidates
-    () =
+let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?failed ?attention ?skipped
+    ?(skip_missing = false) ~candidates () =
   match orchestrator.state.Runtime_state.ordered_queue with
   | None -> ()
   | Some queue ->
@@ -2000,7 +2125,13 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
       in
       let candidate_missing queue_identifier = candidate_for queue_identifier = None in
       let skipped_identifier, skipped_reason =
-        match skipped with Some (identifier, reason) -> (Some identifier, Some reason) | None -> (None, None)
+        match skipped with Some (identifier, reason) -> (Some identifier, reason) | None -> (None, None)
+      in
+      let failed_identifier, failed_reason =
+        match failed with Some (identifier, reason) -> (Some identifier, reason) | None -> (None, None)
+      in
+      let attention_identifier, attention_reason =
+        match attention with Some (identifier, reason) -> (Some identifier, reason) | None -> (None, None)
       in
       let old_entries = queue.entries in
       let next_entries state =
@@ -2008,43 +2139,74 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
         |> List.map (fun (entry : Runtime_state.ordered_queue_entry) ->
                let title = match candidate_for entry.issue_identifier with Some issue -> Some issue.Issue.title | None -> entry.title in
                let canonical_identifier = canonical_identifier entry.issue_identifier in
-               let state_name =
+               let explicit_outcome =
                  match completed_identifier with
-                 | Some identifier when entry_matches_identifier entry.issue_identifier identifier -> "completed"
+                 | Some identifier when entry_matches_identifier entry.issue_identifier identifier -> Some ("completed", None)
                  | _ -> (
                      match pending_identifier with
-                     | Some identifier when entry_matches_identifier entry.issue_identifier identifier -> "pending"
+                     | Some identifier when entry_matches_identifier entry.issue_identifier identifier -> Some ("pending", None)
                      | _ -> (
-                         match skipped_identifier with
-                         | Some identifier when entry_matches_identifier entry.issue_identifier identifier -> "skipped"
+                         match failed_identifier with
+                         | Some identifier when entry_matches_identifier entry.issue_identifier identifier ->
+                             Some ("failed", failed_reason)
                          | _ -> (
-                             match entry_state_for_issue state canonical_identifier with
-                             | Some state -> state
-                             | None
-                               when skip_missing
-                                    && ordered_queue_entry_needs_live_source entry
-                                    && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
-                                 "skipped"
-                             | None
-                               when skip_missing
-                                    && (entry.state = "completed" || ordered_queue_entry_is_stale_active entry)
-                                    && candidate_dispatchable entry.issue_identifier ->
-                                 "pending"
-                             | None -> entry.state)))
+                             match attention_identifier with
+                             | Some identifier when entry_matches_identifier entry.issue_identifier identifier ->
+                                 Some ("attention", attention_reason)
+                             | _ -> (
+                                 match skipped_identifier with
+                                 | Some identifier when entry_matches_identifier entry.issue_identifier identifier ->
+                                     Some ("skipped", skipped_reason)
+                                 | _ -> None))))
                in
+               let inferred_state =
+                 match entry_state_for_issue state canonical_identifier with
+                 | Some state -> state
+                 | None
+                   when skip_missing
+                        && ordered_queue_entry_needs_live_source entry
+                        && (candidate_missing entry.issue_identifier || candidate_not_dispatchable entry.issue_identifier) ->
+                     if candidate_missing entry.issue_identifier then "skipped"
+                     else
+                       (match candidate_for entry.issue_identifier with
+                       | Some issue -> queue_terminal_state_for_status orchestrator.config issue.Issue.state
+                       | None -> "skipped")
+                 | None
+                   when skip_missing
+                        && ordered_queue_entry_is_stale_active entry
+                        && candidate_not_dispatchable entry.issue_identifier ->
+                     (match candidate_for entry.issue_identifier with
+                     | Some issue -> queue_terminal_state_for_status orchestrator.config issue.Issue.state
+                     | None -> entry.state)
+                 | None
+                   when skip_missing
+                        && (entry.state = "completed" || ordered_queue_entry_is_stale_active entry)
+                        && candidate_dispatchable entry.issue_identifier ->
+                     "pending"
+                 | None -> entry.state
+               in
+               let state_name = match explicit_outcome with Some (state, _) -> state | None -> inferred_state in
                let skip_reason =
-                 match skipped_identifier with
-                 | Some identifier when entry_matches_identifier entry.issue_identifier identifier -> skipped_reason
-                 | _ when (
-                     match pending_identifier with
-                     | Some identifier -> entry_matches_identifier entry.issue_identifier identifier
-                     | None -> false) ->
-                     None
-                 | _ when skip_missing && ordered_queue_entry_needs_live_source entry && candidate_missing entry.issue_identifier ->
+                 match explicit_outcome with
+                 | Some ("failed", reason) | Some ("attention", reason) | Some ("skipped", reason) -> reason
+                 | Some ("completed", _) | Some ("pending", _) -> None
+                 | Some (_, reason) -> reason
+                 | None when skip_missing && ordered_queue_entry_needs_live_source entry && candidate_missing entry.issue_identifier ->
                      Some "Issue became unavailable or not dispatchable before admission."
-                 | _ when skip_missing && ordered_queue_entry_needs_live_source entry && candidate_not_dispatchable entry.issue_identifier ->
-                     Some "Issue is no longer in a dispatchable project state."
-                 | _ -> entry.skip_reason
+                 | None
+                   when skip_missing && ordered_queue_entry_needs_live_source entry
+                        && candidate_not_dispatchable entry.issue_identifier ->
+                     (match candidate_for entry.issue_identifier with
+                     | Some issue -> queue_terminal_reason_for_status orchestrator.config issue.Issue.state
+                     | None -> Some "Issue is no longer in a dispatchable project state.")
+                 | None
+                   when skip_missing
+                        && ordered_queue_entry_is_stale_active entry
+                        && candidate_not_dispatchable entry.issue_identifier ->
+                     (match candidate_for entry.issue_identifier with
+                     | Some issue -> queue_terminal_reason_for_status orchestrator.config issue.Issue.state
+                     | None -> entry.skip_reason)
+                 | None -> entry.skip_reason
                in
                { entry with title; state = state_name; skip_reason })
       in
@@ -2053,7 +2215,13 @@ let update_ordered_queue_entries orchestrator ?completed_identifier ?pending_ide
       List.iter2
         (fun (old_entry : Runtime_state.ordered_queue_entry) (new_entry : Runtime_state.ordered_queue_entry) ->
           if old_entry.state <> "skipped" && new_entry.state = "skipped" then
-            render_ordered_queue_skipped new_entry.issue_identifier (Option.value new_entry.skip_reason ~default:""))
+            render_ordered_queue_skipped new_entry.issue_identifier (Option.value new_entry.skip_reason ~default:"")
+          else if old_entry.state <> "failed" && new_entry.state = "failed" then
+            render_ordered_queue_terminal "failed" new_entry.issue_identifier
+              (Option.value new_entry.skip_reason ~default:"")
+          else if old_entry.state <> "attention" && new_entry.state = "attention" then
+            render_ordered_queue_terminal "attention" new_entry.issue_identifier
+              (Option.value new_entry.skip_reason ~default:""))
         old_entries new_entries
 
 let set_error orchestrator msg = update_state orchestrator (fun state -> { state with Runtime_state.last_error = Some msg })
@@ -3112,15 +3280,29 @@ let dispatch_issue orchestrator issue =
                 None
               with exn -> Some ("Agent Prompt Archive persistence failed: " ^ Printexc.to_string exn)
             in
+            (match
+               if is_compozy_prd_run_child orchestrator issue then
+                 compozy_task_start_context orchestrator.config workspace issue
+               else None
+             with
+            | Some (task_file, previous_task_file) ->
+                render_compozy_task_started issue.identifier task_file previous_task_file
+            | None -> ());
             let launched = orchestrator.launch ~stage ~config:orchestrator.config ~workspace ~prompt ~issue in
             let now = Util.now_iso8601 () in
             let stage_agent, stage_states = selected_stage_fields stage in
+            let sandbox_enabled, sandbox_provider, sandbox_reuse_outcome =
+              sandbox_metadata_from_launch orchestrator.config launched.event
+            in
             let row =
               {
                 Runtime_state.issue;
                 stage_agent;
                 harness_name = Some harness.name;
                 harness_kind = Some harness.kind;
+                sandbox_enabled;
+                sandbox_provider;
+                sandbox_reuse_outcome;
                 stage_states;
                 session_id = launched.session_id;
                 turn_count = 0;
@@ -3235,7 +3417,7 @@ type compozy_failure =
   | Not_compozy_failure
   | Compozy_retry_step
   | Compozy_next_after_failure of Compozy_tasks_tracker.prd_run
-  | Compozy_finished_after_failure of Compozy_tasks_tracker.prd_run
+  | Compozy_finished_after_failure of Compozy_tasks_tracker.prd_run * string
 
 let record_compozy_task_step_failure orchestrator child error =
   if not (is_compozy_prd_run_child orchestrator child.issue) then Ok Not_compozy_failure
@@ -3273,7 +3455,10 @@ let record_compozy_task_step_failure orchestrator child error =
                         else
                           match updated_run.current_step with
                           | Some _ -> Ok (Compozy_next_after_failure updated_run)
-                          | None -> Ok (Compozy_finished_after_failure updated_run))))
+                          | None ->
+                              Ok
+                                (Compozy_finished_after_failure
+                                   (updated_run, compozy_task_step_failed_reason step retry_count error)))))
 
 let non_retryable_completion_error = function
   | "commit required but agent produced no code changes" | "commit required but no staged changes were found" -> true
@@ -3322,9 +3507,9 @@ let mark_blocked ?child orchestrator issue_id error =
           last_error = Some error;
         }
         |> Runtime_state.clear_context_status issue_id);
-      update_ordered_queue_entries orchestrator ~skipped:(row.issue.identifier, error) ~candidates:[ row.issue ] ()
+      update_ordered_queue_entries orchestrator ~attention:(row.issue.identifier, Some error) ~candidates:[ row.issue ] ()
 
-let complete_child ?next_status orchestrator child =
+let complete_child ?next_status ?queue_terminal_state ?queue_terminal_reason orchestrator child =
   let issue_id = child.issue_id in
   let next_issue =
     match next_status with
@@ -3336,8 +3521,33 @@ let complete_child ?next_status orchestrator child =
     | Some state -> issue_state_is_dispatchable orchestrator state
     | None -> false
   in
-  let completed_identifier = if has_active_next_stage then None else Some child.issue_identifier in
+  let terminal_queue_state =
+    match queue_terminal_state with
+    | Some state when Util.trim state <> "" -> Some (String.lowercase_ascii (Util.trim state))
+    | _ ->
+        if has_active_next_stage then None
+        else
+          Some
+            (match next_status with
+            | Some status -> queue_terminal_state_for_status orchestrator.config status
+            | None -> "completed")
+  in
+  let terminal_queue_reason =
+    match queue_terminal_reason with
+    | Some reason -> Some reason
+    | None -> Option.bind next_status (queue_terminal_reason_for_status orchestrator.config)
+  in
+  let completed_identifier = match terminal_queue_state with Some "completed" -> Some child.issue_identifier | _ -> None in
   let pending_identifier = if has_active_next_stage then Some child.issue_identifier else None in
+  let failed =
+    match terminal_queue_state with Some "failed" -> Some (child.issue_identifier, terminal_queue_reason) | _ -> None
+  in
+  let attention =
+    match terminal_queue_state with Some "attention" -> Some (child.issue_identifier, terminal_queue_reason) | _ -> None
+  in
+  let skipped =
+    match terminal_queue_state with Some "skipped" -> Some (child.issue_identifier, terminal_queue_reason) | _ -> None
+  in
   Hashtbl.remove orchestrator.attempts issue_id;
   Hashtbl.remove orchestrator.retry_due issue_id;
   Hashtbl.remove orchestrator.previous_attempt_outputs issue_id;
@@ -3350,7 +3560,8 @@ let complete_child ?next_status orchestrator child =
         List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
     }
     |> Runtime_state.clear_context_status issue_id);
-  update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ~candidates:[ next_issue ] ();
+  update_ordered_queue_entries orchestrator ?completed_identifier ?pending_identifier ?failed ?attention ?skipped
+    ~candidates:[ next_issue ] ();
   render_dispatch_completed child.issue_identifier child.issue_title
 
 let mark_child_failed orchestrator child error =
@@ -3366,7 +3577,8 @@ let mark_child_failed orchestrator child error =
       let next_issue = compozy_issue_with_lifecycle_dispatch_state orchestrator.config run in
       complete_child ~next_status:next_issue.state orchestrator child;
       dispatch_issue orchestrator next_issue
-  | Ok (Compozy_finished_after_failure run) -> complete_child ~next_status:run.state orchestrator child
+  | Ok (Compozy_finished_after_failure (run, reason)) ->
+      complete_child ~next_status:run.state ~queue_terminal_state:"failed" ~queue_terminal_reason:reason orchestrator child
 
 let cleanup_task_worktree orchestrator child =
   cleanup_task_worktree_for_issue orchestrator.config child.issue child.workspace.path
@@ -3430,7 +3642,7 @@ let mark_merge_attention orchestrator child error =
       last_error = Some error;
     }
     |> Runtime_state.clear_context_status child.issue_id);
-  update_ordered_queue_entries orchestrator ~skipped:(child.issue_identifier, error) ~candidates:[ child.issue ] ()
+  update_ordered_queue_entries orchestrator ~attention:(child.issue_identifier, Some error) ~candidates:[ child.issue ] ()
 
 type compozy_completion =
   | Not_compozy_child
@@ -3636,6 +3848,7 @@ let refresh_child_output ?(force = false) orchestrator child =
 
 let reap_children orchestrator =
   let now = Unix.time () in
+  let original_children = orchestrator.children in
   let finished, still_running =
     List.fold_left
       (fun (finished, running) child ->
@@ -3671,7 +3884,14 @@ let reap_children orchestrator =
               (child.issue_id :: finished, running))
       ([], []) orchestrator.children
   in
-  orchestrator.children <- List.rev still_running;
+  (* Completion handlers may synchronously dispatch a follow-up child, for
+     example the next Compozy Task Step. Keep those children when replacing the
+     original reaped set. *)
+  let launched_during_reap =
+    orchestrator.children
+    |> List.filter (fun child -> not (List.exists (fun original -> original == child) original_children))
+  in
+  orchestrator.children <- List.rev still_running @ List.rev launched_during_reap;
   ignore finished
 
 let poll_once orchestrator =

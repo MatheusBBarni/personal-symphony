@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Show Sandbox Status In The Web Dashboard
 type: frontend
 complexity: medium
 dependencies:
   - task_04
+
 ---
 
 # Task 05: Show Sandbox Status In The Web Dashboard

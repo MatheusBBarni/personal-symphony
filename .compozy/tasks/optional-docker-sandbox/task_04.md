@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Extend Runtime State With Sandbox Launch Metadata
 type: backend
 complexity: medium
 dependencies:
   - task_03
+
 ---
 
 # Task 04: Extend Runtime State With Sandbox Launch Metadata
@@ -28,11 +29,11 @@ Extend backend runtime snapshots with moderate sandbox visibility so operators c
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add sandbox metadata fields to backend runtime-state running rows.
-- [ ] 4.2 Populate sandbox metadata during sandboxed launch tracking.
-- [ ] 4.3 Extend JSON snapshot serialization for HTTP and live state consumers.
-- [ ] 4.4 Preserve empty or omitted sandbox metadata for non-sandboxed runs.
-- [ ] 4.5 Add backend tests for runtime-state and server snapshot coverage.
+- [x] 4.1 Add sandbox metadata fields to backend runtime-state running rows.
+- [x] 4.2 Populate sandbox metadata during sandboxed launch tracking.
+- [x] 4.3 Extend JSON snapshot serialization for HTTP and live state consumers.
+- [x] 4.4 Preserve empty or omitted sandbox metadata for non-sandboxed runs.
+- [x] 4.5 Add backend tests for runtime-state and server snapshot coverage.
 
 ## Implementation Details
 Reference the TechSpec sections "Runtime State Additions", "API Endpoints", and "Monitoring and Observability". This task should stop at backend snapshot shape and not implement dashboard rendering.
@@ -60,13 +61,13 @@ Reference the TechSpec sections "Runtime State Additions", "API Endpoints", and 
 
 ## Tests
 - Unit tests:
-  - [ ] Running-state JSON includes sandbox fields for sandboxed launches.
-  - [ ] Running-state JSON omits or nulls sandbox fields for non-sandboxed launches.
-  - [ ] Reuse outcome values serialize as expected for `created`, `reused`, and `recreated`.
+  - [x] Running-state JSON includes sandbox fields for sandboxed launches.
+  - [x] Running-state JSON omits or nulls sandbox fields for non-sandboxed launches.
+  - [x] Reuse outcome values serialize as expected for `created`, `reused`, and `recreated`.
 - Integration tests:
-  - [ ] `/api/v1/state` includes sandbox metadata for a sandboxed running issue.
-  - [ ] `/api/v1/state/live` emits sandbox metadata in live snapshots.
-  - [ ] Existing readiness snapshot tests still pass without requiring frontend changes.
+  - [x] `/api/v1/state` includes sandbox metadata for a sandboxed running issue.
+  - [x] `/api/v1/state/live` emits sandbox metadata in live snapshots.
+  - [x] Existing readiness snapshot tests still pass without requiring frontend changes.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -78,6 +78,9 @@ sockets[0].onmessage({
         description: "Dashboard card fixture",
         harness_name: "engineer",
         harness_kind: "claude",
+        sandbox_enabled: true,
+        sandbox_provider: "docker",
+        sandbox_reuse_outcome: "reused",
         context_status: {
           state: "succeeded",
           summary: "Agent Context Snapshot generated.",
@@ -122,6 +125,9 @@ assert.equal(snapshots[0].running[0].context_status.state, "succeeded");
 assert.equal(snapshots[0].running[0].harness_name, "engineer");
 assert.equal(snapshots[0].running[0].harness_kind, "claude");
 assert.equal(snapshots[0].intake_evaluations[0].state, "ready");
+assert.equal(snapshots[0].running[0].sandbox_enabled, true);
+assert.equal(snapshots[0].running[0].sandbox_provider, "docker");
+assert.equal(snapshots[0].running[0].sandbox_reuse_outcome, "reused");
 assert.equal(snapshots[0].retrying[0].context_status.state, "timed_out");
 assert.equal(snapshots[0].compozy_progress.current_step, "task_02.md");
 assert.equal(snapshots[0].compozy_progress.completed, 1);
@@ -141,6 +147,7 @@ assert.equal(dashboardSnapshot.tokens, "42");
 assert.equal(dashboardSnapshot.issues[0].harnessIdentity, "engineer (claude)");
 assert.equal(dashboardSnapshot.issues[0].intakeState, "Ready for intake");
 assert.equal(dashboardSnapshot.issues[0].intakeReason, "Tracker state matches configured Symphony-ready Status.");
+assert.equal(dashboardSnapshot.issues[0].sandbox, "docker reused");
 assert.equal(dashboardSnapshot.compozyProgress.runId, "compozy:compozy-tasks-run-integration");
 assert.equal(dashboardSnapshot.compozyProgress.currentStep, "task_02.md");
 assert.equal(dashboardSnapshot.compozyProgress.completed, "1");
@@ -166,6 +173,8 @@ assert.match(lifecycleMarkup, /Dispatch state/);
 assert.match(lifecycleMarkup, /Done/);
 assert.match(lifecycleMarkup, /Stage agent/);
 assert.match(lifecycleMarkup, /engineer/);
+assert.match(lifecycleMarkup, /Sandbox/);
+assert.match(lifecycleMarkup, /docker reused/);
 assert.match(lifecycleMarkup, /PR readiness/);
 assert.match(lifecycleMarkup, /handoff_failed/);
 assert.match(lifecycleMarkup, /Handoff status/);
@@ -613,6 +622,7 @@ assert.equal(snapshotFromState(snapshots[1]).compozyProgress, undefined);
 assert.equal(snapshots[1].running[0].context_status, undefined);
 assert.equal(snapshots[1].running[0].harness_name, undefined);
 assert.equal(snapshotFromState(snapshots[1]).issues.length, 0);
+assert.equal(snapshots[1].running[0].sandbox_enabled, undefined);
 
 sockets[0].onclose();
 assert.equal(errors.at(-1), "Live dashboard disconnected. Reconnecting...");

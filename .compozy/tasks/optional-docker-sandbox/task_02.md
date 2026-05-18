@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Build Docker Sandbox Runtime Helper
 type: backend
 complexity: high
 dependencies:
   - task_01
+
 ---
 
 # Task 02: Build Docker Sandbox Runtime Helper

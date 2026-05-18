@@ -15,6 +15,7 @@ let compozy_progress_lines = (progress: Runtime_state.compozy_progress) =>
     optional_line("Handoff", progress.handoff_status),
     optional_line("Reason", progress.reason),
     Some(("Current step", Option.value(progress.current_step, ~default="none"))),
+    Some(("Next step", Option.value(progress.next_step, ~default="none"))),
     Some((
       "Steps",
       Printf.sprintf(

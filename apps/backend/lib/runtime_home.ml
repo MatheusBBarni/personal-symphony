@@ -40,6 +40,16 @@ let settings_json =
   "workspace": {
     "root": ".symphony/workspaces"
   },
+  "sandbox": {
+    "enabled": false,
+    "type": "docker",
+    "image": "ghcr.io/your-org/symphony-agent:latest",
+    "bootstrapCommands": [],
+    "persistent": true,
+    "networkEnabled": false,
+    "cpuLimit": 2,
+    "memoryMb": 4096
+  },
   "harnesses": {
     "codex": {
       "kind": "codex",

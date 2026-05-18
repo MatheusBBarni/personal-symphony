@@ -7,6 +7,9 @@ type running = {
   stage_agent : string option;
   harness_name : string option;
   harness_kind : string option;
+  sandbox_enabled : bool option;
+  sandbox_provider : string option;
+  sandbox_reuse_outcome : string option;
   stage_states : string list;
   session_id : string option;
   turn_count : int;
@@ -45,6 +48,7 @@ type compozy_progress = {
   run_id : string;
   slug : string;
   current_step : string option;
+  next_step : string option;
   completed : int;
   failed : int;
   skipped : int;
@@ -119,6 +123,7 @@ type t = {
   ordered_queue : ordered_queue option;
   intake_evaluations : intake_evaluation list;
   compozy_progress : compozy_progress option;
+  compozy_progresses : compozy_progress list;
   startup_reconciliation : startup_reconciliation list;
   task_branch_integrations : task_branch_integration list;
   context_diagnostics : context_diagnostic list;
@@ -126,7 +131,10 @@ type t = {
 }
 
 let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue
-    ?(intake_evaluations = []) ?compozy_progress ?last_error () =
+    ?(intake_evaluations = []) ?compozy_progress ?(compozy_progresses = []) ?last_error () =
+  let compozy_progresses =
+    match (compozy_progresses, compozy_progress) with [], Some progress -> [ progress ] | _ -> compozy_progresses
+  in
   {
     workspace_repository_name;
     tracker_kind;
@@ -145,6 +153,7 @@ let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps
     ordered_queue;
     intake_evaluations;
     compozy_progress;
+    compozy_progresses;
     startup_reconciliation = [];
     task_branch_integrations = [];
     context_diagnostics = [];
@@ -220,6 +229,9 @@ let running_to_yojson state row =
       ("stage_agent", (match row.stage_agent with Some s -> `String s | None -> `Null));
       ("harness_name", (match row.harness_name with Some s -> `String s | None -> `Null));
       ("harness_kind", (match row.harness_kind with Some s -> `String s | None -> `Null));
+      ("sandbox_enabled", (match row.sandbox_enabled with Some enabled -> `Bool enabled | None -> `Null));
+      ("sandbox_provider", (match row.sandbox_provider with Some s -> `String s | None -> `Null));
+      ("sandbox_reuse_outcome", (match row.sandbox_reuse_outcome with Some s -> `String s | None -> `Null));
       ("stage_states", `List (List.map (fun state -> `String state) row.stage_states));
       ("session_id", (match row.session_id with Some s -> `String s | None -> `Null));
       ("turn_count", `Int row.turn_count);
@@ -285,12 +297,24 @@ let handoff_status_of_lifecycle (lifecycle : Compozy_lifecycle.t) =
       Some (Compozy_lifecycle.pr_readiness_to_string lifecycle.pr_readiness)
   | _ -> None
 
+let pending_step_after current_step steps =
+  let current_index = Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.index) current_step in
+  steps
+  |> List.find_opt (fun (step : Compozy_tasks_tracker.task_step) ->
+         String.lowercase_ascii step.status = "pending"
+         &&
+         match current_index with
+         | Some index -> step.index > index
+         | None -> true)
+
 let compozy_progress_of_prd_run ?lifecycle (run : Compozy_tasks_tracker.prd_run) =
   let counts = run.counts in
+  let next_step = pending_step_after run.current_step run.steps in
   {
     run_id = run.id;
     slug = run.slug;
     current_step = Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) run.current_step;
+    next_step = Option.map (fun (step : Compozy_tasks_tracker.task_step) -> step.file) next_step;
     completed = counts.completed;
     failed = counts.failed;
     skipped = counts.skipped;
@@ -323,6 +347,13 @@ let initial_compozy_progress (config : Config.t) =
         in
         Option.map (compozy_progress_of_prd_run_for_runtime config) selected
 
+let initial_compozy_progresses (config : Config.t) =
+  if config.tracker.kind <> "compozy_tasks" then []
+  else
+    match Compozy_tasks_tracker.discover_prd_runs ~compozy_root:config.tracker.compozy_root with
+    | Error _ -> []
+    | Ok runs -> List.map (compozy_progress_of_prd_run_for_runtime config) runs
+
 let compozy_progress_to_yojson (row : compozy_progress) =
   let option_string = function Some value -> `String value | None -> `Null in
   `Assoc
@@ -330,6 +361,7 @@ let compozy_progress_to_yojson (row : compozy_progress) =
       ("run_id", `String row.run_id);
       ("slug", `String row.slug);
       ("current_step", option_string row.current_step);
+      ("next_step", option_string row.next_step);
       ("completed", `Int row.completed);
       ("failed", `Int row.failed);
       ("skipped", `Int row.skipped);
@@ -422,6 +454,7 @@ let compozy_progress_of_yojson json =
           run_id;
           slug;
           current_step = json_string_member "current_step" json;
+          next_step = json_string_member "next_step" json;
           completed = Option.value (json_int_member "completed" json) ~default:0;
           failed = Option.value (json_int_member "failed" json) ~default:0;
           skipped = Option.value (json_int_member "skipped" json) ~default:0;
@@ -437,6 +470,12 @@ let compozy_progress_of_yojson json =
 
 let compozy_progress_from_snapshot_yojson json =
   match json_member "compozy_progress" json with Some (`Assoc _ as progress) -> compozy_progress_of_yojson progress | _ -> None
+
+let compozy_progresses_from_snapshot_yojson json =
+  match json_member "compozy_progresses" json with
+  | Some (`List progresses) -> List.filter_map compozy_progress_of_yojson progresses
+  | _ -> (
+      match compozy_progress_from_snapshot_yojson json with Some progress -> [ progress ] | None -> [])
 
 let tracker_kind_from_snapshot_yojson json =
   Option.value (json_string_member "tracker_kind" json) ~default:"github"
@@ -498,6 +537,7 @@ let to_yojson state =
       ("ordered_queue", (match state.ordered_queue with Some row -> ordered_queue_to_yojson row | None -> `Null));
       ("intake_evaluations", `List (List.map intake_evaluation_to_yojson state.intake_evaluations));
       ("compozy_progress", (match state.compozy_progress with Some row -> compozy_progress_to_yojson row | None -> `Null));
+      ("compozy_progresses", `List (List.map compozy_progress_to_yojson state.compozy_progresses));
       ("startup_reconciliation", `List (List.map startup_reconciliation_to_yojson state.startup_reconciliation));
       ("task_branch_integrations", `List (List.map task_branch_integration_to_yojson state.task_branch_integrations));
       ("context_diagnostics", `List (List.map context_diagnostic_to_yojson state.context_diagnostics));

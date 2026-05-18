@@ -1132,6 +1132,343 @@ let test_workspace_safety () =
       let reused = Workspace.create_for_issue ~root "ABC/42 needs work" in
       Alcotest.(check bool) "reused" false reused.created_now)
 
+let docker_sandbox =
+  {
+    Config.enabled = true;
+    type_ = Some "docker";
+    image = Some "symphony-agent:test";
+    bootstrap_commands = [];
+    persistent = Some true;
+    network_enabled = Some false;
+    cpu_limit = Some 2;
+    memory_mb = Some 1024;
+    validation_errors = [];
+  }
+
+let launch_test_config ?(sandbox = Config.default_sandbox) ?(codex_command = "cat") root =
+  {
+    Config.workflow_path = "settings.json";
+    repository_root = root;
+    tracker =
+      {
+        kind = "github";
+        owner = "acme";
+        repo = "widgets";
+        project_number = 7;
+        api_key_env = "GITHUB_TOKEN";
+        api_key = Some "token";
+        minibeads_root = ".beads";
+        minibeads_command = "mb";
+        compozy_root = ".compozy/tasks";
+        compozy_max_task_step_retries = 2;
+        active_states = [ "Todo"; "In progress" ];
+        terminal_states = [ "Done" ];
+        ready_status = "Todo";
+        ready_status_explicit = true;
+        project_status_field = "Status";
+        project_status_on_dispatch = Some "In progress";
+        project_status_on_success = Some "In review";
+        project_status_on_retry = Some "Todo";
+        ensure_project_statuses = true;
+      };
+    polling = { interval_ms = 1000 };
+    workspace = { root = Filename.concat root "workspaces" };
+    git = Config.default_git;
+    agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+    codex =
+      {
+        command = codex_command;
+        model = Config.default_model;
+        reasoning_effort = Config.default_reasoning_effort;
+        turn_timeout_ms = 1000;
+        read_timeout_ms = 100;
+        stall_timeout_ms = 1000;
+      };
+    agent_harnesses_explicit = false;
+    agent_harnesses = [];
+    logical_agents = [];
+    legacy_agent_harness_paths = [];
+    server = Config.default_server;
+    pull_request = Config.default_pull_request;
+    protected_paths = Config.default_protected_paths;
+    sandbox;
+    stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+  }
+
+let write_fake_docker ?(exec_exit = 0) ?(info_exit = 0) ?(image_inspect_exit = 0) ?(probe_exit = 0)
+    ?(ps_names = "") ?(health = "running") root =
+  let bin = Filename.concat root "fake-bin" in
+  Util.mkdir_p bin;
+  let log = Filename.concat root "docker.log" in
+  let state = Filename.concat root "docker.state" in
+  let docker = Filename.concat bin "docker" in
+  Util.write_file docker
+    {|#!/bin/sh
+set -e
+log="${FAKE_DOCKER_LOG}"
+state="${FAKE_DOCKER_STATE}"
+printf '%s\n' "$*" >> "$log"
+
+case "${1:-}" in
+  --version)
+    echo "Docker version 25.0.0"
+    exit 0
+    ;;
+  info)
+    if [ "${FAKE_DOCKER_INFO_EXIT}" != "0" ]; then
+      echo "fake docker daemon unavailable" >&2
+      exit "${FAKE_DOCKER_INFO_EXIT}"
+    fi
+    echo "25.0.0"
+    exit 0
+    ;;
+  image)
+    if [ "${2:-}" = "inspect" ]; then
+      if [ "${FAKE_DOCKER_IMAGE_INSPECT_EXIT}" != "0" ]; then
+        echo "fake docker image unavailable" >&2
+        exit "${FAKE_DOCKER_IMAGE_INSPECT_EXIT}"
+      fi
+      echo "[]"
+      exit 0
+    fi
+    ;;
+  ps)
+    if [ "${FAKE_DOCKER_PS_NAMES}" != "" ]; then
+      printf '%s\n' "${FAKE_DOCKER_PS_NAMES}"
+    fi
+    exit 0
+    ;;
+  container)
+    if [ "${2:-}" = "inspect" ]; then
+      test -f "$state"
+      exit $?
+    fi
+    ;;
+  inspect)
+    if [ "${2:-}" = "-f" ]; then
+      if [ "${3:-}" = "{{.State.Running}}" ]; then
+        echo true
+        exit 0
+      fi
+      if [ "${3:-}" = "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}" ]; then
+        echo "${FAKE_DOCKER_HEALTH}"
+        exit 0
+      fi
+      if [ -f "$state" ]; then
+        cat "$state"
+        exit 0
+      fi
+      exit 1
+    fi
+    ;;
+  run)
+    for arg in "$@"; do
+      if [ "$arg" = "--rm" ]; then
+        if [ "${FAKE_DOCKER_PROBE_EXIT}" != "0" ]; then
+          echo "fake docker image probe failure" >&2
+          exit "${FAKE_DOCKER_PROBE_EXIT}"
+        fi
+        exit 0
+      fi
+    done
+    config_hash=""
+    previous=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$previous" = "--label" ]; then
+        case "$1" in
+          personal-symphony.sandbox-config-hash=*) config_hash="${1#*=}" ;;
+        esac
+      fi
+      previous="$1"
+      shift
+    done
+    printf '%s' "$config_hash" > "$state"
+    echo fake-container
+    exit 0
+    ;;
+  rm)
+    rm -f "$state"
+    exit 0
+    ;;
+  start)
+    exit 0
+    ;;
+  exec)
+    shift
+    if [ "${1:-}" = "-i" ]; then
+      shift
+    fi
+    if [ "${1:-}" = "-w" ]; then
+      cwd="$2"
+      shift 2
+    else
+      cwd="$PWD"
+    fi
+    shift
+    if [ "${1:-}" = "/bin/sh" ] && [ "${2:-}" = "-lc" ]; then
+      shift 2
+      command="$1"
+    else
+      command="$*"
+    fi
+    if [ "${FAKE_DOCKER_EXEC_EXIT}" != "0" ]; then
+      echo "fake docker exec failure" >&2
+      exit "${FAKE_DOCKER_EXEC_EXIT}"
+    fi
+    cd "$cwd"
+    exec /bin/sh -lc "$command"
+    ;;
+esac
+
+echo "unexpected docker invocation: $*" >&2
+exit 64
+|};
+  Unix.chmod docker 0o755;
+  ( bin,
+    docker,
+    log,
+    state,
+    string_of_int exec_exit,
+    string_of_int info_exit,
+    string_of_int image_inspect_exit,
+    string_of_int probe_exit,
+    ps_names,
+    health )
+
+let with_fake_docker ?exec_exit ?info_exit ?image_inspect_exit ?probe_exit ?ps_names ?health root f =
+  let bin, docker, log, state, exec_exit, info_exit, image_inspect_exit, probe_exit, ps_names, health =
+    write_fake_docker ?exec_exit ?info_exit ?image_inspect_exit ?probe_exit ?ps_names ?health root
+  in
+  let path = match Sys.getenv_opt "PATH" with Some path -> bin ^ ":" ^ path | None -> bin in
+  with_env
+    [
+      ("PATH", path);
+      ("SYMPHONY_DOCKER_BIN", docker);
+      ("FAKE_DOCKER_LOG", log);
+      ("FAKE_DOCKER_STATE", state);
+      ("FAKE_DOCKER_EXEC_EXIT", exec_exit);
+      ("FAKE_DOCKER_INFO_EXIT", info_exit);
+      ("FAKE_DOCKER_IMAGE_INSPECT_EXIT", image_inspect_exit);
+      ("FAKE_DOCKER_PROBE_EXIT", probe_exit);
+      ("FAKE_DOCKER_PS_NAMES", ps_names);
+      ("FAKE_DOCKER_HEALTH", health);
+    ]
+    (fun () -> f log)
+
+let test_sandbox_runtime_disabled_builds_host_launch_command () =
+  with_temp_dir "symphony-sandbox-host-plan-" (fun root ->
+      let config = launch_test_config root ~codex_command:"cat" in
+      let workspace_path = Filename.concat root "workspaces/_1" in
+      Util.mkdir_p workspace_path;
+      let prompt_path = Filename.concat workspace_path "prompt.md" in
+      let stdout_path = Filename.concat workspace_path "stdout.log" in
+      let stderr_path = Filename.concat workspace_path "stderr.log" in
+      match
+        Sandbox_runtime.launch_plan ~config ~workspace_path ~harness_command:"cat" ~prompt_path ~stdout_path
+          ~stderr_path
+      with
+      | Error error -> Alcotest.fail error
+      | Ok plan ->
+          Alcotest.(check (option string)) "provider" None plan.provider;
+          Alcotest.(check string) "host command"
+            (Printf.sprintf "cd %s && cat < %s > %s 2> %s" (Util.shell_quote workspace_path)
+               (Util.shell_quote prompt_path) (Util.shell_quote stdout_path) (Util.shell_quote stderr_path))
+            plan.command)
+
+let test_sandbox_runtime_enabled_builds_docker_launch_plan () =
+  with_temp_dir "symphony-sandbox-docker-plan-" (fun root ->
+      with_fake_docker root (fun _docker_log ->
+          let config = launch_test_config root ~sandbox:docker_sandbox ~codex_command:"cat" in
+          let workspace_path = Filename.concat root "workspaces/_1" in
+          Util.mkdir_p workspace_path;
+          let prompt_path = Filename.concat workspace_path "prompt.md" in
+          let stdout_path = Filename.concat workspace_path "stdout.log" in
+          let stderr_path = Filename.concat workspace_path "stderr.log" in
+          match
+            Sandbox_runtime.launch_plan ~config ~workspace_path ~harness_command:"cat" ~prompt_path ~stdout_path
+              ~stderr_path
+          with
+          | Error error -> Alcotest.fail error
+          | Ok plan ->
+              Alcotest.(check (option string)) "provider" (Some "docker") plan.provider;
+              Alcotest.(check (option string)) "initial outcome" (Some "created") plan.reuse_outcome;
+              Alcotest.(check bool) "container named" true (Option.is_some plan.container_name);
+              let changed_config =
+                launch_test_config root ~sandbox:{ docker_sandbox with Config.memory_mb = Some 2048 } ~codex_command:"cat"
+              in
+              let changed_plan =
+                Sandbox_runtime.launch_plan ~config:changed_config ~workspace_path ~harness_command:"cat" ~prompt_path
+                  ~stdout_path ~stderr_path
+              in
+              (match changed_plan with
+              | Error error -> Alcotest.fail error
+              | Ok changed_plan ->
+                  Alcotest.(check (option string)) "container identity stays Agent Worktree-scoped" plan.container_name
+                    changed_plan.container_name);
+              Alcotest.(check bool) "uses docker exec" true
+                (contains_substring plan.command (Util.shell_quote (Sys.getenv "SYMPHONY_DOCKER_BIN") ^ " 'exec' '-i'"));
+              Alcotest.(check bool) "workdir is Agent Worktree" true
+                (contains_substring plan.command ("'-w' " ^ Util.shell_quote workspace_path));
+              Alcotest.(check bool) "reads prompt path" true (contains_substring plan.command (Util.shell_quote prompt_path));
+              Alcotest.(check bool) "writes stdout path" true (contains_substring plan.command (Util.shell_quote stdout_path));
+              Alcotest.(check bool) "writes stderr path" true (contains_substring plan.command (Util.shell_quote stderr_path))))
+
+let test_sandbox_runtime_reports_reuse_outcomes () =
+  with_temp_dir "symphony-sandbox-reuse-outcomes-" (fun root ->
+      with_fake_docker root (fun _docker_log ->
+          let config = launch_test_config root ~sandbox:docker_sandbox ~codex_command:"cat" in
+          let workspace_path = Filename.concat root "workspaces/_1" in
+          Util.mkdir_p workspace_path;
+          let prompt_path = Filename.concat workspace_path "prompt.md" in
+          let stdout_path = Filename.concat workspace_path "stdout.log" in
+          let stderr_path = Filename.concat workspace_path "stderr.log" in
+          Util.write_file prompt_path "Issue #1";
+          let plan_for config =
+            match
+              Sandbox_runtime.launch_plan ~config ~workspace_path ~harness_command:"cat" ~prompt_path ~stdout_path
+                ~stderr_path
+            with
+            | Ok plan -> plan
+            | Error error -> Alcotest.fail error
+          in
+          let created = plan_for config in
+          Alcotest.(check (option string)) "first launch creates" (Some "created") created.reuse_outcome;
+          ignore (run_ok ~cwd:root "create sandbox container" created.command);
+          let reused = plan_for config in
+          Alcotest.(check (option string)) "matching container reused" (Some "reused") reused.reuse_outcome;
+          let changed_config =
+            launch_test_config root ~sandbox:{ docker_sandbox with Config.memory_mb = Some 2048 } ~codex_command:"cat"
+          in
+          let recreated = plan_for changed_config in
+          Alcotest.(check (option string)) "config change recreates" (Some "recreated") recreated.reuse_outcome))
+
+let test_sandbox_runtime_uses_agent_worktree_scoped_container_names () =
+  with_temp_dir "symphony-sandbox-worktree-containers-" (fun root ->
+      with_fake_docker root (fun _docker_log ->
+          let config = launch_test_config root ~sandbox:docker_sandbox ~codex_command:"cat" in
+          let prompt_path workspace_path =
+            let prompt_path = Filename.concat workspace_path "prompt.md" in
+            Util.write_file prompt_path "Issue";
+            prompt_path
+          in
+          let plan_for workspace_path =
+            Util.mkdir_p workspace_path;
+            match
+              Sandbox_runtime.launch_plan ~config ~workspace_path ~harness_command:"cat"
+                ~prompt_path:(prompt_path workspace_path)
+                ~stdout_path:(Filename.concat workspace_path "stdout.log")
+                ~stderr_path:(Filename.concat workspace_path "stderr.log")
+            with
+            | Ok plan -> plan
+            | Error error -> Alcotest.fail error
+          in
+          let first = plan_for (Filename.concat root "workspaces/_1") in
+          let second = plan_for (Filename.concat root "workspaces/_2") in
+          Alcotest.(check bool) "first container named" true (Option.is_some first.container_name);
+          Alcotest.(check bool) "second container named" true (Option.is_some second.container_name);
+          Alcotest.(check bool) "container identity is Agent Worktree-scoped" true
+            (first.container_name <> second.container_name)))
+
 let test_shell_launch_runs_agent_in_agent_worktree () =
   with_temp_dir "symphony-launch-root-" (fun root ->
       let workspace_root = Filename.concat root "workspaces" in
@@ -1181,6 +1518,7 @@ let test_shell_launch_runs_agent_in_agent_worktree () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -1274,6 +1612,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -1309,6 +1648,164 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
         (Util.read_file (Filename.concat workspace.path "pi.cwd") |> Util.trim);
       Alcotest.(check string) "pi prompt piped" "Issue #1"
         (Util.read_file (Filename.concat workspace.path "pi.prompt") |> Util.trim))
+
+let test_shell_launch_runs_sandboxed_agent_in_agent_worktree () =
+  with_temp_dir "symphony-sandbox-launch-root-" (fun root ->
+      with_fake_docker root (fun docker_log ->
+          let command =
+            "sh -c 'pwd > sandbox.cwd; cat > sandbox.prompt; printf sandbox-stdout; printf sandbox-stderr >&2'"
+          in
+          let config = launch_test_config root ~sandbox:docker_sandbox ~codex_command:command in
+          let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+          let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+          let launched = Orchestrator.shell_launch ~stage:None ~config ~workspace ~prompt:"Issue #1" ~issue in
+          (match launched.pid with
+          | Some pid -> (
+              match snd (Unix.waitpid [] pid) with
+              | Unix.WEXITED 0 -> ()
+              | Unix.WEXITED code ->
+                  Alcotest.fail
+                    (Printf.sprintf "sandbox launch exited %d: %s" code
+                       (Util.read_file (Option.get launched.stderr_path)))
+              | Unix.WSIGNALED signal -> Alcotest.fail (Printf.sprintf "sandbox launch signaled %d" signal)
+              | Unix.WSTOPPED signal -> Alcotest.fail (Printf.sprintf "sandbox launch stopped %d" signal))
+          | None -> Alcotest.fail "expected shell launch pid");
+          Alcotest.(check bool) "event identifies Docker provider" true
+            (contains_substring launched.event "sandbox_provider=docker");
+          Alcotest.(check string) "agent cwd" (Unix.realpath workspace.path)
+            (Util.read_file (Filename.concat workspace.path "sandbox.cwd") |> Util.trim);
+          Alcotest.(check string) "prompt piped" "Issue #1"
+            (Util.read_file (Filename.concat workspace.path "sandbox.prompt") |> Util.trim);
+          Alcotest.(check bool) "stdout path under Agent Worktree" true
+            (Workspace.is_inside ~root:workspace.path ~path:(Option.get launched.stdout_path));
+          Alcotest.(check bool) "stderr path under Agent Worktree" true
+            (Workspace.is_inside ~root:workspace.path ~path:(Option.get launched.stderr_path));
+          Alcotest.(check string) "stdout log" "sandbox-stdout" (Util.read_file (Option.get launched.stdout_path));
+          Alcotest.(check string) "stderr log" "sandbox-stderr" (Util.read_file (Option.get launched.stderr_path));
+          let docker_log = Util.read_file docker_log in
+          Alcotest.(check bool) "docker exec selected" true (contains_substring docker_log "exec -i -w");
+          Alcotest.(check bool) "docker workdir is Agent Worktree" true
+            (contains_substring docker_log workspace.path)))
+
+let test_shell_launch_sandbox_uses_selected_stage_harness () =
+  with_temp_dir "symphony-sandbox-stage-harness-" (fun root ->
+      with_fake_docker root (fun docker_log ->
+          let workspace_root = Filename.concat root "workspaces" in
+          let agents_root = Filename.concat root "agents" in
+          Util.mkdir_p agents_root;
+          Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
+          let codex = { Config.command = "false"; model = Config.default_model; reasoning_effort = Config.default_reasoning_effort; turn_timeout_ms = 1000; read_timeout_ms = 100; stall_timeout_ms = 1000 } in
+          let pi_harness =
+            {
+              Config.name = "pi";
+              kind = "pi";
+              command = "sh -c 'pwd > pi.cwd; cat > pi.prompt; printf pi-harness'";
+              model = Config.default_pi_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 1000;
+              read_timeout_ms = 100;
+              stall_timeout_ms = 1000;
+              loop_enabled = false;
+              loop_command = "";
+            }
+          in
+          let config =
+            {
+              (launch_test_config root ~sandbox:docker_sandbox) with
+              Config.workspace = { root = workspace_root };
+              codex;
+              agent_harnesses_explicit = true;
+              agent_harnesses = [ Config.harness_of_codex codex; pi_harness ];
+              logical_agents =
+                [
+                  {
+                    Config.name = "engineer";
+                    harness = "pi";
+                    model = None;
+                    reasoning_effort = None;
+                    turn_timeout_ms = None;
+                    read_timeout_ms = None;
+                    stall_timeout_ms = None;
+                  };
+                ];
+              stage_agents =
+                {
+                  enabled = true;
+                  root = agents_root;
+                  default_agent = None;
+                  stages =
+                    [
+                      {
+                        Config.states = [ "Todo" ];
+                        agent = "engineer";
+                        harness = None;
+                        max_concurrent_agents = None;
+                        context_snapshot = None;
+                        context_command = None;
+                        skills = [];
+                        start_status = None;
+                        success_status = Some "In review";
+                        retry_status = Some "Todo";
+                        goal = None;
+                        commit = None;
+                      };
+                    ];
+                };
+            }
+          in
+          let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+          let workspace = Workspace.create_for_issue ~root:workspace_root issue.identifier in
+          let launched = Orchestrator.shell_launch ~stage:None ~config ~workspace ~prompt:"Issue #1" ~issue in
+          (match launched.pid with
+          | Some pid -> (
+              match snd (Unix.waitpid [] pid) with
+              | Unix.WEXITED 0 -> ()
+              | Unix.WEXITED code ->
+                  Alcotest.fail
+                    (Printf.sprintf "sandbox stage launch exited %d: %s" code
+                       (Util.read_file (Option.get launched.stderr_path)))
+              | Unix.WSIGNALED signal -> Alcotest.fail (Printf.sprintf "sandbox stage launch signaled %d" signal)
+              | Unix.WSTOPPED signal -> Alcotest.fail (Printf.sprintf "sandbox stage launch stopped %d" signal))
+          | None -> Alcotest.fail "expected shell launch pid");
+          Alcotest.(check string) "stage harness stdout" "pi-harness" (Util.read_file (Option.get launched.stdout_path));
+          Alcotest.(check string) "pi cwd" (Unix.realpath workspace.path)
+            (Util.read_file (Filename.concat workspace.path "pi.cwd") |> Util.trim);
+          Alcotest.(check string) "pi prompt piped" "Issue #1"
+            (Util.read_file (Filename.concat workspace.path "pi.prompt") |> Util.trim);
+          Alcotest.(check bool) "docker received PI command" true
+            (contains_substring (Util.read_file docker_log) "pi-harness")))
+
+let test_orchestrator_running_state_records_sandbox_launch_metadata () =
+  with_temp_dir "symphony-sandbox-running-state-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      with_temp_dir "symphony-sandbox-running-state-docker-" (fun docker_root ->
+        with_fake_docker docker_root (fun _docker_log ->
+          let config =
+            {
+              (launch_test_config root ~sandbox:docker_sandbox ~codex_command:"cat") with
+              Config.workspace = { root = Filename.concat root ".symphony/workspaces" };
+              git = git_policy ();
+            }
+          in
+          let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+          let current_status = ref issue.Issue.state in
+          let fetch _ = Ok [ { issue with state = !current_status } ] in
+          let set_status _ _ status =
+            current_status := status;
+            Ok ()
+          in
+          let orchestrator =
+            Orchestrator.make ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.poll_once orchestrator;
+          let state = Orchestrator.get_state orchestrator in
+          let row =
+            match state.Runtime_state.running with [ row ] -> row | _ -> Alcotest.fail "expected one running row"
+          in
+          Alcotest.(check (option bool)) "sandbox enabled" (Some true) row.sandbox_enabled;
+          Alcotest.(check (option string)) "sandbox provider" (Some "docker") row.sandbox_provider;
+          Alcotest.(check (option string)) "sandbox reuse outcome" (Some "created") row.sandbox_reuse_outcome)))
 
 let test_dispatch_selects_pi_harness_before_start_status_update () =
   with_temp_dir "symphony-dispatch-pi-start-status-" (fun root ->
@@ -1391,6 +1888,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -2154,6 +2652,189 @@ let test_github_runtime_readiness_still_reports_github_gaps () =
             (List.exists (( = ) "tracker.projectNumber") requirements);
           Alcotest.(check bool) "token gap" true
             (List.exists (( = ) "environment.GITHUB_TOKEN") requirements)))
+
+let write_sandbox_settings ?sandbox root =
+  Util.mkdir_p (Filename.concat root ".symphony");
+  let settings = Filename.concat root "settings.json" in
+  let sandbox_fragment = match sandbox with None -> "" | Some json -> ",\n  \"sandbox\": " ^ json in
+  Util.write_file settings
+    ("{\n  \"tracker\": {\"kind\": \"minibeads\"},\n  \"stageAgents\": {\"enabled\": false}"
+    ^ sandbox_fragment ^ "\n}");
+  Config.from_settings_file ~workspace_root:root settings
+
+let sandbox_requirements gaps =
+  gaps
+  |> List.map (fun (gap : Config.readiness_gap) -> gap.requirement)
+  |> List.filter (String.starts_with ~prefix:"sandbox.")
+
+let test_config_sandbox_omitted_defaults_disabled_without_gaps () =
+  with_temp_dir "symphony-sandbox-omitted-" (fun root ->
+      let config = write_sandbox_settings root in
+      Alcotest.(check bool) "sandbox disabled" false config.Config.sandbox.enabled;
+      Alcotest.(check (option string)) "sandbox type" None config.sandbox.type_;
+      Alcotest.(check (list string)) "sandbox gaps" [] (Config.readiness_gaps config |> sandbox_requirements))
+
+let test_config_sandbox_disabled_ignores_incomplete_fields () =
+  with_temp_dir "symphony-sandbox-disabled-" (fun root ->
+      let config =
+        write_sandbox_settings root
+          ~sandbox:
+            {|{"enabled": false, "type": "podman", "bootstrapCommands": ["", 42], "cpuLimit": 0}|}
+      in
+      Alcotest.(check bool) "sandbox disabled" false config.Config.sandbox.enabled;
+      Alcotest.(check (list string)) "sandbox gaps" [] (Config.readiness_gaps config |> sandbox_requirements))
+
+let test_config_sandbox_valid_docker_settings () =
+  with_temp_dir "symphony-sandbox-valid-" (fun root ->
+      with_fake_docker root (fun _docker_log ->
+      let config =
+        write_sandbox_settings root
+          ~sandbox:
+            {|{
+  "enabled": true,
+  "type": "docker",
+  "image": "ghcr.io/acme/symphony-agent:latest",
+  "bootstrapCommands": ["pnpm install", "opam install . --deps-only"],
+  "persistent": true,
+  "networkEnabled": false,
+  "cpuLimit": 2,
+  "memoryMb": 4096
+}|}
+      in
+      Alcotest.(check bool) "sandbox enabled" true config.Config.sandbox.enabled;
+      Alcotest.(check (option string)) "sandbox type" (Some "docker") config.sandbox.type_;
+      Alcotest.(check (option string)) "sandbox image" (Some "ghcr.io/acme/symphony-agent:latest")
+        config.sandbox.image;
+      Alcotest.(check (list string)) "bootstrap commands" [ "pnpm install"; "opam install . --deps-only" ]
+        config.sandbox.bootstrap_commands;
+      Alcotest.(check (option bool)) "persistent" (Some true) config.sandbox.persistent;
+      Alcotest.(check (option bool)) "network" (Some false) config.sandbox.network_enabled;
+      Alcotest.(check (option int)) "cpu" (Some 2) config.sandbox.cpu_limit;
+      Alcotest.(check (option int)) "memory" (Some 4096) config.sandbox.memory_mb;
+      Alcotest.(check (list string)) "sandbox gaps" [] (Config.readiness_gaps config |> sandbox_requirements)))
+
+let test_config_sandbox_reports_placeholder_image_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-placeholder-image-" (fun root ->
+      let config =
+        write_sandbox_settings root
+          ~sandbox:
+            {|{
+  "enabled": true,
+  "type": "docker",
+  "image": "ghcr.io/your-org/symphony-agent:latest",
+  "persistent": true,
+  "networkEnabled": false,
+  "cpuLimit": 2,
+  "memoryMb": 4096
+}|}
+      in
+      let gaps = Config.readiness_gaps config in
+      let requirements = gaps |> sandbox_requirements in
+      Alcotest.(check (list string)) "sandbox requirements" [ "sandbox.image" ] requirements;
+      match List.find_opt (fun (gap : Config.readiness_gap) -> gap.requirement = "sandbox.image") gaps with
+      | Some gap ->
+          Alcotest.(check bool) "placeholder remediation" true
+            (contains_substring gap.remediation "placeholder sandbox.image")
+      | None -> Alcotest.fail "expected sandbox.image readiness gap")
+
+let valid_sandbox_settings =
+  {|{
+  "enabled": true,
+  "type": "docker",
+  "image": "ghcr.io/acme/symphony-agent:latest",
+  "persistent": true,
+  "networkEnabled": false,
+  "cpuLimit": 2,
+  "memoryMb": 4096
+}|}
+
+let sandbox_gap requirements requirement = List.exists (( = ) requirement) requirements
+
+let test_config_sandbox_reports_missing_docker_binary_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-missing-docker-" (fun root ->
+      with_env [ ("SYMPHONY_DOCKER_BIN", Filename.concat root "missing-docker") ] (fun () ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "docker binary gap" true (sandbox_gap requirements "sandbox.docker")))
+
+let test_config_sandbox_reports_unreachable_docker_daemon_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-docker-daemon-" (fun root ->
+      with_fake_docker root ~info_exit:1 (fun _docker_log ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "docker daemon gap" true
+            (sandbox_gap requirements "sandbox.dockerDaemon")))
+
+let test_config_sandbox_reports_unusable_image_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-image-probe-" (fun root ->
+      with_fake_docker root ~probe_exit:42 (fun _docker_log ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "image gap" true (sandbox_gap requirements "sandbox.image")))
+
+let test_config_sandbox_reports_unhealthy_existing_container_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-unhealthy-container-" (fun root ->
+      with_fake_docker root ~ps_names:"symphony-sandbox-stale" ~health:"unhealthy" (fun _docker_log ->
+          let config = write_sandbox_settings root ~sandbox:valid_sandbox_settings in
+          let requirements = Config.readiness_gaps config |> sandbox_requirements in
+          Alcotest.(check bool) "sandbox state gap" true (sandbox_gap requirements "sandbox.state")))
+
+let test_config_sandbox_enabled_requires_docker_fields () =
+  with_temp_dir "symphony-sandbox-missing-fields-" (fun root ->
+      let config = write_sandbox_settings root ~sandbox:{|{"enabled": true}|} in
+      Alcotest.(check (list string)) "sandbox requirements"
+        [ "sandbox.type"; "sandbox.image"; "sandbox.persistent"; "sandbox.networkEnabled"; "sandbox.cpuLimit"; "sandbox.memoryMb" ]
+        (Config.readiness_gaps config |> sandbox_requirements))
+
+let test_config_sandbox_rejects_unsupported_type_as_gap () =
+  with_temp_dir "symphony-sandbox-unsupported-type-" (fun root ->
+      let config =
+        write_sandbox_settings root
+          ~sandbox:
+            {|{
+  "enabled": true,
+  "type": "process",
+  "image": "ghcr.io/acme/symphony-agent:latest",
+  "persistent": true,
+  "networkEnabled": true,
+  "cpuLimit": 2,
+  "memoryMb": 4096
+}|}
+      in
+      match List.find_opt (fun (gap : Config.readiness_gap) -> gap.requirement = "sandbox.type") (Config.readiness_gaps config) with
+      | Some gap -> Alcotest.(check bool) "docker remediation" true (contains_substring gap.remediation "docker")
+      | None -> Alcotest.fail "expected sandbox.type readiness gap")
+
+let test_config_sandbox_rejects_invalid_bootstrap_commands_as_gaps () =
+  with_temp_dir "symphony-sandbox-bootstrap-invalid-" (fun root ->
+      let config =
+        write_sandbox_settings root
+          ~sandbox:
+            {|{
+  "enabled": true,
+  "type": "docker",
+  "image": "ghcr.io/acme/symphony-agent:latest",
+  "bootstrapCommands": ["pnpm install", "", 42],
+  "persistent": true,
+  "networkEnabled": true,
+  "cpuLimit": 2,
+  "memoryMb": 4096
+}|}
+      in
+      Alcotest.(check (list string)) "bootstrap requirements"
+        [ "sandbox.bootstrapCommands[1]"; "sandbox.bootstrapCommands[2]" ]
+        (Config.readiness_gaps config |> sandbox_requirements))
+
+let test_sandbox_runtime_readiness_and_policy_block_dispatch () =
+  with_temp_dir "symphony-sandbox-runtime-readiness-" (fun root ->
+      let config = write_sandbox_settings root ~sandbox:{|{"enabled": true, "type": "podman"}|} in
+      let state = Runtime_readiness.state config in
+      let requirements = runtime_requirements state.Runtime_state.readiness_gaps in
+      Alcotest.(check bool) "runtime includes sandbox type gap" true (List.exists (( = ) "sandbox.type") requirements);
+      Alcotest.(check bool) "runtime includes sandbox image gap" true (List.exists (( = ) "sandbox.image") requirements);
+      Alcotest.(check bool) "readiness policy blocks" true
+        (Runtime_policy.action ~mode:Cli_mode.Terminal_console ~readiness_gaps:state.readiness_gaps
+        = Runtime_policy.Serve_readiness_state))
 
 let test_legacy_codex_app_server_command_normalizes_to_exec () =
   let content =
@@ -2924,6 +3605,7 @@ let test_project_status_order_uses_transition_flow () =
       server = Config.default_server;
       pull_request = Config.default_pull_request;
       protected_paths = Config.default_protected_paths;
+      sandbox = Config.default_sandbox;
       stage_agents = { enabled = false; root = "/tmp/widgets/.symphony/agents"; default_agent = None; stages = [] };
     }
   in
@@ -2975,8 +3657,20 @@ let test_bootstrap_default_runtime_contract_shape () =
       in
       let string path = Yojson.Safe.Util.to_string (member path) in
       let bool path = Yojson.Safe.Util.to_bool (member path) in
+      let json_int path = Yojson.Safe.Util.to_int (member path) in
+      let json_list path = Yojson.Safe.Util.to_list (member path) in
       Alcotest.(check bool) "legacy top-level codex absent" true (member [ "codex" ] = `Null);
       Alcotest.(check string) "ready status" Config.default_ready_status (string [ "project"; "readyStatus" ]);
+      Alcotest.(check bool) "sandbox default disabled" false (bool [ "sandbox"; "enabled" ]);
+      Alcotest.(check string) "sandbox type" "docker" (string [ "sandbox"; "type" ]);
+      Alcotest.(check string) "sandbox image" "ghcr.io/your-org/symphony-agent:latest"
+        (string [ "sandbox"; "image" ]);
+      Alcotest.(check int) "sandbox bootstrap commands empty" 0
+        (List.length (json_list [ "sandbox"; "bootstrapCommands" ]));
+      Alcotest.(check bool) "sandbox persistent" true (bool [ "sandbox"; "persistent" ]);
+      Alcotest.(check bool) "sandbox network explicit" false (bool [ "sandbox"; "networkEnabled" ]);
+      Alcotest.(check int) "sandbox cpu limit" 2 (json_int [ "sandbox"; "cpuLimit" ]);
+      Alcotest.(check int) "sandbox memory" 4096 (json_int [ "sandbox"; "memoryMb" ]);
       Alcotest.(check string) "codex loop command" "/goal" (string [ "harnesses"; "codex"; "loop"; "command" ]);
       Alcotest.(check bool) "codex loop enabled" true (bool [ "harnesses"; "codex"; "loop"; "enabled" ]);
       Alcotest.(check string) "claude kind" "claude" (string [ "harnesses"; "claude"; "kind" ]);
@@ -3001,7 +3695,10 @@ let test_bootstrap_default_runtime_contract_shape () =
         [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ];
       let config = Config.from_settings_file ~workspace_root:root home.settings_path in
       Alcotest.(check int) "bootstrapped Harness definitions load" 3 (List.length config.agent_harnesses);
-      Alcotest.(check int) "bootstrapped logical agents load" 3 (List.length config.logical_agents))
+      Alcotest.(check int) "bootstrapped logical agents load" 3 (List.length config.logical_agents);
+      Alcotest.(check bool) "bootstrapped sandbox remains disabled" false config.sandbox.enabled;
+      Alcotest.(check (list string)) "bootstrapped disabled sandbox has no gaps" []
+        (Config.readiness_gaps config |> sandbox_requirements))
 
 let test_runtime_contract_docs_use_current_harness_examples () =
   let read path = Util.read_file (repository_file path) in
@@ -3044,13 +3741,68 @@ let test_runtime_contract_docs_use_current_harness_examples () =
       "Legacy harness-shaped Runtime Settings under `agents.*`";
     ]
 
+let test_runtime_contract_docs_cover_sandbox_settings () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  let adr = read "docs/adr/0021-agent-harness-runtime-settings.md" in
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
+    [
+      "### Optional Docker Sandbox";
+      "\"sandbox\": {";
+      "\"enabled\": false";
+      "\"type\": \"docker\"";
+      "\"image\": \"ghcr.io/your-org/symphony-agent:latest\"";
+      "\"bootstrapCommands\": []";
+      "\"persistent\": true";
+      "\"networkEnabled\": false";
+      "\"cpuLimit\": 2";
+      "\"memoryMb\": 4096";
+      "`sandbox.enabled`";
+      "Readiness Gaps and block dispatch";
+      "not silently fall back to host execution";
+      "Agent Worktree-scoped Docker container";
+      "`sandbox_enabled`";
+      "`sandbox_provider`";
+      "`sandbox_reuse_outcome`";
+      "`created`, `reused`, or `recreated`";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (contains_substring context expected))
+    [
+      "**Sandbox**";
+      "Docker is the only V1 Sandbox type";
+      "Runtime Settings may define a repository-level **Sandbox** under `sandbox`";
+      "sandbox-enabled **Workspace Repository**";
+      "blocking **Readiness Gaps**";
+      "Agent Worktree-scoped Docker container";
+      "created, reused, or recreated";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
+    [
+      "Accepted, amended 2026-05-08 and 2026-05-17";
+      "top-level `sandbox` block";
+      "`sandbox.enabled` is `true`";
+      "`sandbox.type` must be `docker`";
+      "live Docker availability";
+      "must not become an Agent Harness kind";
+    ]
+
 let test_runtime_contract_docs_are_secret_free () =
-  let combined = Util.read_file (repository_file "README.md") ^ Util.read_file (repository_file "CONTEXT.md") in
+  let combined =
+    Util.read_file (repository_file "README.md")
+    ^ Util.read_file (repository_file "CONTEXT.md")
+    ^ Util.read_file (repository_file "docs/adr/0021-agent-harness-runtime-settings.md")
+  in
   List.iter
     (fun secret_marker ->
       Alcotest.(check bool) ("no secret value marker " ^ secret_marker) false
         (contains_substring combined secret_marker))
-    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN=" ]
+    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "GITHUB_TOKEN="; "GH_TOKEN=" ]
 
 let test_terminal_console_docs_document_default_runtime_semantics () =
   let read path = Util.read_file (repository_file path) in
@@ -3870,6 +4622,9 @@ let test_runtime_state_exposes_running_issue_details () =
             stage_agent = None;
             harness_name = Some "codex";
             harness_kind = Some "codex";
+            sandbox_enabled = None;
+            sandbox_provider = None;
+            sandbox_reuse_outcome = None;
             stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
@@ -3908,6 +4663,56 @@ let test_runtime_state_exposes_running_issue_details () =
     [ "Todo"; "In progress"; "In review"; "Done" ]
     (Runtime_state.to_yojson ordered_state |> member "status_order" |> to_list |> List.map to_string)
 
+let runtime_state_sandbox_row ?sandbox_enabled ?sandbox_provider ?sandbox_reuse_outcome identifier =
+  let issue = Issue.empty ~id:identifier ~identifier ~title:("Issue " ^ identifier) ~state:"In progress" in
+  {
+    Runtime_state.issue;
+    stage_agent = Some "engineer";
+    harness_name = Some "codex";
+    harness_kind = Some "codex";
+    sandbox_enabled;
+    sandbox_provider;
+    sandbox_reuse_outcome;
+    stage_states = [ "Todo" ];
+    session_id = Some ("pid:" ^ identifier);
+    turn_count = 0;
+    last_event = Some "launched";
+    last_message = None;
+    started_at = "2026-05-04T00:00:00Z";
+    last_event_at = None;
+    tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+    goal_usage = None;
+  }
+
+let test_runtime_state_serializes_sandbox_metadata () =
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      running =
+        [
+          runtime_state_sandbox_row ~sandbox_enabled:true ~sandbox_provider:"docker" ~sandbox_reuse_outcome:"created" "#1";
+          runtime_state_sandbox_row ~sandbox_enabled:true ~sandbox_provider:"docker" ~sandbox_reuse_outcome:"reused" "#2";
+          runtime_state_sandbox_row ~sandbox_enabled:true ~sandbox_provider:"docker" ~sandbox_reuse_outcome:"recreated" "#3";
+        ];
+    }
+  in
+  let open Yojson.Safe.Util in
+  let rows = Runtime_state.to_yojson state |> member "running" |> to_list in
+  Alcotest.(check (list string)) "reuse outcomes" [ "created"; "reused"; "recreated" ]
+    (List.map (fun row -> row |> member "sandbox_reuse_outcome" |> to_string) rows);
+  let first = List.hd rows in
+  Alcotest.(check bool) "sandbox enabled" true (first |> member "sandbox_enabled" |> to_bool);
+  Alcotest.(check string) "sandbox provider" "docker" (first |> member "sandbox_provider" |> to_string)
+
+let test_runtime_state_nulls_sandbox_metadata_for_host_rows () =
+  let state = { (Runtime_state.empty ()) with running = [ runtime_state_sandbox_row "#1" ] } in
+  let open Yojson.Safe.Util in
+  let row = Runtime_state.to_yojson state |> member "running" |> to_list |> List.hd in
+  let is_null field = match row |> member field with `Null -> true | _ -> false in
+  Alcotest.(check bool) "sandbox enabled null" true (is_null "sandbox_enabled");
+  Alcotest.(check bool) "sandbox provider null" true (is_null "sandbox_provider");
+  Alcotest.(check bool) "sandbox reuse null" true (is_null "sandbox_reuse_outcome")
+
 let test_runtime_state_exposes_tracker_kind () =
   let open Yojson.Safe.Util in
   let default_json = Runtime_state.empty () |> Runtime_state.to_yojson in
@@ -3927,6 +4732,8 @@ let test_runtime_state_absent_compozy_progress_is_compatible () =
     (Runtime_state.tracker_kind_from_snapshot_yojson older_snapshot);
   Alcotest.(check bool) "older snapshot progress absent" true
     (Option.is_none (Runtime_state.compozy_progress_from_snapshot_yojson older_snapshot));
+  Alcotest.(check int) "older snapshot progress list absent" 0
+    (List.length (Runtime_state.compozy_progresses_from_snapshot_yojson older_snapshot));
   let older_progress_snapshot =
     `Assoc
       [
@@ -3947,7 +4754,9 @@ let test_runtime_state_absent_compozy_progress_is_compatible () =
   | Some parsed ->
       Alcotest.(check string) "legacy parsed run id" "compozy:legacy-feature" parsed.Runtime_state.run_id;
       Alcotest.(check (option string)) "legacy lifecycle absent" None parsed.lifecycle_state;
-      Alcotest.(check (option string)) "legacy readiness absent" None parsed.pr_readiness
+      Alcotest.(check (option string)) "legacy readiness absent" None parsed.pr_readiness;
+      Alcotest.(check int) "legacy progress list fallback" 1
+        (List.length (Runtime_state.compozy_progresses_from_snapshot_yojson older_progress_snapshot))
   | None -> Alcotest.fail "expected legacy Compozy progress to parse"
 
 let test_runtime_state_exposes_intake_evaluations () =
@@ -3994,7 +4803,8 @@ let test_runtime_state_exposes_intake_evaluations () =
         blocked.reason
   | _ -> Alcotest.fail "expected parsed intake evaluations"
 
-let compozy_progress_fixture ?(current_step = Some "task_02.md") ?(lifecycle_state = Some "pr_handoff")
+let compozy_progress_fixture ?(current_step = Some "task_02.md") ?(next_step = Some "task_03.md")
+    ?(lifecycle_state = Some "pr_handoff")
     ?(dispatch_state = Some "In review") ?(stage_agent = Some "reviewer")
     ?(pr_readiness = Some "handoff_failed") ?(reason = Some "Batch Pull Request handoff failed.")
     ?(handoff_status = Some "handoff_failed") () =
@@ -4002,6 +4812,7 @@ let compozy_progress_fixture ?(current_step = Some "task_02.md") ?(lifecycle_sta
     Runtime_state.run_id = "compozy:compozy-tasks-run-integration";
     slug = "compozy-tasks-run-integration";
     current_step;
+    next_step;
     completed = 2;
     failed = 1;
     skipped = 0;
@@ -4041,6 +4852,7 @@ let test_terminal_console_compozy_progress_lines_include_lifecycle () =
       "Handoff";
       "Reason";
       "Current step";
+      "Next step";
       "Steps";
     ]
     labels;
@@ -4052,6 +4864,7 @@ let test_terminal_console_compozy_progress_lines_include_lifecycle () =
   Alcotest.(check (option string)) "reason" (Some "Batch Pull Request handoff failed.")
     (List.assoc_opt "Reason" lines);
   Alcotest.(check (option string)) "current step" (Some "task_02.md") (List.assoc_opt "Current step" lines);
+  Alcotest.(check (option string)) "next step" (Some "task_03.md") (List.assoc_opt "Next step" lines);
   Alcotest.(check (option string)) "step counts" (Some "2 completed, 1 failed, 0 skipped, 8 total")
     (List.assoc_opt "Steps" lines)
 
@@ -4070,6 +4883,7 @@ let test_terminal_console_compozy_progress_lines_omit_absent_lifecycle () =
   Alcotest.(check bool) "reason omitted" false (List.mem "Reason" labels);
   Alcotest.(check (option string)) "current step placeholder preserved" (Some "none")
     (List.assoc_opt "Current step" lines);
+  Alcotest.(check (option string)) "next step preserved" (Some "task_03.md") (List.assoc_opt "Next step" lines);
   Alcotest.(check (option string)) "step counts preserved" (Some "2 completed, 1 failed, 0 skipped, 8 total")
     (List.assoc_opt "Steps" lines)
 
@@ -4093,9 +4907,12 @@ let test_runtime_state_exposes_compozy_progress () =
       let open Yojson.Safe.Util in
       Alcotest.(check string) "tracker kind" "compozy_tasks" (json |> member "tracker_kind" |> to_string);
       let payload = json |> member "compozy_progress" in
+      let payloads = json |> member "compozy_progresses" |> to_list in
+      Alcotest.(check int) "progress list length" 1 (List.length payloads);
       Alcotest.(check string) "run id" "compozy:compozy-tasks-run-integration" (payload |> member "run_id" |> to_string);
       Alcotest.(check string) "slug" "compozy-tasks-run-integration" (payload |> member "slug" |> to_string);
       Alcotest.(check string) "current step" "task_02.md" (payload |> member "current_step" |> to_string);
+      Alcotest.(check string) "next step" "task_05.md" (payload |> member "next_step" |> to_string);
       Alcotest.(check int) "completed" 1 (payload |> member "completed" |> to_int);
       Alcotest.(check int) "failed" 1 (payload |> member "failed" |> to_int);
       Alcotest.(check int) "skipped" 1 (payload |> member "skipped" |> to_int);
@@ -4107,14 +4924,20 @@ let test_runtime_state_exposes_compozy_progress () =
       Alcotest.(check bool) "readiness absent" true (optional_field_absent "pr_readiness");
       Alcotest.(check bool) "reason absent" true (optional_field_absent "reason");
       Alcotest.(check bool) "handoff absent" true (optional_field_absent "handoff_status");
-      match Runtime_state.compozy_progress_from_snapshot_yojson json with
+      (match Runtime_state.compozy_progress_from_snapshot_yojson json with
       | Some parsed ->
           Alcotest.(check string) "parsed run id" progress.run_id parsed.Runtime_state.run_id;
           Alcotest.(check (option string)) "parsed current step" (Some "task_02.md") parsed.current_step;
+          Alcotest.(check (option string)) "parsed next step" (Some "task_05.md") parsed.next_step;
           Alcotest.(check int) "parsed total" 5 parsed.total;
           Alcotest.(check (option string)) "parsed lifecycle absent" None parsed.lifecycle_state;
           Alcotest.(check (option string)) "parsed readiness absent" None parsed.pr_readiness
-      | None -> Alcotest.fail "expected parsed Compozy progress")
+      | None -> Alcotest.fail "expected parsed Compozy progress");
+      (match Runtime_state.compozy_progresses_from_snapshot_yojson json with
+      | [ parsed ] ->
+          Alcotest.(check string) "parsed list run id" progress.run_id parsed.Runtime_state.run_id;
+          Alcotest.(check (option string)) "parsed list next step" (Some "task_05.md") parsed.next_step
+      | parsed -> Alcotest.fail (Printf.sprintf "expected one parsed Compozy progress, got %d" (List.length parsed))))
 
 let test_runtime_state_compozy_progress_merges_lifecycle_metadata () =
   with_temp_dir "symphony-compozy-progress-lifecycle-" (fun root ->
@@ -4505,6 +5328,7 @@ let test_orchestrator_resumes_same_ordered_queue_state () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -4614,6 +5438,9 @@ let test_runtime_state_exposes_goal_usage_when_available () =
             stage_agent = None;
             harness_name = None;
             harness_kind = None;
+            sandbox_enabled = None;
+            sandbox_provider = None;
+            sandbox_reuse_outcome = None;
             stage_states = [];
             session_id = Some "pid:123";
             turn_count = 0;
@@ -4673,6 +5500,9 @@ let test_runtime_state_exposes_context_status () =
       stage_agent = Some "engineer";
       harness_name = None;
       harness_kind = None;
+      sandbox_enabled = None;
+      sandbox_provider = None;
+      sandbox_reuse_outcome = None;
       stage_states = [ "Todo" ];
       session_id = Some ("pid:" ^ issue.Issue.id);
       turn_count = 0;
@@ -4761,6 +5591,9 @@ let terminal_console_running_row ?(identifier = "#1") ?(title = "Running task") 
       stage_agent = Some "engineer";
       harness_name = Some "codex";
       harness_kind = Some "codex";
+      sandbox_enabled = None;
+      sandbox_provider = None;
+      sandbox_reuse_outcome = None;
       stage_states = [ "Todo"; "In progress" ];
       session_id = Some "pid:123";
       turn_count = 3;
@@ -4952,12 +5785,44 @@ let test_terminal_console_model_projects_ordered_queue () =
   Alcotest.(check bool) "summary next work" true
     (List.exists (fun line -> line = "Next work: #1 One") model.summary)
 
+let test_terminal_console_model_projects_ordered_queue_attention () =
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "#6";
+            title = Some "Six";
+            state = "failed";
+            skip_reason = Some "Final task failed";
+          };
+          {
+            Runtime_state.issue_identifier = "#7";
+            title = Some "Seven";
+            state = "attention";
+            skip_reason = Some "Needs review";
+          };
+        ];
+    }
+  in
+  let model = Terminal_console_model.of_runtime_state (Runtime_state.empty ~ordered_queue:queue ()) in
+  Alcotest.(check string) "mode" "attention" model.mode;
+  Alcotest.(check (list string)) "queue states" [ "failed"; "attention" ]
+    (List.map (fun (row : Terminal_console_model.task_row) -> row.state) model.queue);
+  let failed = List.nth model.queue 0 in
+  let attention = List.nth model.queue 1 in
+  Alcotest.(check (option string)) "failed detail" (Some "failure reason Final task failed") failed.detail;
+  Alcotest.(check (option string)) "failed error" (Some "Final task failed") failed.error;
+  Alcotest.(check (option string)) "attention detail" (Some "attention reason Needs review") attention.detail;
+  Alcotest.(check (option string)) "attention error" (Some "Needs review") attention.error
+
 let test_terminal_console_model_projects_compozy_progress () =
   let progress =
     {
       Runtime_state.run_id = "compozy:\027[31mrun\027[0m";
       slug = "tui-rewrite";
       current_step = Some "task_02.md";
+      next_step = Some "task_03.md";
       completed = 1;
       failed = 2;
       skipped = 3;
@@ -4978,11 +5843,12 @@ let test_terminal_console_model_projects_compozy_progress () =
   | Some projected ->
       Alcotest.(check string) "run id sanitized" "compozy:run" projected.Terminal_console_model.run_id;
       Alcotest.(check (option string)) "current step" (Some "task_02.md") projected.current_step;
+      Alcotest.(check (option string)) "next step" (Some "task_03.md") projected.next_step;
       Alcotest.(check int) "completed" 1 projected.completed;
       Alcotest.(check int) "failed" 2 projected.failed;
       Alcotest.(check int) "skipped" 3 projected.skipped;
       Alcotest.(check int) "total" 9 projected.total;
-      Alcotest.(check string) "summary" "tui-rewrite: task_02.md (1 completed, 2 failed, 3 skipped, 9 total)"
+      Alcotest.(check string) "summary" "tui-rewrite: task_02.md -> task_03.md (1 completed, 2 failed, 3 skipped, 9 total)"
         projected.summary
   | None -> Alcotest.fail "expected Compozy progress"
 
@@ -5119,6 +5985,7 @@ let terminal_console_compozy_fixture =
     Runtime_state.run_id = "compozy:run";
     slug = "tui-rewrite";
     current_step = Some "task_04.md";
+    next_step = Some "task_05.md";
     completed = 2;
     failed = 1;
     skipped = 3;
@@ -5205,6 +6072,87 @@ let test_terminal_console_tui_ordered_queue_panel_states () =
   check_line_contains "skipped state" lines "SKIPPED #5 Five";
   check_line_contains "skip reason" lines "skip reason: Issue skipped"
 
+let test_terminal_console_tui_ordered_queue_attention_states () =
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "#6";
+            title = Some "Six";
+            state = "failed";
+            skip_reason = Some "Final task failed";
+          };
+          {
+            Runtime_state.issue_identifier = "#7";
+            title = Some "Seven";
+            state = "attention";
+            skip_reason = Some "Needs review";
+          };
+        ];
+    }
+  in
+  let state = Runtime_state.empty ~ordered_queue:queue () in
+  let lines = terminal_console_panel state "Queue" in
+  check_line_contains "failed state" lines "FAILED #6 Six";
+  check_line_contains "failure reason" lines "failure reason: Final task failed";
+  check_line_contains "attention state" lines "ATTENTION #7 Seven";
+  check_line_contains "attention reason" lines "attention reason: Needs review"
+
+let test_terminal_console_tui_terminal_compozy_queue_omits_stale_step_progress () =
+  let progress run_id slug =
+    {
+      terminal_console_compozy_fixture with
+      run_id;
+      slug;
+      current_step = Some "task_01.md";
+      next_step = Some "task_02.md";
+      completed = 0;
+      failed = 0;
+      skipped = 0;
+      total = 6;
+    }
+  in
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "compozy:attention-run";
+            title = Some "Compozy PRD run: attention-run";
+            state = "attention";
+            skip_reason = Some "Reviewer handoff has not created a pull request.";
+          };
+          {
+            Runtime_state.issue_identifier = "compozy:failed-run";
+            title = Some "Compozy PRD run: failed-run";
+            state = "failed";
+            skip_reason = Some "Compozy Task Step task_06.md failed after 2 attempts.";
+          };
+        ];
+    }
+  in
+  let state =
+    Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:queue
+      ~compozy_progresses:
+        [
+          progress "compozy:attention-run" "attention-run";
+          progress "compozy:failed-run" "failed-run";
+        ]
+      ()
+  in
+  let lines = terminal_console_panel state "Queue" in
+  check_wrapped_text_contains "attention row keeps attention reason" lines
+    "ATTENTION compozy:attention-run Compozy PRD run: attention-run";
+  check_wrapped_text_contains "failed row keeps failure reason" lines "FAILED compozy:failed-run Compozy PRD run: failed-run";
+  check_wrapped_text_contains "attention reason retained" lines "attention reason: Reviewer handoff has not created a pull request.";
+  check_wrapped_text_contains "failure reason retained" lines
+    "failure reason: Compozy Task Step task_06.md failed after 2 attempts.";
+  Alcotest.(check bool) "terminal queue omits stale task-step detail" false
+    (contains_substring (String.concat " " lines) "Compozy Task Step: task_01.md -> next task_02.md");
+  Alcotest.(check bool) "terminal queue omits stale progress counters" false
+    (contains_substring (String.concat " " lines) "progress 0/6 completed, 0 failed, 0 skipped")
+
 let test_terminal_console_tui_queue_flags_current_compozy_task_step () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let queue =
@@ -5225,11 +6173,83 @@ let test_terminal_console_tui_queue_flags_current_compozy_task_step () =
       ~compozy_progress:terminal_console_compozy_fixture ()
   in
   let lines = terminal_console_panel state "Queue" in
-  check_line_contains "queue row current step" lines "Current Compozy Task Step: task_04.md";
-  check_line_contains "queue row step progress" lines "progress completed 2, failed 1, skipped 3, total 8";
+  check_wrapped_text_contains "queue row current and next step" lines "Compozy Task Step: task_04.md -> next task_05.md";
+  check_wrapped_text_contains "queue row step progress" lines "progress 2/8 completed, 1 failed, 3 skipped";
   let expanded = Shell.initial_model state |> Shell.apply_key Shell.Space_key in
   let expanded_lines = Shell.render_model expanded.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
-  check_line_contains "expanded current step" expanded_lines "Current Compozy Task Step: task_04.md"
+  check_line_contains "expanded current step" expanded_lines "Current Compozy Task Step: task_04.md";
+  check_line_contains "expanded next step" expanded_lines "Next Compozy Task Step: task_05.md"
+
+let test_terminal_console_tui_maps_compozy_steps_per_run () =
+  let first_issue, first_running =
+    terminal_console_running_row ~identifier:"compozy:first-feature" ~title:"Compozy PRD run: first-feature" "C1"
+  in
+  let second_issue, second_running =
+    terminal_console_running_row ~identifier:"compozy:second-feature" ~title:"Compozy PRD run: second-feature" "C2"
+  in
+  let progress run_id slug current_step next_step completed total =
+    {
+      Runtime_state.run_id;
+      slug;
+      current_step = Some current_step;
+      next_step = Some next_step;
+      completed;
+      failed = 0;
+      skipped = 0;
+      total;
+      lifecycle_state = None;
+      dispatch_state = None;
+      stage_agent = None;
+      pr_readiness = None;
+      reason = None;
+      handoff_status = None;
+    }
+  in
+  let queue =
+    {
+      Runtime_state.entries =
+        [
+          {
+            Runtime_state.issue_identifier = "compozy:first-feature";
+            title = Some "Compozy PRD run: first-feature";
+            state = "running";
+            skip_reason = None;
+          };
+          {
+            Runtime_state.issue_identifier = "compozy:second-feature";
+            title = Some "Compozy PRD run: second-feature";
+            state = "running";
+            skip_reason = None;
+          };
+        ];
+    }
+  in
+  let state =
+    {
+      (Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:queue
+         ~compozy_progresses:
+           [
+             progress "compozy:first-feature" "first-feature" "task_01.md" "task_02.md" 0 2;
+             progress "compozy:second-feature" "second-feature" "task_05.md" "task_06.md" 4 6;
+           ]
+         ())
+      with
+      issues = [ first_issue; second_issue ];
+      running = [ first_running; second_running ];
+    }
+  in
+  let queue_lines = terminal_console_panel state "Queue" in
+  check_wrapped_text_contains "queue first run current and next step" queue_lines
+    "compozy:first-feature Compozy PRD run: first-feature - Compozy Task Step: task_01.md -> next task_02.md";
+  check_wrapped_text_contains "queue second run current and next step" queue_lines
+    "compozy:second-feature Compozy PRD run: second-feature - Compozy Task Step: task_05.md -> next task_06.md";
+  let task_lines = terminal_console_panel state "Tasks" in
+  check_wrapped_text_contains "tasks first run row" task_lines "compozy:first-feature Compozy PRD run: first-feature";
+  check_wrapped_text_contains "tasks first run Compozy detail" task_lines
+    "Compozy Task Step: task_01.md -> next task_02.md";
+  check_wrapped_text_contains "tasks second run row" task_lines "compozy:second-feature Compozy PRD run: second-feature";
+  check_wrapped_text_contains "tasks second run Compozy detail" task_lines
+    "Compozy Task Step: task_05.md -> next task_06.md"
 
 let test_terminal_console_tui_queue_space_expands_selected_stage () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -5881,6 +6901,9 @@ let test_websocket_broadcast_after_state_change () =
                 stage_agent = None;
                 harness_name = None;
                 harness_kind = None;
+                sandbox_enabled = None;
+                sandbox_provider = None;
+                sandbox_reuse_outcome = None;
                 stage_states = [];
                 session_id = Some "pid:2";
                 turn_count = 0;
@@ -6061,6 +7084,9 @@ let test_websocket_context_status_snapshot_and_http_state () =
             stage_agent = Some "engineer";
             harness_name = None;
             harness_kind = None;
+            sandbox_enabled = None;
+            sandbox_provider = None;
+            sandbox_reuse_outcome = None;
             stage_states = [ "Todo" ];
             session_id = Some "pid:1";
             turn_count = 0;
@@ -6108,6 +7134,36 @@ let test_websocket_context_status_snapshot_and_http_state () =
   Alcotest.(check string) "http running context" "warning"
     (json |> member "running" |> to_list |> List.hd |> member "context_status" |> member "state" |> to_string)
 
+let test_server_sandbox_metadata_snapshot_surfaces () =
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      running =
+        [
+          runtime_state_sandbox_row ~sandbox_enabled:true ~sandbox_provider:"docker" ~sandbox_reuse_outcome:"reused" "#1";
+        ];
+    }
+  in
+  let sandbox_row json =
+    let open Yojson.Safe.Util in
+    json |> member "running" |> to_list |> List.hd
+  in
+  let check_row label row =
+    let open Yojson.Safe.Util in
+    Alcotest.(check bool) (label ^ " sandbox enabled") true (row |> member "sandbox_enabled" |> to_bool);
+    Alcotest.(check string) (label ^ " sandbox provider") "docker" (row |> member "sandbox_provider" |> to_string);
+    Alcotest.(check string) (label ^ " sandbox reuse") "reused"
+      (row |> member "sandbox_reuse_outcome" |> to_string)
+  in
+  let http =
+    Server.handle_request (fun () -> state)
+      { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+  in
+  let body = match List.rev (String.split_on_char '\n' http) with body :: _ -> body | [] -> "" in
+  check_row "http" (Yojson.Safe.from_string body |> sandbox_row);
+  with_websocket_client state (fun ~set_state:_ ~live:_ ~client_fd:_ ~initial ->
+      check_row "live" (Yojson.Safe.from_string initial |> sandbox_row))
+
 let test_orchestrator_notifies_each_state_mutation () =
   with_temp_dir "symphony-notify-" (fun root ->
       let config =
@@ -6148,6 +7204,7 @@ let test_orchestrator_notifies_each_state_mutation () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -6202,6 +7259,7 @@ let test_orchestrator_parses_final_output_when_size_was_already_seen () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -6232,6 +7290,9 @@ Goal Usage: {"status":"complete","time_used_seconds":1.5,"tokens_used":24}
                 stage_agent = None;
                 harness_name = None;
                 harness_kind = None;
+                sandbox_enabled = None;
+                sandbox_provider = None;
+                sandbox_reuse_outcome = None;
                 stage_states = [];
                 session_id = Some "pid:test";
                 turn_count = 0;
@@ -6320,6 +7381,7 @@ let test_orchestrator_parses_final_output_before_timeout_retry () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -6349,6 +7411,9 @@ Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
                 stage_agent = None;
                 harness_name = None;
                 harness_kind = None;
+                sandbox_enabled = None;
+                sandbox_provider = None;
+                sandbox_reuse_outcome = None;
                 stage_states = [];
                 session_id = Some "pid:timeout";
                 turn_count = 0;
@@ -6454,6 +7519,7 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -6484,6 +7550,9 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
                     stage_agent = None;
                     harness_name = None;
                     harness_kind = None;
+                    sandbox_enabled = None;
+                    sandbox_provider = None;
+                    sandbox_reuse_outcome = None;
                     stage_states = [];
                     session_id = Some "pid:quiet";
                     turn_count = 0;
@@ -6565,6 +7634,7 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -6580,6 +7650,9 @@ let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
                 stage_agent = None;
                 harness_name = None;
                 harness_kind = None;
+                sandbox_enabled = None;
+                sandbox_provider = None;
+                sandbox_reuse_outcome = None;
                 stage_states = [];
                 session_id = Some "pid:block";
                 turn_count = 0;
@@ -7455,6 +8528,7 @@ let stage_capacity_config root ~global_cap =
       server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
+    sandbox = Config.default_sandbox;
     stage_agents =
       {
         enabled = true;
@@ -7548,6 +8622,7 @@ let test_orchestrator_dispatch_limits () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -7705,6 +8780,9 @@ let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
           stage_agent = Some "engineer";
           harness_name = None;
           harness_kind = None;
+          sandbox_enabled = None;
+          sandbox_provider = None;
+          sandbox_reuse_outcome = None;
           stage_states = [ "Todo"; "In progress" ];
           session_id = Some issue.Issue.id;
           turn_count = 0;
@@ -7777,6 +8855,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
             server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -7902,6 +8981,7 @@ let test_orchestrator_dispatches_ordered_queue_only_in_order () =
       server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -8023,6 +9103,7 @@ let test_orchestrator_pauses_tracker_after_rate_limit () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -8167,6 +9248,7 @@ let test_orchestrator_does_not_dispatch_terminal_issues () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -8229,6 +9311,7 @@ let test_orchestrator_retries_failed_agent () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -8247,6 +9330,58 @@ let test_orchestrator_retries_failed_agent () =
           Alcotest.(check string) "retry issue" "I1" retry.issue_id;
           Alcotest.(check int) "retry attempt" 1 retry.attempt
       | [] -> Alcotest.fail "expected retry row")
+
+let test_orchestrator_retries_failed_sandbox_launch_without_task_branch_corruption () =
+  with_temp_dir "symphony-sandbox-launch-retry-" (fun root ->
+      init_repo root "feature/start";
+      ignore_runtime_home root;
+      with_temp_dir "symphony-fake-docker-" (fun docker_root ->
+          with_fake_docker docker_root ~exec_exit:42 (fun _docker_log ->
+              let config =
+                {
+                  (launch_test_config root ~sandbox:docker_sandbox ~codex_command:"sh -c 'printf should-not-succeed'") with
+                  Config.workspace = { root = Filename.concat root ".symphony/workspaces" };
+                  git = git_policy ();
+                }
+              in
+              let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+              let current_status = ref issue.Issue.state in
+              let statuses = ref [] in
+              let fetch _ = Ok [ { issue with state = !current_status } ] in
+              let set_status _ _ status =
+                current_status := status;
+                statuses := status :: !statuses;
+                Ok ()
+              in
+              let orchestrator =
+                Orchestrator.make ~fetch ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+              in
+              Orchestrator.poll_once orchestrator;
+              let child =
+                match orchestrator.children with [ child ] -> child | _ -> Alcotest.fail "expected running sandbox child"
+              in
+              let workspace_path = child.workspace.path in
+              Alcotest.(check string) "task branch before retry" "symphony/task-1"
+                (run_ok ~cwd:workspace_path "task branch" "git branch --show-current" |> Util.trim);
+              let rec poll_until_finished attempts =
+                Unix.sleepf 0.02;
+                Orchestrator.poll_once orchestrator;
+                let state = Orchestrator.get_state orchestrator in
+                if attempts <= 0 || List.length state.Runtime_state.running = 0 then state
+                else poll_until_finished (attempts - 1)
+              in
+              let state = poll_until_finished 25 in
+              Alcotest.(check int) "no longer running" 0 (List.length state.Runtime_state.running);
+              Alcotest.(check int) "retry queued" 1 (List.length state.retrying);
+              Alcotest.(check (list string)) "status returned to retry state" [ "In progress"; "Todo" ]
+                (List.rev !statuses);
+              Alcotest.(check string) "task branch preserved" "symphony/task-1"
+                (run_ok ~cwd:workspace_path "task branch after retry" "git branch --show-current" |> Util.trim);
+              Alcotest.(check string) "loop-start branch preserved" "feature/start"
+                (run_ok ~cwd:root "loop branch after retry" "git branch --show-current" |> Util.trim);
+              Alcotest.(check bool) "stderr captures sandbox failure" true
+                (contains_substring (Util.read_file (Filename.concat workspace_path "stderr.log"))
+                   "fake docker exec failure"))))
 
 let test_github_child_failure_retry_behavior_unchanged () =
   with_temp_dir "symphony-github-child-retry-regression-" (fun root ->
@@ -8296,6 +9431,7 @@ let test_github_child_failure_retry_behavior_unchanged () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -8397,6 +9533,7 @@ let test_orchestrator_timeout_kills_agent_process_group () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -8464,6 +9601,7 @@ let test_orchestrator_moves_status_to_review_on_success () =
             server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -8533,6 +9671,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -8689,6 +9828,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -8827,6 +9967,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -8916,6 +10057,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
       server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
+    sandbox = Config.default_sandbox;
     stage_agents =
       {
         enabled = true;
@@ -9171,6 +10313,7 @@ let compozy_test_config root compozy_root =
     server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
+    sandbox = Config.default_sandbox;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
@@ -10709,7 +11852,12 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
         (compozy_task_status workspace_compozy_root workspace_task_01);
       Alcotest.(check bool) "first prompt includes first task" true (contains_substring first_prompt "First step sentinel.");
       let first_child = completed_compozy_child first_issue first_workspace in
-      Orchestrator.mark_completed orchestrator first_child;
+      let (), _stdout, transition_stderr =
+        capture_process_output (fun () -> Orchestrator.mark_completed orchestrator first_child)
+      in
+      Alcotest.(check bool) "transition log says starting next task" true
+        (contains_substring transition_stderr "starting" && contains_substring transition_stderr "task_02.md"
+       && contains_substring transition_stderr "from" && contains_substring transition_stderr "task_01.md");
       let first_progress =
         match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
         | Some progress -> progress
@@ -10748,6 +11896,100 @@ let test_compozy_completion_relaunches_next_step_in_same_worktree () =
         final_progress.lifecycle_state;
       Alcotest.(check (option string)) "final readiness follows policy" (Some "disabled")
         final_progress.pr_readiness)
+
+let test_compozy_reap_preserves_relaunched_next_step_child () =
+  with_temp_dir "symphony-compozy-reap-next-child-" (fun root ->
+      init_repo root "feature/start";
+      let compozy_root = Filename.concat (Filename.concat root ".compozy") "tasks" in
+      let prd_dir = Filename.concat compozy_root "reap-feature" in
+      Util.mkdir_p prd_dir;
+      let task_01 = Filename.concat prd_dir "task_01.md" in
+      let task_02 = Filename.concat prd_dir "task_02.md" in
+      write_compozy_task ~title:"First step" ~body:"\n# First\n\nReap first sentinel.\n" task_01;
+      write_compozy_task ~title:"Second step" ~body:"\n# Second\n\nReap second sentinel.\n" task_02;
+      ignore (run_ok ~cwd:root "commit Compozy tasks" "git add .compozy && git commit -q -m compozy-tasks");
+      ignore_runtime_home root;
+      let cleanup_pid pid =
+        try
+          match Unix.waitpid [ Unix.WNOHANG ] pid with
+          | 0, _ ->
+              (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+              ignore (try Unix.waitpid [] pid with Unix.Unix_error _ -> (0, Unix.WEXITED 0))
+          | _ -> ()
+        with Unix.Unix_error (Unix.ECHILD, _, _) -> ()
+      in
+      let pids = ref [] in
+      Fun.protect
+        ~finally:(fun () -> List.iter cleanup_pid !pids)
+        (fun () ->
+          let config = compozy_test_config root compozy_root in
+          let launches = ref [] in
+          let launch ~stage:_ ~config:_ ~(workspace : Workspace.t) ~prompt ~issue =
+            let launch_number = List.length !launches + 1 in
+            let command = if launch_number = 1 then "true" else "sleep 30" in
+            let pid =
+              Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; command |] Unix.stdin Unix.stdout Unix.stderr
+            in
+            pids := pid :: !pids;
+            launches := (issue, workspace, prompt, pid) :: !launches;
+            {
+              Orchestrator.pid = Some pid;
+              session_id = Some (string_of_int launch_number);
+              event = "test-launch";
+              stdout_path = None;
+              stderr_path = None;
+            }
+          in
+          let commit_stage _config _workspace _issue _stage _next_status = Ok () in
+          let orchestrator =
+            Orchestrator.make ~launch ~commit_stage ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+          in
+          Orchestrator.poll_once orchestrator;
+          let first_issue, first_workspace, first_prompt, _first_pid =
+            match List.rev !launches with
+            | [ launch ] -> launch
+            | _ -> Alcotest.fail "expected first Compozy launch"
+          in
+          let workspace_compozy_root = Filename.concat (Filename.concat first_workspace.path ".compozy") "tasks" in
+          let workspace_task_01 =
+            Filename.concat (Filename.concat workspace_compozy_root "reap-feature") "task_01.md"
+          in
+          let workspace_task_02 =
+            Filename.concat (Filename.concat workspace_compozy_root "reap-feature") "task_02.md"
+          in
+          Alcotest.(check string) "first task started" "in_progress"
+            (compozy_task_status workspace_compozy_root workspace_task_01);
+          Alcotest.(check bool) "first prompt includes first task" true
+            (contains_substring first_prompt "Reap first sentinel.");
+          Unix.sleepf 0.1;
+          Orchestrator.reap_children orchestrator;
+          let second_issue, second_workspace, second_prompt, _second_pid =
+            match List.rev !launches with
+            | [ _first; second ] -> second
+            | _ -> Alcotest.fail "expected reap to relaunch next Compozy task"
+          in
+          Alcotest.(check string) "same workspace" first_workspace.path second_workspace.path;
+          Alcotest.(check string) "first task completed" "completed"
+            (compozy_task_status workspace_compozy_root workspace_task_01);
+          Alcotest.(check string) "second task running" "in_progress"
+            (compozy_task_status workspace_compozy_root workspace_task_02);
+          Alcotest.(check bool) "second prompt includes second task" true
+            (contains_substring second_prompt "Reap second sentinel.");
+          Alcotest.(check int) "relaunched process remains tracked" 1 (List.length orchestrator.Orchestrator.children);
+          (match orchestrator.Orchestrator.children with
+          | [ child ] ->
+              Alcotest.(check string) "tracked child is next step" second_issue.Issue.id child.issue_id;
+              Orchestrator.kill_child child
+          | _ -> Alcotest.fail "expected one tracked child after reap");
+          let progress =
+            match (Orchestrator.get_state orchestrator).Runtime_state.compozy_progress with
+            | Some progress -> progress
+            | None -> Alcotest.fail "expected Compozy progress after reap"
+          in
+          Alcotest.(check (option string)) "runtime current step" (Some "task_02.md") progress.current_step;
+          Alcotest.(check (option string)) "runtime next step" None progress.next_step;
+          Alcotest.(check int) "runtime completed count" 1 progress.completed;
+          Alcotest.(check string) "first issue completed" first_issue.Issue.identifier progress.run_id))
 
 let test_compozy_failed_step_retries_then_advances_to_next_step () =
   with_temp_dir "symphony-compozy-retry-advance-" (fun root ->
@@ -10955,8 +12197,13 @@ let test_compozy_failed_final_step_over_limit_records_failed_lifecycle () =
           stderr_path = None;
         }
       in
+      let ordered_queue =
+        match Ordered_queue.parse "failed-final-feature" with
+        | Ok queue -> queue
+        | Error _ -> Alcotest.fail "queue parse failed"
+      in
       let orchestrator =
-        Orchestrator.make ~launch ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
+        Orchestrator.make ~ordered_queue ~launch ~config ~prompt_template:"Compozy {{ issue.identifier }}" ()
       in
       Orchestrator.poll_once orchestrator;
       let issue, workspace =
@@ -10976,6 +12223,14 @@ let test_compozy_failed_final_step_over_limit_records_failed_lifecycle () =
             (option_exists (fun reason -> contains_substring reason "task_01.md") progress.reason);
           Alcotest.(check int) "failed count preserved" 1 progress.failed
       | None -> Alcotest.fail "expected Compozy progress after over-limit failure");
+      (match state.Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "queue records failed run" [ "failed" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          let entry = List.hd queue.entries in
+          Alcotest.(check bool) "queue reason mentions failed step" true
+            (option_exists (fun reason -> contains_substring reason "task_01.md") entry.skip_reason)
+      | None -> Alcotest.fail "expected ordered queue state");
       Alcotest.(check string) "root task remains unchanged" "pending" (compozy_task_status compozy_root task_01))
 
 let test_compozy_finished_run_with_failed_step_stays_failed () =
@@ -12170,6 +13425,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -12369,6 +13625,9 @@ printf '%s\n' 'raw stderr diagnostic' >&2
                   stage_agent = Some "engineer";
                   harness_name = None;
                   harness_kind = None;
+                  sandbox_enabled = None;
+                  sandbox_provider = None;
+                  sandbox_reuse_outcome = None;
                   stage_states = [ "Todo" ];
                   session_id = launched.session_id;
                   turn_count = 0;
@@ -12458,6 +13717,7 @@ let test_orchestrator_commits_stage_before_success_status () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -12612,6 +13872,7 @@ let test_orchestrator_retries_when_success_status_move_fails () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -12689,6 +13950,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
           server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -12793,6 +14055,7 @@ let test_stage_commit_requires_code_changes () =
             server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
         }
       in
@@ -12859,6 +14122,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
             server = Config.default_server;
           pull_request = Config.default_pull_request;
           protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
           stage_agents =
             {
               enabled = true;
@@ -12971,6 +14235,7 @@ let base_orchestrator_config root git =
   server = Config.default_server;
     pull_request = Config.default_pull_request;
     protected_paths = Config.default_protected_paths;
+    sandbox = Config.default_sandbox;
     stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
   }
 
@@ -13484,6 +14749,118 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
       Orchestrator.poll_once orchestrator;
       Alcotest.(check (list string)) "second launch" [ "Backlog"; "Todo" ] (List.rev !launched))
 
+let test_ordered_queue_marks_terminal_candidates_with_specific_states () =
+  with_temp_dir "symphony-orchestrator-queue-terminal-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ~merge_attention_status:"human_attention" ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done"; "failed"; "human_attention" ];
+              project_status_on_dispatch = None;
+            };
+          agent = { base_config.agent with max_concurrent_agents = 3 };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let issues =
+        [
+          Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Done issue" ~state:"Done";
+          Issue.empty ~id:"I2" ~identifier:"#2" ~title:"Failed issue" ~state:"failed";
+          Issue.empty ~id:"I3" ~identifier:"#3" ~title:"Attention issue" ~state:"human_attention";
+        ]
+      in
+      let ordered_queue =
+        match Ordered_queue.parse "#1,#2,#3" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        launched := issue.Issue.identifier :: !launched;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok issues) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "terminal queue does not launch" [] (List.rev !launched);
+      let state = Orchestrator.get_state orchestrator in
+      match state.Runtime_state.ordered_queue with
+      | None -> Alcotest.fail "expected ordered queue state"
+      | Some queue ->
+          Alcotest.(check (list string)) "terminal queue states" [ "completed"; "failed"; "attention" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          Alcotest.(check (list (option string))) "terminal queue reasons"
+            [
+              None;
+              Some "Issue is in a terminal failed state.";
+              Some "Issue is in a human attention state.";
+            ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries);
+          let model = Terminal_console_model.of_runtime_state state in
+          Alcotest.(check string) "terminal queue mode" "attention" model.mode)
+
+let test_ordered_queue_preserves_terminal_attention_states () =
+  with_temp_dir "symphony-orchestrator-queue-legacy-terminal-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker = { base_config.tracker with active_states = [ "Todo" ]; project_status_on_dispatch = None };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [
+              {
+                Runtime_state.issue_identifier = "#1";
+                title = Some "Failed";
+                state = "failed";
+                skip_reason = Some "Final step failed";
+              };
+              {
+                Runtime_state.issue_identifier = "#2";
+                title = Some "Attention";
+                state = "attention";
+                skip_reason = Some "Issue is in a human attention state.";
+              };
+            ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let ordered_queue =
+        match Ordered_queue.parse "#1,#2" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launched;
+      let state = Orchestrator.get_state orchestrator in
+      match state.Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "terminal attention states stay distinct" [ "failed"; "attention" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          Alcotest.(check (list (option string))) "legacy terminal reasons stay attached"
+            [ Some "Final step failed"; Some "Issue is in a human attention state." ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries);
+          let model = Terminal_console_model.of_runtime_state state in
+          Alcotest.(check string) "terminal queue mode" "attention" model.mode
+      | None -> Alcotest.fail "expected ordered queue state")
+
 let test_ordered_queue_revives_persisted_completed_active_entries () =
   with_temp_dir "symphony-orchestrator-queue-revive-" (fun root ->
       let base_config = base_orchestrator_config root (git_policy ()) in
@@ -13522,6 +14899,54 @@ let test_ordered_queue_revives_persisted_completed_active_entries () =
       | Some queue ->
           Alcotest.(check (list string)) "revived state is running" [ "running" ]
             (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries)
+      | None -> Alcotest.fail "expected ordered queue state")
+
+let test_ordered_queue_preserves_persisted_completed_terminal_entries () =
+  with_temp_dir "symphony-orchestrator-queue-preserve-completed-" (fun root ->
+      let base_config = base_orchestrator_config root (git_policy ~merge_attention_status:"human_attention" ()) in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done"; "human_attention" ];
+              project_status_on_dispatch = None;
+            };
+          pull_request = { Config.default_pull_request with enabled = false };
+        }
+      in
+      let persisted =
+        {
+          Runtime_state.entries =
+            [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "completed"; skip_reason = None } ];
+        }
+      in
+      let path = Orchestrator.ordered_queue_state_path config in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path (Runtime_state.ordered_queue_to_yojson persisted |> Yojson.Safe.to_string);
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"human_attention" in
+      let ordered_queue =
+        match Ordered_queue.parse "#1" with Ok queue -> queue | Error _ -> Alcotest.fail "queue parse failed"
+      in
+      let launched = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue:_ =
+        incr launched;
+        { Orchestrator.pid = None; session_id = None; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~ordered_queue ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ())
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check int) "not launched" 0 !launched;
+      match (Orchestrator.get_state orchestrator).Runtime_state.ordered_queue with
+      | Some queue ->
+          Alcotest.(check (list string)) "completed remains completed" [ "completed" ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.state) queue.entries);
+          Alcotest.(check (list (option string))) "completed reason stays empty" [ None ]
+            (List.map (fun (entry : Runtime_state.ordered_queue_entry) -> entry.skip_reason) queue.entries)
       | None -> Alcotest.fail "expected ordered queue state")
 
 let test_ordered_queue_skips_stale_persisted_running_entry () =
@@ -15225,8 +16650,22 @@ let () =
       ("workspace", [ Alcotest.test_case "sanitize and reuse" `Quick test_workspace_safety ]);
       ( "launch",
         [
+          Alcotest.test_case "disabled sandbox builds host launch plan" `Quick
+            test_sandbox_runtime_disabled_builds_host_launch_command;
+          Alcotest.test_case "enabled sandbox builds Docker launch plan" `Quick
+            test_sandbox_runtime_enabled_builds_docker_launch_plan;
+          Alcotest.test_case "sandbox launch plan reports reuse outcomes" `Quick
+            test_sandbox_runtime_reports_reuse_outcomes;
+          Alcotest.test_case "sandbox containers are Agent Worktree-scoped" `Quick
+            test_sandbox_runtime_uses_agent_worktree_scoped_container_names;
           Alcotest.test_case "runs agent in agent worktree" `Quick test_shell_launch_runs_agent_in_agent_worktree;
           Alcotest.test_case "selects PI harness for stage agent" `Quick test_shell_launch_selects_pi_harness_for_stage_agent;
+          Alcotest.test_case "runs sandboxed agent in agent worktree" `Quick
+            test_shell_launch_runs_sandboxed_agent_in_agent_worktree;
+          Alcotest.test_case "sandbox uses selected stage harness" `Quick
+            test_shell_launch_sandbox_uses_selected_stage_harness;
+          Alcotest.test_case "records sandbox launch metadata in running state" `Quick
+            test_orchestrator_running_state_records_sandbox_launch_metadata;
           Alcotest.test_case "selects PI harness before start status update" `Quick
             test_dispatch_selects_pi_harness_before_start_status_update;
         ] );
@@ -15256,6 +16695,8 @@ let () =
         [
           Alcotest.test_case "Runtime Contract examples use Harnesses and logical agents" `Quick
             test_runtime_contract_docs_use_current_harness_examples;
+          Alcotest.test_case "Runtime Contract docs cover sandbox settings" `Quick
+            test_runtime_contract_docs_cover_sandbox_settings;
           Alcotest.test_case "Runtime Contract docs are secret-free" `Quick test_runtime_contract_docs_are_secret_free;
           Alcotest.test_case "Terminal Console docs cover default runtime semantics" `Quick
             test_terminal_console_docs_document_default_runtime_semantics;
@@ -15417,6 +16858,30 @@ let () =
             test_compozy_runtime_readiness_repairs_stale_attention_lifecycle;
           Alcotest.test_case "keeps GitHub runtime readiness gaps" `Quick
             test_github_runtime_readiness_still_reports_github_gaps;
+          Alcotest.test_case "defaults omitted sandbox settings to disabled" `Quick
+            test_config_sandbox_omitted_defaults_disabled_without_gaps;
+          Alcotest.test_case "ignores incomplete sandbox settings when disabled" `Quick
+            test_config_sandbox_disabled_ignores_incomplete_fields;
+          Alcotest.test_case "parses valid Docker sandbox settings" `Quick
+            test_config_sandbox_valid_docker_settings;
+          Alcotest.test_case "reports placeholder Docker sandbox image readiness" `Quick
+            test_config_sandbox_reports_placeholder_image_as_readiness_gap;
+          Alcotest.test_case "reports missing Docker binary readiness" `Quick
+            test_config_sandbox_reports_missing_docker_binary_as_readiness_gap;
+          Alcotest.test_case "reports unreachable Docker daemon readiness" `Quick
+            test_config_sandbox_reports_unreachable_docker_daemon_as_readiness_gap;
+          Alcotest.test_case "reports unusable Docker image readiness" `Quick
+            test_config_sandbox_reports_unusable_image_as_readiness_gap;
+          Alcotest.test_case "reports unhealthy Docker sandbox state readiness" `Quick
+            test_config_sandbox_reports_unhealthy_existing_container_as_readiness_gap;
+          Alcotest.test_case "requires Docker sandbox fields when enabled" `Quick
+            test_config_sandbox_enabled_requires_docker_fields;
+          Alcotest.test_case "reports unsupported sandbox type readiness" `Quick
+            test_config_sandbox_rejects_unsupported_type_as_gap;
+          Alcotest.test_case "reports invalid sandbox bootstrap commands" `Quick
+            test_config_sandbox_rejects_invalid_bootstrap_commands_as_gaps;
+          Alcotest.test_case "blocks runtime policy on sandbox readiness gaps" `Quick
+            test_sandbox_runtime_readiness_and_policy_block_dispatch;
           Alcotest.test_case "normalizes legacy codex app-server command" `Quick test_legacy_codex_app_server_command_normalizes_to_exec;
           Alcotest.test_case "parses agent harnesses" `Quick
             test_config_parses_agent_harnesses_and_legacy_codex_precedence;
@@ -15481,6 +16946,10 @@ let () =
       ( "runtime-state",
         [
           Alcotest.test_case "exposes running issue details" `Quick test_runtime_state_exposes_running_issue_details;
+          Alcotest.test_case "serializes sandbox running metadata" `Quick
+            test_runtime_state_serializes_sandbox_metadata;
+          Alcotest.test_case "nulls sandbox metadata for host running rows" `Quick
+            test_runtime_state_nulls_sandbox_metadata_for_host_rows;
           Alcotest.test_case "exposes tracker kind" `Quick test_runtime_state_exposes_tracker_kind;
           Alcotest.test_case "accepts absent Compozy progress" `Quick
             test_runtime_state_absent_compozy_progress_is_compatible;
@@ -15522,6 +16991,8 @@ let () =
             test_terminal_console_model_projects_readiness_blocked;
           Alcotest.test_case "projects Terminal Console ordered queue rows" `Quick
             test_terminal_console_model_projects_ordered_queue;
+          Alcotest.test_case "projects Terminal Console ordered queue attention rows" `Quick
+            test_terminal_console_model_projects_ordered_queue_attention;
           Alcotest.test_case "projects Terminal Console Compozy progress" `Quick
             test_terminal_console_model_projects_compozy_progress;
           Alcotest.test_case "sanitizes Terminal Console display text" `Quick
@@ -15540,8 +17011,14 @@ let () =
             test_terminal_console_tui_readiness_attention_panel_wraps_remediation;
           Alcotest.test_case "renders Queue panel states" `Quick
             test_terminal_console_tui_ordered_queue_panel_states;
+          Alcotest.test_case "renders Queue panel attention states" `Quick
+            test_terminal_console_tui_ordered_queue_attention_states;
+          Alcotest.test_case "omits stale Compozy step progress for terminal Queue rows" `Quick
+            test_terminal_console_tui_terminal_compozy_queue_omits_stale_step_progress;
           Alcotest.test_case "flags current Compozy Task Step in Queue" `Quick
             test_terminal_console_tui_queue_flags_current_compozy_task_step;
+          Alcotest.test_case "maps Compozy Task Steps per Queue and Tasks row" `Quick
+            test_terminal_console_tui_maps_compozy_steps_per_run;
           Alcotest.test_case "expands Queue stage details with Space" `Quick
             test_terminal_console_tui_queue_space_expands_selected_stage;
           Alcotest.test_case "renders Logs panel background output" `Quick
@@ -15599,6 +17076,8 @@ let () =
             test_websocket_compozy_progress_snapshot_shape;
           Alcotest.test_case "serves context status live snapshot and HTTP state" `Quick
             test_websocket_context_status_snapshot_and_http_state;
+          Alcotest.test_case "serves sandbox metadata in HTTP and live snapshots" `Quick
+            test_server_sandbox_metadata_snapshot_surfaces;
         ] );
       ( "cli",
         [
@@ -15705,6 +17184,10 @@ let () =
           Alcotest.test_case "skips full stage capacity in ordered queue" `Quick
             test_orchestrator_stage_capacity_skips_full_ordered_stage;
           Alcotest.test_case "dispatches ordered queue only in order" `Quick test_orchestrator_dispatches_ordered_queue_only_in_order;
+          Alcotest.test_case "marks terminal ordered queue candidates by state" `Quick
+            test_ordered_queue_marks_terminal_candidates_with_specific_states;
+          Alcotest.test_case "preserves ordered queue terminal attention" `Quick
+            test_ordered_queue_preserves_terminal_attention_states;
           Alcotest.test_case "dispatches minibeads ordered queue only when dispatchable" `Quick
             test_orchestrator_dispatches_minibeads_ordered_queue_only_when_dispatchable;
           Alcotest.test_case "dispatches Compozy bare ordered queue by resolved identity" `Quick
@@ -15727,6 +17210,8 @@ let () =
             test_ordered_queue_keeps_stage_handoffs_pending;
           Alcotest.test_case "revives completed ordered queue entries in active states" `Quick
             test_ordered_queue_revives_persisted_completed_active_entries;
+          Alcotest.test_case "preserves completed ordered queue entries in terminal states" `Quick
+            test_ordered_queue_preserves_persisted_completed_terminal_entries;
           Alcotest.test_case "skips stale active ordered queue entries without candidates" `Quick
             test_ordered_queue_skips_stale_persisted_running_entry;
           Alcotest.test_case "requeues stale active ordered queue entries with dispatchable candidates" `Quick
@@ -15742,6 +17227,8 @@ let () =
             test_orchestrator_minibeads_stub_dispatch_without_github_settings;
           Alcotest.test_case "does not dispatch terminal issues" `Quick test_orchestrator_does_not_dispatch_terminal_issues;
           Alcotest.test_case "retries failed agents" `Quick test_orchestrator_retries_failed_agent;
+          Alcotest.test_case "retries failed sandbox launch without task branch corruption" `Quick
+            test_orchestrator_retries_failed_sandbox_launch_without_task_branch_corruption;
           Alcotest.test_case "keeps GitHub child retry behavior unchanged" `Quick
             test_github_child_failure_retry_behavior_unchanged;
           Alcotest.test_case "timeout kills agent process group" `Quick
@@ -15764,6 +17251,8 @@ let () =
             test_orchestrator_wraps_compozy_task_step_prompt_without_github_prompt_change;
           Alcotest.test_case "relaunches Compozy task steps in one worktree" `Quick
             test_compozy_completion_relaunches_next_step_in_same_worktree;
+          Alcotest.test_case "keeps reaped Compozy next-step process tracked" `Quick
+            test_compozy_reap_preserves_relaunched_next_step_child;
           Alcotest.test_case "hands completed Compozy runs to reviewer before Task Pull Request" `Quick
             test_compozy_final_step_hands_off_to_reviewer_before_task_pr;
           Alcotest.test_case "retries failed Compozy task step then advances" `Quick

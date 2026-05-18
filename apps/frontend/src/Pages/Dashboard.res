@@ -10,6 +10,7 @@ type issueItem = {
   harnessIdentity: string,
   intakeState: string,
   intakeReason: string,
+  sandbox: string,
 }
 
 type queueEntry = {
@@ -270,6 +271,16 @@ let issueCard = (issue: issueItem) =>
         className="mt-3 rounded border border-sky-900/70 bg-sky-950/40 px-3 py-2 text-xs leading-5 text-sky-100"
       >
         <span className="font-medium text-sky-50"> {React.string("Harness")} </span>
+        <span className="ml-2"> {React.string(value)} </span>
+      </div>
+    }}
+    {switch issue.sandbox {
+    | "" => React.null
+    | value =>
+      <div
+        className="mt-3 rounded border border-amber-900/70 bg-amber-950/40 px-3 py-2 text-xs leading-5 text-amber-100"
+      >
+        <span className="font-medium text-amber-50"> {React.string("Sandbox")} </span>
         <span className="ml-2"> {React.string(value)} </span>
       </div>
     }}

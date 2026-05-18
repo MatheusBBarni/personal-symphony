@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: Wire Sandbox Launch Into Orchestrator
 type: backend
 complexity: high
 dependencies:
   - task_01
   - task_02
+
 ---
 
 # Task 03: Wire Sandbox Launch Into Orchestrator
@@ -29,11 +30,11 @@ Integrate sandbox-aware execution at the existing orchestrator launch seam so sa
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Connect orchestrator launch planning to the Docker sandbox runtime helper when sandboxing is enabled.
-- [ ] 3.2 Preserve Agent Worktree-based prompt and log file semantics under sandboxed execution.
-- [ ] 3.3 Preserve host execution behavior for repositories without sandboxing enabled.
-- [ ] 3.4 Ensure launch failures and retries continue to flow through current orchestrator behavior.
-- [ ] 3.5 Add backend tests covering sandboxed and non-sandboxed launch paths.
+- [x] 3.1 Connect orchestrator launch planning to the Docker sandbox runtime helper when sandboxing is enabled.
+- [x] 3.2 Preserve Agent Worktree-based prompt and log file semantics under sandboxed execution.
+- [x] 3.3 Preserve host execution behavior for repositories without sandboxing enabled.
+- [x] 3.4 Ensure launch failures and retries continue to flow through current orchestrator behavior.
+- [x] 3.5 Add backend tests covering sandboxed and non-sandboxed launch paths.
 
 ## Implementation Details
 Reference the TechSpec sections "Data Flow", "Impact Analysis", and "Integration Tests". Do not split quoting, Docker wrapping, and process spawning into separate tasks; the launch seam must remain coherent end-to-end.
@@ -63,13 +64,13 @@ Reference the TechSpec sections "Data Flow", "Impact Analysis", and "Integration
 
 ## Tests
 - Unit tests:
-  - [ ] Sandbox-disabled repositories still build the existing host launch command.
-  - [ ] Sandbox-enabled repositories select the Docker-backed launch plan instead of host execution.
-  - [ ] Prompt path and stdout/stderr paths remain under the **Agent Worktree** for sandboxed runs.
+  - [x] Sandbox-disabled repositories still build the existing host launch command.
+  - [x] Sandbox-enabled repositories select the Docker-backed launch plan instead of host execution.
+  - [x] Prompt path and stdout/stderr paths remain under the **Agent Worktree** for sandboxed runs.
 - Integration tests:
-  - [ ] Sandbox-enabled launch still records selected **Agent Harness** identity and starts from the expected worktree.
-  - [ ] Sandbox launch failure enters existing retry or attention behavior without corrupting Task Branch state.
-  - [ ] Existing non-sandbox orchestrator launch tests continue to pass unchanged.
+  - [x] Sandbox-enabled launch still records selected **Agent Harness** identity and starts from the expected worktree.
+  - [x] Sandbox launch failure enters existing retry or attention behavior without corrupting Task Branch state.
+  - [x] Existing non-sandbox orchestrator launch tests continue to pass unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 
