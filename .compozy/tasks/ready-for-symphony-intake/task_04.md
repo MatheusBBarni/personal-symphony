@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Allow idle startup and enforce ready-status dispatch semantics"
 type: backend
 complexity: high
@@ -7,6 +7,7 @@ dependencies:
   - task_01
   - task_02
   - task_03
+
 ---
 
 # Task 04: Allow idle startup and enforce ready-status dispatch semantics
@@ -32,10 +33,10 @@ Update orchestration startup and dispatch so a Workspace Repository with no read
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Remove "nothing ready" as a readiness-blocking startup condition while preserving structural readiness validation.
-- [ ] 4.2 Enforce tracker admission decisions during first dispatch in the orchestrator poll loop.
-- [ ] 4.3 Apply the same ready-status rule to Ordered Queue admission without letting queue selection bypass tracker eligibility.
-- [ ] 4.4 Extend backend tests for idle startup, queue gating, and preserved post-admission lifecycle semantics.
+- [x] 4.1 Remove "nothing ready" as a readiness-blocking startup condition while preserving structural readiness validation.
+- [x] 4.2 Enforce tracker admission decisions during first dispatch in the orchestrator poll loop.
+- [x] 4.3 Apply the same ready-status rule to Ordered Queue admission without letting queue selection bypass tracker eligibility.
+- [x] 4.4 Extend backend tests for idle startup, queue gating, and preserved post-admission lifecycle semantics.
 
 ## Implementation Details
 Reference the TechSpec "System Architecture", "Impact Analysis", and "Monitoring and Observability" sections, especially the idle-startup decision and queue interaction rules. Keep this task focused on readiness, policy, and dispatch semantics; operator-facing Runtime State explanations and dashboard rendering belong to the next task.
@@ -65,13 +66,13 @@ Reference the TechSpec "System Architecture", "Impact Analysis", and "Monitoring
 
 ## Tests
 - Unit tests:
-  - [ ] Runtime readiness returns no readiness gap when the selected tracker is structurally valid but has zero ready items.
-  - [ ] Ordered Queue validation rejects a queue entry that is visible but not ready for first admission.
-  - [ ] Orchestrator first-admission filtering uses the tracker admission decision instead of broader active-state checks.
+  - [x] Runtime readiness returns no readiness gap when the selected tracker is structurally valid but has zero ready items.
+  - [x] Ordered Queue validation rejects a queue entry that is visible but not ready for first admission.
+  - [x] Orchestrator first-admission filtering uses the tracker admission decision instead of broader active-state checks.
 - Integration tests:
-  - [ ] Startup with valid GitHub or Compozy tracker settings and zero ready items enters Orchestration Idle rather than readiness-only mode.
-  - [ ] A queued item does not dispatch until it satisfies the Symphony-ready Status rule, even when it is otherwise visible in the selected Issue Tracker.
-  - [ ] Already admitted work continues through retry or later stage handling without being ejected by the new first-admission rule.
+  - [x] Startup with valid GitHub or Compozy tracker settings and zero ready items enters Orchestration Idle rather than readiness-only mode.
+  - [x] A queued item does not dispatch until it satisfies the Symphony-ready Status rule, even when it is otherwise visible in the selected Issue Tracker.
+  - [x] Already admitted work continues through retry or later stage handling without being ejected by the new first-admission rule.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -34,6 +34,8 @@ type prd_run = {
   not_runnable_reason : string option;
 }
 
+type ready_summary = { ready_status : string; path : string }
+
 type readiness_gap = { requirement : string; remediation : string }
 
 type frontmatter_update = {
@@ -226,6 +228,99 @@ let parse_task_file ~compozy_root path =
                   | Ok (status, title, task_type, complexity, dependencies, retry_count, last_error) ->
                       Ok { path; file; index; status; title; task_type; complexity; dependencies; retry_count; last_error }))))
 
+let ready_summary_file = "_tasks.md"
+
+let normalize_ready_key key =
+  key |> String.lowercase_ascii
+  |> String.map (function '-' | '_' | '*' | '`' -> ' ' | c -> c)
+  |> Util.trim
+
+let ready_status_key = function
+  | "status" | "ready status" | "readystatus" | "symphony ready status" | "symphonyreadystatus" | "intake status"
+  | "intakestatus" ->
+      true
+  | _ -> false
+
+let strip_markdown_line_prefix line =
+  let line = Util.trim line in
+  let len = String.length line in
+  let line =
+    if len > 0 && line.[0] = '#' then
+      let rec skip index =
+        if index < len && (line.[index] = '#' || line.[index] = ' ') then skip (index + 1) else index
+      in
+      String.sub line (skip 0) (len - skip 0) |> Util.trim
+    else line
+  in
+  match Util.drop_prefix ~prefix:"- " line with
+  | Some rest -> Util.trim rest
+  | None -> (
+      match Util.drop_prefix ~prefix:"* " line with Some rest -> Util.trim rest | None -> line)
+
+let ready_status_from_line line =
+  let line = strip_markdown_line_prefix line in
+  match String.index_opt line ':' with
+  | None -> Ok None
+  | Some index ->
+      let key = String.sub line 0 index |> normalize_ready_key in
+      if not (ready_status_key key) then Ok None
+      else
+        let value = String.sub line (index + 1) (String.length line - index - 1) |> strip_quotes |> Util.trim in
+        if value = "" then Error (Printf.sprintf "empty run-level Symphony-ready Status in %s" ready_summary_file)
+        else Ok (Some value)
+
+let ready_status_from_content content =
+  let rec collect acc = function
+    | [] -> Ok (List.rev acc)
+    | line :: rest -> (
+        match ready_status_from_line line with
+        | Error _ as error -> error
+        | Ok None -> collect acc rest
+        | Ok (Some value) -> collect (value :: acc) rest)
+  in
+  match collect [] (Util.split_lines content) with
+  | Error _ as error -> error
+  | Ok values -> (
+      match List.sort_uniq String.compare values with
+      | [] ->
+          Error
+            (Printf.sprintf
+               "missing run-level Symphony-ready Status in %s; expected frontmatter `status: <value>` or a line like `Status: <value>`"
+               ready_summary_file)
+      | [ value ] -> Ok value
+      | values ->
+          Error
+            (Printf.sprintf "multiple run-level Symphony-ready Status summaries in %s: %s" ready_summary_file
+               (String.concat ", " values)))
+
+let parse_ready_summary ~compozy_root prd_dir =
+  match ensure_inside_root ~compozy_root prd_dir with
+  | Error _ as error -> error
+  | Ok prd_dir ->
+      if not (Sys.is_directory prd_dir) then Error (Printf.sprintf "Compozy PRD path is not a directory: %s" prd_dir)
+      else
+        let path = Filename.concat prd_dir ready_summary_file in
+        if not (Sys.file_exists path) then Error (Printf.sprintf "missing %s at %s" ready_summary_file path)
+        else if Sys.is_directory path then Error (Printf.sprintf "%s is a directory, expected a file: %s" ready_summary_file path)
+        else
+          match ok_or_error (fun () -> Util.read_file path) with
+          | Error msg -> Error (Printf.sprintf "could not read %s: %s" ready_summary_file msg)
+          | Ok content ->
+              let content_result =
+                if starts_with ~prefix:"---" (Util.trim content) then
+                  match split_frontmatter ~file:ready_summary_file content with
+                  | Error _ as error -> error
+                  | Ok (frontmatter, body) -> Ok (frontmatter ^ "\n" ^ body)
+                else Ok content
+              in
+              (match content_result with
+              | Error _ as error -> error
+              | Ok content ->
+                  ready_status_from_content content
+                  |> Result.map (fun ready_status -> { ready_status; path }))
+
+let ready_summary_of_prd_run ~compozy_root (run : prd_run) = parse_ready_summary ~compozy_root run.path
+
 let list_task_paths ~compozy_root prd_dir =
   match ensure_inside_root ~compozy_root prd_dir with
   | Error _ as error -> error
@@ -396,28 +491,7 @@ let readiness_gaps (config : Config.t) =
   else
     match discover_prd_runs ~compozy_root:root with
     | Error error -> [ gap "tracker.compozy.root" error ]
-    | Ok [] ->
-        [
-          gap "tracker.compozy.prdRuns"
-            (Printf.sprintf "Add at least one Compozy PRD-run directory under %s." root);
-        ]
-    | Ok runs ->
-        if List.exists runnable_prd_run runs then []
-        else
-          let reason =
-            runs
-            |> List.filter_map (fun (run : prd_run) ->
-                   Option.map (fun reason -> Printf.sprintf "%s: %s" run.id reason) run.not_runnable_reason)
-            |> function
-            | [] -> ""
-            | reasons -> " First issue: " ^ List.hd reasons
-          in
-          [
-            gap "tracker.compozy.runnablePrdRun"
-              (Printf.sprintf
-                 "Add at least one Compozy PRD-run directory with a pending or in_progress task_NN.md under %s.%s"
-                 root reason);
-          ]
+    | Ok _runs -> []
 
 let issue_of_prd_run (run : prd_run) =
   Issue.empty ~id:run.id ~identifier:run.id ~title:run.title ~state:run.state
@@ -428,7 +502,7 @@ let ensure_trailing_newline content =
 let prompt_section title content =
   Printf.sprintf "## %s\n\n%s" title (ensure_trailing_newline content)
 
-let prompt_optional_file run file title =
+let prompt_optional_file (run : prd_run) file title =
   let path = Filename.concat run.path file in
   if not (Sys.file_exists path) then Ok None
   else
@@ -579,7 +653,7 @@ let update_task_frontmatter ~compozy_root path update =
 let update_status ~compozy_root path status =
   update_task_frontmatter ~compozy_root path { status = Some status; retry_count = None; last_error = None }
 
-let task_step_path run (step : task_step) = Filename.concat run.path step.file
+let task_step_path (run : prd_run) (step : task_step) = Filename.concat run.path step.file
 
 let mark_step_started ~compozy_root run step =
   update_status ~compozy_root (task_step_path run step) "in_progress"

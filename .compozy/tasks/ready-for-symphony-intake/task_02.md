@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Implement GitHub exact-match ready-status admission"
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 02: Implement GitHub exact-match ready-status admission

@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Add ready-status Runtime Settings and tracker admission contract"
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 01: Add ready-status Runtime Settings and tracker admission contract
@@ -28,10 +29,10 @@ Add the shared Runtime Settings field for the Symphony-ready Status and extend t
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add the shared Runtime Settings field for the Symphony-ready Status in backend config parsing and effective runtime configuration.
-- [ ] 1.2 Extend the Issue Tracker contract with a first-admission decision type and adapter-facing function.
-- [ ] 1.3 Thread the ready-status setting through tracker construction without changing unrelated Runtime Contract semantics.
-- [ ] 1.4 Add focused backend tests for config parsing and tracker admission contract behavior.
+- [x] 1.1 Add the shared Runtime Settings field for the Symphony-ready Status in backend config parsing and effective runtime configuration.
+- [x] 1.2 Extend the Issue Tracker contract with a first-admission decision type and adapter-facing function.
+- [x] 1.3 Thread the ready-status setting through tracker construction without changing unrelated Runtime Contract semantics.
+- [x] 1.4 Add focused backend tests for config parsing and tracker admission contract behavior.
 
 ## Implementation Details
 Reference the TechSpec "System Architecture", "Implementation Design", and "Data Models" sections, especially the Runtime Settings and Tracker Admission Decision guidance. Keep this task limited to the shared config and tracker-boundary seam; GitHub exact-match filtering and Compozy `_tasks.md` parsing belong to later tasks.
@@ -61,13 +62,13 @@ Reference the TechSpec "System Architecture", "Implementation Design", and "Data
 
 ## Tests
 - Unit tests:
-  - [ ] Config parsing accepts the ready-status field and preserves existing defaults for unrelated Runtime Settings.
-  - [ ] Missing ready-status configuration resolves to the documented default without mutating user-edited Runtime Contract files.
-  - [ ] Issue Tracker admission decisions can be constructed without changing existing active-state or terminal-state helpers.
+  - [x] Config parsing accepts the ready-status field and preserves existing defaults for unrelated Runtime Settings.
+  - [x] Missing ready-status configuration resolves to the documented default without mutating user-edited Runtime Contract files.
+  - [x] Issue Tracker admission decisions can be constructed without changing existing active-state or terminal-state helpers.
 - Integration tests:
-  - [ ] Effective runtime config exposes one ready-status value to both the GitHub Tracker and Compozy-backed Local Issue Tracker constructors.
-  - [ ] Bootstrap settings defaults remain idempotent and include the documented ready-status behavior without overwriting user-edited Runtime Contract files.
-  - [ ] Existing tracker fetch and normalization tests continue to pass after the contract extension.
+  - [x] Effective runtime config exposes one ready-status value to both the GitHub Tracker and Compozy-backed Local Issue Tracker constructors.
+  - [x] Bootstrap settings defaults remain idempotent and include the documented ready-status behavior without overwriting user-edited Runtime Contract files.
+  - [x] Existing tracker fetch and normalization tests continue to pass after the contract extension.
 - Test coverage target: >=80%
 - All tests must pass
 

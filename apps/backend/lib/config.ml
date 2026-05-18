@@ -11,6 +11,8 @@ type tracker = {
   compozy_max_task_step_retries : int;
   active_states : string list;
   terminal_states : string list;
+  ready_status : string;
+  ready_status_explicit : bool;
   project_status_field : string;
   project_status_on_dispatch : string option;
   project_status_on_success : string option;
@@ -159,6 +161,7 @@ exception Invalid_config of string
 
 let default_active_states = [ "To-Do"; "Todo"; "In Progress" ]
 let default_terminal_states = [ "Done"; "Closed"; "Cancelled"; "Canceled"; "Duplicate" ]
+let default_ready_status = "Ready for Symphony"
 let default_dispatch_status = "In progress"
 let default_review_status = "In review"
 let default_retry_status = "To-Do"
@@ -429,8 +432,14 @@ let from_workflow workflow =
         | Some _ as token -> token
         | None -> Util.getenv_nonempty "GH_TOKEN")
   in
+  let ready_status = Simple_yaml.get_string "ready_status" tracker_raw in
   let active_states =
     match Simple_yaml.get_list "active_states" tracker_raw with [] -> default_active_states | states -> states
+  in
+  let active_states =
+    match ready_status with
+    | Some status when Util.trim status <> "" -> add_string_ci (Util.trim status) active_states
+    | _ -> active_states
   in
   let terminal_states =
     (match Simple_yaml.get_list "terminal_states" tracker_raw with [] -> default_terminal_states | states -> states)
@@ -470,6 +479,8 @@ let from_workflow workflow =
         compozy_max_task_step_retries = default_compozy_max_task_step_retries;
         active_states;
         terminal_states;
+        ready_status = Option.value ready_status ~default:default_ready_status;
+        ready_status_explicit = Option.is_some ready_status;
         project_status_field = Option.value (Simple_yaml.get_string "project_status_field" tracker_raw) ~default:"Status";
         project_status_on_dispatch =
           Some (Option.value (Simple_yaml.get_string "project_status_on_dispatch" tracker_raw) ~default:default_dispatch_status);
@@ -1466,6 +1477,22 @@ let from_settings_file ~workspace_root path =
     json_string_list "terminalStates" project_raw ~default:default_terminal_states
     |> add_string_ci merge_attention_status
   in
+  let ready_status_member = member "readyStatus" project_raw in
+  let ready_status_explicit =
+    match ready_status_member with `String _ | `Int _ -> true | _ -> false
+  in
+  let ready_status =
+    match ready_status_member with
+    | `String status -> status
+    | `Int status -> string_of_int status
+    | _ -> default_ready_status
+  in
+  let active_states =
+    let states = json_string_list "activeStates" project_raw ~default:default_active_states in
+    if kind = "github" && ready_status_explicit && Util.trim ready_status <> "" then
+      add_string_ci (Util.trim ready_status) states
+    else states
+  in
   let workspace_root_value =
     json_string "root" workspace_raw ~default:".symphony/workspaces" |> expand_path ~base_dir:workspace_root
   in
@@ -1506,8 +1533,10 @@ let from_settings_file ~workspace_root path =
         compozy_max_task_step_retries =
           positive "tracker.compozy.maxTaskStepRetries"
             (json_int "maxTaskStepRetries" compozy_raw ~default:default_compozy_max_task_step_retries);
-        active_states = json_string_list "activeStates" project_raw ~default:default_active_states;
+        active_states;
         terminal_states;
+        ready_status = Util.trim ready_status;
+        ready_status_explicit;
         project_status_field = json_string "statusField" project_raw ~default:"Status";
         project_status_on_dispatch =
           Some (Option.value (json_optional_string "startStatus" project_raw) ~default:default_dispatch_status);
@@ -2066,6 +2095,8 @@ let readiness_gaps config =
     add "project.activeStates" "Add at least one active project state in .symphony/settings.json.";
   if config.tracker.terminal_states = [] then
     add "project.terminalStates" "Add at least one terminal project state in .symphony/settings.json.";
+  if Util.trim config.tracker.ready_status = "" then
+    add "project.readyStatus" "Set project.readyStatus to the Symphony-ready Status for first admission.";
   if config.pull_request.enabled && Util.trim config.pull_request.base_branch = "" then
     add "pullRequest.baseBranch" "Set pullRequest.baseBranch in .symphony/settings.json when pullRequest.enabled is true.";
   if

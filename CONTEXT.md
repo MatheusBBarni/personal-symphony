@@ -85,7 +85,7 @@ The configured source of Workspace Repository issue records that Personal Sympho
 _Avoid_: task database, work list
 
 **Symphony-ready Status**:
-The tracker-owned status value that makes one Workspace Repository work item eligible for first admission into orchestration.
+The tracker-owned status value that makes one Workspace Repository work item eligible for first admission into orchestration when `project.readyStatus` is present in Runtime Settings. Runtime Contracts without an explicit `project.readyStatus` preserve legacy active-state first admission.
 _Avoid_: queue state, in-progress status, label-only marker
 
 **GitHub Tracker**:
@@ -393,9 +393,11 @@ _Avoid_: reinitialize, reset
 - A sandbox-enabled **Workspace Repository** must block dispatch with **Readiness Gaps** when the Docker Sandbox is unavailable, unsupported, or missing required settings.
 - A sandbox-enabled dispatch uses an Agent Worktree-scoped Docker container so concurrent Agent Worktrees do not remove or recreate one another's Sandbox container.
 - The **GitHub Tracker** remains the default Issue Tracker.
-- A **Symphony-ready Status** controls first admission into orchestration; it does not replace queue ordering or post-admission lifecycle behavior.
+- An explicit **Symphony-ready Status** controls first admission into orchestration; it does not replace queue ordering or post-admission lifecycle behavior.
+- A **Runtime Contract** without explicit `project.readyStatus` preserves legacy active-state first admission for compatibility.
 - A **Local Issue Tracker** stores issue records in **Local Issue Files** owned by the Workspace Repository.
 - A Compozy-backed **Local Issue Tracker** treats one **Compozy PRD Run** as the issue-level work item and the contained **Compozy Task Steps** as ordered progress within that work item.
+- A Compozy-backed **Local Issue Tracker** reads `_tasks.md` run-level **Symphony-ready Status** when it is present, while legacy task-list-only `_tasks.md` files preserve existing runnable-run first admission.
 - A **Compozy PRD Run Lifecycle** belongs to the **Compozy PRD Run**, not to an individual **Compozy Task Step**.
 - **Compozy Task Step** progress remains the source for current step and completed, failed, skipped, and total counts.
 - **Compozy PR Readiness** is separate from **Compozy Task Step** progress; failed, skipped, blocked, or terminal task-step progress does not by itself make a **Batch Pull Request** ready.

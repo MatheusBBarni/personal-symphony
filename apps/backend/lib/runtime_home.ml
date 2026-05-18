@@ -26,6 +26,7 @@ let settings_json =
   },
   "project": {
     "statusField": "Status",
+    "readyStatus": "Ready for Symphony",
     "activeStates": ["Backlog", "Todo", "To-Do", "In progress", "In Progress", "In review"],
     "terminalStates": ["Done", "Closed", "Cancelled"],
     "startStatus": "In progress",

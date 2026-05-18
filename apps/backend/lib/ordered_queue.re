@@ -265,7 +265,22 @@ let validation_gaps = (tracker: Issue_tracker.t, queue) =>
              })
            | [] =>
              switch (result.issue) {
-             | Some(issue) => issue_gap(issue)
+             | Some(issue) =>
+               if (tracker.is_terminal(issue.Issue.state)) {
+                 issue_gap(issue);
+               } else {
+                 let decision = tracker.first_admission(issue);
+                 if (decision.eligible) {
+                   None;
+                 } else {
+                   Some({
+                     requirement: "orderedQueue." ++ queue_identifier,
+                     remediation:
+                       "Issue does not satisfy the Symphony-ready Status for first admission. "
+                       ++ decision.reason,
+                   });
+                 };
+               }
              | None =>
                Some({
                  requirement: "orderedQueue." ++ queue_identifier,
