@@ -92,6 +92,13 @@ type orderedQueueEntry = {
 
 type orderedQueue = {entries: array<orderedQueueEntry>}
 
+type intakeEvaluation = {
+  issue_identifier: string,
+  eligible: bool,
+  state: option<string>,
+  reason: option<string>,
+}
+
 type compozyProgress = {
   run_id: string,
   slug: string,
@@ -126,6 +133,9 @@ type runningIssue = {
   context_status: option<contextStatus>,
   harness_name: option<string>,
   harness_kind: option<string>,
+  sandbox_enabled: option<bool>,
+  sandbox_provider: option<string>,
+  sandbox_reuse_outcome: option<string>,
 }
 
 type runtimeState = {
@@ -143,6 +153,7 @@ type runtimeState = {
   issue_errors: array<blockedTaskError>,
   status_order: array<string>,
   ordered_queue: option<orderedQueue>,
+  intake_evaluations: array<intakeEvaluation>,
   compozy_progress: option<compozyProgress>,
 }
 
@@ -155,6 +166,7 @@ type runtimeState = {
   "harnessIdentityText"
 @val external goalUsageText: option<goalUsage> => string = "goalUsageText"
 @val external contextStatusText: option<contextStatus> => string = "contextStatusText"
+@send external toLowerCase: string => string = "toLowerCase"
 
 let readinessText = state =>
   if Array.length(arrayOrEmpty(state.readiness_gaps)) > 0 {
@@ -223,6 +235,24 @@ let harnessIdentityForIssue = (state, issueId) => {
   }
 }
 
+let sandboxForIssue = (state, issueId) => {
+  switch arrayOrEmpty(state.running)->Array.find(issue => issue.issue_id == issueId) {
+  | Some(issue) =>
+    switch issue.sandbox_enabled {
+    | Some(true) =>
+      let provider = stringOrFallback(issue.sandbox_provider, "sandbox")
+      let reuseOutcome = stringOrEmpty(issue.sandbox_reuse_outcome)
+      if reuseOutcome == "" {
+        provider
+      } else {
+        provider ++ " " ++ reuseOutcome
+      }
+    | Some(false) | None => ""
+    }
+  | None => ""
+  }
+}
+
 let orderedQueueEntries = state =>
   switch state.ordered_queue {
   | Some(queue) =>
@@ -233,6 +263,37 @@ let orderedQueueEntries = state =>
       skipReason: stringOrEmpty(entry.skip_reason),
     })
   | None => []
+  }
+
+let intakeEvaluationForIssue = (state, issueIdentifier) =>
+  arrayOrEmpty(state.intake_evaluations)->Array.find(
+    evaluation => evaluation.issue_identifier == issueIdentifier,
+  )
+
+let intakeStateLabel = (evaluation: option<intakeEvaluation>) =>
+  switch evaluation {
+  | None => ""
+  | Some(evaluation) =>
+    let fallback = if evaluation.eligible {
+      "ready"
+    } else {
+      "not_ready"
+    }
+    switch stringOrFallback(evaluation.state, fallback)->toLowerCase {
+    | "ready" => "Ready for intake"
+    | "queue_blocked" => "Queue blocked"
+    | "parse_blocked" => "Parse blocked"
+    | "admitted" => "Already admitted"
+    | "not_ready" => "Not ready"
+    | _ when evaluation.eligible => "Ready for intake"
+    | _ => "Not ready"
+    }
+  }
+
+let intakeReasonText = (evaluation: option<intakeEvaluation>) =>
+  switch evaluation {
+  | None => ""
+  | Some(evaluation) => stringOrEmpty(evaluation.reason)
   }
 
 let compozyProgressForDashboard = state =>
@@ -270,6 +331,7 @@ let snapshotFromState = state => {
   orderedQueue: orderedQueueEntries(state),
   compozyProgress: compozyProgressForDashboard(state),
   issues: arrayOrEmpty(state.issues)->Array.map(issue => {
+    let intakeEvaluation = intakeEvaluationForIssue(state, issue.issue_identifier)
     {
       Dashboard.identifier: issue.issue_identifier,
       title: issue.title,
@@ -280,6 +342,9 @@ let snapshotFromState = state => {
       goalUsage: goalUsageForIssue(state, issue.issue_id),
       contextStatus: contextStatusForIssue(state, issue.issue_id),
       harnessIdentity: harnessIdentityForIssue(state, issue.issue_id),
+      intakeState: intakeStateLabel(intakeEvaluation),
+      intakeReason: intakeReasonText(intakeEvaluation),
+      sandbox: sandboxForIssue(state, issue.issue_id),
     }
   }),
 }

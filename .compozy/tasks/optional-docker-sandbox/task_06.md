@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Update Runtime Contract Defaults, Glossary, And Docs
 type: docs
 complexity: medium
@@ -30,11 +30,11 @@ Update bootstrap defaults, glossary entries, and operator-facing documentation s
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Update embedded bootstrap `settings.json` examples with the approved sandbox fields.
-- [ ] 6.2 Update glossary or domain language in `CONTEXT.md` if sandbox becomes a stable runtime term.
-- [ ] 6.3 Update README or ADR references that explain Runtime Settings and runtime behavior.
-- [ ] 6.4 Extend docs/bootstrap assertions to cover the new runtime contract examples.
-- [ ] 6.5 Verify docs remain secret-free and consistent with implemented behavior.
+- [x] 6.1 Update embedded bootstrap `settings.json` examples with the approved sandbox fields.
+- [x] 6.2 Update glossary or domain language in `CONTEXT.md` if sandbox becomes a stable runtime term.
+- [x] 6.3 Update README or ADR references that explain Runtime Settings and runtime behavior.
+- [x] 6.4 Extend docs/bootstrap assertions to cover the new runtime contract examples.
+- [x] 6.5 Verify docs remain secret-free and consistent with implemented behavior.
 
 ## Implementation Details
 Reference the TechSpec sections "High-Level Technical Constraints", "Impact Analysis", and "Architecture Decision Records". This task must preserve the project’s idempotent bootstrap behavior and glossary discipline.
@@ -65,13 +65,13 @@ Reference the TechSpec sections "High-Level Technical Constraints", "Impact Anal
 
 ## Tests
 - Unit tests:
-  - [ ] Bootstrap example generation includes the approved sandbox settings shape without secrets.
-  - [ ] Existing bootstrap idempotency behavior remains unchanged for user-edited files.
-  - [ ] Docs assertions validate the sandbox-enabled Runtime Contract examples.
+  - [x] Bootstrap example generation includes the approved sandbox settings shape without secrets.
+  - [x] Existing bootstrap idempotency behavior remains unchanged for user-edited files.
+  - [x] Docs assertions validate the sandbox-enabled Runtime Contract examples.
 - Integration tests:
-  - [ ] Runtime home bootstrap produces the expected sandbox-capable `settings.json` example for a new repository.
-  - [ ] README and glossary updates remain consistent with the implemented runtime contract semantics.
-  - [ ] Existing docs/runtime-home test suites still pass after sandbox documentation updates.
+  - [x] Runtime home bootstrap produces the expected sandbox-capable `settings.json` example for a new repository.
+  - [x] README and glossary updates remain consistent with the implemented runtime contract semantics.
+  - [x] Existing docs/runtime-home test suites still pass after sandbox documentation updates.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -318,6 +318,7 @@ let status_is_active ~active_states status =
 
 let status_is_visible ~config status =
   status_is_active ~active_states:config.Config.active_states status
+  || (config.ready_status_explicit && Util.trim status = Util.trim config.ready_status)
   || List.exists (string_equal_ci status) config.terminal_states
 
 let status_is_terminal ~config status =

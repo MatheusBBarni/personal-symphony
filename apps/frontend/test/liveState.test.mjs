@@ -61,6 +61,14 @@ sockets[0].onmessage({
         description: "Dashboard card fixture",
       },
     ],
+    intake_evaluations: [
+      {
+        issue_identifier: "#1",
+        eligible: true,
+        state: "ready",
+        reason: "Tracker state matches configured Symphony-ready Status.",
+      },
+    ],
     running: [
       {
         issue_id: "I1",
@@ -70,6 +78,9 @@ sockets[0].onmessage({
         description: "Dashboard card fixture",
         harness_name: "engineer",
         harness_kind: "claude",
+        sandbox_enabled: true,
+        sandbox_provider: "docker",
+        sandbox_reuse_outcome: "reused",
         context_status: {
           state: "succeeded",
           summary: "Agent Context Snapshot generated.",
@@ -113,6 +124,10 @@ assert.equal(snapshots[0].usage_totals.total_tokens, 42);
 assert.equal(snapshots[0].running[0].context_status.state, "succeeded");
 assert.equal(snapshots[0].running[0].harness_name, "engineer");
 assert.equal(snapshots[0].running[0].harness_kind, "claude");
+assert.equal(snapshots[0].intake_evaluations[0].state, "ready");
+assert.equal(snapshots[0].running[0].sandbox_enabled, true);
+assert.equal(snapshots[0].running[0].sandbox_provider, "docker");
+assert.equal(snapshots[0].running[0].sandbox_reuse_outcome, "reused");
 assert.equal(snapshots[0].retrying[0].context_status.state, "timed_out");
 assert.equal(snapshots[0].compozy_progress.current_step, "task_02.md");
 assert.equal(snapshots[0].compozy_progress.completed, 1);
@@ -130,6 +145,9 @@ const dashboardSnapshot = snapshotFromState(snapshots[0]);
 assert.equal(dashboardSnapshot.trackerKind, "compozy_tasks");
 assert.equal(dashboardSnapshot.tokens, "42");
 assert.equal(dashboardSnapshot.issues[0].harnessIdentity, "engineer (claude)");
+assert.equal(dashboardSnapshot.issues[0].intakeState, "Ready for intake");
+assert.equal(dashboardSnapshot.issues[0].intakeReason, "Tracker state matches configured Symphony-ready Status.");
+assert.equal(dashboardSnapshot.issues[0].sandbox, "docker reused");
 assert.equal(dashboardSnapshot.compozyProgress.runId, "compozy:compozy-tasks-run-integration");
 assert.equal(dashboardSnapshot.compozyProgress.currentStep, "task_02.md");
 assert.equal(dashboardSnapshot.compozyProgress.completed, "1");
@@ -155,12 +173,17 @@ assert.match(lifecycleMarkup, /Dispatch state/);
 assert.match(lifecycleMarkup, /Done/);
 assert.match(lifecycleMarkup, /Stage agent/);
 assert.match(lifecycleMarkup, /engineer/);
+assert.match(lifecycleMarkup, /Sandbox/);
+assert.match(lifecycleMarkup, /docker reused/);
 assert.match(lifecycleMarkup, /PR readiness/);
 assert.match(lifecycleMarkup, /handoff_failed/);
 assert.match(lifecycleMarkup, /Handoff status/);
 assert.match(lifecycleMarkup, /handoff_failed/);
 assert.match(lifecycleMarkup, /Reason/);
 assert.match(lifecycleMarkup, /Batch Pull Request handoff failed\./);
+assert.match(lifecycleMarkup, /Intake/);
+assert.match(lifecycleMarkup, /Ready for intake/);
+assert.match(lifecycleMarkup, /Tracker state matches configured Symphony-ready Status\./);
 assert.match(lifecycleMarkup, /Current step/);
 assert.match(lifecycleMarkup, /task_02\.md/);
 assert.match(lifecycleMarkup, /Completed/);
@@ -297,6 +320,14 @@ const compozyDashboardSnapshot = snapshotFromState({
       description: "Run task files as one PRD run.",
     },
   ],
+  intake_evaluations: [
+    {
+      issue_identifier: "compozy:compozy-tasks-run-integration",
+      eligible: false,
+      state: "parse_blocked",
+      reason: "Ready-status parse failed for _tasks.md.",
+    },
+  ],
   running: [],
   retrying: [],
   issue_errors: [],
@@ -323,6 +354,8 @@ assert.equal(compozyDashboardSnapshot.compozyProgress.stageAgent, "");
 assert.equal(compozyDashboardSnapshot.compozyProgress.prReadiness, "");
 assert.equal(compozyDashboardSnapshot.compozyProgress.reason, "");
 assert.equal(compozyDashboardSnapshot.compozyProgress.handoffStatus, "");
+assert.equal(compozyDashboardSnapshot.issues[0].intakeState, "Parse blocked");
+assert.equal(compozyDashboardSnapshot.issues[0].intakeReason, "Ready-status parse failed for _tasks.md.");
 
 const compozyMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: compozyDashboardSnapshot, error: undefined }),
@@ -337,6 +370,8 @@ assert.match(compozyMarkup, /Skipped/);
 assert.match(compozyMarkup, /Total/);
 assert.match(compozyMarkup, /1 tracked PRD runs/);
 assert.match(compozyMarkup, /work item states/);
+assert.match(compozyMarkup, /Parse blocked/);
+assert.match(compozyMarkup, /Ready-status parse failed for _tasks\.md\./);
 assert.doesNotMatch(compozyMarkup, /Lifecycle/);
 assert.doesNotMatch(compozyMarkup, /Compozy PRD Run lifecycle/);
 assert.doesNotMatch(compozyMarkup, /Dispatch state/);
@@ -377,6 +412,20 @@ const richDashboardSnapshot = snapshotFromState({
       },
     ],
   },
+  intake_evaluations: [
+    {
+      issue_identifier: "#13",
+      eligible: false,
+      state: "queue_blocked",
+      reason: "Ordered Queue entry is waiting for first-admission eligibility.",
+    },
+    {
+      issue_identifier: "#15",
+      eligible: true,
+      state: "admitted",
+      reason: "Work item was already admitted; lifecycle state now controls execution.",
+    },
+  ],
   issues: [
     {
       issue_id: "I-run",
@@ -483,11 +532,17 @@ assert.equal(richDashboardSnapshot.issues[1].harnessIdentity, "reviewer");
 assert.match(richDashboardSnapshot.issues[1].description, /\.\.\.$/);
 assert.equal(richDashboardSnapshot.issues[2].harnessIdentity, "pi");
 assert.equal(richDashboardSnapshot.issues[3].error, "human action required");
+assert.equal(richDashboardSnapshot.issues[3].intakeState, "Queue blocked");
+assert.equal(
+  richDashboardSnapshot.issues[3].intakeReason,
+  "Ordered Queue entry is waiting for first-admission eligibility.",
+);
 assert.equal(richDashboardSnapshot.issues[3].goalUsage, "status blocked | tokens 8");
 assert.equal(richDashboardSnapshot.issues[4].error, "will retry");
 assert.equal(richDashboardSnapshot.issues[4].goalUsage, "time 3s");
 assert.equal(richDashboardSnapshot.issues[4].contextStatus, "timed out: Context Command timed out");
 assert.equal(richDashboardSnapshot.issues[5].error, "");
+assert.equal(richDashboardSnapshot.issues[5].intakeState, "Already admitted");
 
 const richMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: richDashboardSnapshot, error: "live socket warning" }),
@@ -510,6 +565,8 @@ assert.match(richMarkup, /timed out: Context Command timed out/);
 assert.match(richMarkup, /Harness/);
 assert.match(richMarkup, /planner \(codex\)/);
 assert.match(richMarkup, /human action required/);
+assert.match(richMarkup, /Queue blocked/);
+assert.match(richMarkup, /Already admitted/);
 assert.match(richMarkup, /6 tracked issues/);
 assert.match(richMarkup, /Tracker github/);
 
@@ -529,6 +586,20 @@ const emptyTrackerMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: emptyTrackerSnapshot, error: undefined }),
 );
 assert.match(emptyTrackerMarkup, /No tracked issues were returned by the latest snapshot\./);
+
+const legacyIssueSnapshot = snapshotFromState({
+  tracker_kind: "github",
+  counts: { running: 0, retrying: 0 },
+  usage_totals: { total_tokens: 0 },
+  generated_at: "2026-05-04T00:04:30Z",
+  status_order: ["Todo"],
+  issues: [{ issue_id: "I-legacy", issue_identifier: "#99", title: "Legacy issue", state: "Todo" }],
+  running: [],
+  retrying: [],
+  issue_errors: [],
+});
+assert.equal(legacyIssueSnapshot.issues[0].intakeState, "");
+assert.equal(legacyIssueSnapshot.issues[0].intakeReason, "");
 
 const loadingMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: undefined, error: "backend unavailable" }),
@@ -550,6 +621,8 @@ assert.equal(snapshots[1].compozy_progress, undefined);
 assert.equal(snapshotFromState(snapshots[1]).compozyProgress, undefined);
 assert.equal(snapshots[1].running[0].context_status, undefined);
 assert.equal(snapshots[1].running[0].harness_name, undefined);
+assert.equal(snapshotFromState(snapshots[1]).issues.length, 0);
+assert.equal(snapshots[1].running[0].sandbox_enabled, undefined);
 
 sockets[0].onclose();
 assert.equal(errors.at(-1), "Live dashboard disconnected. Reconnecting...");

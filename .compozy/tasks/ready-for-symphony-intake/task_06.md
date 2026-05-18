@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Update docs and ADR-aligned runtime semantics"
 type: docs
 complexity: medium
 dependencies:
   - task_04
   - task_05
+
 ---
 
 # Task 06: Update docs and ADR-aligned runtime semantics

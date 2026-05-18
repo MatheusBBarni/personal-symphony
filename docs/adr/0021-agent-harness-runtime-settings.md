@@ -28,6 +28,8 @@ Stage Agent mappings select logical agents with `stageAgents.stages[].agent`. St
 
 Readiness validation uses enabled Stage Agent mappings resolved through logical agents as the dispatch boundary for Agent Harness launch requirements. Required Agent Harness fields and launch environment checks are validated for selected Agent Harnesses; unused Agent Harness definitions do not block dispatch solely because their launch path is unavailable.
 
+The Optional Docker Sandbox remains separate from Agent Harness selection. Runtime Settings may define a top-level `sandbox` block that defaults to disabled. When `sandbox.enabled` is `true`, `sandbox.type` must be `docker`, required sandbox fields and live Docker availability become dispatch-blocking readiness inputs, and Symphony launches the selected Agent Harness through an Agent Worktree-scoped Sandbox container instead of redefining the Harness kind.
+
 The first Claude Harness uses Claude Code non-interactive CLI execution with `stream-json` output:
 
 ```sh
@@ -75,5 +77,7 @@ PI, Claude, and Cursor can be selected explicitly without pretending to be `code
 Stage mappings keep one responsibility: route statuses to logical agents. Logical agents keep one responsibility: select Harnesses and role-level execution overrides. Harnesses keep one responsibility: define provider execution, defaults, and loop capability.
 
 Runtime Settings parsing, readiness validation, launch command rendering, timeout handling, and Runtime State naming need implementation review for Codex-specific assumptions.
+
+Sandbox parsing, readiness validation, and Runtime State metadata are additional Runtime Contract concerns, but Sandbox must not become an Agent Harness kind or a stage-level routing concept.
 
 The Runtime Contract changes, so Bootstrap must preserve existing user-edited Runtime Settings and create new defaults only when files are missing.

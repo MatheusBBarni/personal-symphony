@@ -26,6 +26,7 @@ let settings_json =
   },
   "project": {
     "statusField": "Status",
+    "readyStatus": "Ready for Symphony",
     "activeStates": ["Backlog", "Todo", "To-Do", "In progress", "In Progress", "In review"],
     "terminalStates": ["Done", "Closed", "Cancelled"],
     "startStatus": "In progress",
@@ -38,6 +39,16 @@ let settings_json =
   },
   "workspace": {
     "root": ".symphony/workspaces"
+  },
+  "sandbox": {
+    "enabled": false,
+    "type": "docker",
+    "image": "ghcr.io/your-org/symphony-agent:latest",
+    "bootstrapCommands": [],
+    "persistent": true,
+    "networkEnabled": false,
+    "cpuLimit": 2,
+    "memoryMb": 4096
   },
   "harnesses": {
     "codex": {

@@ -176,11 +176,12 @@ let is_state state (row : Projection.task_row) = String.lowercase_ascii row.stat
 let state_rank state =
   match String.lowercase_ascii state with
   | "attention" -> 0
-  | "retrying" -> 1
-  | "running" -> 2
-  | "pending" -> 3
-  | "completed" -> 4
-  | "skipped" -> 5
+  | "failed" -> 1
+  | "retrying" -> 2
+  | "running" -> 3
+  | "pending" -> 4
+  | "completed" -> 5
+  | "skipped" -> 6
   | _ -> 6
 
 let ordered_rows rows =
@@ -340,6 +341,7 @@ let state_token state =
   | "running" -> "RUNNING"
   | "retrying" -> "RETRYING"
   | "attention" -> "ATTENTION"
+  | "failed" -> "FAILED"
   | "readiness_blocked" -> "READINESS BLOCKED"
   | "pending" -> "PENDING"
   | "completed" -> "COMPLETED"
@@ -425,6 +427,14 @@ let compozy_progress_for_row (snapshot : Projection.t) row =
       | Some progress when compozy_row_matches progress row -> Some progress
       | _ -> None)
 
+let queue_row_has_active_compozy_step row =
+  match String.lowercase_ascii row.Projection.state with
+  | "pending" | "running" | "retrying" -> true
+  | _ -> false
+
+let compozy_progress_for_active_queue_row snapshot row =
+  if queue_row_has_active_compozy_step row then compozy_progress_for_row snapshot row else None
+
 let compozy_task_step_summary (progress : Projection.compozy_progress) =
   let step = option_value ~default:"none" progress.current_step in
   let next = option_value ~default:"none" progress.next_step in
@@ -462,6 +472,8 @@ let queue_row_line ?(next = false) ?compozy_detail (row : Projection.task_row) =
   let detail =
     match row.error with
     | Some reason when String.lowercase_ascii row.state = "skipped" -> Some ("skip reason: " ^ reason)
+    | Some reason when String.lowercase_ascii row.state = "failed" -> Some ("failure reason: " ^ reason)
+    | Some reason when String.lowercase_ascii row.state = "attention" -> Some ("attention reason: " ^ reason)
     | _ -> row.detail
   in
   let detail =
@@ -591,7 +603,7 @@ let matching_active_task snapshot (row : Projection.task_row) =
 let queue_expansion_lines snapshot (row : Projection.task_row) =
   let task_line = Printf.sprintf "    Task: %s %s" row.id row.title in
   let compozy_lines =
-    match compozy_progress_for_row snapshot row with
+    match compozy_progress_for_active_queue_row snapshot row with
     | Some progress -> compozy_task_step_lines progress
     | None -> []
   in
@@ -608,7 +620,7 @@ let queue_expansion_lines snapshot (row : Projection.task_row) =
   | None -> [ task_line; "    Stage: " ^ state_token row.state ] @ compozy_lines
 
 let queue_row_lines snapshot interaction index row =
-  let compozy_detail = compozy_detail_for_row snapshot row in
+  let compozy_detail = Option.map compozy_task_step_summary (compozy_progress_for_active_queue_row snapshot row) in
   let line =
     queue_row_line ?compozy_detail row |> fun line -> row_marker interaction.selected_rows.queue index ^ line
   in
@@ -626,7 +638,7 @@ let queue_panel ?terminal_size ?(interaction = default_interaction) (snapshot : 
         let next =
           match next_queue_row snapshot with
           | Some row ->
-              let compozy_detail = compozy_detail_for_row snapshot row in
+              let compozy_detail = Option.map compozy_task_step_summary (compozy_progress_for_active_queue_row snapshot row) in
               [ "Next work: " ^ queue_row_line ~next:true ?compozy_detail row ]
           | None -> []
         in
