@@ -1837,6 +1837,9 @@ let sandbox_hash value =
   let digest = Digest.to_hex (Digest.string value) in
   String.sub digest 0 (min 24 (String.length digest))
 
+let sandbox_image_is_placeholder image =
+  image |> Util.trim |> String.split_on_char '/' |> List.exists is_placeholder
+
 let sandbox_static_ready sandbox =
   sandbox.validation_errors = []
   &&
@@ -1844,7 +1847,7 @@ let sandbox_static_ready sandbox =
     (sandbox.type_, sandbox.image, sandbox.persistent, sandbox.network_enabled, sandbox.cpu_limit, sandbox.memory_mb)
   with
   | Some "docker", Some image, Some true, Some _, Some cpu_limit, Some memory_mb ->
-      Util.trim image <> "" && cpu_limit > 0 && memory_mb > 0
+      Util.trim image <> "" && (not (sandbox_image_is_placeholder image)) && cpu_limit > 0 && memory_mb > 0
   | _ -> false
 
 let sandbox_existing_container_names config =
@@ -1942,6 +1945,9 @@ let sandbox_readiness_gaps config add =
         add_if_no_validation_error "sandbox.type"
           "Set sandbox.type to docker when sandbox.enabled is true.");
     (match sandbox.image with
+    | Some image when sandbox_image_is_placeholder image ->
+        add_if_no_validation_error "sandbox.image"
+          "Replace the placeholder sandbox.image with the Docker image used for sandboxed agent execution."
     | Some _ -> ()
     | None ->
         add_if_no_validation_error "sandbox.image"

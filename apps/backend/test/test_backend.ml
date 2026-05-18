@@ -2601,6 +2601,30 @@ let test_config_sandbox_valid_docker_settings () =
       Alcotest.(check (option int)) "memory" (Some 4096) config.sandbox.memory_mb;
       Alcotest.(check (list string)) "sandbox gaps" [] (Config.readiness_gaps config |> sandbox_requirements)))
 
+let test_config_sandbox_reports_placeholder_image_as_readiness_gap () =
+  with_temp_dir "symphony-sandbox-placeholder-image-" (fun root ->
+      let config =
+        write_sandbox_settings root
+          ~sandbox:
+            {|{
+  "enabled": true,
+  "type": "docker",
+  "image": "ghcr.io/your-org/symphony-agent:latest",
+  "persistent": true,
+  "networkEnabled": false,
+  "cpuLimit": 2,
+  "memoryMb": 4096
+}|}
+      in
+      let gaps = Config.readiness_gaps config in
+      let requirements = gaps |> sandbox_requirements in
+      Alcotest.(check (list string)) "sandbox requirements" [ "sandbox.image" ] requirements;
+      match List.find_opt (fun (gap : Config.readiness_gap) -> gap.requirement = "sandbox.image") gaps with
+      | Some gap ->
+          Alcotest.(check bool) "placeholder remediation" true
+            (contains_substring gap.remediation "placeholder sandbox.image")
+      | None -> Alcotest.fail "expected sandbox.image readiness gap")
+
 let valid_sandbox_settings =
   {|{
   "enabled": true,
@@ -15651,6 +15675,8 @@ let () =
             test_config_sandbox_disabled_ignores_incomplete_fields;
           Alcotest.test_case "parses valid Docker sandbox settings" `Quick
             test_config_sandbox_valid_docker_settings;
+          Alcotest.test_case "reports placeholder Docker sandbox image readiness" `Quick
+            test_config_sandbox_reports_placeholder_image_as_readiness_gap;
           Alcotest.test_case "reports missing Docker binary readiness" `Quick
             test_config_sandbox_reports_missing_docker_binary_as_readiness_gap;
           Alcotest.test_case "reports unreachable Docker daemon readiness" `Quick
