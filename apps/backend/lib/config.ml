@@ -1341,9 +1341,41 @@ let executable_available executable =
     | Unix.WEXITED 0 -> true
     | _ -> false
 
+let is_shell_word_char = function
+  | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' | '.' -> true
+  | _ -> false
+
+let substring_at text index needle =
+  let needle_length = String.length needle in
+  index + needle_length <= String.length text
+  &&
+  let rec loop offset =
+    offset = needle_length || (text.[index + offset] = needle.[offset] && loop (offset + 1))
+  in
+  loop 0
+
+let cursor_agent_token_end command =
+  let token = "cursor-agent" in
+  let token_length = String.length token in
+  let command_length = String.length command in
+  let rec search index =
+    if index + token_length > command_length then None
+    else if substring_at command index token then
+      let before_ok = index = 0 || not (is_shell_word_char command.[index - 1]) in
+      let after_index = index + token_length in
+      let after_ok = after_index = command_length || not (is_shell_word_char command.[after_index]) in
+      if before_ok && after_ok then Some after_index else search (index + 1)
+    else search (index + 1)
+  in
+  search 0
+
 let cursor_status_command (harness : agent_harness) =
-  harness_executable harness
-  |> Option.map (fun executable -> Printf.sprintf "%s status" (Util.shell_quote executable))
+  let command = harness_probe_command harness |> Util.trim in
+  match cursor_agent_token_end command with
+  | Some token_end -> Some (String.sub command 0 token_end ^ " status")
+  | None ->
+      harness_executable harness
+      |> Option.map (fun executable -> Printf.sprintf "%s status" (Util.shell_quote executable))
 
 let cursor_harness_auth_configured (harness : agent_harness) =
   match cursor_status_command harness with
@@ -2156,7 +2188,7 @@ let readiness_gaps config =
             if not (cursor_harness_auth_configured harness) then
               add (prefix ^ ".auth")
                 "Configure Cursor authentication without storing secrets in Runtime Settings. Run `cursor-agent login` \
-                 or set CURSOR_API_KEY, then confirm `cursor-agent status` succeeds."
+                 or set CURSOR_API_KEY, then confirm the configured Cursor Harness status probe succeeds."
         | Some executable ->
             add (prefix ^ ".install")
               (Printf.sprintf

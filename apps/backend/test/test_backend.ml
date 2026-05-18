@@ -3240,7 +3240,29 @@ let test_cursor_harness_readiness_checks_selected_install_and_auth () =
           Unix.chmod authenticated_cursor 0o755;
           write_settings (authenticated_cursor ^ " -p --model <model> --output-format stream-json");
           Alcotest.(check bool) "cursor status success avoids auth gap" false
-            (has "harnesses.cursor.auth" (requirements ()))))
+            (has "harnesses.cursor.auth" (requirements ()));
+          let fake_bin = Filename.concat root "fake-bin" in
+          Util.mkdir_p fake_bin;
+          let wrapped_probe_log = Filename.concat root "wrapped-probe.log" in
+          let fake_npx = Filename.concat fake_bin "npx" in
+          Util.write_file fake_npx
+            {|#!/bin/sh
+printf '%s\n' "$*" > "$WRAPPED_PROBE_LOG"
+case "$*" in
+  "cursor-agent status") exit 0 ;;
+  *) exit 2 ;;
+esac
+|};
+          Unix.chmod fake_npx 0o755;
+          with_env [ ("WRAPPED_PROBE_LOG", wrapped_probe_log) ] (fun () ->
+              write_settings (fake_npx ^ " cursor-agent -p --model <model> --output-format stream-json");
+              let wrapped_requirements = requirements () in
+              Alcotest.(check bool) "wrapped cursor launcher avoids install gap" false
+                (has "harnesses.cursor.install" wrapped_requirements);
+              Alcotest.(check bool) "wrapped cursor launcher avoids auth gap" false
+                (has "harnesses.cursor.auth" wrapped_requirements);
+              Alcotest.(check string) "wrapped cursor status command" "cursor-agent status\n"
+                (Util.read_file wrapped_probe_log))))
 
 let test_cursor_harness_readiness_ignores_unselected_harnesses () =
   with_temp_dir "symphony-cursor-optional-readiness-" (fun root ->
