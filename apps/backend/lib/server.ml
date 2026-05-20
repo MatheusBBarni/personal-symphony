@@ -11,7 +11,30 @@ type live_state = {
   mutex : Mutex.t;
 }
 
+type dashboard_identity = {
+  workspace_root : string;
+  runtime_home : string;
+  mode : string;
+  auth_required : bool;
+  server_host : string;
+  server_port : int;
+}
+
 let create_live_state ~get_state = { get_state; clients = []; mutex = Mutex.create () }
+
+let make_dashboard_identity ~workspace_root ~runtime_home ~mode ~auth_required ~server_host ~server_port =
+  { workspace_root; runtime_home; mode; auth_required; server_host; server_port }
+
+let dashboard_identity_to_yojson identity =
+  `Assoc
+    [
+      ("workspace_root", `String identity.workspace_root);
+      ("runtime_home", `String identity.runtime_home);
+      ("mode", `String identity.mode);
+      ("auth_required", `Bool identity.auth_required);
+      ("server_host", `String identity.server_host);
+      ("server_port", `Int identity.server_port);
+    ]
 
 let response ?(status = "200 OK") ?(content_type = "application/json") body =
   Printf.sprintf "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s"
@@ -402,9 +425,10 @@ let drain_websocket fd =
   in
   loop ()
 
-let handle_request ?auth_token get_state request =
+let handle_request ?auth_token ?identity get_state request =
   match request.path with
-  | ("/api/v1/state" | "/api/v1/refresh") when not (authenticated ?auth_token request) -> unauthorized_response ()
+  | ("/api/v1/state" | "/api/v1/refresh" | "/api/v1/dashboard/identity") when not (authenticated ?auth_token request) ->
+      unauthorized_response ()
   | "/" as path -> (
       match serve_static path with Some body -> body | None -> missing_frontend_response ())
   | "/api/v1/state" -> Runtime_state.to_yojson (get_state ()) |> Yojson.Safe.to_string |> response
@@ -417,6 +441,17 @@ let handle_request ?auth_token get_state request =
           ("operations", `List [ `String "poll"; `String "reconcile" ]);
         ]
       |> Yojson.Safe.to_string |> response ~status:"202 Accepted"
+  | "/api/v1/dashboard/identity" -> (
+      match identity with
+      | Some identity -> dashboard_identity_to_yojson identity |> Yojson.Safe.to_string |> response
+      | None ->
+          response ~status:"404 Not Found"
+            (`Assoc
+               [
+                 ( "error",
+                   `Assoc [ ("code", `String "not_found"); ("message", `String "dashboard identity unavailable") ] );
+               ]
+            |> Yojson.Safe.to_string))
   | path -> (
       match serve_static path with
       | Some body -> body
@@ -455,7 +490,7 @@ let render_server_ready ~host ~port =
     (cyan (Printf.sprintf "%s:%d" host port))
     (dim (Printf.sprintf "event=startup outcome=completed server_host=%s server_port=%d" host port))
 
-let serve ?live ?auth_token ?(host = default_host) ~port ~get_state () =
+let serve ?live ?auth_token ?identity ?on_ready ?(host = default_host) ~port ~get_state () =
   let host = normalize_host host in
   if host_requires_auth host && auth_token = None then invalid_arg "non-loopback dashboard host requires an auth token";
   let socket = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
@@ -467,6 +502,7 @@ let serve ?live ?auth_token ?(host = default_host) ~port ~get_state () =
     match Unix.getsockname socket with Unix.ADDR_INET (_, port) -> port | _ -> port
   in
   render_server_ready ~host ~port:actual_port;
+  Option.iter (fun callback -> callback actual_port) on_ready;
   while true do
     let client, _ = Unix.accept socket in
     Unix.set_close_on_exec client;
@@ -483,7 +519,7 @@ let serve ?live ?auth_token ?(host = default_host) ~port ~get_state () =
                | Some live when request.path = "/api/v1/state/live" && is_websocket_upgrade request ->
                    handle_websocket ?auth_token live client oc request
                | _ ->
-                   let body = handle_request ?auth_token get_state request in
+                   let body = handle_request ?auth_token ?identity get_state request in
                    output_string oc body;
                    flush oc))
          client)

@@ -303,7 +303,10 @@ let run_runtime port once web queue_arg merge_args overrides =
               let auth_token = if Server.host_requires_auth host then Some (Server.generate_auth_token ()) else None in
               render_web_dashboard_starting ?auth_token ~host ~port ();
               let live = Server.create_live_state ~get_state:(fun () -> state) in
-              run_until_stopped (fun () -> Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> state) ())
+              run_until_stopped (fun () ->
+                  Dashboard_service.serve_foreground ~workspace_root:config.repository_root
+                    ~runtime_home:home.runtime_dir ~host ~port ~mode:Dashboard_service.web_dashboard_mode ~auth_token
+                    ~live ~get_state:(fun () -> state) ())
           | Web_dashboard Runtime_policy.Run_orchestrator ->
               let host = config.server.host in
               let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
@@ -324,7 +327,9 @@ let run_runtime port once web queue_arg merge_args overrides =
               orchestrator_ref := Some orchestrator;
               ignore (Thread.create Orchestrator.run_forever orchestrator);
               run_until_stopped (fun () ->
-                  Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
+                  Dashboard_service.serve_foreground ~workspace_root:config.repository_root
+                    ~runtime_home:home.runtime_dir ~host ~port ~mode:Dashboard_service.web_dashboard_mode ~auth_token
+                    ~live ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
           | Terminal_console_readiness ->
               Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
                 ~local_surfaces:terminal_console_local_surfaces ~initial_logs:!terminal_console_initial_logs

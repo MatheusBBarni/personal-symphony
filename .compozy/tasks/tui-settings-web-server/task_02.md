@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Add Dashboard Identity Endpoint"
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 02: Add Dashboard Identity Endpoint
