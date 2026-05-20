@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Add evidence command runner and diagnostics"
 type: backend
 complexity: high
 dependencies:
   - task_03
   - task_04
+
 ---
 
 # Task 06: Add evidence command runner and diagnostics

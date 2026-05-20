@@ -110,6 +110,23 @@ type stage_context_command = {
   max_output_bytes : int;
   validation_error : string option;
 }
+type stage_goal_loop_evidence_command = {
+  argv : string list;
+  cwd : string;
+  timeout_ms : int;
+  max_output_bytes : int;
+}
+type stage_goal_loop_budget = {
+  max_turns : int option;
+  max_runtime_ms : int option;
+  max_tokens : int option;
+}
+type stage_goal_loop = {
+  enabled : bool;
+  evidence_command : stage_goal_loop_evidence_command option;
+  budget : stage_goal_loop_budget;
+  goal_loop_validation_errors : (string * string) list;
+}
 type stage_agent = {
   states : string list;
   agent : string;
@@ -117,6 +134,7 @@ type stage_agent = {
   max_concurrent_agents : int option;
   context_snapshot : stage_context_snapshot option;
   context_command : stage_context_command option;
+  goal_loop : stage_goal_loop option;
   skills : string list;
   start_status : string option;
   success_status : string option;
@@ -211,6 +229,11 @@ let default_context_snapshot_max_output_bytes = 12000
 let default_context_command_cwd = "agentWorktree"
 let default_context_command_timeout_ms = 30000
 let default_context_command_max_output_bytes = 12000
+let default_goal_loop_evidence_cwd = default_context_command_cwd
+let default_goal_loop_evidence_timeout_ms = default_context_command_timeout_ms
+let default_goal_loop_evidence_max_output_bytes = default_context_command_max_output_bytes
+let default_goal_loop_budget : stage_goal_loop_budget =
+  { max_turns = None; max_runtime_ms = None; max_tokens = None }
 
 let default_git =
   {
@@ -258,6 +281,7 @@ let default_stage_agents =
       max_concurrent_agents = None;
       context_snapshot = None;
       context_command = None;
+      goal_loop = None;
       skills = [];
       start_status = None;
       success_status = Some "To-Do";
@@ -272,6 +296,7 @@ let default_stage_agents =
       max_concurrent_agents = None;
       context_snapshot = None;
       context_command = None;
+      goal_loop = None;
       skills = [];
       start_status = Some "In progress";
       success_status = Some "In review";
@@ -286,6 +311,7 @@ let default_stage_agents =
       max_concurrent_agents = None;
       context_snapshot = None;
       context_command = None;
+      goal_loop = None;
       skills = [];
       start_status = None;
       success_status = Some "Done";
@@ -1107,6 +1133,147 @@ let json_stage_context_snapshot json =
           validation_error = Some "stageAgents.stages[].context must be an object";
         }
 
+let json_goal_loop_optional_positive_int path raw =
+  match raw with
+  | `Null -> (None, [])
+  | `Int value when value > 0 -> (Some value, [])
+  | `String value -> (
+      match Util.trim value |> int_of_string_opt with
+      | Some parsed when parsed > 0 -> (Some parsed, [])
+      | _ -> (None, [ (path, path ^ " must be positive") ]))
+  | `Int _ -> (None, [ (path, path ^ " must be positive") ])
+  | _ -> (None, [ (path, path ^ " must be an integer") ])
+
+let json_stage_goal_loop_budget ~enabled raw =
+  match raw with
+  | `Null ->
+      let errors =
+        if enabled then
+          [
+            ( "stageAgents.stages[].goalLoop.budget",
+              "stageAgents.stages[].goalLoop.budget must include at least one positive budget: maxTurns, \
+               maxRuntimeMs, or maxTokens" );
+          ]
+        else []
+      in
+      (default_goal_loop_budget, errors)
+  | `Assoc _ ->
+      let max_turns, turn_errors =
+        json_goal_loop_optional_positive_int "stageAgents.stages[].goalLoop.budget.maxTurns"
+          (member "maxTurns" raw)
+      in
+      let max_runtime_ms, runtime_errors =
+        json_goal_loop_optional_positive_int "stageAgents.stages[].goalLoop.budget.maxRuntimeMs"
+          (member "maxRuntimeMs" raw)
+      in
+      let max_tokens, token_errors =
+        json_goal_loop_optional_positive_int "stageAgents.stages[].goalLoop.budget.maxTokens"
+          (member "maxTokens" raw)
+      in
+      let budget : stage_goal_loop_budget = { max_turns; max_runtime_ms; max_tokens } in
+      let field_errors = if enabled then turn_errors @ runtime_errors @ token_errors else [] in
+      let missing_errors =
+        if enabled && field_errors = [] && max_turns = None && max_runtime_ms = None && max_tokens = None then
+          [
+            ( "stageAgents.stages[].goalLoop.budget",
+              "stageAgents.stages[].goalLoop.budget must include at least one positive budget: maxTurns, \
+               maxRuntimeMs, or maxTokens" );
+          ]
+        else []
+      in
+      (budget, field_errors @ missing_errors)
+  | _ ->
+      let errors =
+        if enabled then
+          [ ("stageAgents.stages[].goalLoop.budget", "stageAgents.stages[].goalLoop.budget must be an object") ]
+        else []
+      in
+      (default_goal_loop_budget, errors)
+
+let json_stage_goal_loop_evidence_command ~enabled raw =
+  match raw with
+  | `Assoc _ ->
+      let command_result =
+        json_context_command_argv "stageAgents.stages[].goalLoop.evidence.command"
+          (member "command" raw)
+      in
+      let cwd_result =
+        json_context_command_cwd "stageAgents.stages[].goalLoop.evidence.cwd" (member "cwd" raw)
+      in
+      let timeout_result =
+        json_positive_int_strict "stageAgents.stages[].goalLoop.evidence.timeoutMs"
+          (member "timeoutMs" raw)
+          ~default:default_goal_loop_evidence_timeout_ms
+      in
+      let max_result =
+        json_positive_int_strict "stageAgents.stages[].goalLoop.evidence.maxOutputBytes"
+          (member "maxOutputBytes" raw)
+          ~default:default_goal_loop_evidence_max_output_bytes
+      in
+      let errors =
+        if not enabled then []
+        else
+          [
+            (match command_result with Ok _ -> None | Error error -> Some ("stageAgents.stages[].goalLoop.evidence.command", error));
+            (match cwd_result with Ok _ -> None | Error error -> Some ("stageAgents.stages[].goalLoop.evidence.cwd", error));
+            (match timeout_result with Ok _ -> None | Error error -> Some ("stageAgents.stages[].goalLoop.evidence.timeoutMs", error));
+            (match max_result with Ok _ -> None | Error error -> Some ("stageAgents.stages[].goalLoop.evidence.maxOutputBytes", error));
+          ]
+          |> List.filter_map Fun.id
+      in
+      let evidence_command : stage_goal_loop_evidence_command =
+        {
+          argv = (match command_result with Ok argv -> argv | Error _ -> []);
+          cwd = (match cwd_result with Ok cwd -> cwd | Error _ -> default_goal_loop_evidence_cwd);
+          timeout_ms =
+            (match timeout_result with Ok timeout_ms -> timeout_ms | Error _ -> default_goal_loop_evidence_timeout_ms);
+          max_output_bytes =
+            (match max_result with Ok max_output_bytes -> max_output_bytes | Error _ -> default_goal_loop_evidence_max_output_bytes);
+        }
+      in
+      (Some evidence_command, errors)
+  | _ ->
+      let errors =
+        if enabled then
+          [
+            ( "stageAgents.stages[].goalLoop.evidence.command",
+              "stageAgents.stages[].goalLoop.evidence.command must be an argv array" );
+          ]
+        else []
+      in
+      (None, errors)
+
+let json_stage_goal_loop json =
+  let loop_raw = member "goalLoop" json in
+  match loop_raw with
+  | `Null -> None
+  | `Assoc _ ->
+      let enabled_result = json_bool_strict "stageAgents.stages[].goalLoop.enabled" (member "enabled" loop_raw) in
+      let enabled = match enabled_result with Ok enabled -> enabled | Error _ -> false in
+      let evidence_command, evidence_errors =
+        json_stage_goal_loop_evidence_command ~enabled (member "evidence" loop_raw)
+      in
+      let budget, budget_errors = json_stage_goal_loop_budget ~enabled (member "budget" loop_raw) in
+      let enabled_errors =
+        match enabled_result with Ok _ -> [] | Error error -> [ ("stageAgents.stages[].goalLoop.enabled", error) ]
+      in
+      Some
+        {
+          enabled;
+          evidence_command;
+          budget;
+          goal_loop_validation_errors = enabled_errors @ evidence_errors @ budget_errors;
+        }
+  | _ ->
+      Some
+        {
+          enabled = false;
+          evidence_command = None;
+          budget = default_goal_loop_budget;
+          goal_loop_validation_errors =
+            [ ("stageAgents.stages[].goalLoop", "stageAgents.stages[].goalLoop must be an object") ];
+        }
+
 let json_stage_agent json =
   let goal_raw = member "goal" json in
   let goal = match goal_raw with `Assoc _ -> Some { enabled = json_bool "enabled" goal_raw ~default:false } | _ -> None in
@@ -1161,6 +1328,7 @@ let json_stage_agent json =
       |> positive_option "stageAgents.stages.maxConcurrentAgents";
     context_snapshot = json_stage_context_snapshot json;
     context_command = json_stage_context_command json;
+    goal_loop = json_stage_goal_loop json;
     skills = json_string_list "skills" json ~default:[];
     start_status = json_optional_string "startStatus" json;
     success_status = json_optional_string "successStatus" json;
@@ -1176,6 +1344,11 @@ let stage_context_snapshot_enabled (stage : stage_agent) =
 
 let stage_context_command_enabled (stage : stage_agent) =
   match stage.context_command with Some command -> command.validation_error = None | None -> false
+
+let stage_goal_loop_enabled (stage : stage_agent) =
+  match stage.goal_loop with
+  | Some goal_loop -> goal_loop.enabled && goal_loop.goal_loop_validation_errors = []
+  | None -> false
 
 let stage_goal_handoff_enabled config =
   config.stage_agents.enabled && List.exists stage_goal_enabled config.stage_agents.stages
@@ -1860,6 +2033,21 @@ let validate_stage_context_commands config add =
         | _ -> ())
       config.stage_agents.stages
 
+let validate_stage_goal_loops config add =
+  if config.stage_agents.enabled then
+    List.iter
+      (fun (stage : stage_agent) ->
+        match stage.goal_loop with
+        | Some { goal_loop_validation_errors; _ } ->
+            List.iter
+              (fun (path, error) ->
+                add
+                  (stage_context_setting_requirement stage "goalLoop" path)
+                  (error ^ ". Fix the Stage Agent Goal Loop Runtime Settings before dispatch."))
+              goal_loop_validation_errors
+        | None -> ())
+      config.stage_agents.stages
+
 let run_shell_capture ~cwd command =
   let command = Printf.sprintf "cd %s && %s 2>&1" (Util.shell_quote cwd) command in
   let ic = Unix.open_process_in command in
@@ -2297,6 +2485,7 @@ let readiness_gaps config =
       config.stage_agents.stages);
   validate_stage_context_snapshots config add;
   validate_stage_context_commands config add;
+  validate_stage_goal_loops config add;
   validate_stage_skill_load config add;
   List.rev !gaps
 

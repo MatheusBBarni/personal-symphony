@@ -944,6 +944,39 @@ let write_private_file path content =
   let oc = open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o600 path in
   Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () -> output_string oc content)
 
+let goal_loop_state_dir config = Filename.concat (runtime_state_dir config) "goal-loops"
+
+let goal_loop_state_path config (loop : Runtime_state.goal_loop) =
+  Filename.concat (goal_loop_state_dir config) (Workspace.sanitize loop.issue_id ^ ".json")
+
+let load_goal_loop_states config =
+  let dir = goal_loop_state_dir config in
+  if not (Sys.file_exists dir && Sys.is_directory dir) then []
+  else
+    Sys.readdir dir |> Array.to_list
+    |> List.filter (fun name -> Filename.check_suffix name ".json")
+    |> List.sort String.compare
+    |> List.filter_map (fun name ->
+           let path = Filename.concat dir name in
+           try Yojson.Safe.from_file path |> Runtime_state.goal_loop_of_yojson
+           with Sys_error _ | Yojson.Json_error _ -> None)
+
+let persist_goal_loop_state config loop =
+  let dir = goal_loop_state_dir config in
+  ensure_private_runtime_dir dir;
+  let path = goal_loop_state_path config loop in
+  write_private_file path (Yojson.Safe.pretty_to_string (Runtime_state.goal_loop_to_yojson loop) ^ "\n")
+
+let persist_goal_loop_states config loops =
+  try
+    List.iter (persist_goal_loop_state config) loops;
+    None
+  with
+  | Sys_error error -> Some ("Goal Loop State persistence failed: " ^ error)
+  | Unix.Unix_error (error, fn, arg) ->
+      Some (Printf.sprintf "Goal Loop State persistence failed: %s(%s): %s" fn arg (Unix.error_message error))
+  | exn -> Some ("Goal Loop State persistence failed: " ^ Printexc.to_string exn)
+
 let env_value name env =
   let prefix = name ^ "=" in
   Array.to_list env
@@ -1972,6 +2005,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
     state =
       Runtime_state.empty ~workspace_repository_name ~tracker_kind:tracker.kind ~status_order:(Config.project_status_order config)
         ?ordered_queue:(Option.map (load_ordered_queue_state config) ordered_queue)
+        ~goal_loops:(load_goal_loop_states config)
         ?compozy_progress:(Runtime_state.initial_compozy_progress config)
         ~compozy_progresses:(Runtime_state.initial_compozy_progresses config)
         ();
@@ -1997,11 +2031,152 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
 let get_state orchestrator = orchestrator.state
 
 let set_state orchestrator state =
+  let state =
+    match persist_goal_loop_states orchestrator.config state.Runtime_state.goal_loops with
+    | None -> state
+    | Some error -> { state with Runtime_state.last_error = Some error }
+  in
   orchestrator.state <- state;
   persist_ordered_queue_state orchestrator.config state.Runtime_state.ordered_queue;
   orchestrator.notify_state state
 
 let update_state orchestrator f = set_state orchestrator (f orchestrator.state)
+
+let goal_loop_budget_of_config (budget : Config.stage_goal_loop_budget) : Goal_loop.budget =
+  { Goal_loop.max_turns = budget.max_turns; max_runtime_ms = budget.max_runtime_ms; max_tokens = budget.max_tokens }
+
+let goal_loop_budget_of_runtime_state (budget : Runtime_state.goal_loop_budget) : Goal_loop.budget =
+  { Goal_loop.max_turns = budget.max_turns; max_runtime_ms = budget.max_runtime_ms; max_tokens = budget.max_tokens }
+
+let runtime_goal_loop_budget_of_goal_loop (budget : Goal_loop.budget) : Runtime_state.goal_loop_budget =
+  { Runtime_state.max_turns = budget.max_turns; max_runtime_ms = budget.max_runtime_ms; max_tokens = budget.max_tokens }
+
+let goal_loop_of_runtime_state (loop : Runtime_state.goal_loop) : Goal_loop.t =
+  {
+    Goal_loop.issue_id = loop.issue_id;
+    issue_identifier = loop.issue_identifier;
+    run_id = loop.run_id;
+    goal = loop.goal;
+    state = loop.state;
+    stage_agent = loop.stage_agent;
+    harness_name = loop.harness_name;
+    harness_kind = loop.harness_kind;
+    attempt_count = loop.attempt_count;
+    budget = goal_loop_budget_of_runtime_state loop.budget;
+    latest_evidence = loop.latest_evidence;
+    stop_outcome = loop.stop_outcome;
+    stop_reason = loop.stop_reason;
+    next_action = loop.next_action;
+    diagnostics_path = loop.diagnostics_path;
+    updated_at = loop.updated_at;
+  }
+
+let runtime_goal_loop_of_goal_loop (loop : Goal_loop.t) : Runtime_state.goal_loop =
+  {
+    Runtime_state.issue_id = loop.issue_id;
+    issue_identifier = loop.issue_identifier;
+    run_id = loop.run_id;
+    goal = loop.goal;
+    state = loop.state;
+    stage_agent = loop.stage_agent;
+    harness_name = loop.harness_name;
+    harness_kind = loop.harness_kind;
+    attempt_count = loop.attempt_count;
+    budget = runtime_goal_loop_budget_of_goal_loop loop.budget;
+    latest_evidence = loop.latest_evidence;
+    stop_outcome = loop.stop_outcome;
+    stop_reason = loop.stop_reason;
+    next_action = loop.next_action;
+    diagnostics_path = loop.diagnostics_path;
+    updated_at = loop.updated_at;
+  }
+
+let upsert_goal_loop (loop : Runtime_state.goal_loop) (loops : Runtime_state.goal_loop list) =
+  loop :: List.filter (fun (existing : Runtime_state.goal_loop) -> existing.issue_id <> loop.issue_id) loops
+
+let stage_goal_loop_config = function
+  | Some (stage : Config.stage_agent) when Config.stage_goal_loop_enabled stage ->
+      Option.map (fun goal_loop -> (stage, goal_loop)) stage.goal_loop
+  | _ -> None
+
+let goal_loop_goal issue =
+  match Util.trim issue.Issue.title with
+  | "" -> Printf.sprintf "Complete %s" issue.identifier
+  | title -> Printf.sprintf "Complete %s: %s" issue.identifier title
+
+let goal_loop_run_id state issue =
+  match Runtime_state.goal_loop_for_issue state issue.Issue.id with
+  | Some loop when not (Goal_loop.terminal_state loop.state) -> loop.run_id
+  | _ -> Printf.sprintf "goal-loop-%s-%d" (Workspace.sanitize issue.identifier) (int_of_float (Unix.time ()))
+
+let goal_loop_for_dispatch state issue stage (harness : Config.agent_harness) attempt now =
+  match stage_goal_loop_config stage with
+  | None -> None
+  | Some (stage, goal_loop_config) ->
+      let run_id = goal_loop_run_id state issue in
+      let attempt_count = launch_attempt_number attempt in
+      Some
+        (Goal_loop.create issue.id issue.identifier run_id (goal_loop_goal issue) (Some stage.agent)
+           (Some harness.name) (Some harness.kind) attempt_count
+           (goal_loop_budget_of_config goal_loop_config.budget)
+           now
+        |> runtime_goal_loop_of_goal_loop)
+
+let update_goal_loop_in_state issue_id update state =
+  match Runtime_state.goal_loop_for_issue state issue_id with
+  | None -> state
+  | Some loop ->
+      let updated = goal_loop_of_runtime_state loop |> update |> runtime_goal_loop_of_goal_loop in
+      { state with Runtime_state.goal_loops = upsert_goal_loop updated state.goal_loops }
+
+let update_goal_loop_state orchestrator issue_id update =
+  update_state orchestrator (update_goal_loop_in_state issue_id update)
+
+let goal_loop_attempt_count orchestrator issue_id =
+  match Runtime_state.goal_loop_for_issue orchestrator.state issue_id with
+  | Some loop -> loop.attempt_count
+  | None -> launch_attempt_number (Hashtbl.find_opt orchestrator.attempts issue_id)
+
+let record_goal_loop_activity orchestrator issue_id latest_activity next_action =
+  let attempt_count = goal_loop_attempt_count orchestrator issue_id in
+  let updated_at = Util.now_iso8601 () in
+  update_goal_loop_state orchestrator issue_id (fun loop ->
+      Goal_loop.record_activity loop attempt_count latest_activity next_action updated_at)
+
+let mark_goal_loop_budget_exhausted orchestrator issue_id reason =
+  let updated_at = Util.now_iso8601 () in
+  update_goal_loop_state orchestrator issue_id (fun loop -> Goal_loop.stop_budget_exhausted loop reason updated_at)
+
+let running_row_for_child orchestrator child =
+  List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = child.issue_id) orchestrator.state.running
+
+let goal_loop_budget_exhaustion orchestrator child =
+  match Runtime_state.goal_loop_for_issue orchestrator.state child.issue_id with
+  | None -> None
+  | Some loop when Goal_loop.terminal_state loop.state -> None
+  | Some loop ->
+      let elapsed_ms = int_of_float ((Unix.time () -. child.started_at) *. 1000.) in
+      let total_tokens =
+        match running_row_for_child orchestrator child with Some row -> row.tokens.total_tokens | None -> 0
+      in
+      (match loop.budget.max_turns with
+      | Some max_turns when loop.attempt_count > max_turns ->
+          Some
+            (Printf.sprintf "Goal Loop budget exhausted: maxTurns %d reached before attempt %d." max_turns
+               loop.attempt_count)
+      | _ -> (
+          match loop.budget.max_runtime_ms with
+          | Some max_runtime_ms when elapsed_ms >= max_runtime_ms ->
+              Some
+                (Printf.sprintf "Goal Loop budget exhausted: maxRuntimeMs %d reached after %dms." max_runtime_ms
+                   elapsed_ms)
+          | _ -> (
+              match loop.budget.max_tokens with
+              | Some max_tokens when total_tokens >= max_tokens ->
+                  Some
+                    (Printf.sprintf "Goal Loop budget exhausted: maxTokens %d reached with %d tokens." max_tokens
+                       total_tokens)
+              | _ -> None)))
 
 let is_compozy_prd_run_child orchestrator issue =
   orchestrator.tracker.kind = "compozy_tasks" && Util.starts_with ~prefix:"compozy:" issue.Issue.identifier
@@ -3447,6 +3622,7 @@ let dispatch_issue orchestrator issue =
                 goal_usage = None;
               }
             in
+            let goal_loop = goal_loop_for_dispatch orchestrator.state issue stage harness attempt now in
             Hashtbl.remove orchestrator.retry_due issue.id;
             Hashtbl.remove orchestrator.previous_attempt_outputs issue.id;
             update_state orchestrator (fun state ->
@@ -3461,6 +3637,10 @@ let dispatch_issue orchestrator issue =
                   (match context_diagnostic_summary with
                   | Some summary -> append_context_diagnostic_summary state.context_diagnostics summary
                   | None -> state.context_diagnostics);
+                goal_loops =
+                  (match goal_loop with
+                  | Some loop -> upsert_goal_loop loop state.goal_loops
+                  | None -> state.goal_loops);
                 last_error =
                   (match (context_diagnostic_error, prompt_archive_error) with
                   | None, None -> None
@@ -3516,24 +3696,31 @@ let mark_retrying orchestrator issue_id error =
         Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday tm.tm_hour
           tm.tm_min tm.tm_sec
       in
+      let goal_loop_updated_at = Util.now_iso8601 () in
       update_state orchestrator (fun state ->
-        {
-          state with
-          running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) state.running;
-          retrying =
-            {
-              Runtime_state.issue_id;
-              issue_identifier = row.issue.identifier;
-              attempt = next_attempt;
-              due_at;
-              error = Some error;
-              goal_usage = row.goal_usage;
-            }
-            :: List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
-          issue_errors =
-            List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id) state.issue_errors;
-          last_error = Some error;
-        });
+        let state =
+          {
+            state with
+            running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) state.running;
+            retrying =
+              {
+                Runtime_state.issue_id;
+                issue_identifier = row.issue.identifier;
+                attempt = next_attempt;
+                due_at;
+                error = Some error;
+                goal_usage = row.goal_usage;
+              }
+              :: List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
+            issue_errors =
+              List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id)
+                state.issue_errors;
+            last_error = Some error;
+          }
+        in
+        update_goal_loop_in_state issue_id
+          (fun loop -> Goal_loop.schedule_retry loop (next_attempt + 1) error goal_loop_updated_at)
+          state);
       let stage = stage_from_running orchestrator.config row in
       (match retry_status ?stage orchestrator row.issue with
       | None -> ()
@@ -3956,28 +4143,35 @@ let refresh_child_output ?(force = false) orchestrator child =
     in
     let tokens = max_tokens tokens (max_tokens claude_activity.claude_tokens cursor_activity.cursor_tokens) in
     let goal_usage = parse_goal_usage child.stdout_path child.stderr_path in
+    let latest_event =
+      match claude_activity.claude_last_event with
+      | Some _ -> claude_activity.claude_last_event
+      | None -> (
+          match cursor_activity.cursor_last_event with
+          | Some _ -> cursor_activity.cursor_last_event
+          | None -> Some "agent_output")
+    in
+    let latest_message =
+      match claude_activity.claude_last_message with
+      | Some _ -> claude_activity.claude_last_message
+      | None -> (
+          match cursor_activity.cursor_last_message with
+          | Some _ -> cursor_activity.cursor_last_message
+          | None -> Some "stdout/stderr updated")
+    in
     update_state orchestrator (fun state -> { state with usage_totals = max_tokens state.usage_totals tokens });
     update_running orchestrator child.issue_id (fun row ->
         {
           row with
-          Runtime_state.last_event =
-            (match claude_activity.claude_last_event with
-            | Some _ -> claude_activity.claude_last_event
-            | None -> (
-                match cursor_activity.cursor_last_event with
-                | Some _ -> cursor_activity.cursor_last_event
-                | None -> Some "agent_output"));
-          last_message =
-            (match claude_activity.claude_last_message with
-            | Some _ -> claude_activity.claude_last_message
-            | None -> (
-                match cursor_activity.cursor_last_message with
-                | Some _ -> cursor_activity.cursor_last_message
-                | None -> Some "stdout/stderr updated"));
+          Runtime_state.last_event = latest_event;
+          last_message = latest_message;
           last_event_at = Some now;
           tokens = max_tokens row.tokens tokens;
           goal_usage = (match goal_usage with Some _ -> goal_usage | None -> row.goal_usage);
-        }))
+        });
+    record_goal_loop_activity orchestrator child.issue_id
+      (Option.value latest_message ~default:"Agent output updated.")
+      "Continue monitoring agent activity.")
   else if workspace_activity_changed then (
     child.last_output_at <- Unix.time ();
     let now = Util.now_iso8601 () in
@@ -3987,7 +4181,9 @@ let refresh_child_output ?(force = false) orchestrator child =
           Runtime_state.last_event = Some "agent_activity";
           last_message = Some "workspace files updated";
           last_event_at = Some now;
-        }))
+        });
+    record_goal_loop_activity orchestrator child.issue_id "Workspace files updated."
+      "Continue monitoring workspace activity.")
 
 let reap_children orchestrator =
   let now = Unix.time () in
@@ -3996,16 +4192,24 @@ let reap_children orchestrator =
     List.fold_left
       (fun (finished, running) child ->
         refresh_child_output orchestrator child;
-        if
-          now -. child.started_at > float_of_int child.harness.turn_timeout_ms /. 1000.
-          || now -. child.last_output_at > float_of_int child.harness.stall_timeout_ms /. 1000.
-        then (
-          refresh_child_output ~force:true orchestrator child;
-          kill_child child;
-          mark_child_failed orchestrator child "agent timed out";
-          (child.issue_id :: finished, running))
-        else
-          match Unix.waitpid [ Unix.WNOHANG ] child.pid with
+        match goal_loop_budget_exhaustion orchestrator child with
+        | Some reason ->
+            refresh_child_output ~force:true orchestrator child;
+            kill_child child;
+            mark_goal_loop_budget_exhausted orchestrator child.issue_id reason;
+            mark_blocked ~child orchestrator child.issue_id reason;
+            (child.issue_id :: finished, running)
+        | None ->
+            if
+              now -. child.started_at > float_of_int child.harness.turn_timeout_ms /. 1000.
+              || now -. child.last_output_at > float_of_int child.harness.stall_timeout_ms /. 1000.
+            then (
+              refresh_child_output ~force:true orchestrator child;
+              kill_child child;
+              mark_child_failed orchestrator child "agent timed out";
+              (child.issue_id :: finished, running))
+            else
+              match Unix.waitpid [ Unix.WNOHANG ] child.pid with
           | 0, _ -> (finished, child :: running)
           | _, Unix.WEXITED 0 ->
               refresh_child_output ~force:true orchestrator child;

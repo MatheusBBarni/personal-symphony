@@ -42,6 +42,27 @@ let issue_error ~issue_id ~issue_identifier =
     goal_usage = Some { Runtime_state.status = Some "attention"; time_used_seconds = Some 140.; tokens_used = Some 7300 };
   }
 
+let goal_loop ?(state = "running") ?(attempt_count = 1) ?latest_evidence ?stop_outcome ?stop_reason ?next_action
+    ?diagnostics_path ~issue_id ~issue_identifier ~goal () =
+  {
+    Runtime_state.issue_id;
+    issue_identifier;
+    run_id = "goal-loop-" ^ issue_id;
+    goal;
+    state;
+    stage_agent = Some "engineer";
+    harness_name = Some "codex";
+    harness_kind = Some "codex";
+    attempt_count;
+    budget = { Runtime_state.max_turns = Some 4; max_runtime_ms = Some 3_600_000; max_tokens = Some 200_000 };
+    latest_evidence;
+    stop_outcome;
+    stop_reason;
+    next_action;
+    diagnostics_path;
+    updated_at = "2026-05-14T13:09:00Z";
+  }
+
 let ordered_queue =
   {
     Runtime_state.entries =
@@ -114,6 +135,35 @@ let mock_state () =
       running = [ running running_issue ];
       retrying = [ retrying ~issue_id:"ISSUE-130" ~issue_identifier:"#130" ];
       issue_errors = [ issue_error ~issue_id:"ISSUE-133" ~issue_identifier:"#133" ];
+      goal_loops =
+        [
+          goal_loop ~issue_id:"ISSUE-128" ~issue_identifier:"#128"
+            ~goal:"Render Goal Loop state in the Terminal Console"
+            ~latest_evidence:"Agent is updating Terminal Console projection tests."
+            ~next_action:"Continue monitoring agent activity." ~diagnostics_path:"apps/backend/test/test_backend.ml"
+            ();
+          goal_loop ~issue_id:"ISSUE-133" ~issue_identifier:"#133"
+            ~goal:"Confirm Runtime Contract wording before completion"
+            ~state:"needs_attention" ~attempt_count:3
+            ~latest_evidence:"Evidence command reported missing operator decision."
+            ~stop_outcome:"needs_attention"
+            ~stop_reason:"Runtime Contract wording needs maintainer approval."
+            ~next_action:"Operator attention is required before the loop can continue."
+            ~diagnostics_path:"apps/backend/bin/terminal_console_tui.ml" ();
+          goal_loop ~issue_id:"ISSUE-134" ~issue_identifier:"#134"
+            ~goal:"Verify preview snapshot renders Goal Loop success"
+            ~state:"goal_met" ~attempt_count:2
+            ~latest_evidence:"pnpm test passed for Terminal Console projection."
+            ~stop_outcome:"goal_met" ~stop_reason:"All required checks passed."
+            ~next_action:"Review the Stage Commit diff." ();
+          goal_loop ~issue_id:"ISSUE-135" ~issue_identifier:"#135"
+            ~goal:"Stop when Goal Loop turn budget is exhausted"
+            ~state:"budget_exhausted" ~attempt_count:4
+            ~latest_evidence:"maxTurns reached before deterministic evidence."
+            ~stop_outcome:"budget_exhausted"
+            ~stop_reason:"maxTurns reached before deterministic evidence."
+            ~next_action:"Review the budget exhaustion before continuing the task." ();
+        ];
       usage_totals = { Runtime_state.input_tokens = 61240; output_tokens = 15420; total_tokens = 76660 };
       seconds_running = 644.;
       last_error = Some "Preview data includes one attention row so the Tasks tab has contrast.";

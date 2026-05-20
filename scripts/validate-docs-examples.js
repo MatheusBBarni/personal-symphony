@@ -111,6 +111,10 @@ function assertGlossaryTerms() {
     "Compozy Task Step",
     "Runtime Settings",
     "Readiness Gap",
+    "Goal Loop",
+    "Goal Loop State",
+    "Goal Loop Evidence Command",
+    "Goal Loop Stop Outcome",
   ];
 
   for (const term of terms) {
@@ -120,8 +124,9 @@ function assertGlossaryTerms() {
   }
 
   const combinedDocs = docs.map(readDoc).join("\n");
+  const normalizedDocs = combinedDocs.replace(/\s+/g, " ");
   for (const term of terms) {
-    if (!combinedDocs.includes(term)) {
+    if (!normalizedDocs.includes(term)) {
       fail(`documentation does not use glossary term ${term}`);
     }
   }
@@ -360,6 +365,90 @@ function assertTerminalConsoleGuidance(readme) {
   }
 }
 
+function assertGoalLoopGuidance(readme, jsonBlocks) {
+  const normalizedReadme = readme.replace(/\s+/g, " ");
+  const includesReadme = (phrase) => normalizedReadme.includes(phrase.replace(/\s+/g, " "));
+  const requiredReadme = [
+    "Goal Loop is separate from Stage Goal Handoff",
+    "Goal Loop is Runtime-owned Stage Agent behavior",
+    "Goal met requires deterministic evidence",
+    "Goal Usage, agent exit `0`, changed files, or model confidence alone",
+    "`goalLoop`",
+    "\"command\": [\"pnpm\", \"test\"]",
+    "\"cwd\": \"agentWorktree\"",
+    "\"timeoutMs\": 120000",
+    "\"maxOutputBytes\": 8192",
+    "\"maxTurns\": 4",
+    "\"maxRuntimeMs\": 3600000",
+    "\"maxTokens\": 200000",
+    "secret-free evidence summary",
+    "top-level `goal_loops[]`",
+    "`latest_evidence`",
+    "`stop_outcome`",
+    "`stop_reason`",
+    "`next_action`",
+    "The Terminal Console and Web Dashboard read that same Runtime State projection",
+    "Goal Loop does not own delivery authority",
+    "Stage Commit, Stage Push, Task Branch Integration, merge, pull request creation, auto-merge, and tracker status transitions",
+  ];
+
+  for (const phrase of requiredReadme) {
+    if (!includesReadme(phrase)) {
+      fail(`README.md is missing Goal Loop guidance for ${phrase}`);
+    }
+  }
+
+  const goalLoopExamples = jsonBlocks
+    .filter((block) => block.relativePath === "README.md")
+    .map((block) => parseJsonBlock(block))
+    .filter((parsed) => parsed?.stageAgents?.stages?.some((stage) => stage.goalLoop));
+
+  if (goalLoopExamples.length === 0) {
+    fail("README.md is missing a parseable stageAgents.stages[].goalLoop settings example");
+    return;
+  }
+
+  for (const example of goalLoopExamples) {
+    for (const stage of example.stageAgents.stages.filter((stage) => stage.goalLoop)) {
+      const loop = stage.goalLoop;
+      if (loop.enabled !== true) {
+        fail("README.md Goal Loop example must set goalLoop.enabled to true");
+      }
+      if (!Array.isArray(loop.evidence?.command) || loop.evidence.command.join(" ") !== "pnpm test") {
+        fail("README.md Goal Loop example must use a secret-free argv evidence command");
+      }
+      if (loop.evidence?.cwd !== "agentWorktree") {
+        fail("README.md Goal Loop example must document agentWorktree evidence cwd");
+      }
+      if (loop.evidence?.timeoutMs !== 120000) {
+        fail("README.md Goal Loop example must document evidence timeoutMs");
+      }
+      if (loop.evidence?.maxOutputBytes !== 8192) {
+        fail("README.md Goal Loop example must document evidence maxOutputBytes");
+      }
+      if (!loop.budget || loop.budget.maxTurns !== 4 || loop.budget.maxRuntimeMs !== 3600000 || loop.budget.maxTokens !== 200000) {
+        fail("README.md Goal Loop example must document positive turn, runtime, and token budgets");
+      }
+    }
+  }
+
+  const requiredContext = [
+    "**Goal Loop**:",
+    "**Goal Loop State**:",
+    "**Goal Loop Evidence Command**:",
+    "**Goal Loop Stop Outcome**:",
+    "Goal met requires successful deterministic evidence from the **Goal Loop Evidence Command**",
+    "A **Goal Loop** must not change retry, completion, status transition, **Stage Commit**, **Stage Push**, Task Branch Integration, auto-merge, pull request, or delivery authority",
+    "The **Terminal Console** and **Web Dashboard** read **Goal Loop State** from the same **Runtime State** projection",
+  ];
+
+  for (const phrase of requiredContext) {
+    if (!context.includes(phrase)) {
+      fail(`CONTEXT.md is missing Goal Loop semantics for ${phrase}`);
+    }
+  }
+}
+
 function assertGitHubScope(projectTracking) {
   const required = [
     'tracker.kind` is `"github"`',
@@ -444,6 +533,7 @@ assertReadinessGuidance(markdownByPath.get("README.md"));
 assertCompozyGuidance(markdownByPath.get("README.md"));
 assertCompozyLifecycleContractDocs(markdownByPath.get("README.md"));
 assertTerminalConsoleGuidance(markdownByPath.get("README.md"));
+assertGoalLoopGuidance(markdownByPath.get("README.md"), jsonBlocks);
 assertGitHubScope(markdownByPath.get(".github/project-tracking.md"));
 assertLegacyWorkflowReferencesAreScoped();
 assertNoGeneratedResJsDiff();

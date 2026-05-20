@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Wire Goal Loop lifecycle into orchestration dispatch and activity"
 type: backend
 complexity: high
@@ -7,6 +7,7 @@ dependencies:
   - task_03
   - task_04
   - task_05
+
 ---
 
 # Task 07: Wire Goal Loop lifecycle into orchestration dispatch and activity
@@ -31,11 +32,11 @@ This task connects the pure Goal Loop model to orchestration lifecycle events be
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Create loop state at dispatch for enabled stages.
-- [ ] 7.2 Update loop state when agent output or workspace activity changes.
-- [ ] 7.3 Update loop state when an existing retry is scheduled.
-- [ ] 7.4 Record budget exhaustion as a visible stop state.
-- [ ] 7.5 Add orchestration tests proving existing lifecycle behavior is unchanged.
+- [x] 7.1 Create loop state at dispatch for enabled stages.
+- [x] 7.2 Update loop state when agent output or workspace activity changes.
+- [x] 7.3 Update loop state when an existing retry is scheduled.
+- [x] 7.4 Record budget exhaustion as a visible stop state.
+- [x] 7.5 Add orchestration tests proving existing lifecycle behavior is unchanged.
 
 ## Implementation Details
 Use the TechSpec "Integration Points" and "Development Sequencing" sections. This task should populate lifecycle state, but the evidence gate itself belongs to task_08.
@@ -64,15 +65,15 @@ Use the TechSpec "Integration Points" and "Development Sequencing" sections. Thi
 
 ## Tests
 - Unit tests:
-  - [ ] Dispatching a Goal Loop-enabled stage creates a `running` loop state.
-  - [ ] Dispatching a non-enabled stage does not create loop state.
-  - [ ] Agent output updates latest activity without overwriting Goal Usage.
-  - [ ] Existing retry scheduling updates Goal Loop attempt and next action.
-  - [ ] Budget exhaustion creates a `budget_exhausted` stop outcome.
+  - [x] Dispatching a Goal Loop-enabled stage creates a `running` loop state.
+  - [x] Dispatching a non-enabled stage does not create loop state.
+  - [x] Agent output updates latest activity without overwriting Goal Usage.
+  - [x] Existing retry scheduling updates Goal Loop attempt and next action.
+  - [x] Budget exhaustion creates a `budget_exhausted` stop outcome.
 - Integration tests:
-  - [ ] Runtime State snapshot shows loop state for an active dispatched task.
-  - [ ] Existing Stage Goal Handoff prompt composition remains unchanged.
-  - [ ] Existing Stage Commit/status behavior remains unchanged before task_08.
+  - [x] Runtime State snapshot shows loop state for an active dispatched task.
+  - [x] Existing Stage Goal Handoff prompt composition remains unchanged.
+  - [x] Existing Stage Commit/status behavior remains unchanged before task_08.
 - Test coverage target: >=80%
 - All tests must pass
 

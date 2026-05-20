@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Persist canonical Goal Loop state under Runtime Home"
 type: backend
 complexity: medium
 dependencies:
   - task_02
+
 ---
 
 # Task 04: Persist canonical Goal Loop state under Runtime Home
