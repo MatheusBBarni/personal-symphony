@@ -116,6 +116,16 @@ let stop_needs_attention = (loop, reason, updated_at) => {
   updated_at,
 };
 
+let stop_goal_met = (loop, evidence, updated_at) => {
+  ...loop,
+  state: goal_met,
+  latest_evidence: Some(bounded(evidence)),
+  stop_outcome: Some(goal_met),
+  stop_reason: Some("Goal Loop Evidence Command succeeded."),
+  next_action: Some("Continue existing completion lifecycle."),
+  updated_at,
+};
+
 let stop_budget_exhausted = (loop, reason, updated_at) => {
   ...loop,
   state: budget_exhausted,

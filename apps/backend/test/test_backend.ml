@@ -14865,6 +14865,19 @@ let goal_loop_enabled_config root =
     ~goal_loop:(test_goal_loop_config ~max_turns:4 ~max_runtime_ms:3_600_000 ~max_tokens:200_000 ())
     root
 
+let goal_loop_enabled_config_with_evidence root argv =
+  let goal_loop = test_goal_loop_config ~max_turns:4 ~max_runtime_ms:3_600_000 ~max_tokens:200_000 () in
+  let evidence_command =
+    Some
+      {
+        Config.argv;
+        cwd = Config.default_goal_loop_evidence_cwd;
+        timeout_ms = Config.default_goal_loop_evidence_timeout_ms;
+        max_output_bytes = Config.default_goal_loop_evidence_max_output_bytes;
+      }
+  in
+  stage_context_test_config ~context_snapshot:false ~goal_loop:{ goal_loop with evidence_command } root
+
 let test_goal_loop_domain_transitions () =
   let budget : Goal_loop.budget = { max_turns = Some 2; max_runtime_ms = Some 1000; max_tokens = None } in
   let loop =
@@ -14877,7 +14890,11 @@ let test_goal_loop_domain_transitions () =
   Alcotest.(check int) "retry attempt" 2 retry.attempt_count;
   let exhausted = Goal_loop.stop_budget_exhausted retry "maxRuntimeMs reached" "2026-05-20T12:02:00Z" in
   Alcotest.(check string) "budget state" "budget_exhausted" exhausted.state;
-  Alcotest.(check (option string)) "budget outcome" (Some "budget_exhausted") exhausted.stop_outcome
+  Alcotest.(check (option string)) "budget outcome" (Some "budget_exhausted") exhausted.stop_outcome;
+  let met = Goal_loop.stop_goal_met retry "pnpm test passed." "2026-05-20T12:03:00Z" in
+  Alcotest.(check string) "goal met state" "goal_met" met.state;
+  Alcotest.(check (option string)) "goal met outcome" (Some "goal_met") met.stop_outcome;
+  Alcotest.(check (option string)) "goal met evidence" (Some "pnpm test passed.") met.latest_evidence
 
 let test_orchestrator_goal_loop_dispatch_creates_running_state () =
   with_temp_dir "symphony-goal-loop-dispatch-" (fun root ->
@@ -15094,6 +15111,72 @@ let test_orchestrator_goal_loop_preserves_stage_goal_handoff_prompt () =
       let open Yojson.Safe.Util in
       Alcotest.(check string) "goal kind unchanged" "Stage Goal Context" (goal_json |> member "kind" |> to_string);
       Alcotest.(check int) "goal attempt unchanged" 1 (goal_json |> member "attempt" |> to_int))
+
+let test_orchestrator_goal_loop_successful_exit_requires_evidence () =
+  with_temp_dir "symphony-goal-loop-success-evidence-" (fun root ->
+      let config = goal_loop_enabled_config_with_evidence root [ "printf"; "deterministic evidence" ] in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let commit_calls = ref 0 in
+      let statuses = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        let pid = Orchestrator.spawn_shell_command "exit 0" in
+        { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        incr commit_calls;
+        Ok ()
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~set_status ~fetch:(fun _ -> Ok [ issue ]) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "stage commit runs after evidence" 1 !commit_calls;
+      Alcotest.(check (list string)) "success status moves after evidence" [ "In review" ] (List.rev !statuses);
+      Alcotest.(check int) "no retry after evidence" 0 (List.length state.Runtime_state.retrying);
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "goal met after evidence" "goal_met" loop.state;
+      Alcotest.(check (option string)) "evidence stored" (Some "deterministic evidence") loop.latest_evidence)
+
+let test_orchestrator_goal_loop_successful_exit_retries_without_evidence () =
+  with_temp_dir "symphony-goal-loop-missing-evidence-" (fun root ->
+      let config = goal_loop_enabled_config_with_evidence root [ "true" ] in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let commit_calls = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        let pid = Orchestrator.spawn_shell_command "exit 0" in
+        { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        incr commit_calls;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~set_status:(fun _ _ _ -> Ok ()) ~fetch:(fun _ -> Ok [ issue ])
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "stage commit skipped without evidence" 0 !commit_calls;
+      Alcotest.(check int) "retry queued without evidence" 1 (List.length state.Runtime_state.retrying);
+      let retry =
+        match state.Runtime_state.retrying with [ retry ] -> retry | _ -> Alcotest.fail "expected one retry row"
+      in
+      Alcotest.(check bool) "retry reason explains missing evidence" true
+        (option_exists
+           (fun error -> contains_substring error "produced no deterministic evidence")
+           retry.error);
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "retrying without evidence" "retrying" loop.state)
 
 let test_orchestrator_goal_loop_keeps_completion_lifecycle_unchanged () =
   with_temp_dir "symphony-goal-loop-completion-lifecycle-" (fun root ->
@@ -18881,6 +18964,10 @@ let () =
             test_orchestrator_goal_loop_budget_exhaustion_records_stop;
           Alcotest.test_case "Goal Loop preserves Stage Goal Handoff prompt" `Quick
             test_orchestrator_goal_loop_preserves_stage_goal_handoff_prompt;
+          Alcotest.test_case "Goal Loop successful exit requires evidence" `Quick
+            test_orchestrator_goal_loop_successful_exit_requires_evidence;
+          Alcotest.test_case "Goal Loop successful exit retries without evidence" `Quick
+            test_orchestrator_goal_loop_successful_exit_retries_without_evidence;
           Alcotest.test_case "Goal Loop keeps completion lifecycle unchanged" `Quick
             test_orchestrator_goal_loop_keeps_completion_lifecycle_unchanged;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;

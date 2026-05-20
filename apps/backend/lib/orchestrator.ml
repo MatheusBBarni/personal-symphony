@@ -2147,6 +2147,10 @@ let mark_goal_loop_budget_exhausted orchestrator issue_id reason =
   let updated_at = Util.now_iso8601 () in
   update_goal_loop_state orchestrator issue_id (fun loop -> Goal_loop.stop_budget_exhausted loop reason updated_at)
 
+let mark_goal_loop_goal_met orchestrator issue_id evidence =
+  let updated_at = Util.now_iso8601 () in
+  update_goal_loop_state orchestrator issue_id (fun loop -> Goal_loop.stop_goal_met loop evidence updated_at)
+
 let running_row_for_child orchestrator child =
   List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = child.issue_id) orchestrator.state.running
 
@@ -2177,6 +2181,93 @@ let goal_loop_budget_exhaustion orchestrator child =
                     (Printf.sprintf "Goal Loop budget exhausted: maxTokens %d reached with %d tokens." max_tokens
                        total_tokens)
               | _ -> None)))
+
+let context_command_of_goal_loop_evidence (command : Config.stage_goal_loop_evidence_command) :
+    Config.stage_context_command =
+  {
+    argv = command.argv;
+    cwd = command.cwd;
+    timeout_ms = command.timeout_ms;
+    max_output_bytes = command.max_output_bytes;
+    validation_error = None;
+  }
+
+type goal_loop_evidence_result =
+  | Goal_loop_evidence_passed of string
+  | Goal_loop_evidence_failed of string
+
+let goal_loop_evidence_failure_summary run =
+  if run.timed_out then "Goal Loop evidence command timed out."
+  else
+    match run.process_status with
+    | Unix.WEXITED code -> Printf.sprintf "Goal Loop evidence command exited with code %d." code
+    | Unix.WSIGNALED signal -> Printf.sprintf "Goal Loop evidence command terminated by signal %d." signal
+    | Unix.WSTOPPED signal -> Printf.sprintf "Goal Loop evidence command stopped by signal %d." signal
+
+let run_goal_loop_evidence_command orchestrator child (command : Config.stage_goal_loop_evidence_command) =
+  let started_at = Unix.gettimeofday () in
+  let context_command = context_command_of_goal_loop_evidence command in
+  try
+    let input_path =
+      write_context_command_input_file orchestrator.config
+        (Yojson.Safe.to_string
+           (`Assoc
+          [
+            ("kind", `String "Goal Loop Evidence Input");
+            ("issueIdentifier", `String child.issue_identifier);
+            ("workspaceRepositoryRoot", `String orchestrator.config.Config.repository_root);
+            ("agentWorktree", `String child.workspace.Workspace.path);
+          ]))
+    in
+    Fun.protect
+      ~finally:(fun () -> remove_if_exists input_path)
+      (fun () ->
+        let env = env_with_context_input input_path in
+        let cwd = context_command_cwd orchestrator.config child.workspace context_command in
+        match command.argv with
+        | [] -> Goal_loop_evidence_failed "Goal Loop evidence command argv is empty."
+        | program :: _ -> (
+            match resolve_context_executable ~cwd env program with
+            | Error error -> Goal_loop_evidence_failed ("Goal Loop evidence command " ^ error ^ ".")
+            | Ok executable ->
+                with_context_command_pipes (fun ~stdout_read ~stdout_write ~stderr_read ~stderr_write ->
+                    let pid =
+                      spawn_context_command ~cwd ~env ~stdin_path:input_path ~stdout_fd:stdout_write
+                        ~stderr_fd:stderr_write ~executable command.argv
+                    in
+                    close_noerr stdout_write;
+                    close_noerr stderr_write;
+                    let run =
+                      wait_context_command env pid command.timeout_ms stdout_read stderr_read command.max_output_bytes
+                    in
+                    if run.timed_out then Goal_loop_evidence_failed (goal_loop_evidence_failure_summary run)
+                    else
+                      match run.process_status with
+                      | Unix.WEXITED 0 ->
+                          let evidence = Util.trim run.stdout.output in
+                          if evidence = "" then
+                            Goal_loop_evidence_failed
+                              "Goal Loop evidence command succeeded but produced no deterministic evidence."
+                          else Goal_loop_evidence_passed evidence
+                      | _ -> Goal_loop_evidence_failed (goal_loop_evidence_failure_summary run))))
+  with exn ->
+    let elapsed_ms = context_command_elapsed_ms started_at in
+    Goal_loop_evidence_failed
+      (Printf.sprintf "Goal Loop evidence command failed after %dms: %s" elapsed_ms (Printexc.to_string exn))
+
+let goal_loop_completion_gate orchestrator child =
+  let stage = match child.stage with Some _ -> child.stage | None -> stage_for_issue orchestrator.config child.issue in
+  match stage_goal_loop_config stage with
+  | None -> `Complete
+  | Some (_stage, goal_loop_config) -> (
+      match goal_loop_config.evidence_command with
+      | None -> `Fail "Goal Loop evidence command is not configured."
+      | Some command -> (
+          match run_goal_loop_evidence_command orchestrator child command with
+          | Goal_loop_evidence_passed evidence ->
+              mark_goal_loop_goal_met orchestrator child.issue_id evidence;
+              `Complete
+          | Goal_loop_evidence_failed reason -> `Fail reason))
 
 let is_compozy_prd_run_child orchestrator issue =
   orchestrator.tracker.kind = "compozy_tasks" && Util.starts_with ~prefix:"compozy:" issue.Issue.identifier
@@ -4213,7 +4304,9 @@ let reap_children orchestrator =
           | 0, _ -> (finished, child :: running)
           | _, Unix.WEXITED 0 ->
               refresh_child_output ~force:true orchestrator child;
-              mark_completed orchestrator child;
+              (match goal_loop_completion_gate orchestrator child with
+              | `Complete -> mark_completed orchestrator child
+              | `Fail reason -> mark_child_failed orchestrator child reason);
               (child.issue_id :: finished, running)
           | _, Unix.WEXITED code ->
               refresh_child_output ~force:true orchestrator child;
@@ -4227,7 +4320,9 @@ let reap_children orchestrator =
               set_error orchestrator (Printf.sprintf "agent for %s stopped by signal %d" child.issue_id signal);
               (finished, child :: running)
           | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
-              mark_completed orchestrator child;
+              (match goal_loop_completion_gate orchestrator child with
+              | `Complete -> mark_completed orchestrator child
+              | `Fail reason -> mark_child_failed orchestrator child reason);
               (child.issue_id :: finished, running))
       ([], []) orchestrator.children
   in
