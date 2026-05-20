@@ -18,594 +18,423 @@ Stage Commit is enabled for this stage. Leave the worktree ready for a local com
 
 Stage agent: engineer
 
-# Compozy PRD Run Stage
+# Compozy Task Step
 
-Run: compozy:cursor-cli-harness-integration
-PRD directory: cursor-cli-harness-integration
-Task step status: completed
-Completed task steps: 6/6
+Run: compozy:built-in-agent-looper
+PRD directory: built-in-agent-looper
+Current task file: task_11.md
+Current task title: Update operator docs examples and final validation coverage
 
-## Completed Compozy Task Steps
+## Current Task (`task_11.md`)
 
-- task_01.md: Add Cursor Harness Kind, Defaults, And Command Rendering
-- task_02.md: Add Cursor CLI Install And Auth Readiness Checks
-- task_03.md: Implement Cursor Loop Readiness And Goal Handoff Support
-- task_04.md: Add Cursor Stream-JSON Activity Parsing And Runtime Visibility
-- task_05.md: Update Bootstrap Runtime Contract Defaults For Cursor
-- task_06.md: Update Docs, Glossary, Project ADR, And Harness Onboarding Guidance
+---
+status: in_progress
+title: "Update operator docs examples and final validation coverage"
+type: docs
+complexity: medium
+dependencies:
+  - task_03
+  - task_08
+  - task_09
+  - task_10
+
+---
+
+# Task 11: Update operator docs examples and final validation coverage
+
+## Overview
+This task completes the feature documentation and verification story after backend and UI behavior are implemented. It documents Goal Loop configuration, evidence command behavior, Runtime State visibility, operator outcomes, and the boundaries that preserve existing delivery semantics.
+
+<critical>
+- ALWAYS READ the PRD and TechSpec before starting
+- REFERENCE TECHSPEC for implementation details — do not duplicate here
+- FOCUS ON "WHAT" — describe what needs to be accomplished, not how
+- MINIMIZE CODE — show code only to illustrate current structure or problem areas
+- TESTS REQUIRED — every task MUST include tests in deliverables
+</critical>
+
+<requirements>
+- REQ-01 MUST document Goal Loop settings, evidence command contract, stop outcomes, and Runtime State fields.
+- REQ-02 MUST update Bootstrap or example settings only if implementation explicitly accepted those defaults.
+- REQ-03 MUST document that Goal Loop does not own Stage Commit, Stage Push, merge, PR, auto-merge, or status authority.
+- REQ-04 MUST update repo docs/tests for Terminal Console and Web Dashboard visibility.
+- REQ-05 MUST run the final verification set appropriate for backend, frontend, docs, and task validation.
+</requirements>
+
+## Subtasks
+- [ ] 11.1 Update README and relevant docs for Goal Loop operator behavior.
+- [ ] 11.2 Update Runtime Settings examples and secret-free evidence command examples.
+- [ ] 11.3 Update `CONTEXT.md` if implementation changed final terms after task_01.
+- [ ] 11.4 Add final docs/test assertions for operator-facing semantics.
+- [ ] 11.5 Run full validation and record any remaining gaps.
+
+## Implementation Details
+Use the TechSpec "Monitoring and Observability" and "Development Sequencing" sections. This task should not introduce new runtime behavior except documentation-driven tests or fixture updates required to keep docs accurate.
+
+### Relevant Files
+- `README.md` — primary operator docs for Symphony runtime behavior.
+- `CONTEXT.md` — domain source of truth.
+- `docs/adr/` — contains repo-level decisions for runtime semantics.
+- `apps/backend/test/test_backend.ml` — documentation and runtime behavior assertions.
+- `apps/frontend/test/liveState.test.mjs` — final dashboard snapshot coverage.
+- `.compozy/tasks/built-in-agent-looper/_tasks.md` — task bundle master list for validation.
+
+### Dependent Files
+- `apps/backend/lib/runtime_home.ml` — examples must remain idempotent and secret-free.
+- `apps/backend/lib/config.ml` — docs must match actual settings.
+- `apps/backend/lib/runtime_state.ml` — docs must match actual Runtime State fields.
+- `apps/backend/bin/terminal_console_tui.ml` and `apps/frontend/src/Pages/Dashboard.res` — docs must match actual operator surfaces.
+
+### Related ADRs
+- [ADR-001: Goal Loop Runtime Scope](adrs/adr-001.md) — Defines scope and lifecycle boundaries.
+- [ADR-002: Evidence-First Goal Loop Approach](adrs/adr-002.md) — Defines evidence-first product behavior.
+- [ADR-003: Stage-Scoped Goal Loop Runtime State](adrs/adr-003.md) — Defines state and config scope.
+- [ADR-004: Evidence Command Completion Gate](adrs/adr-004.md) — Defines evidence gate and retry/attention behavior.
+
+## Deliverables
+- Updated operator documentation for Goal Loop.
+- Updated docs tests or assertions.
+- Secret-free examples for evidence command configuration.
+- Final verification notes for backend, frontend, docs, and task validation.
+- Unit tests with 80%+ coverage **(REQUIRED)**.
+- Integration tests across backend/frontend/docs validation **(REQUIRED)**.
+
+## Tests
+- Unit tests:
+  - [ ] Docs assertions confirm Goal Loop terms and lifecycle boundaries.
+  - [ ] Runtime Settings examples are secret-free and parse correctly.
+  - [ ] Documentation mentions deterministic evidence for `Goal met`.
+- Integration tests:
+  - [ ] `pnpm test` passes for backend and docs assertions.
+  - [ ] `pnpm frontend:test` passes for dashboard/live-state changes.
+  - [ ] `pnpm frontend:build` passes after ReScript changes.
+  - [ ] `pnpm backend:build` passes after backend changes.
+  - [ ] `compozy tasks validate --name built-in-agent-looper` passes for this bundle.
+- Test coverage target: >=80%
+- All tests must pass
+
+## Success Criteria
+- All tests passing
+- Test coverage >=80%
+- Operator docs match implemented behavior.
+- Goal Loop examples are secret-free and idempotent.
+- Task validation passes for the generated bundle.
 
 ## PRD (`_prd.md`)
 
-# Cursor CLI Harness Integration PRD
+# Built-In Agent Looper PRD
 
 ## Overview
 
-Cursor CLI Harness Integration makes Symphony a clearer provider-choice product for operators who already run agent
-work through Cursor. It adds Cursor as a stable first-class `Agent Harness` inside the existing `Runtime Contract`, so
-a `Workspace Repository` can route any `Logical Agent` role to Cursor without abandoning Symphony's orchestration
-model, `Agent Worktree` isolation, `Task Branch` flow, or Runtime State visibility.
+Personal Symphony should add an evidence-first **Goal Loop** that lets a maintainer supervise agent work with higher trust and less manual continuation. A maintainer should be able to see what goal an agent is pursuing, why the loop continued, what evidence supports completion, and why the loop stopped.
 
-The value is practical rather than aspirational. Operators should be able to complete normal task flows on
-Cursor-selected roles using the same product concepts they already understand for other Harnesses. The product outcome
-is stronger provider neutrality: Cursor becomes a supported peer to existing Harnesses, while Symphony preserves one
-consistent user model for selection, readiness, observability, and rollout.
+V1 focuses on trust and visibility. A loop may stop as **Goal met** only when deterministic evidence supports that outcome. Ambiguous, blocked, or unverifiable work stops as **Needs attention** with clear guidance. Budget exhaustion stops predictably and visibly.
 
 ## Goals
 
-- Make Cursor a stable first-class `Agent Harness` option in Symphony's `Runtime Contract`.
-- Let operators assign Cursor to any `Logical Agent` role, not only `engineer`.
-- Enable operators who already use Cursor CLI to complete normal Symphony task flows without switching tools.
-- Preserve clear product boundaries between `harnesses`, `agents`, and `stageAgents`.
-- Strengthen Symphony's repeatable pattern for future Harness additions through a small onboarding or certification
-  checklist.
-
-Target outcomes:
-- Cursor-selected roles can complete normal task flows reliably enough for routine use.
-- Operators understand how to configure Cursor with low ambiguity.
-- Symphony's provider-choice story becomes stronger without fragmenting the product model.
+- Let maintainers trust loop outcomes across multiple **Stage Agents** in a **Workspace Repository**.
+- Make **Goal met** an evidence-backed stop outcome, not an agent confidence claim.
+- Reduce manual "continue working" nudges while preserving operator control.
+- Expose loop goal, status, stop reason, latest evidence, and next action through existing operator surfaces.
+- Preserve existing lifecycle boundaries for status transitions, Stage Commit, Stage Push, merge, PR, and delivery behavior.
 
 ## User Stories
 
-**Workspace Repository operator**
-
-- As a `Workspace Repository` operator, I want to select Cursor for any `Logical Agent` role so that Symphony fits the
-  agent tool I already use.
-- As a `Workspace Repository` operator, I want Cursor to look like a real supported Harness, not a hidden
-  compatibility path, so that I can adopt it confidently.
-- As a `Workspace Repository` operator, I want clear readiness and setup guidance so that I can get to a successful
-  run quickly.
-
-**Task supervisor**
-
-- As a task supervisor, I want Runtime State to show when Cursor is the selected Harness so that I can understand
-  which provider is running a task.
-- As a task supervisor, I want normal task progress and logs to remain visible when work runs on Cursor so that
-  provider choice does not reduce operational trust.
-
-**Product maintainer**
-
-- As a product maintainer, I want Cursor onboarding to follow the same Harness model as existing providers so that
-  future Harness additions become easier and less ad hoc.
-- As a product maintainer, I want the PRD to define clear non-goals so that provider support does not quietly expand
-  into unrelated product commitments.
+- As a maintainer, I want to see the active goal for each looped task so that I know what the agent is trying to complete.
+- As a maintainer, I want **Goal met** to require visible deterministic evidence so that I can trust completed loop outcomes.
+- As a maintainer, I want blocked or ambiguous loops to stop as **Needs attention** so that I can intervene with the missing decision or context.
+- As a maintainer, I want budget exhaustion to be explicit so that long-running loops do not silently burn time or usage.
+- As a maintainer, I want the same loop status in Runtime State, Terminal Console, and Web Dashboard so that I do not reconcile conflicting views.
 
 ## Core Features
 
-### F1: Stable First-Class Cursor Harness
-
-Symphony must present Cursor as a supported `Agent Harness` inside `harnesses`, with the same product-level status as
-other supported Harnesses.
-
-User capability:
-- Operators can define a Cursor Harness in Runtime Settings.
-- Cursor appears as a valid execution choice rather than an advanced workaround.
-- Product docs teach Cursor through the same Harness model already used elsewhere.
-
-### F2: Any Logical Agent Can Select Cursor
-
-Cursor support must be available to any `Logical Agent` role.
-
-User capability:
-- Operators can assign Cursor to `planner`, `engineer`, `reviewer`, or other logical roles they define.
-- Symphony does not frame Cursor as an `engineer`-only product path.
-- Provider choice remains role-based and explicit.
-
-### F3: Low-Ambiguity Setup Experience
-
-The product must make it clear how an operator gets from Runtime Settings to a successful Cursor-selected run.
-
-User capability:
-- Operators know where Cursor belongs in the `Runtime Contract`.
-- Operators receive clear readiness or setup feedback when Cursor is selected.
-- Operators can reach a first successful run with low configuration ambiguity.
-
-### F4: Normal Task-Flow Support
-
-Cursor-selected roles must be able to participate in the normal Symphony workflow.
-
-User capability:
-- Operators can use Cursor-selected roles in routine task execution.
-- Provider choice does not break the expected task-flow experience.
-- Cursor support is measured by successful use in ordinary work, not by a narrow demo path.
-
-### F5: Provider Visibility In Runtime State
-
-Cursor must be observable as a selected Harness in operator-facing runtime views.
-
-User capability:
-- Operators can tell when a task is running on Cursor.
-- Provider identity remains visible alongside normal task state.
-- Provider choice does not reduce day-to-day operational clarity.
-
-### F6: Cursor Examples In Bootstrap And Docs
-
-Runtime Contract examples must show Cursor as part of the supported Harness story.
-
-User capability:
-- Operators can copy or adapt a Cursor example from product-owned documentation or seeded defaults.
-- Cursor configuration is discoverable without reading backend source.
-- Docs reinforce the split between `harnesses`, `agents`, and `stageAgents`.
-
-### F7: Harness Onboarding Checklist
-
-The Cursor effort should leave behind a lightweight reusable checklist for future Harness additions.
-
-User capability:
-- Product maintainers can evaluate future Harness candidates against a repeatable set of product expectations.
-- Symphony reduces one-off provider decisions over time.
-- Cursor becomes a compounding product investment, not just a single-provider feature.
+| Feature | Priority | Requirement |
+|---|---|---|
+| Goal Loop status | Critical | Show the current loop goal, state, attempt count, stop budget, latest evidence, and next action. |
+| Evidence-backed completion | Critical | Allow **Goal met** only when deterministic evidence is present for the claimed completion. |
+| Attention stop outcome | Critical | Stop ambiguous, blocked, or missing-evidence work as **Needs attention** with a concise reason. |
+| Budget stop outcome | Critical | Stop predictably when configured time, turn, or usage limits are exhausted. |
+| Shared operator visibility | High | Present the same authoritative loop status through existing operator surfaces. |
+| Lifecycle boundary protection | High | Keep delivery behavior under existing Symphony rules; the loop does not gain commit, push, merge, PR, or status authority. |
+| Future recipe readiness | Medium | Preserve product language that can later support named reusable loop recipes without expanding V1 scope. |
 
 ## User Experience
 
-Primary journey:
-1. An operator opens `.symphony/settings.json` or related Runtime Contract docs.
-2. They see Cursor presented as a supported `Agent Harness` alongside the existing provider model.
-3. They assign Cursor to one or more `Logical Agent` roles.
-4. Symphony guides them to readiness rather than leaving provider setup ambiguous.
-5. They dispatch normal work and observe Cursor-selected execution through the same Runtime State surfaces they already
-   use.
-6. They continue using Symphony's existing orchestration flow without needing a separate mental model for Cursor.
+A maintainer starts or observes a task using a loop-capable stage. The operator surface shows the active goal and current loop state. During execution, the maintainer can see whether the loop is still working, what changed recently, and what evidence is available.
 
-Product experience principles:
-- Provider choice should feel native, not bolted on.
-- Role selection should remain simple and explicit.
-- Setup friction should be low enough that current Cursor users can adopt quickly.
-- Visibility should remain strong enough that operators trust mixed-Harness environments.
-- Discoverability should come from the Runtime Contract and product docs, not from tribal knowledge.
+When the loop stops, the outcome is one of three primary user-facing states:
 
-Accessibility and clarity considerations:
-- Setup and readiness messages should be understandable by operators who know Symphony but do not know backend
-  internals.
-- Product wording should distinguish support scope from future ambitions.
-- Provider-specific examples should reinforce the same information architecture rather than creating a separate
-  Cursor-only UX.
+- **Goal met**: deterministic evidence supports the completion claim.
+- **Needs attention**: the loop is blocked, ambiguous, or missing required evidence.
+- **Budget exhausted**: time, turn, or usage limits stopped the loop.
+
+The maintainer should never need to infer whether "done" means verified, guessed, or merely claimed.
 
 ## High-Level Technical Constraints
 
-- Cursor must fit the existing `Workspace Repository`-owned `Runtime Contract`.
-- Product examples must preserve the separation between `harnesses`, `agents`, and `stageAgents`.
-- Bootstrap must remain idempotent and must not overwrite user-edited runtime files.
-- Product guidance must reference only secret environment variable names, never secret values.
-- Provider support must preserve existing `Agent Worktree`, `Task Branch`, and Runtime State product semantics.
-- Observability must remain available even when provider-specific structured activity is incomplete.
+- Must preserve established Symphony domain language and update `CONTEXT.md` when final terms are accepted.
+- Must remain Workspace Repository scoped.
+- Must not expose secrets, token values, local environment contents, or full hidden prompts in operator-facing evidence.
+- Must not change existing Stage Commit, Stage Push, merge, PR, auto-merge, or status-transition behavior in V1.
+- Must coexist with current **Stage Goal Handoff**, **Harness Loop**, **Goal Usage**, **Runtime State**, **Terminal Console**, and **Web Dashboard** semantics.
 
 ## Non-Goals (Out of Scope)
 
-- Reframing Cursor as a hidden or experimental-only feature.
-- Limiting Cursor support to only one `Logical Agent` role in the product story.
-- Shipping Cursor background-agent or cloud-agent product behavior in this PRD.
-- Creating a broad new provider-capability framework for permissions, autonomy, or enterprise controls.
-- Promising complete semantic parity between Cursor and every existing Harness.
-- Automatically rewriting user Runtime Contract files.
-- Using this PRD to define implementation details, parser strategy, or backend architecture.
+- Full autonomous delivery authority.
+- Independent completion review after agent exit.
+- Multi-goal orchestration.
+- Recipe marketplace or broad loop configuration UI.
+- Provider-specific global lifecycle hooks.
+- Qualitative-only completion claims counted as **Goal met** in V1.
 
 ## Phased Rollout Plan
 
 ### MVP (Phase 1)
 
-- Stable first-class Cursor Harness positioning in the Runtime Contract.
-- Cursor available to any `Logical Agent`.
-- Clear setup and readiness experience for Cursor-selected roles.
-- Normal task-flow support for routine operator use.
-- Runtime State provider visibility for Cursor.
-- Cursor examples in docs or seeded settings.
-- Initial Harness onboarding checklist for future providers.
-
-Success criteria to proceed:
-- Operators can complete normal task flows on Cursor-selected roles.
-- Setup ambiguity is low enough that existing Cursor operators can adopt without deep source-code reading.
-- Runtime State makes Cursor-selected execution understandable in daily use.
+- Define evidence-first Goal Loop product behavior.
+- Show active goal, loop state, stop outcome, latest evidence, budget status, and next action.
+- Support **Goal met**, **Needs attention**, and **Budget exhausted** as clear stop outcomes.
+- Preserve all existing delivery lifecycle rules.
 
 ### Phase 2
 
-- Improve discoverability and operator guidance for mixed-Harness environments.
-- Strengthen the reusable Harness onboarding checklist with examples and validation guidance.
-- Expand product documentation around role selection patterns and common provider-choice scenarios.
-
-Success criteria to proceed:
-- Operators can confidently mix Cursor with other Harnesses across different roles.
-- Product maintainers can use the onboarding checklist to evaluate another Harness candidate with less ad hoc work.
+- Add reusable loop recipes once V1 proves maintainers trust the loop state.
+- Improve dashboard and console summaries for historical loop outcomes.
+- Add richer attention categorization for missing evidence, blocked dependency, and budget exhaustion.
 
 ### Phase 3
 
-- Mature Symphony's broader provider-choice narrative using lessons from Cursor adoption.
-- Evaluate whether additional provider-facing product surfaces are needed for richer mixed-Harness workflows.
-- Extend the onboarding pattern into a more formal provider-support playbook if repeated Harness additions justify it.
-
-Long-term success criteria:
-- Symphony can add future Harnesses without reshaping the core product model.
-- Provider choice becomes a durable product strength rather than a source of setup complexity.
+- Explore cross-harness loop behavior and broader workflow reuse.
+- Consider independent completion review only through a separate ADR and PRD.
+- Add aggregate loop reliability and cost trend reporting.
 
 ## Success Metrics
 
-- `>= 90%` of Cursor-selected task runs complete the normal dispatch-to-finish flow without setup or support failure in
-  dogfood use.
-- `<= 15 minutes` median time from opening Cursor setup docs to first successful Cursor-selected task flow for an
-  operator who already has Cursor installed.
-- `100%` of Cursor-selected running tasks show provider identity in Runtime State.
-- `>= 2` real `Workspace Repositories` adopt Cursor as part of normal role selection within 30 days of release.
-- `>= 80%` of surveyed or observed early adopters report that provider choice feels clear rather than ambiguous.
+| Metric | Target |
+|---|---:|
+| Stop explanation coverage | >= 90% of stopped loops include outcome, reason, latest evidence, and next action. |
+| Evidence-backed success | 100% of **Goal met** outcomes include deterministic evidence. |
+| Manual continuation reduction | >= 50% fewer maintainer continuation nudges on loop-enabled tasks. |
+| Attention clarity | >= 80% of **Needs attention** outcomes identify the missing evidence, blocker, or decision. |
+| Lifecycle boundary violations | 0 loop-driven commit, push, merge, PR, or status changes outside existing rules. |
 
 ## Risks and Mitigations
 
-- **Adoption risk:** Operators may not trust Cursor if support looks partial or ambiguous.
-  - Mitigation: position Cursor as stable first-class support and keep the setup path explicit.
-
-- **Expectation risk:** Stable support language may create stronger expectations than the first rollout can satisfy.
-  - Mitigation: keep the supported scope narrow, define clear non-goals, and use phased rollout to control surface
-    area.
-
-- **Competitive risk:** If Symphony's provider-choice story feels weaker than other agent orchestration products,
-  Cursor support may not change adoption.
-  - Mitigation: focus the MVP on normal task-flow completion and operator clarity, not merely checkbox compatibility.
-
-- **Dependency risk:** Product confidence depends partly on external provider behavior and documentation staying usable.
-  - Mitigation: base the product promise on documented behaviors, preserve fallback visibility, and avoid
-    overspecifying parity claims.
-
-- **Scope creep risk:** Cursor support could quietly grow into unrelated autonomy or provider-platform work.
-  - Mitigation: keep future-oriented items explicitly out of scope and use the onboarding checklist to discipline
-    expansion.
+- **False completion**: Require deterministic evidence for **Goal met**.
+- **Operator fatigue from attention outcomes**: Make attention reasons concise and actionable.
+- **Reduced automation feel**: Position V1 as trust-first; completion without evidence is not a success.
+- **Scope creep into platform features**: Defer recipes, multi-goal orchestration, and completion review.
+- **Confusing overlap with Stage Goal Handoff**: Define Goal Loop as the user-facing loop outcome model, while Stage Goal Handoff remains launch-time behavior.
 
 ## Architecture Decision Records
 
-- [ADR-001: Cursor Harness As A Bounded Multi-Harness Extension](adrs/adr-001.md) — Accepts `kind: "cursor"` as a
-  first-class `Agent Harness` while keeping scope bounded and reusable.
-- [ADR-002: Stable First-Class Cursor Harness Product Posture](adrs/adr-002.md) — Commits the PRD to stable
-  first-class support for Cursor across any `Logical Agent` role.
+- [ADR-001: Goal Loop Runtime Scope](adrs/adr-001.md) — Accepts a narrow Goal Loop V1 with platform-shaped Runtime contracts.
+- [ADR-002: Evidence-First Goal Loop Approach](adrs/adr-002.md) — Selects evidence-backed completion as the PRD approach.
 
 ## Open Questions
 
-- What default Cursor example should product docs emphasize first for operator setup clarity?
-- How prominently should the Harness onboarding checklist appear in operator-facing docs versus maintainer-facing
-  artifacts?
-- What product language best distinguishes "stable support" from "full semantic parity" without weakening user
-  confidence?
-- Are there specific mixed-Harness role combinations that deserve first-class documentation examples in the initial
-  release?
+- What final domain term should be accepted in `CONTEXT.md`: **Goal Loop**, **Agent Loop Run**, or another term?
+- Should V1 expose loop history beyond the latest stop outcome?
+- Which user-facing evidence categories should count as deterministic for the first release?
+- Should budget settings be described as per stage, per agent role, or per loop run in the next TechSpec?
 
 ## TechSpec (`_techspec.md`)
 
-# Cursor CLI Harness Integration TechSpec
+# Built-In Agent Looper TechSpec
 
 ## Executive Summary
 
-This change adds Cursor as a native `kind: "cursor"` `Agent Harness` inside Symphony's existing multi-Harness
-architecture. The implementation reuses the established `harnesses -> agents -> stageAgents` resolution path,
-selected-Harness readiness model, shell-based launch flow, Runtime State Harness identity, and Bootstrap-owned Runtime
-Contract examples. Cursor-specific behavior stays inside the same provider seams already used for Claude and PI.
+Implement an evidence-first **Goal Loop** as Runtime-owned state, not as a provider prompt wrapper. The core architecture adds a pure backend `Goal_loop` domain module, stage-scoped Goal Loop settings, persisted `.symphony/state/goal-loops/*.json` state, Runtime State projection, and existing Terminal Console/Web Dashboard rendering.
 
-The primary technical trade-off is explicit provider support versus shared-module complexity. A native Cursor Harness
-gives clear behavior, readiness, and observability without inventing a second provider system, but it adds new
-provider-specific branches to already dense backend modules such as `config.ml`, `orchestrator.ml`, and
-`test_backend.ml`. The design keeps scope narrow: Cursor uses CLI-driven auth readiness, `stream-json` as the
-canonical structured output path with raw-log fallback, operator-configured loop support through `loop.enabled` /
-`loop.command`, and targeted updates to Bootstrap, docs, and tests.
+The primary trade-off is stricter completion gating: Goal Loop-enabled stages may not enter existing completion behavior after agent exit `0` until a deterministic evidence command succeeds. Missing or failed evidence retries the task using the existing retry budget, then moves to Human Attention.
 
 ## System Architecture
 
 ### Component Overview
 
-**Runtime Settings / Harness Parsing**
-- Module: `apps/backend/lib/config.ml`
-- Purpose: Parse `kind: "cursor"` inside `harnesses`, merge logical-agent overrides, define defaults, and surface
-  readiness gaps.
-- Boundary: Owns Runtime Contract interpretation and selected-Harness validation, not runtime execution itself.
-
-**Harness Launch And Prompt Composition**
-- Module: `apps/backend/lib/orchestrator.ml`
-- Purpose: Render the selected Cursor command, compose prompt input, launch the process in an `Agent Worktree`, and
-  capture stdout/stderr.
-- Boundary: Owns dispatch-time behavior and runtime child process handling.
-
-**Runtime State And Operator Visibility**
-- Modules: `apps/backend/lib/runtime_state.ml`, `apps/backend/lib/terminal_console_model.ml`,
-  `apps/frontend/src/RuntimeStateSnapshot.res`, `apps/frontend/src/Pages/Dashboard.res`
-- Purpose: Preserve Harness identity and, where supported, structured live activity for running Cursor tasks.
-- Boundary: Owns operator-facing visibility, not command execution or readiness probing.
-
-**Bootstrap And Runtime Contract Examples**
-- Module: `apps/backend/lib/runtime_home.ml`
-- Purpose: Seed bootstrapped `.symphony/settings.json` examples with Cursor support.
-- Boundary: Owns default Runtime Contract examples and idempotent Bootstrap behavior.
-
-**Documentation And Domain Language**
-- Files: `CONTEXT.md`, `README.md`, `docs/adr/0021-agent-harness-runtime-settings.md`
-- Purpose: Update glossary, supported Harness examples, and architectural documentation so Cursor is part of the
-  official model.
-- Boundary: Owns product-contract explanation rather than implementation behavior.
-
-**Backend Verification**
-- Module: `apps/backend/test/test_backend.ml`
-- Purpose: Extend parser, readiness, command rendering, loop, dispatch, and activity coverage for Cursor.
-- Boundary: Owns regression confidence across shared Harness code.
-
-### Data Flow
-
-1. Operator defines `harnesses.cursor` in `.symphony/settings.json`.
-2. `Config.from_settings_file` parses Cursor as a native Harness kind and merges role-level overrides from
-   `agents.<name>`.
-3. `Config.selected_agent_harness` resolves a stage to a logical agent and then to the Cursor Harness.
-4. `Config.readiness_gaps` performs selected-Harness Cursor install/auth/loop readiness before dispatch.
-5. `Orchestrator.compose_prompt` prepends loop handoff only when `loop.enabled` is true and Cursor loop readiness is
-   satisfied.
-6. `Orchestrator.shell_launch` renders the Cursor command, writes the prompt, and launches the child process with
-   stdout/stderr capture.
-7. Runtime refresh logic parses Cursor `stream-json` when available, otherwise falls back to raw logs.
-8. Runtime State and UI surfaces show `harness_name`, `harness_kind`, and activity updates for the running task.
+| Component | Responsibility | Boundary |
+|---|---|---|
+| `Goal_loop` domain module | Types and pure transition logic for loop state, budgets, evidence, and stop outcomes | No Git, tracker, server, or UI calls |
+| Stage Agent config | Opt-in Goal Loop settings and evidence command contract | Does not overload Harness Loop or Goal Usage |
+| Orchestrator integration | Create/update Goal Loop state at dispatch, run evidence gate on exit `0`, route retry/attention/completion | Existing completion path remains downstream |
+| Runtime State | Authoritative top-level `goal_loops` projection plus row summaries when useful | Existing `/api/v1/state` and live stream continue |
+| Runtime Home persistence | Store canonical loop state under `.symphony/state/goal-loops/*.json` | Private, bounded, secret-free |
+| Terminal Console | Render current/terminal Goal Loop state near Goal Usage and Context Status | Read-only |
+| Web Dashboard | Render Goal Loop card near existing task execution details | Reads Runtime State only |
 
 ## Implementation Design
 
 ### Core Interfaces
 
-```ocaml
-type agent_harness = {
-  name : string;
-  kind : string;
-  command : string;
-  model : string;
-  reasoning_effort : string;
-  turn_timeout_ms : int;
-  read_timeout_ms : int;
-  stall_timeout_ms : int;
-  loop_enabled : bool;
-  loop_command : string;
+```go
+type GoalLoopState struct {
+  IssueID        string `json:"issue_id"`
+  RunID          string `json:"run_id"`
+  Goal           string `json:"goal"`
+  State          string `json:"state"`
+  AttemptCount   int    `json:"attempt_count"`
+  StopOutcome    string `json:"stop_outcome,omitempty"`
+  StopReason     string `json:"stop_reason,omitempty"`
+  LatestEvidence string `json:"latest_evidence,omitempty"`
+  NextAction     string `json:"next_action,omitempty"`
+  UpdatedAt      string `json:"updated_at"`
 }
 ```
 
-```ocaml
-type selected_harness_resolution =
-  | Resolved_harness of agent_harness
-  | Missing_logical_agent of string
-  | Missing_referenced_harness of string
-```
-
-```ocaml
-val selected_agent_harness : t -> stage_agent option -> agent_harness option
-val readiness_gaps : t -> readiness_gap list
-val render_harness_command : Config.agent_harness -> string
-```
-
-These interfaces already exist and should remain the primary contracts. The Cursor work extends them by:
-- adding `cursor` as an allowed `kind`
-- adding Cursor-specific default command and readiness behavior
-- optionally extending runtime activity parsing for Cursor output
+The implementation is OCaml/ReasonML, but the exported Runtime State JSON should follow this stable contract.
 
 ### Data Models
 
-**Runtime Settings Harness Entry**
-- Existing `agent_harness` record remains the primary data model.
-- Cursor uses the same fields as other Harnesses:
-  - `name`
-  - `kind = "cursor"`
-  - `command`
-  - `model`
-  - `reasoningEffort`
-  - `turnTimeoutMs`
-  - `readTimeoutMs`
-  - `stallTimeoutMs`
-  - `loop.enabled`
-  - `loop.command`
+Add a Goal Loop state model with these fields:
 
-**Logical Agent Mapping**
-- Existing `logical_agent` model remains unchanged.
-- Cursor support is driven through `agents.<name>.harness = "cursor"` or another named Cursor Harness.
+| Field | Type | Notes |
+|---|---|---|
+| `issue_id` | string | Stable issue identifier used by Runtime State |
+| `issue_identifier` | string | Human-readable identifier |
+| `run_id` | string | Stable loop run id |
+| `goal` | string | Bounded text from Stage Goal Context or configured goal source |
+| `state` | enum | `running`, `retrying`, `goal_met`, `needs_attention`, `budget_exhausted` |
+| `stage_agent` | string option | Stage Agent name |
+| `harness_name` | string option | Selected Harness name |
+| `harness_kind` | string option | Selected Harness kind |
+| `attempt_count` | int | Existing attempt count plus Goal Loop attempts |
+| `budget` | object | Max turns/time/usage configured for the loop |
+| `latest_evidence` | string option | Bounded evidence summary |
+| `stop_outcome` | enum option | `goal_met`, `needs_attention`, `budget_exhausted` |
+| `stop_reason` | string option | Bounded reason |
+| `next_action` | string option | Operator or retry guidance |
+| `diagnostics_path` | string option | Private Runtime Diagnostics file path |
+| `updated_at` | string | ISO timestamp |
 
-**Runtime State Running Row**
-- Existing `running` model already carries:
-  - `harness_name`
-  - `harness_kind`
-  - `last_event`
-  - `last_message`
-  - `tokens`
-- No schema expansion is required for minimal Cursor support if live activity can fit the current normalized fields.
+Persist one JSON file per active or recently stopped loop under `.symphony/state/goal-loops/`.
 
 ### API Endpoints
 
-No new external HTTP API endpoints are required.
+No new endpoint is required.
 
-Existing backend state endpoints and WebSocket/live-state surfaces continue to serve Runtime State snapshots. Cursor
-support changes the contents of existing running-task rows rather than adding new resources.
+Extend the existing Runtime State JSON returned by `GET /api/v1/state` and streamed by the Live Dashboard Connection:
+
+```json
+{
+  "goal_loops": [
+    {
+      "issue_id": "I1",
+      "issue_identifier": "#1",
+      "run_id": "goal-loop-I1-...",
+      "goal": "Evidence-backed completion for task #1",
+      "state": "goal_met",
+      "attempt_count": 2,
+      "stop_outcome": "goal_met",
+      "latest_evidence": "Verification command passed.",
+      "next_action": null
+    }
+  ]
+}
+```
 
 ## Integration Points
 
-This design does not integrate with systems outside the codebase beyond the local Cursor CLI executable invoked by
-Symphony.
-
-The main external boundary is the local Cursor CLI command:
-- installation availability must be verified before dispatch
-- auth/status readiness must be checked through the Cursor CLI itself
-- `stream-json` output must be parsed defensively
-- loop support must validate the plugin-backed command path before dispatch when enabled
+| Area | Integration |
+|---|---|
+| `apps/backend/lib/config.ml` | Add stage-scoped Goal Loop config with evidence command, budgets, timeout, and max output bytes. |
+| `apps/backend/lib/orchestrator.ml` | Gate agent exit `0` before `mark_completed`; update Goal Loop state through dispatch, retry, attention, and completion. |
+| `apps/backend/lib/runtime_state.ml` | Add `goal_loop` types, JSON serialization, and top-level projection. |
+| `apps/backend/lib/terminal_console_model.ml` | Sanitize and project Goal Loop state for rows/details. |
+| `apps/backend/bin/terminal_console_tui.ml` | Render Goal Loop details in task panels. |
+| `apps/frontend/src/RuntimeStateSnapshot.res` | Add snapshot types and mapping for `goal_loops`. |
+| `apps/frontend/src/Pages/Dashboard.res` | Render Goal Loop status near Goal Usage and Context Status. |
+| `CONTEXT.md` | Add accepted Goal Loop terminology and avoid-list language. |
+| `docs/adr/` | Add product architecture ADR before implementation because runtime semantics change. |
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
-|-----------|-------------|---------------------|-----------------|
-| `apps/backend/lib/config.ml` | modified | Core Harness parsing and readiness logic; high shared-module risk | Add Cursor kind/defaults, CLI-driven auth readiness, and loop readiness |
-| `apps/backend/lib/orchestrator.ml` | modified | Launch path and runtime activity parsing; high behavioral risk | Add Cursor command rendering if needed, Cursor activity parsing, and loop-safe behavior |
-| `apps/backend/lib/runtime_home.ml` | modified | Bootstrap default Runtime Contract; product-contract risk | Add Cursor example while preserving idempotent Bootstrap |
-| `apps/backend/lib/runtime_state.ml` | modified or unchanged | Likely schema reuse, but verify normalized activity suffices | Confirm no new fields are needed |
-| `apps/backend/lib/terminal_console_model.ml` | modified or unchanged | Running-row detail already includes Harness identity | Verify Cursor activity is readable without model changes |
-| `apps/frontend/src/RuntimeStateSnapshot.res` | modified or unchanged | Existing runtime snapshot may already be sufficient | Verify frontend accepts Cursor Harness rows without schema change |
-| `apps/frontend/src/Pages/Dashboard.res` | modified or unchanged | Dashboard may only need display validation | Confirm Harness identity renders correctly |
-| `apps/backend/test/test_backend.ml` | modified | Large shared suite; regression risk | Add targeted Cursor tests near existing Harness cases |
-| `CONTEXT.md` | modified | Domain source of truth; required by repo rules | Add Cursor Harness terminology and semantics |
-| `README.md` | modified | Operator-facing setup surface | Add supported Cursor examples |
-| `docs/adr/0021-agent-harness-runtime-settings.md` | modified | Existing architecture ADR needs amendment for new supported kind | Update supported Harness set and semantics |
+|---|---|---|---|
+| `config.ml` | Modified | New stage config can create readiness gaps if invalid | Add parsing and validation tests |
+| `runtime_home.ml` | Modified | Bootstrap examples must remain idempotent and not overwrite user files | Add defaults only if accepted for missing files |
+| `orchestrator.ml` | Modified | Completion gating is high-risk | Add focused tests around exit `0`, evidence fail, retry, and attention |
+| `runtime_state.ml` | Modified | JSON contract changes | Add backwards-compatible serialization tests |
+| Terminal Console | Modified | Read-only display changes | Add projection/rendering tests |
+| Frontend dashboard | Modified | Snapshot mapping/rendering changes | Add live-state tests |
+| `CONTEXT.md` | Modified | New domain language | Update glossary and tests that assert docs language |
 
 ## Testing Approach
 
 ### Unit Tests
 
-Focus areas:
-- `Config` parses `kind: "cursor"` and default Cursor command/loop behavior correctly.
-- `Config.selected_agent_harness` resolves Cursor through logical agents.
-- `Config.readiness_gaps` validates:
-  - selected-only Cursor install checks
-  - CLI-driven auth/status checks
-  - Cursor loop readiness when `loop.enabled` is true
-- `Orchestrator.render_harness_command` handles Cursor token replacement or provider-specific rendering correctly.
-- Cursor structured-output parsing normalizes `stream-json` into existing Runtime State activity fields.
-- Loop-disabled and loop-enabled Cursor prompts behave correctly.
-
-Mock and boundary strategy:
-- Use temporary settings files and fake shell commands as existing tests do for Claude/PI.
-- Use fake Cursor scripts that emit deterministic `stream-json` or status output.
-- Keep tests adjacent to current Harness coverage in `apps/backend/test/test_backend.ml`.
-
-Critical scenarios:
-- selected Cursor Harness with successful install/auth readiness
-- unselected Cursor Harness does not block readiness
-- loop-enabled Cursor Harness without plugin support fails readiness
-- loop-enabled Cursor Harness with plugin support prepends configured `loop.command`
-- Cursor `stream-json` parser ignores malformed lines and preserves raw-log fallback behavior
+- Goal Loop transition tests for running, evidence success, evidence failure, retry, attention, and budget exhaustion.
+- Config parsing tests for enabled/disabled Goal Loop, invalid evidence command, invalid budget, and missing command.
+- Runtime State serialization tests for `goal_loops` and old snapshots without loop state.
+- Evidence command input/output tests using temp scripts.
 
 ### Integration Tests
 
-Integration slices:
-- full config load with `harnesses.cursor`, `agents.<role>.harness`, and enabled stage routing
-- dispatch path that launches a fake Cursor command and updates Runtime State
-- bootstrapped settings content includes Cursor examples
-- Terminal Console / Runtime State JSON exposes Cursor `harness_name` and `harness_kind`
-
-Test data/setup:
-- temp Workspace Repository roots
-- fake `.symphony/agents/*.md` prompt files
-- fake Cursor binaries/scripts in PATH or explicit temp command paths
-- deterministic fake auth/status command responses
-
-Environment dependencies:
-- no real Cursor install required for tests
-- tests should not depend on user-local Cursor state
-- loop/plugin readiness must be simulated through fake command responses
+- Agent exit `0` plus passing evidence command proceeds to existing completion.
+- Agent exit `0` plus failing evidence command retries with missing-evidence guidance.
+- Evidence failure after retry exhaustion moves to Human Attention before Stage Commit/status changes.
+- Runtime State HTTP and websocket snapshots include Goal Loop state.
+- Terminal Console and Web Dashboard render the same loop state.
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Add Cursor kind/defaults in `Config` and update supported-kind validation - no dependencies
-2. Add Cursor selected-Harness install/auth readiness in `Config` - depends on step 1
-3. Add Cursor loop-readiness checks tied to `loop.enabled` / `loop.command` - depends on steps 1-2
-4. Add Cursor command rendering adjustments in `Orchestrator` if the standard token replacement is insufficient - depends on steps 1-2
-5. Add Cursor `stream-json` parsing and running-row activity updates - depends on step 4
-6. Add targeted backend tests for parsing, readiness, loop, rendering, and dispatch - depends on steps 1-5
-7. Update Bootstrap defaults, glossary, README, and project ADR docs - depends on steps 1-6
-8. Verify frontend/dashboard and Terminal Console behavior with Cursor runtime rows - depends on steps 5-7
+1. Add `Goal_loop` domain module and tests - no dependencies.
+2. Add stage-scoped config parsing and readiness validation - depends on step 1.
+3. Add Runtime Home persistence for `.symphony/state/goal-loops/*.json` - depends on step 1.
+4. Extend Runtime State JSON with top-level `goal_loops` - depends on steps 1 and 3.
+5. Add evidence command runner using Context Command conventions - depends on steps 1 and 2.
+6. Gate orchestrator exit `0` completion path with evidence evaluation - depends on steps 2, 3, and 5.
+7. Add retry guidance and Human Attention routing for evidence failures - depends on step 6.
+8. Render Goal Loop in Terminal Console - depends on step 4.
+9. Render Goal Loop in Web Dashboard - depends on step 4.
+10. Update `CONTEXT.md`, README/docs, and repo ADR - depends on settled behavior from steps 1-9.
 
 ### Technical Dependencies
 
-- A documented Cursor CLI command shape that works with stdin-fed non-interactive launch.
-- A documented Cursor CLI auth/status command usable for readiness probing.
-- A documented or validated `stream-json` event shape sufficient for normalized activity parsing.
-- A documented plugin-backed loop command path for Cursor when `loop.enabled` is true.
-- User-approved Bootstrap default change, which has already been provided in the clarification round.
+- Existing Runtime State snapshot delivery.
+- Existing Agent Worktree execution boundary.
+- Existing retry budget and Human Attention status.
+- Existing Context Command conventions for structured input and bounded output.
 
 ## Monitoring and Observability
 
-Key metrics:
-- Cursor-selected readiness failure rate by requirement (`install`, `auth`, `loop`)
-- Cursor dispatch success rate
-- Cursor structured-output parse success rate
-- Cursor fallback-to-raw-log rate
-- Cursor loop-enabled dispatch success rate
-
-Log events and fields:
-- `harness_name=cursor`
-- `harness_kind=cursor`
-- Cursor readiness requirement identifiers
-- parsed Cursor last event and last message when structured output is available
-- loop-enabled readiness diagnostic details
-- raw stdout/stderr preservation path for troubleshooting
-
-Alerting and escalation:
-- repeated Cursor auth/readiness failures in dogfood environments
-- unexpected parse failure spikes after Cursor CLI upgrades
-- loop-enabled Cursor tasks consistently failing before first output
+- Runtime State fields: loop state, stop outcome, stop reason, latest evidence, next action, attempt count, updated timestamp.
+- Diagnostics: evidence command duration, exit code, timeout flag, stdout/stderr byte counts, truncation flags.
+- Operator thresholds: any `needs_attention` or `budget_exhausted` state should be visible in Terminal Console and Web Dashboard.
+- No secret values, local environment contents, or full hidden prompts should be stored in Goal Loop state.
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- **Decision:** Implement Cursor as a native Harness kind rather than a generic command shim.
-  - **Rationale:** Fits the accepted Runtime Contract and preserves provider-specific behavior in the right layer.
-  - **Trade-offs:** Adds complexity to shared backend modules.
-  - **Alternatives rejected:** PI-style compatibility-only path; broader generic refactor first.
+- **Decision:** Stage Agent owns Goal Loop config.
+  **Rationale:** Goal Loop is workflow-stage behavior, not a Harness capability.
+  **Trade-off:** More stage config surface.
 
-- **Decision:** Use Cursor CLI itself for auth/status readiness.
-  - **Rationale:** Matches the selected design choice and avoids weaker indirect heuristics as the main signal.
-  - **Trade-offs:** Couples readiness to a provider-owned CLI contract.
-  - **Alternatives rejected:** env/file-only auth detection; no preflight auth readiness.
+- **Decision:** Persist canonical state under `.symphony/state/goal-loops/*.json`.
+  **Rationale:** Successful `goal_met` outcomes need retained visibility after active rows clear.
+  **Trade-off:** More persistence and pruning work.
 
-- **Decision:** Treat `stream-json` as the canonical Cursor output path.
-  - **Rationale:** Gives Cursor a structured observability contract comparable to Claude where supported.
-  - **Trade-offs:** Requires provider-specific parser maintenance.
-  - **Alternatives rejected:** `json` only; raw-log-only V1.
+- **Decision:** Require evidence command success before completion.
+  **Rationale:** Agent exit `0` is not deterministic proof.
+  **Trade-off:** Misconfigured evidence commands can increase retries and attention.
 
-- **Decision:** Support Cursor loop entry through `loop.enabled` / `loop.command`.
-  - **Rationale:** Preserves the current Harness loop model and fits the plugin-backed Cursor path described by the user.
-  - **Trade-offs:** Requires new loop readiness checks beyond current Codex-only protection.
-  - **Alternatives rejected:** no loop support; Codex-style implicit loop parity.
-
-- **Decision:** Add Cursor to bootstrapped settings examples.
-  - **Rationale:** Matches the approved product posture and reduces Runtime Contract ambiguity for new operators.
-  - **Trade-offs:** Changes default examples in a repo area marked “ask first.”
-  - **Alternatives rejected:** docs-only support; defer Bootstrap changes.
+- **Decision:** Reuse Context Command input conventions.
+  **Rationale:** Existing structured input, temp-file env var, timeout, and diagnostics patterns fit the evidence command.
+  **Trade-off:** Evidence command semantics must be documented separately from Context Command.
 
 ### Known Risks
 
-- **stdin/non-TTY incompatibility**
-  - Likelihood: medium
-  - Mitigation: validate the documented non-interactive Cursor command shape early and add a provider-local renderer if
-    required.
-
-- **Cursor CLI contract drift**
-  - Likelihood: medium
-  - Mitigation: keep parsing defensive, preserve raw-log fallback, and isolate Cursor-specific readiness logic.
-
-- **Loop false positives**
-  - Likelihood: medium
-  - Mitigation: add explicit readiness validation for loop-enabled Cursor Harnesses before dispatch instead of
-    inheriting Codex assumptions.
-
-- **Shared-module regression risk**
-  - Likelihood: high
-  - Mitigation: use targeted changes, add focused backend tests near existing Harness cases, and avoid refactoring
-    `test_backend.ml` structure.
-
-- **Bootstrap/example ambiguity between `--force` and non-`--force`**
-  - Likelihood: medium
-  - Mitigation: make the example posture explicit in docs and seeded settings rather than implying one safe default
-    without explanation.
+- Evidence command becomes too strict and blocks useful qualitative work. Mitigation: stop qualitative work as Human Attention in V1.
+- Goal Loop state drifts from orchestrator lifecycle. Mitigation: all transitions go through `Goal_loop` helpers and are projected into Runtime State.
+- UI surfaces diverge. Mitigation: both read the same Runtime State JSON.
+- Existing Stage Goal Handoff terminology confuses operators. Mitigation: `CONTEXT.md` must distinguish Goal Loop from Harness Loop and Stage Goal Handoff.
 
 ## Architecture Decision Records
 
-- [ADR-001: Cursor Harness As A Bounded Multi-Harness Extension](adrs/adr-001.md) — Accepts `kind: "cursor"` as a
-  first-class `Agent Harness` while keeping scope bounded and reusable.
-- [ADR-002: Stable First-Class Cursor Harness Product Posture](adrs/adr-002.md) — Commits the PRD to stable
-  first-class support for Cursor across any `Logical Agent` role.
-- [ADR-003: Native Cursor Harness Technical Design](adrs/adr-003.md) — Chooses a native `cursor` Harness kind over a
-  compatibility shim or broader refactor.
-- [ADR-004: Cursor Output, Readiness, And Loop Contract](adrs/adr-004.md) — Sets `stream-json`, CLI-driven
-  readiness, explicit loop support, and dual command-posture handling as the core Cursor contract.
+- [ADR-001: Goal Loop Runtime Scope](adrs/adr-001.md) — Accepts a narrow Goal Loop V1 with platform-shaped Runtime contracts.
+- [ADR-002: Evidence-First Goal Loop Approach](adrs/adr-002.md) — Selects evidence-backed completion as the PRD approach.
+- [ADR-003: Stage-Scoped Goal Loop Runtime State](adrs/adr-003.md) — Chooses Stage Agent config plus persisted top-level Runtime State as the canonical loop model.
+- [ADR-004: Evidence Command Completion Gate](adrs/adr-004.md) — Requires an evidence command before Goal Loop completion can enter the existing completion path.
 

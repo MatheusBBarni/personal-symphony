@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Add stage-scoped Goal Loop configuration and readiness validation"
 type: backend
 complexity: high
 dependencies:
   - task_02
+
 ---
 
 # Task 03: Add stage-scoped Goal Loop configuration and readiness validation
@@ -29,11 +30,11 @@ This task adds the Runtime Settings surface that lets a Stage Agent opt into Goa
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add stage-scoped Goal Loop configuration types and defaults.
-- [ ] 3.2 Parse Goal Loop settings from Runtime Settings.
-- [ ] 3.3 Add validation for evidence command settings and budgets.
-- [ ] 3.4 Add readiness gaps for invalid enabled Goal Loop settings.
-- [ ] 3.5 Add config parsing and readiness tests.
+- [x] 3.1 Add stage-scoped Goal Loop configuration types and defaults.
+- [x] 3.2 Parse Goal Loop settings from Runtime Settings.
+- [x] 3.3 Add validation for evidence command settings and budgets.
+- [x] 3.4 Add readiness gaps for invalid enabled Goal Loop settings.
+- [x] 3.5 Add config parsing and readiness tests.
 
 ## Implementation Details
 Follow the TechSpec "Integration Points" and ADR-003. This task should add configuration and readiness behavior only; it should not execute evidence commands or wire orchestration transitions.
@@ -62,14 +63,14 @@ Follow the TechSpec "Integration Points" and ADR-003. This task should add confi
 
 ## Tests
 - Unit tests:
-  - [ ] Missing Goal Loop settings parse as disabled.
-  - [ ] Enabled Goal Loop with valid evidence command and budgets parses successfully.
-  - [ ] Enabled Goal Loop with empty evidence command reports a readiness gap.
-  - [ ] Invalid cwd, timeout, max output bytes, or budget values report targeted readiness gaps.
-  - [ ] Existing Stage Goal Handoff loop settings still parse unchanged.
+  - [x] Missing Goal Loop settings parse as disabled.
+  - [x] Enabled Goal Loop with valid evidence command and budgets parses successfully.
+  - [x] Enabled Goal Loop with empty evidence command reports a readiness gap.
+  - [x] Invalid cwd, timeout, max output bytes, or budget values report targeted readiness gaps.
+  - [x] Existing Stage Goal Handoff loop settings still parse unchanged.
 - Integration tests:
-  - [ ] Runtime readiness includes Goal Loop gaps while still allowing Terminal Console inspection.
-  - [ ] Unused or disabled Goal Loop settings do not block dispatch.
+  - [x] Runtime readiness includes Goal Loop gaps while still allowing Terminal Console inspection.
+  - [x] Unused or disabled Goal Loop settings do not block dispatch.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Render Goal Loop state in Web Dashboard"
 type: frontend
 complexity: medium
 dependencies:
   - task_05
   - task_08
+
 ---
 
 # Task 10: Render Goal Loop state in Web Dashboard

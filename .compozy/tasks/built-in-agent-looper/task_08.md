@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Gate completion on evidence with retry and Human Attention routing"
 type: backend
 complexity: critical
 dependencies:
   - task_06
   - task_07
+
 ---
 
 # Task 08: Gate completion on evidence with retry and Human Attention routing

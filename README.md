@@ -557,6 +557,67 @@ input, Symphony reports a Cursor loop Readiness Gap. Cursor `stream-json` activi
 running-task Runtime State fields used by other Harnesses, while raw stdout and stderr logs remain
 available as diagnostics.
 
+Goal Loop is separate from Stage Goal Handoff. Stage Goal Handoff is launch-time prompt handoff;
+Goal Loop is Runtime-owned Stage Agent behavior that can stop as Goal met, Needs attention, or
+Budget exhausted. Goal met requires deterministic evidence, so Goal Usage, agent exit `0`, changed
+files, or model confidence alone does not count as completion evidence.
+
+Enable Goal Loop per stage with `goalLoop`. Bootstrap does not add Goal Loop defaults; omitting the
+block keeps existing stage behavior unchanged. The `goalLoop.evidence` block configures the Goal
+Loop Evidence Command. The evidence command is an argv array, runs from the configured working
+directory, receives the same structured input on stdin and through the Context Command temp-file path
+convention, and should print a concise, secret-free evidence summary:
+
+```json
+{
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {
+        "states": ["Todo", "To-Do", "In progress", "In Progress"],
+        "agent": "engineer",
+        "successStatus": "In review",
+        "retryStatus": "To-Do",
+        "goalLoop": {
+          "enabled": true,
+          "evidence": {
+            "command": ["pnpm", "test"],
+            "cwd": "agentWorktree",
+            "timeoutMs": 120000,
+            "maxOutputBytes": 8192
+          },
+          "budget": {
+            "maxTurns": 4,
+            "maxRuntimeMs": 3600000,
+            "maxTokens": 200000
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+The evidence command contract is intentionally narrow. A zero exit code with bounded stdout is
+successful deterministic evidence. Missing commands, timeouts, non-zero exits, invalid output, or
+missing deterministic evidence retry the same task with missing-evidence guidance while the
+configured budget allows another attempt; once the loop cannot continue, the stop outcome is Needs
+attention or Budget exhausted instead of Goal met.
+
+Runtime State exposes Goal Loop State as top-level `goal_loops[]` entries with `issue_id`,
+`issue_identifier`, `run_id`, `goal`, `state`, `stage_agent`, `harness_name`, `harness_kind`,
+`attempt_count`, `budget`, `latest_evidence`, `stop_outcome`, `stop_reason`, `next_action`,
+`diagnostics_path`, and `updated_at`. The Goal Loop Stop Outcome is `goal_met`, `needs_attention`, or
+`budget_exhausted`. The Terminal Console and Web Dashboard read that same Runtime State projection
+near Goal Usage and Context Status, including stopped Goal met, Needs attention, and Budget
+exhausted outcomes.
+
+Goal Loop does not own delivery authority. Stage Commit, Stage Push, Task Branch Integration, merge,
+pull request creation, auto-merge, and tracker status transitions stay governed by the existing
+Runtime Contract and run only through the existing completion and delivery lifecycle after Goal met
+evidence succeeds.
+
 Stage commits run after an agent exits successfully and before Symphony moves the issue to the
 stage's `successStatus`. Set `commit.enabled` per stage to control which transitions create commits;
 for example, keep `Backlog -> To-Do` uncommitted and commit `In progress -> In review`. The message

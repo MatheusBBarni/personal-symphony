@@ -176,10 +176,13 @@ let is_state state (row : Projection.task_row) = String.lowercase_ascii row.stat
 let state_rank state =
   match String.lowercase_ascii state with
   | "attention" -> 0
+  | "needs_attention" -> 0
+  | "budget_exhausted" -> 0
   | "failed" -> 1
   | "retrying" -> 2
   | "running" -> 3
   | "pending" -> 4
+  | "goal_met" -> 5
   | "completed" -> 5
   | "skipped" -> 6
   | _ -> 6
@@ -237,6 +240,7 @@ let row_search_text (row : Projection.task_row) =
     row.detail;
     row.error;
     Option.bind row.goal_usage (fun usage -> usage.text);
+    Option.map (fun (loop : Projection.goal_loop) -> loop.goal ^ " " ^ loop.text) row.goal_loop;
     Option.map (fun (status : Projection.context_status) -> status.text) row.context_status;
   ]
   |> List.filter_map Fun.id |> String.concat " " |> String.lowercase_ascii
@@ -248,8 +252,11 @@ let task_row_matches interaction row =
 let visible_task_rows interaction rows = rows |> List.filter (task_row_matches interaction) |> ordered_rows
 let visible_active_rows snapshot interaction = visible_task_rows interaction snapshot.Projection.active
 let visible_queue_rows snapshot interaction = visible_task_rows interaction snapshot.Projection.queue
+let is_attention_row (row : Projection.task_row) =
+  match String.lowercase_ascii row.state with "attention" | "needs_attention" | "budget_exhausted" -> true | _ -> false
+
 let visible_attention_rows snapshot interaction =
-  visible_active_rows snapshot interaction |> List.filter (is_state "attention")
+  visible_active_rows snapshot interaction |> List.filter is_attention_row
 
 let readiness_search_text (row : Projection.readiness_row) =
   String.lowercase_ascii (row.requirement ^ " " ^ row.remediation)
@@ -341,6 +348,9 @@ let state_token state =
   | "running" -> "RUNNING"
   | "retrying" -> "RETRYING"
   | "attention" -> "ATTENTION"
+  | "needs_attention" -> "NEEDS ATTENTION"
+  | "budget_exhausted" -> "BUDGET EXHAUSTED"
+  | "goal_met" -> "GOAL MET"
   | "failed" -> "FAILED"
   | "readiness_blocked" -> "READINESS BLOCKED"
   | "pending" -> "PENDING"
@@ -452,15 +462,15 @@ let compozy_task_step_lines (progress : Projection.compozy_progress) =
 let compozy_detail_for_row (snapshot : Projection.t) row =
   Option.map compozy_task_step_summary (compozy_progress_for_row snapshot row)
 
+let combined_detail items =
+  match List.filter_map Fun.id items with [] -> None | items -> Some (String.concat " | " items)
+
+let goal_loop_summary (loop : Projection.goal_loop) = "Goal Loop: " ^ loop.text
+
 let task_row_line ?(prefix = "") ?compozy_detail (row : Projection.task_row) =
   let base = Printf.sprintf "%s%s %s %s" prefix (state_token row.state) row.id row.title in
-  let detail =
-    match (row.detail, compozy_detail) with
-    | None, None -> None
-    | Some detail, None -> Some detail
-    | None, Some compozy_detail -> Some compozy_detail
-    | Some detail, Some compozy_detail -> Some (compozy_detail ^ " | " ^ detail)
-  in
+  let goal_loop_detail = Option.map goal_loop_summary row.goal_loop in
+  let detail = combined_detail [ compozy_detail; goal_loop_detail; row.detail ] in
   match detail with None -> base | Some detail -> base ^ " - " ^ shorten detail
 
 let row_marker selected index = if selected = index then "> " else "  "
@@ -533,7 +543,7 @@ let tasks_panel ?terminal_size ?(interaction = default_interaction) (snapshot : 
       Printf.sprintf "Active: RUNNING %d | RETRYING %d | ATTENTION %d"
         (count_active "running" snapshot.active)
         (count_active "retrying" snapshot.active)
-        (count_active "attention" snapshot.active);
+        (List.length (List.filter is_attention_row snapshot.active));
       total_tokens_line snapshot;
     ]
     @ filter_line interaction @ active_lines @ next_lines @ error_lines
@@ -596,6 +606,26 @@ let detail_group prefixes items =
   List.filter (fun item -> List.exists (fun prefix -> starts_with item prefix) prefixes) items
 
 let optional_join label items = match items with [] -> [] | items -> [ label ^ String.concat " | " items ]
+
+let goal_loop_detail_lines (loop : Projection.goal_loop) =
+  let headline =
+    [
+      "state " ^ loop.state;
+      Printf.sprintf "attempt %d" loop.attempt_count;
+    ]
+    |> (fun parts -> match loop.stop_outcome with Some outcome -> parts @ [ "outcome " ^ outcome ] | None -> parts)
+    |> fun parts -> parts @ [ "updated " ^ loop.updated_at ]
+  in
+  [
+    Some ("Goal Loop: " ^ String.concat " | " headline);
+    Some ("Goal Loop Goal: " ^ loop.goal);
+    Option.map (fun budget -> "Goal Loop Budget: " ^ budget) loop.budget;
+    Option.map (fun evidence -> "Goal Loop Evidence: " ^ evidence) loop.latest_evidence;
+    Option.map (fun reason -> "Goal Loop Stop Reason: " ^ reason) loop.stop_reason;
+    Option.map (fun action -> "Goal Loop Next Action: " ^ action) loop.next_action;
+    Option.map (fun path -> "Goal Loop Diagnostics: " ^ path) loop.diagnostics_path;
+  ]
+  |> List.filter_map Fun.id
 
 let matching_active_task snapshot (row : Projection.task_row) =
   List.find_opt (fun (active : Projection.task_row) -> active.id = row.id) snapshot.Projection.active
@@ -703,6 +733,7 @@ let task_detail_panel ?terminal_size ?(interaction = default_interaction) (snaps
         @ optional_join "Issue metadata: " issue_metadata
         @ optional_join "Stage state: " stage_state
         @ optional_join "Harness identity: " harness_identity
+        @ (match row.goal_loop with Some loop -> goal_loop_detail_lines loop | None -> [])
         @ (match row.goal_usage with Some usage -> Option.to_list (goal_usage_line usage) | None -> [])
         @ (match row.context_status with Some context -> [ "Context Status: " ^ context.text ] | None -> [])
         @ (match row.error with Some error -> [ "Current error: " ^ shorten error ] | None -> [])
@@ -976,6 +1007,7 @@ let selected_local_path model =
   | Some (Projection.Show_path path) -> Some path
   | _ -> (
       match selected_task ~interaction:model.interaction model.snapshot with
+      | Some { Projection.goal_loop = Some { diagnostics_path = Some path; _ }; _ } -> Some path
       | Some { Projection.context_status = Some { diagnostics_path = Some path; _ }; _ } -> Some path
       | _ ->
           model.snapshot.Projection.safe_aids

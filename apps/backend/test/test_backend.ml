@@ -674,6 +674,215 @@ let test_config_parses_stage_context_command_and_readiness () =
              && contains_substring gap.remediation "stageAgents.stages[].context.maxOutputBytes")
            cap_gaps))
 
+let test_config_parses_stage_goal_loop_and_readiness () =
+  with_temp_dir "symphony-settings-stage-goal-loop-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      Util.write_file (Filename.concat root ".symphony/agents/engineer.md") "Engineer";
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let write_settings stage_field =
+            let settings = Filename.concat root ("settings-" ^ string_of_int (Random.bits ()) ^ ".json") in
+            Util.write_file settings
+              (Printf.sprintf
+                 {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {"states": ["Todo"], "agent": "engineer"%s}
+    ]
+  }
+}|}
+                 stage_field);
+            Config.from_settings_file ~workspace_root:root settings
+          in
+          let goal_loop_requirements config =
+            Config.readiness_gaps config
+            |> List.filter_map (fun (gap : Config.readiness_gap) ->
+                   if contains_substring gap.requirement "goalLoop" then Some gap.requirement else None)
+          in
+          let expect_goal_loop_gap label requirement config =
+            let gaps = Config.readiness_gaps config in
+            match List.find_opt (fun (gap : Config.readiness_gap) -> gap.requirement = requirement) gaps with
+            | Some gap ->
+                Alcotest.(check bool) (label ^ " remediation names source path") true
+                  (contains_substring gap.remediation "stageAgents.stages[].goalLoop")
+            | None -> Alcotest.fail (label ^ " expected " ^ requirement)
+          in
+          let omitted = write_settings "" in
+          (match omitted.stage_agents.stages with
+          | [ stage ] ->
+              Alcotest.(check bool) "omitted Goal Loop disabled" false (Config.stage_goal_loop_enabled stage);
+              Alcotest.(check (list string)) "omitted Goal Loop has no gaps" [] (goal_loop_requirements omitted)
+          | _ -> Alcotest.fail "expected one configured stage");
+          let valid =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": true,
+  "evidence": {
+    "command": ["pnpm", "test"],
+    "cwd": "workspaceRepositoryRoot",
+    "timeoutMs": 120000,
+    "maxOutputBytes": 8192
+  },
+  "budget": {"maxTurns": 4, "maxRuntimeMs": 3600000, "maxTokens": 200000}
+}|js}
+          in
+          (match valid.stage_agents.stages with
+          | [ { Config.goal_loop = Some goal_loop; _ } as stage ] ->
+              Alcotest.(check bool) "valid Goal Loop enabled" true (Config.stage_goal_loop_enabled stage);
+              (match goal_loop.evidence_command with
+              | Some evidence ->
+                  Alcotest.(check (list string)) "evidence argv" [ "pnpm"; "test" ] evidence.argv;
+                  Alcotest.(check string) "evidence cwd" "workspaceRepositoryRoot" evidence.cwd;
+                  Alcotest.(check int) "evidence timeout" 120000 evidence.timeout_ms;
+                  Alcotest.(check int) "evidence output cap" 8192 evidence.max_output_bytes
+              | None -> Alcotest.fail "expected evidence command");
+              Alcotest.(check (option int)) "budget max turns" (Some 4) goal_loop.budget.max_turns;
+              Alcotest.(check (option int)) "budget max runtime" (Some 3600000) goal_loop.budget.max_runtime_ms;
+              Alcotest.(check (option int)) "budget max tokens" (Some 200000) goal_loop.budget.max_tokens;
+              Alcotest.(check (list string)) "valid Goal Loop has no gaps" [] (goal_loop_requirements valid)
+          | _ -> Alcotest.fail "expected enabled Goal Loop");
+          let empty_command =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": true,
+  "evidence": {"command": []},
+  "budget": {"maxTurns": 2}
+}|js}
+          in
+          expect_goal_loop_gap "empty evidence command" "stageAgents.engineer.goalLoop.evidence.command" empty_command;
+          let invalid_cwd =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": true,
+  "evidence": {"command": ["pnpm", "test"], "cwd": "outside"},
+  "budget": {"maxTurns": 2}
+}|js}
+          in
+          expect_goal_loop_gap "invalid evidence cwd" "stageAgents.engineer.goalLoop.evidence.cwd" invalid_cwd;
+          let invalid_timeout =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": true,
+  "evidence": {"command": ["pnpm", "test"], "timeoutMs": 0},
+  "budget": {"maxTurns": 2}
+}|js}
+          in
+          expect_goal_loop_gap "invalid evidence timeout" "stageAgents.engineer.goalLoop.evidence.timeoutMs"
+            invalid_timeout;
+          let invalid_cap =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": true,
+  "evidence": {"command": ["pnpm", "test"], "maxOutputBytes": 0},
+  "budget": {"maxTurns": 2}
+}|js}
+          in
+          expect_goal_loop_gap "invalid evidence output cap" "stageAgents.engineer.goalLoop.evidence.maxOutputBytes"
+            invalid_cap;
+          let invalid_budget =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": true,
+  "evidence": {"command": ["pnpm", "test"]},
+  "budget": {"maxTurns": 0}
+}|js}
+          in
+          expect_goal_loop_gap "invalid budget value" "stageAgents.engineer.goalLoop.budget.maxTurns" invalid_budget;
+          let missing_budget =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": true,
+  "evidence": {"command": ["pnpm", "test"]},
+  "budget": {}
+}|js}
+          in
+          expect_goal_loop_gap "missing budget value" "stageAgents.engineer.goalLoop.budget" missing_budget;
+          let disabled =
+            write_settings
+              {js|, "goalLoop": {
+  "enabled": false,
+  "evidence": {"command": []},
+  "budget": {"maxTurns": 0}
+}|js}
+          in
+          Alcotest.(check (list string)) "disabled invalid Goal Loop has no gaps" [] (goal_loop_requirements disabled);
+          let unused_settings = Filename.concat root ("settings-unused-" ^ string_of_int (Random.bits ()) ^ ".json") in
+          Util.write_file unused_settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": false,
+    "stages": [
+      {
+        "states": ["Todo"],
+        "agent": "engineer",
+        "goalLoop": {
+          "enabled": true,
+          "evidence": {"command": []},
+          "budget": {"maxTurns": 0}
+        }
+      }
+    ]
+  }
+}|};
+          let unused = Config.from_settings_file ~workspace_root:root unused_settings in
+          Alcotest.(check (list string)) "unused Goal Loop has no gaps" [] (goal_loop_requirements unused);
+          let stage_goal =
+            write_settings {js|, "goal": {"enabled": true}|js}
+          in
+          (match stage_goal.stage_agents.stages with
+          | [ stage ] ->
+              Alcotest.(check bool) "Stage Goal Handoff still parses" true (Config.stage_goal_enabled stage);
+              Alcotest.(check bool) "Stage Goal Handoff does not enable Goal Loop" false
+                (Config.stage_goal_loop_enabled stage)
+          | _ -> Alcotest.fail "expected one Stage Goal Handoff stage")))
+
+let test_goal_loop_readiness_state_preserves_terminal_inspection () =
+  with_temp_dir "symphony-goal-loop-runtime-readiness-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      Util.write_file (Filename.concat root ".symphony/agents/engineer.md") "Engineer";
+      with_env [ ("GITHUB_TOKEN", "token") ] (fun () ->
+          let settings = Filename.concat root "settings.json" in
+          Util.write_file settings
+            {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {
+    "enabled": true,
+    "root": ".symphony/agents",
+    "stages": [
+      {
+        "states": ["Todo"],
+        "agent": "engineer",
+        "goalLoop": {
+          "enabled": true,
+          "evidence": {"command": []},
+          "budget": {"maxTurns": 2}
+        }
+      }
+    ]
+  }
+}|};
+          let config = Config.from_settings_file ~workspace_root:root settings in
+          let state = Runtime_readiness.state config in
+          let requirements =
+            state.Runtime_state.readiness_gaps
+            |> List.map (fun (gap : Runtime_state.readiness_gap) -> gap.requirement)
+          in
+          Alcotest.(check bool) "runtime readiness includes Goal Loop gap" true
+            (List.exists (( = ) "stageAgents.engineer.goalLoop.evidence.command") requirements);
+          Alcotest.(check bool) "readiness policy blocks dispatch" true
+            (Runtime_policy.action ~mode:Cli_mode.Terminal_console ~readiness_gaps:state.readiness_gaps
+            = Runtime_policy.Serve_readiness_state);
+          let projection = Terminal_console_model.of_runtime_state state in
+          Alcotest.(check string) "Terminal Console stays inspectable" "readiness_blocked" projection.mode;
+          Alcotest.(check bool) "Terminal Console projects Goal Loop readiness" true
+            (List.exists
+               (fun (row : Terminal_console_model.readiness_row) ->
+                 row.requirement = "stageAgents.engineer.goalLoop.evidence.command")
+               projection.readiness)))
+
 let test_config_parses_allowed_loop_start_branch_policy () =
   with_temp_dir "symphony-loop-start-policy-" (fun root ->
       Util.mkdir_p (Filename.concat root ".symphony/agents");
@@ -1700,6 +1909,7 @@ let test_shell_launch_selects_pi_harness_for_stage_agent () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -1873,6 +2083,7 @@ let test_shell_launch_sandbox_uses_selected_stage_harness () =
                         start_status = None;
                         success_status = Some "In review";
                         retry_status = Some "Todo";
+                        goal_loop = None;
                         goal = None;
                         commit = None;
                       };
@@ -2034,6 +2245,7 @@ let test_dispatch_selects_pi_harness_before_start_status_update () =
                     start_status = Some "In progress";
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -4124,11 +4336,90 @@ let test_runtime_contract_docs_cover_sandbox_settings () =
       "must not become an Agent Harness kind";
     ]
 
+let test_goal_loop_docs_codify_runtime_semantics () =
+  let read path = Util.read_file (repository_file path) in
+  let readme = read "README.md" in
+  let context = read "CONTEXT.md" in
+  let adr = read "docs/adr/0028-runtime-owned-goal-loop.md" in
+  let normalize_doc text =
+    let buffer = Buffer.create (String.length text) in
+    let previous_space = ref false in
+    String.iter
+      (fun ch ->
+        if ch = ' ' || ch = '\n' || ch = '\r' || ch = '\t' then (
+          if not !previous_space then Buffer.add_char buffer ' ';
+          previous_space := true)
+        else (
+          Buffer.add_char buffer ch;
+          previous_space := false))
+      text;
+    Util.trim (Buffer.contents buffer)
+  in
+  let doc_contains text expected = contains_substring (normalize_doc text) (normalize_doc expected) in
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("CONTEXT includes " ^ expected) true (doc_contains context expected))
+    [
+      "**Goal Loop**:";
+      "A Runtime-owned, stage-scoped execution loop";
+      "**Goal Loop State**:";
+      "**Goal Loop Evidence Command**:";
+      "**Goal Loop Stop Outcome**:";
+      "A **Goal Loop** is Runtime-owned state, not a **Harness Loop**, **Stage Goal Handoff**, **Stage Goal Context**, or **Goal Usage**.";
+      "Canonical **Goal Loop State** is persisted under `.symphony/state/goal-loops/*.json`";
+      "Goal met requires successful deterministic evidence";
+      "Agent exit `0`, changed files, model confidence, and **Goal Usage** are not completion evidence";
+      "**Stage Goal Handoff** remains launch-time behavior";
+      "The **Terminal Console** and **Web Dashboard** read **Goal Loop State** from the same **Runtime State** projection";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("README includes " ^ expected) true (doc_contains readme expected))
+    [
+      "Goal Loop is separate from Stage Goal Handoff";
+      "Stage Goal Handoff is launch-time prompt handoff";
+      "Goal Loop is Runtime-owned Stage Agent behavior";
+      "Goal Usage, agent exit `0`, changed files, or model confidence alone";
+      "does not count as completion evidence";
+      "\"goalLoop\": {";
+      "\"command\": [\"pnpm\", \"test\"]";
+      "\"cwd\": \"agentWorktree\"";
+      "\"timeoutMs\": 120000";
+      "\"maxOutputBytes\": 8192";
+      "\"maxTurns\": 4";
+      "\"maxRuntimeMs\": 3600000";
+      "\"maxTokens\": 200000";
+      "secret-free evidence summary";
+      "top-level `goal_loops[]`";
+      "`latest_evidence`";
+      "`stop_outcome`";
+      "`stop_reason`";
+      "`next_action`";
+      "The Terminal Console and Web Dashboard read that same Runtime State projection";
+      "Goal Loop does not own delivery authority";
+      "Stage Commit, Stage Push, Task Branch Integration, merge, pull request creation, auto-merge, and tracker status transitions";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (doc_contains adr expected))
+    [
+      "Accepted";
+      "Goal Loop configuration belongs to stage behavior rather than Agent Harness definitions";
+      "Canonical Goal Loop state will be persisted under `.symphony/state/goal-loops/*.json`";
+      "Goal met requires a successful deterministic evidence command";
+      "agent exit code `0` is not enough to enter completion behavior";
+      "Goal Loop does not own delivery authority in V1";
+    ];
+  Alcotest.(check bool) "CONTEXT does not make Goal Usage completion evidence" false
+    (contains_substring context "**Goal Usage** is completion evidence");
+  Alcotest.(check bool) "README does not make Goal Usage completion evidence" false
+    (contains_substring readme "Goal Usage is completion evidence")
+
 let test_runtime_contract_docs_are_secret_free () =
   let combined =
     Util.read_file (repository_file "README.md")
     ^ Util.read_file (repository_file "CONTEXT.md")
     ^ Util.read_file (repository_file "docs/adr/0021-agent-harness-runtime-settings.md")
+    ^ Util.read_file (repository_file "docs/adr/0028-runtime-owned-goal-loop.md")
   in
   List.iter
     (fun secret_marker ->
@@ -5838,6 +6129,111 @@ let test_runtime_state_exposes_goal_usage_when_available () =
   Alcotest.(check string) "error goal status" "blocked" (error_usage |> member "status" |> to_string);
   Alcotest.(check (float 0.01)) "error goal time" 2. (error_usage |> member "time_used_seconds" |> to_float)
 
+let goal_loop_fixture ?(stage_agent = Some "engineer") ?(harness_name = Some "codex")
+    ?(harness_kind = Some "codex") ?(attempt_count = 2)
+    ?(budget = { Runtime_state.max_turns = Some 4; max_runtime_ms = Some 3_600_000; max_tokens = Some 200_000 })
+    ?(latest_evidence = Some "Verification command passed.") ?(stop_outcome = Some "goal_met")
+    ?(stop_reason = Some "All required checks passed.") ?(next_action = Some "Review the Stage Commit diff.")
+    ?(diagnostics_path = Some ".symphony/state/diagnostics/goal-loop-I1.json") ?(state = "goal_met")
+    ?(updated_at = "2026-05-20T12:00:00Z") () : Runtime_state.goal_loop =
+  {
+    Runtime_state.issue_id = "I1";
+    issue_identifier = "#1";
+    run_id = "goal-loop-I1-20260520";
+    goal = "Evidence-backed completion for task #1";
+    state;
+    stage_agent;
+    harness_name;
+    harness_kind;
+    attempt_count;
+    budget;
+    latest_evidence;
+    stop_outcome;
+    stop_reason;
+    next_action;
+    diagnostics_path;
+    updated_at;
+  }
+
+let test_runtime_state_exposes_goal_loops () =
+  let loop = goal_loop_fixture () in
+  let state = { (Runtime_state.empty ()) with goal_loops = [ loop ] } in
+  let open Yojson.Safe.Util in
+  let json = Runtime_state.to_yojson state in
+  let loops = json |> member "goal_loops" |> to_list in
+  Alcotest.(check int) "loop count" 1 (List.length loops);
+  let payload = List.hd loops in
+  Alcotest.(check string) "issue id" "I1" (payload |> member "issue_id" |> to_string);
+  Alcotest.(check string) "issue identifier" "#1" (payload |> member "issue_identifier" |> to_string);
+  Alcotest.(check string) "run id" "goal-loop-I1-20260520" (payload |> member "run_id" |> to_string);
+  Alcotest.(check string) "goal" "Evidence-backed completion for task #1" (payload |> member "goal" |> to_string);
+  Alcotest.(check string) "state" "goal_met" (payload |> member "state" |> to_string);
+  Alcotest.(check string) "stage agent" "engineer" (payload |> member "stage_agent" |> to_string);
+  Alcotest.(check string) "harness name" "codex" (payload |> member "harness_name" |> to_string);
+  Alcotest.(check string) "harness kind" "codex" (payload |> member "harness_kind" |> to_string);
+  Alcotest.(check int) "attempt count" 2 (payload |> member "attempt_count" |> to_int);
+  Alcotest.(check int) "budget max turns" 4 (payload |> member "budget" |> member "max_turns" |> to_int);
+  Alcotest.(check int) "budget max runtime" 3_600_000
+    (payload |> member "budget" |> member "max_runtime_ms" |> to_int);
+  Alcotest.(check int) "budget max tokens" 200_000 (payload |> member "budget" |> member "max_tokens" |> to_int);
+  Alcotest.(check string) "latest evidence" "Verification command passed."
+    (payload |> member "latest_evidence" |> to_string);
+  Alcotest.(check string) "stop outcome" "goal_met" (payload |> member "stop_outcome" |> to_string);
+  Alcotest.(check string) "stop reason" "All required checks passed."
+    (payload |> member "stop_reason" |> to_string);
+  Alcotest.(check string) "next action" "Review the Stage Commit diff."
+    (payload |> member "next_action" |> to_string);
+  Alcotest.(check string) "diagnostics path" ".symphony/state/diagnostics/goal-loop-I1.json"
+    (payload |> member "diagnostics_path" |> to_string);
+  Alcotest.(check string) "updated at" "2026-05-20T12:00:00Z" (payload |> member "updated_at" |> to_string);
+  (match Runtime_state.goal_loop_for_issue state "I1" with
+  | Some found -> Alcotest.(check string) "lookup run id" loop.run_id found.Runtime_state.run_id
+  | None -> Alcotest.fail "expected Goal Loop lookup");
+  Alcotest.(check bool) "missing lookup" true (Option.is_none (Runtime_state.goal_loop_for_issue state "missing"));
+  match Runtime_state.goal_loops_from_snapshot_yojson json with
+  | [ parsed ] ->
+      Alcotest.(check string) "parsed issue id" "I1" parsed.Runtime_state.issue_id;
+      Alcotest.(check string) "parsed state" "goal_met" parsed.state;
+      Alcotest.(check (option string)) "parsed evidence" (Some "Verification command passed.")
+        parsed.latest_evidence
+  | parsed -> Alcotest.fail (Printf.sprintf "expected one parsed Goal Loop, got %d" (List.length parsed))
+
+let test_runtime_state_goal_loops_compatibility_and_optional_fields () =
+  let open Yojson.Safe.Util in
+  let empty_json = Runtime_state.empty () |> Runtime_state.to_yojson in
+  Alcotest.(check int) "empty state serializes empty Goal Loops" 0
+    (empty_json |> member "goal_loops" |> to_list |> List.length);
+  Alcotest.(check int) "older snapshot omits Goal Loops safely" 0
+    (Runtime_state.goal_loops_from_snapshot_yojson (`Assoc [ ("counts", `Assoc [ ("running", `Int 0) ]) ])
+    |> List.length);
+  let loop =
+    goal_loop_fixture ~stage_agent:None ~harness_name:None ~harness_kind:None
+      ~budget:{ Runtime_state.max_turns = None; max_runtime_ms = None; max_tokens = None }
+      ~latest_evidence:None ~stop_outcome:None ~stop_reason:None ~next_action:None ~diagnostics_path:None
+      ~state:"running" ()
+  in
+  let json = Runtime_state.to_yojson { (Runtime_state.empty ()) with goal_loops = [ loop ] } in
+  let payload = json |> member "goal_loops" |> to_list |> List.hd in
+  let is_null field = match payload |> member field with `Null -> true | _ -> false in
+  let budget_null field = match payload |> member "budget" |> member field with `Null -> true | _ -> false in
+  Alcotest.(check bool) "stage agent null" true (is_null "stage_agent");
+  Alcotest.(check bool) "harness name null" true (is_null "harness_name");
+  Alcotest.(check bool) "harness kind null" true (is_null "harness_kind");
+  Alcotest.(check bool) "latest evidence null" true (is_null "latest_evidence");
+  Alcotest.(check bool) "stop outcome null" true (is_null "stop_outcome");
+  Alcotest.(check bool) "stop reason null" true (is_null "stop_reason");
+  Alcotest.(check bool) "next action null" true (is_null "next_action");
+  Alcotest.(check bool) "diagnostics path null" true (is_null "diagnostics_path");
+  Alcotest.(check bool) "budget turns null" true (budget_null "max_turns");
+  Alcotest.(check bool) "budget runtime null" true (budget_null "max_runtime_ms");
+  Alcotest.(check bool) "budget tokens null" true (budget_null "max_tokens");
+  match Runtime_state.goal_loops_from_snapshot_yojson json with
+  | [ parsed ] ->
+      Alcotest.(check string) "parsed running state" "running" parsed.Runtime_state.state;
+      Alcotest.(check (option string)) "parsed optional evidence absent" None parsed.latest_evidence;
+      Alcotest.(check (option int)) "parsed budget absent" None parsed.budget.max_turns
+  | _ -> Alcotest.fail "expected parsed Goal Loop with optional fields absent"
+
 let test_runtime_state_exposes_context_status () =
   let running_row issue =
     {
@@ -6008,6 +6404,78 @@ let test_terminal_console_model_projects_running_sanitized () =
           Alcotest.(check (option string)) "diagnostics path" (Some "/tmp/diag.txt") context.diagnostics_path
       | None -> Alcotest.fail "expected context status")
   | _ -> Alcotest.fail "expected one active row"
+
+let test_terminal_console_model_projects_goal_loop_running_sanitized () =
+  let issue, running = terminal_console_running_row ~identifier:"#1" ~title:"Goal Loop task" "I1" in
+  let loop =
+    {
+      (goal_loop_fixture ~state:"running" ~attempt_count:1
+         ~latest_evidence:(Some "GITHUB_TOKEN=super-secret \027[31mpassed\027[0m")
+         ~stop_outcome:None ~stop_reason:None
+         ~next_action:(Some "Continue\027]0;spoof\007 monitoring")
+         ~diagnostics_path:(Some "/tmp/\027[33mgoal-loop.json\027[0m") ())
+      with
+      Runtime_state.goal = "\027[31mFinish\027[0m Terminal Console projection";
+      updated_at = "2026-05-20T12:01:00Z";
+    }
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      running = [ running ];
+      goal_loops = [ loop ];
+    }
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  match model.active with
+  | [ row ] -> (
+      match row.Terminal_console_model.goal_loop with
+      | Some loop ->
+          Alcotest.(check string) "goal sanitized" "Finish Terminal Console projection" loop.goal;
+          Alcotest.(check string) "state sanitized" "running" loop.state;
+          Alcotest.(check int) "attempt" 1 loop.attempt_count;
+          Alcotest.(check (option string)) "evidence redacted"
+            (Some "GITHUB_TOKEN=[redacted] passed")
+            loop.latest_evidence;
+          Alcotest.(check (option string)) "next action sanitized" (Some "Continue monitoring") loop.next_action;
+          Alcotest.(check (option string)) "diagnostics sanitized" (Some "/tmp/goal-loop.json")
+            loop.diagnostics_path;
+          check_no_terminal_control "goal loop text sanitized" loop.text
+      | None -> Alcotest.fail "expected Goal Loop projection")
+  | _ -> Alcotest.fail "expected one active row with Goal Loop"
+
+let test_terminal_console_model_projects_goal_loop_terminal_rows () =
+  let terminal_loop issue_id issue_identifier state stop_reason =
+    {
+      (goal_loop_fixture ~state ~stop_outcome:(Some state) ~stop_reason:(Some stop_reason)
+         ~latest_evidence:(Some stop_reason) ~next_action:(Some "Inspect the Goal Loop outcome.") ())
+      with
+      Runtime_state.issue_id;
+      issue_identifier;
+      goal = "Goal Loop state for " ^ issue_identifier;
+    }
+  in
+  let goal_met = terminal_loop "I20" "#20" "goal_met" "All required checks passed." in
+  let needs_attention = terminal_loop "I21" "#21" "needs_attention" "Evidence command needs operator input." in
+  let budget_exhausted = terminal_loop "I22" "#22" "budget_exhausted" "maxTurns reached." in
+  let state = { (Runtime_state.empty ()) with goal_loops = [ goal_met; needs_attention; budget_exhausted ] } in
+  let model = Terminal_console_model.of_runtime_state state in
+  Alcotest.(check string) "mode reflects attention outcomes" "attention" model.mode;
+  Alcotest.(check int) "terminal rows visible" 3 (List.length model.active);
+  let row id =
+    match List.find_opt (fun (row : Terminal_console_model.task_row) -> row.id = id) model.active with
+    | Some row -> row
+    | None -> Alcotest.fail ("missing row " ^ id)
+  in
+  Alcotest.(check string) "goal met state" "goal_met" (row "#20").state;
+  Alcotest.(check (option string)) "goal met has no error" None (row "#20").error;
+  Alcotest.(check string) "attention state" "needs_attention" (row "#21").state;
+  Alcotest.(check (option string)) "attention stop reason"
+    (Some "Evidence command needs operator input.")
+    (row "#21").error;
+  Alcotest.(check string) "budget state" "budget_exhausted" (row "#22").state;
+  Alcotest.(check (option string)) "budget stop reason" (Some "maxTurns reached.") (row "#22").error
 
 let test_terminal_console_model_projects_retrying () =
   let retry_usage = { Runtime_state.status = Some "retrying"; time_used_seconds = Some 4.; tokens_used = Some 42 } in
@@ -6705,6 +7173,36 @@ let test_terminal_console_tui_task_detail_panel_includes_context () =
   check_line_contains "detail goal usage" lines "Goal Usage: status active | time 12s | tokens 77";
   check_line_contains "detail context" lines "Context Status: warning: Context needs review"
 
+let test_terminal_console_tui_task_detail_includes_goal_loop () =
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      goal_loops =
+        [
+          goal_loop_fixture ~state:"goal_met" ~attempt_count:2
+            ~latest_evidence:(Some "pnpm test passed.")
+            ~stop_outcome:(Some "goal_met") ~stop_reason:(Some "All checks passed.")
+            ~next_action:(Some "Review the Stage Commit diff.")
+            ~diagnostics_path:(Some ".symphony/state/diagnostics/goal-loop-I1.json") ();
+        ];
+    }
+  in
+  let task_lines = terminal_console_panel state "Tasks" in
+  check_wrapped_text_contains "tasks row includes Goal Loop success" task_lines "GOAL MET #1";
+  check_wrapped_text_contains "tasks row includes Goal Loop summary" task_lines "Goal Loop: state goal_met";
+  let detail_lines = terminal_console_panel state "Task Detail" in
+  check_line_contains "detail task" detail_lines "Task: #1 Evidence-backed completion for task #1";
+  check_line_contains "detail state" detail_lines "State: GOAL MET";
+  check_line_contains "detail goal loop headline" detail_lines
+    "Goal Loop: state goal_met | attempt 2 | outcome goal_met";
+  check_line_contains "detail goal loop budget" detail_lines
+    "Goal Loop Budget: maxTurns 4 | maxRuntimeMs 3600000 | maxTokens 200000";
+  check_line_contains "detail goal loop evidence" detail_lines "Goal Loop Evidence: pnpm test passed.";
+  check_line_contains "detail goal loop stop reason" detail_lines "Goal Loop Stop Reason: All checks passed.";
+  check_line_contains "detail goal loop diagnostics" detail_lines
+    "Goal Loop Diagnostics: .symphony/state/diagnostics/goal-loop-I1.json";
+  check_line_absent "goal usage remains separate" detail_lines "Goal Usage:"
+
 let test_terminal_console_tui_task_detail_omits_absent_optional_fields () =
   let issue = Issue.empty ~id:"I11" ~identifier:"#11" ~title:"Attention without extras" ~state:"In progress" in
   let state =
@@ -6819,6 +7317,17 @@ let test_terminal_console_tui_renders_runtime_state_fixtures () =
       ( "compozy",
         Runtime_state.empty ~tracker_kind:"compozy_tasks" ~ordered_queue:(terminal_console_queue_fixture ())
           ~compozy_progress:terminal_console_compozy_fixture () );
+      ( "goal_loop",
+        {
+          (Runtime_state.empty ()) with
+          goal_loops =
+            [
+              goal_loop_fixture ~state:"budget_exhausted"
+                ~stop_outcome:(Some "budget_exhausted")
+                ~stop_reason:(Some "maxTurns reached before deterministic evidence.")
+                ~next_action:(Some "Review the budget exhaustion before continuing the task.") ();
+            ];
+        } );
     ]
   in
   List.iter
@@ -6965,6 +7474,46 @@ let test_terminal_console_tui_invalid_path_is_ui_local () =
               check_line_contains "outside status" [ message ] "outside allowed Workspace Repository surfaces"
           | None -> Alcotest.fail "expected invalid path status");
           Alcotest.(check string) "outside file unchanged" "unchanged\n" (Util.read_file outside_file)))
+
+let test_terminal_console_tui_goal_loop_diagnostics_path_is_read_only () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  with_temp_dir "symphony-terminal-goal-loop-path-" (fun root ->
+      let diagnostic = Filename.concat root "goal-loop.json" in
+      Util.write_file diagnostic "goal loop diagnostic\n";
+      let state =
+        {
+          (Runtime_state.empty ()) with
+          goal_loops =
+            [
+              goal_loop_fixture ~state:"needs_attention"
+                ~stop_outcome:(Some "needs_attention")
+                ~stop_reason:(Some "Evidence command needs operator input.")
+                ~next_action:(Some "Operator attention is required.")
+                ~diagnostics_path:(Some diagnostic) ();
+            ];
+        }
+      in
+      let model = Shell.initial_model state in
+      Alcotest.(check bool) "Goal Loop path is exposed as safe aid" true
+        (List.exists
+           (function Terminal_console_model.Show_path path -> path = diagnostic | _ -> false)
+           model.Shell.snapshot.Terminal_console_model.safe_aids);
+      let transition =
+        Shell.apply_key
+          ~local_surfaces:[ Shell.local_surface ~label:"Workspace Repository" ~root ]
+          (Shell.Character 'o') model
+      in
+      Alcotest.(check (list string)) "inspect is read-only path aid" [ "path:goal-loop.json" ]
+        (List.map
+           (function
+             | Terminal_console_model.Refresh_view -> "refresh"
+             | Show_web_handoff -> "web"
+             | Show_path path -> "path:" ^ Filename.basename path)
+           transition.Shell.safe_aids);
+      (match transition.model.Shell.status_message with
+      | Some message -> check_line_contains "read-only status" [ message ] "Inspect path read-only"
+      | None -> Alcotest.fail "expected read-only inspect status");
+      Alcotest.(check string) "diagnostic file unchanged" "goal loop diagnostic\n" (Util.read_file diagnostic))
 
 let test_terminal_console_tui_footer_help_content () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -7478,6 +8027,33 @@ let test_websocket_context_status_snapshot_and_http_state () =
   let json = Yojson.Safe.from_string body in
   Alcotest.(check string) "http running context" "warning"
     (json |> member "running" |> to_list |> List.hd |> member "context_status" |> member "state" |> to_string)
+
+let test_server_goal_loop_snapshot_surfaces () =
+  let loop = goal_loop_fixture () in
+  let state = { (Runtime_state.empty ()) with goal_loops = [ loop ] } in
+  let check_snapshot label json =
+    let open Yojson.Safe.Util in
+    let payload = json |> member "goal_loops" |> to_list |> List.hd in
+    Alcotest.(check string) (label ^ " issue id") "I1" (payload |> member "issue_id" |> to_string);
+    Alcotest.(check string) (label ^ " run id") "goal-loop-I1-20260520"
+      (payload |> member "run_id" |> to_string);
+    Alcotest.(check string) (label ^ " state") "goal_met" (payload |> member "state" |> to_string);
+    Alcotest.(check string) (label ^ " stop outcome") "goal_met" (payload |> member "stop_outcome" |> to_string);
+    Alcotest.(check string) (label ^ " evidence") "Verification command passed."
+      (payload |> member "latest_evidence" |> to_string);
+    Alcotest.(check string) (label ^ " next action") "Review the Stage Commit diff."
+      (payload |> member "next_action" |> to_string);
+    Alcotest.(check string) (label ^ " updated at") "2026-05-20T12:00:00Z"
+      (payload |> member "updated_at" |> to_string)
+  in
+  let http =
+    Server.handle_request (fun () -> state)
+      { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+  in
+  let body = match List.rev (String.split_on_char '\n' http) with body :: _ -> body | [] -> "" in
+  check_snapshot "http" (Yojson.Safe.from_string body);
+  with_websocket_client state (fun ~set_state:_ ~live:_ ~client_fd:_ ~initial ->
+      check_snapshot "live" (Yojson.Safe.from_string initial))
 
 let test_server_sandbox_metadata_snapshot_surfaces () =
   let state =
@@ -8892,6 +9468,7 @@ let stage_capacity_config root ~global_cap =
               start_status = None;
               success_status = Some "Todo";
               retry_status = Some "Backlog";
+              goal_loop = None;
               goal = None;
               commit = None;
             };
@@ -8906,6 +9483,7 @@ let stage_capacity_config root ~global_cap =
               start_status = Some "In progress";
               success_status = Some "In review";
               retry_status = Some "Todo";
+              goal_loop = None;
               goal = None;
               commit = None;
             };
@@ -8920,6 +9498,7 @@ let stage_capacity_config root ~global_cap =
               start_status = None;
               success_status = Some "Done";
               retry_status = Some "In progress";
+              goal_loop = None;
               goal = None;
               commit = None;
             };
@@ -9219,6 +9798,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                     start_status = Some "In progress";
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -9233,6 +9813,7 @@ let test_orchestrator_stage_capacity_skips_full_ordered_stage () =
                     start_status = None;
                     success_status = Some "Done";
                     retry_status = Some "In progress";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -10035,6 +10616,7 @@ let test_orchestrator_uses_stage_agent_prompt_and_status () =
                     start_status = None;
                     success_status = Some "Done";
                     retry_status = Some "In progress";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -10192,6 +10774,7 @@ let test_orchestrator_prepends_stage_goal_handoff () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = Some { enabled = true };
                     commit = None;
                   };
@@ -10331,6 +10914,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = Some { enabled = false };
                     commit = None;
                   };
@@ -10353,7 +10937,7 @@ let test_orchestrator_skips_stage_goal_when_disabled () =
       Alcotest.(check bool) "normal prompt still included" true (String.contains !captured_prompt '#'))
 
 let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000) ?(context_snapshot = true)
-    ?context_command ?(agent_harnesses_explicit = false) ?(agent_harnesses = []) ?(logical_agents = []) root =
+    ?context_command ?goal_loop ?(agent_harnesses_explicit = false) ?(agent_harnesses = []) ?(logical_agents = []) root =
   let agents_root = Filename.concat root "agents" in
   Unix.mkdir agents_root 0o755;
   Util.write_file (Filename.concat agents_root "engineer.md") "Engineer stage instructions";
@@ -10422,6 +11006,7 @@ let stage_context_test_config ?(goal_enabled = false) ?(max_output_bytes = 12000
               start_status = None;
               success_status = Some "In review";
               retry_status = Some "Todo";
+              goal_loop;
               goal = Some { enabled = goal_enabled };
               commit = None;
             };
@@ -10447,6 +11032,22 @@ let test_harness ?(name = "codex") ?(kind = "codex") ?(command = "codex exec") ?
 let cursor_test_harness ?(command = "cursor-agent -p --model <model> --output-format stream-json")
     ?(loop_enabled = true) ?(loop_command = "/cursor-goal") () =
   test_harness ~name:"cursor" ~kind:"cursor" ~command ~loop_enabled ~loop_command ()
+
+let test_goal_loop_config ?max_turns ?max_runtime_ms ?max_tokens () =
+  let budget : Config.stage_goal_loop_budget = { max_turns; max_runtime_ms; max_tokens } in
+  {
+    Config.enabled = true;
+    evidence_command =
+      Some
+        {
+          Config.argv = [ "true" ];
+          cwd = Config.default_goal_loop_evidence_cwd;
+          timeout_ms = Config.default_goal_loop_evidence_timeout_ms;
+          max_output_bytes = Config.default_goal_loop_evidence_max_output_bytes;
+        };
+    budget;
+    goal_loop_validation_errors = [];
+  }
 
 let logical_agent_for_harness harness_name =
   {
@@ -10749,6 +11350,7 @@ let compozy_stage ?start_status ?success_status ?retry_status agent states =
     start_status;
     success_status;
     retry_status;
+    goal_loop = None;
     goal = None;
     commit = None;
   }
@@ -13864,6 +14466,7 @@ let test_orchestrator_truncates_agent_context_snapshot () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -14252,6 +14855,408 @@ printf '%s\n' 'raw stderr diagnostic' >&2
            (Util.read_file (Option.get launched.stderr_path))
            "raw stderr diagnostic"))
 
+let single_goal_loop state =
+  match state.Runtime_state.goal_loops with
+  | [ loop ] -> loop
+  | _ -> Alcotest.fail "expected one Goal Loop state"
+
+let goal_loop_enabled_config root =
+  stage_context_test_config ~context_snapshot:false
+    ~goal_loop:(test_goal_loop_config ~max_turns:4 ~max_runtime_ms:3_600_000 ~max_tokens:200_000 ())
+    root
+
+let goal_loop_enabled_config_with_evidence root argv =
+  let goal_loop = test_goal_loop_config ~max_turns:4 ~max_runtime_ms:3_600_000 ~max_tokens:200_000 () in
+  let evidence_command =
+    Some
+      {
+        Config.argv;
+        cwd = Config.default_goal_loop_evidence_cwd;
+        timeout_ms = Config.default_goal_loop_evidence_timeout_ms;
+        max_output_bytes = Config.default_goal_loop_evidence_max_output_bytes;
+      }
+  in
+  stage_context_test_config ~context_snapshot:false ~goal_loop:{ goal_loop with evidence_command } root
+
+let test_goal_loop_domain_transitions () =
+  let budget : Goal_loop.budget = { max_turns = Some 2; max_runtime_ms = Some 1000; max_tokens = None } in
+  let loop =
+    Goal_loop.create "I1" "#1" "goal-loop-I1" "Complete #1: One" (Some "engineer") (Some "codex")
+      (Some "codex") 1 budget "2026-05-20T12:00:00Z"
+  in
+  Alcotest.(check string) "created running" "running" loop.state;
+  let retry = Goal_loop.schedule_retry loop 2 "agent exited with code 1" "2026-05-20T12:01:00Z" in
+  Alcotest.(check string) "retry state" "retrying" retry.state;
+  Alcotest.(check int) "retry attempt" 2 retry.attempt_count;
+  let exhausted = Goal_loop.stop_budget_exhausted retry "maxRuntimeMs reached" "2026-05-20T12:02:00Z" in
+  Alcotest.(check string) "budget state" "budget_exhausted" exhausted.state;
+  Alcotest.(check (option string)) "budget outcome" (Some "budget_exhausted") exhausted.stop_outcome;
+  let met = Goal_loop.stop_goal_met retry "pnpm test passed." "2026-05-20T12:03:00Z" in
+  Alcotest.(check string) "goal met state" "goal_met" met.state;
+  Alcotest.(check (option string)) "goal met outcome" (Some "goal_met") met.stop_outcome;
+  Alcotest.(check (option string)) "goal met evidence" (Some "pnpm test passed.") met.latest_evidence
+
+let test_orchestrator_goal_loop_dispatch_creates_running_state () =
+  with_temp_dir "symphony-goal-loop-dispatch-" (fun root ->
+      let config = goal_loop_enabled_config root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "loop state" "running" loop.state;
+      Alcotest.(check string) "loop issue" "I1" loop.issue_id;
+      Alcotest.(check string) "loop identifier" "#1" loop.issue_identifier;
+      Alcotest.(check int) "attempt count" 1 loop.attempt_count;
+      Alcotest.(check (option string)) "stage agent" (Some "engineer") loop.stage_agent;
+      Alcotest.(check (option string)) "harness name" (Some "codex") loop.harness_name;
+      Alcotest.(check (option string)) "harness kind" (Some "codex") loop.harness_kind;
+      Alcotest.(check (option int)) "budget turns" (Some 4) loop.budget.max_turns;
+      let json = Runtime_state.to_yojson state in
+      let open Yojson.Safe.Util in
+      Alcotest.(check int) "runtime state projection" 1 (json |> member "goal_loops" |> to_list |> List.length);
+      let path = Orchestrator.goal_loop_state_path config loop in
+      Alcotest.(check bool) "persisted loop file exists" true (Sys.file_exists path);
+      Alcotest.(check int) "persisted loop file private" 0 ((Unix.stat path).Unix.st_perm land 0o077);
+      let reloaded =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      match Runtime_state.goal_loop_for_issue (Orchestrator.get_state reloaded) "I1" with
+      | Some reloaded_loop -> Alcotest.(check string) "reloaded state" "running" reloaded_loop.state
+      | None -> Alcotest.fail "expected persisted Goal Loop state to reload")
+
+let test_orchestrator_goal_loop_dispatch_skips_non_enabled_stage () =
+  with_temp_dir "symphony-goal-loop-disabled-dispatch-" (fun root ->
+      let config = stage_context_test_config ~context_snapshot:false root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "no Goal Loop state" 0 (List.length state.Runtime_state.goal_loops);
+      Alcotest.(check bool) "no Goal Loop directory" false (Sys.file_exists (Orchestrator.goal_loop_state_dir config)))
+
+let test_orchestrator_goal_loop_activity_preserves_goal_usage () =
+  with_temp_dir "symphony-goal-loop-activity-" (fun root ->
+      let config = goal_loop_enabled_config root in
+      let stage =
+        match config.stage_agents.stages with [ stage ] -> stage | _ -> Alcotest.fail "expected one stage"
+      in
+      let harness = Config.default_agent_harness config in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let stdout_path = Filename.concat root "stdout.log" in
+      Util.write_file stdout_path {|Goal Usage: {"status":"active","time_used_seconds":9,"tokens_used":8}
+|};
+      let orchestrator = Orchestrator.make ~config ~prompt_template:"Issue {{ issue.identifier }}" () in
+      Orchestrator.update_state orchestrator (fun state ->
+          {
+            state with
+            Runtime_state.running =
+              [
+                {
+                  Runtime_state.issue;
+                  stage_agent = Some "engineer";
+                  harness_name = Some "codex";
+                  harness_kind = Some "codex";
+                  sandbox_enabled = None;
+                  sandbox_provider = None;
+                  sandbox_reuse_outcome = None;
+                  stage_states = [ "Todo" ];
+                  session_id = Some "test";
+                  turn_count = 0;
+                  last_event = Some "launched";
+                  last_message = None;
+                  started_at = Util.now_iso8601 ();
+                  last_event_at = None;
+                  tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                  goal_usage = None;
+                };
+              ];
+            goal_loops =
+              [
+                goal_loop_fixture ~state:"running" ~attempt_count:1 ~latest_evidence:(Some "Agent dispatched.")
+                  ~stop_outcome:None ~stop_reason:None ~next_action:(Some "Wait for agent activity.")
+                  ~diagnostics_path:None ();
+              ];
+          });
+      let child =
+        {
+          Orchestrator.pid = 0;
+          issue;
+          stage = Some stage;
+          harness;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = Some stdout_path;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        }
+      in
+      Orchestrator.refresh_child_output ~force:true orchestrator child;
+      let state = Orchestrator.get_state orchestrator in
+      let running =
+        match state.Runtime_state.running with [ row ] -> row | _ -> Alcotest.fail "expected one running row"
+      in
+      (match running.goal_usage with
+      | Some usage ->
+          Alcotest.(check (option string)) "goal usage status" (Some "active") usage.status;
+          Alcotest.(check (option int)) "goal usage tokens" (Some 8) usage.tokens_used
+      | None -> Alcotest.fail "expected Goal Usage");
+      let loop = single_goal_loop state in
+      Alcotest.(check (option string)) "activity evidence" (Some "stdout/stderr updated") loop.latest_evidence;
+      Alcotest.(check (option string)) "activity next action" (Some "Continue monitoring agent activity.")
+        loop.next_action)
+
+let test_orchestrator_goal_loop_retry_updates_attempt_and_next_action () =
+  with_temp_dir "symphony-goal-loop-retry-" (fun root ->
+      let config = goal_loop_enabled_config root in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Orchestrator.mark_retrying orchestrator issue.id "agent exited with code 1";
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "retry queued" 1 (List.length state.Runtime_state.retrying);
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "retry loop state" "retrying" loop.state;
+      Alcotest.(check int) "next attempt count" 2 loop.attempt_count;
+      Alcotest.(check (option string)) "retry evidence" (Some "agent exited with code 1") loop.latest_evidence;
+      Alcotest.(check (option string)) "retry next action" (Some "Retry scheduled for the next agent attempt.")
+        loop.next_action)
+
+let test_orchestrator_goal_loop_budget_exhaustion_records_stop () =
+  with_temp_dir "symphony-goal-loop-budget-" (fun root ->
+      let config =
+        stage_context_test_config ~context_snapshot:false
+          ~goal_loop:(test_goal_loop_config ~max_runtime_ms:1 ())
+          root
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let statuses = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        let pid = Orchestrator.spawn_shell_command "sleep 5" in
+        { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      List.iter
+        (fun (child : Orchestrator.child) -> child.started_at <- Unix.time () -. 1.)
+        orchestrator.Orchestrator.children;
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "budget loop state" "budget_exhausted" loop.state;
+      Alcotest.(check (option string)) "budget stop outcome" (Some "budget_exhausted") loop.stop_outcome;
+      Alcotest.(check bool) "budget reason visible" true
+        (option_exists (fun reason -> contains_substring reason "maxRuntimeMs") loop.stop_reason);
+      Alcotest.(check int) "not retrying after budget stop" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check int) "attention visible" 1 (List.length state.Runtime_state.issue_errors);
+      Alcotest.(check (list string)) "existing blocked status path used" [ "Todo" ] (List.rev !statuses))
+
+let test_orchestrator_goal_loop_preserves_stage_goal_handoff_prompt () =
+  with_temp_dir "symphony-goal-loop-stage-goal-" (fun root ->
+      let config =
+        stage_context_test_config ~goal_enabled:true ~context_snapshot:false
+          ~goal_loop:(test_goal_loop_config ~max_turns:4 ())
+          root
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let captured_prompt = ref "" in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt ~issue =
+        captured_prompt := prompt;
+        { Orchestrator.pid = None; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~fetch:(fun _ -> Ok [ issue ]) ~set_status:(fun _ _ _ -> Ok ()) ~config
+          ~prompt_template:"Normal {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check bool) "goal command first" true
+        (String.starts_with ~prefix:"/goal {\"kind\":\"Stage Goal Context\"" !captured_prompt);
+      Alcotest.(check bool) "normal prompt included" true (contains_substring !captured_prompt "Normal #1");
+      let goal_line =
+        match String.split_on_char '\n' !captured_prompt with first :: _ -> first | [] -> Alcotest.fail "expected prompt"
+      in
+      let goal_json = String.sub goal_line 6 (String.length goal_line - 6) |> Yojson.Safe.from_string in
+      let open Yojson.Safe.Util in
+      Alcotest.(check string) "goal kind unchanged" "Stage Goal Context" (goal_json |> member "kind" |> to_string);
+      Alcotest.(check int) "goal attempt unchanged" 1 (goal_json |> member "attempt" |> to_int))
+
+let test_orchestrator_goal_loop_successful_exit_requires_evidence () =
+  with_temp_dir "symphony-goal-loop-success-evidence-" (fun root ->
+      let config = goal_loop_enabled_config_with_evidence root [ "printf"; "deterministic evidence" ] in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let commit_calls = ref 0 in
+      let statuses = ref [] in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        let pid = Orchestrator.spawn_shell_command "exit 0" in
+        { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        incr commit_calls;
+        Ok ()
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~set_status ~fetch:(fun _ -> Ok [ issue ]) ~config
+          ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "stage commit runs after evidence" 1 !commit_calls;
+      Alcotest.(check (list string)) "success status moves after evidence" [ "In review" ] (List.rev !statuses);
+      Alcotest.(check int) "no retry after evidence" 0 (List.length state.Runtime_state.retrying);
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "goal met after evidence" "goal_met" loop.state;
+      Alcotest.(check (option string)) "evidence stored" (Some "deterministic evidence") loop.latest_evidence)
+
+let test_orchestrator_goal_loop_successful_exit_retries_without_evidence () =
+  with_temp_dir "symphony-goal-loop-missing-evidence-" (fun root ->
+      let config = goal_loop_enabled_config_with_evidence root [ "true" ] in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let commit_calls = ref 0 in
+      let launch ~stage:_ ~config:_ ~workspace:_ ~prompt:_ ~issue =
+        let pid = Orchestrator.spawn_shell_command "exit 0" in
+        { Orchestrator.pid = Some pid; session_id = Some issue.Issue.id; event = "test-launch"; stdout_path = None; stderr_path = None }
+      in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        incr commit_calls;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~launch ~commit_stage ~set_status:(fun _ _ _ -> Ok ()) ~fetch:(fun _ -> Ok [ issue ])
+          ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Unix.sleepf 0.05;
+      Orchestrator.reap_children orchestrator;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "stage commit skipped without evidence" 0 !commit_calls;
+      Alcotest.(check int) "retry queued without evidence" 1 (List.length state.Runtime_state.retrying);
+      let retry =
+        match state.Runtime_state.retrying with [ retry ] -> retry | _ -> Alcotest.fail "expected one retry row"
+      in
+      Alcotest.(check bool) "retry reason explains missing evidence" true
+        (option_exists
+           (fun error -> contains_substring error "produced no deterministic evidence")
+           retry.error);
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "retrying without evidence" "retrying" loop.state)
+
+let test_orchestrator_goal_loop_keeps_completion_lifecycle_unchanged () =
+  with_temp_dir "symphony-goal-loop-completion-lifecycle-" (fun root ->
+      let config = goal_loop_enabled_config root in
+      let stage =
+        match config.stage_agents.stages with [ stage ] -> stage | _ -> Alcotest.fail "expected one stage"
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"One" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:config.workspace.root issue.identifier in
+      let commit_calls = ref 0 in
+      let statuses = ref [] in
+      let commit_stage _config _workspace _issue _stage _next_status =
+        incr commit_calls;
+        Ok ()
+      in
+      let set_status _ _ status =
+        statuses := status :: !statuses;
+        Ok ()
+      in
+      let orchestrator =
+        Orchestrator.make ~commit_stage ~set_status ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.update_state orchestrator (fun state ->
+          {
+            state with
+            Runtime_state.running =
+              [
+                {
+                  Runtime_state.issue;
+                  stage_agent = Some "engineer";
+                  harness_name = Some "codex";
+                  harness_kind = Some "codex";
+                  sandbox_enabled = None;
+                  sandbox_provider = None;
+                  sandbox_reuse_outcome = None;
+                  stage_states = [ "Todo" ];
+                  session_id = Some "test";
+                  turn_count = 0;
+                  last_event = Some "launched";
+                  last_message = None;
+                  started_at = Util.now_iso8601 ();
+                  last_event_at = None;
+                  tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                  goal_usage = None;
+                };
+              ];
+            goal_loops =
+              [
+                goal_loop_fixture ~state:"running" ~attempt_count:1 ~latest_evidence:(Some "Agent dispatched.")
+                  ~stop_outcome:None ~stop_reason:None ~next_action:(Some "Wait for agent activity.")
+                  ~diagnostics_path:None ();
+              ];
+          });
+      let child =
+        {
+          Orchestrator.pid = 0;
+          issue;
+          stage = Some stage;
+          harness = Config.default_agent_harness config;
+          issue_id = issue.id;
+          issue_identifier = issue.identifier;
+          issue_title = issue.title;
+          workspace;
+          started_at = Unix.time ();
+          last_output_at = Unix.time ();
+          stdout_path = None;
+          stderr_path = None;
+          stdout_size = 0;
+          stderr_size = 0;
+        }
+      in
+      Orchestrator.mark_completed orchestrator child;
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "stage commit still runs" 1 !commit_calls;
+      Alcotest.(check (list string)) "success status still moves" [ "In review" ] (List.rev !statuses);
+      Alcotest.(check int) "no retry" 0 (List.length state.Runtime_state.retrying);
+      Alcotest.(check int) "no issue error" 0 (List.length state.Runtime_state.issue_errors);
+      let loop = single_goal_loop state in
+      Alcotest.(check string) "not marked goal met before evidence gate" "running" loop.state)
+
 let test_orchestrator_commits_stage_before_success_status () =
   with_temp_dir "symphony-stage-commit-" (fun root ->
       let config =
@@ -14311,6 +15316,7 @@ let test_orchestrator_commits_stage_before_success_status () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = Some { enabled = true; commit_type = "fixture"; message = "<type>: <generated_message_max_90char>"; push = false; classification = None };
                   };
@@ -14382,6 +15388,7 @@ let test_stage_commit_classification_renders_messages () =
         start_status = None;
         success_status = Some "In review";
         retry_status = Some "Todo";
+        goal_loop = None;
         goal = None;
         commit = Some policy;
       }
@@ -14544,6 +15551,7 @@ let test_orchestrator_retries_push_failure_before_success_status () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = true; classification = None };
                   };
@@ -14648,6 +15656,7 @@ let test_stage_commit_requires_code_changes () =
             start_status = None;
             success_status = Some "In review";
             retry_status = Some "Todo";
+            goal_loop = None;
             goal = None;
             commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
           }
@@ -14716,6 +15725,7 @@ let test_orchestrator_does_not_retry_empty_commit () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
                   };
@@ -14923,6 +15933,7 @@ let protected_stage =
       start_status = None;
       success_status = Some "In review";
       retry_status = Some "Todo";
+      goal_loop = None;
       goal = None;
       commit = Some { enabled = true; commit_type = "feature"; message = Config.default_commit_message; push = false; classification = None };
     }
@@ -15035,6 +16046,7 @@ let test_orchestrator_moves_unauthorized_protected_stage_to_attention () =
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit =
                       Some
@@ -15135,6 +16147,7 @@ let completed_stage_config root git =
               start_status = Some "In progress";
               success_status = Some "In review";
               retry_status = Some "Todo";
+              goal_loop = None;
               goal = None;
               commit = None;
             };
@@ -15192,6 +16205,7 @@ let test_conflicting_stage_commit_classification_moves_attention_without_commit 
                     start_status = None;
                     success_status = Some "In review";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit =
                       Some
@@ -15272,6 +16286,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                     start_status = None;
                     success_status = Some "Todo";
                     retry_status = Some "Backlog";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -15286,6 +16301,7 @@ let test_ordered_queue_keeps_stage_handoffs_pending () =
                     start_status = None;
                     success_status = Some "Done";
                     retry_status = Some "Todo";
+                    goal_loop = None;
                     goal = None;
                     commit = None;
                   };
@@ -16591,6 +17607,7 @@ let test_stage_commit_pushes_task_branch () =
             start_status = None;
             success_status = Some "In review";
             retry_status = Some "Todo";
+            goal_loop = None;
             goal = None;
             commit = Some { enabled = true; commit_type = "feat"; message = Config.default_commit_message; push = true; classification = None };
           }
@@ -16840,6 +17857,7 @@ let manual_merge_config ?(keep_task_branch = true) root =
               context_snapshot = None;
               context_command = None;
               skills = [];
+              goal_loop = None;
               goal = None;
               commit = None;
             };
@@ -17274,6 +18292,8 @@ let () =
             test_runtime_contract_docs_use_current_harness_examples;
           Alcotest.test_case "Runtime Contract docs cover sandbox settings" `Quick
             test_runtime_contract_docs_cover_sandbox_settings;
+          Alcotest.test_case "Goal Loop docs codify runtime semantics" `Quick
+            test_goal_loop_docs_codify_runtime_semantics;
           Alcotest.test_case "Runtime Contract docs are secret-free" `Quick test_runtime_contract_docs_are_secret_free;
           Alcotest.test_case "Terminal Console docs cover default runtime semantics" `Quick
             test_terminal_console_docs_document_default_runtime_semantics;
@@ -17509,6 +18529,10 @@ let () =
             test_config_parses_stage_context_snapshot_and_readiness;
           Alcotest.test_case "parses stage context command and readiness" `Quick
             test_config_parses_stage_context_command_and_readiness;
+          Alcotest.test_case "parses stage Goal Loop and readiness" `Quick
+            test_config_parses_stage_goal_loop_and_readiness;
+          Alcotest.test_case "Goal Loop readiness preserves Terminal Console inspection" `Quick
+            test_goal_loop_readiness_state_preserves_terminal_inspection;
           Alcotest.test_case "parses allowed loop-start branch policy" `Quick
             test_config_parses_allowed_loop_start_branch_policy;
           Alcotest.test_case "parses stage goal and readiness" `Quick test_config_parses_stage_goal_and_readiness;
@@ -17564,10 +18588,17 @@ let () =
           Alcotest.test_case "matches ordered queue state by raw resume key" `Quick
             test_ordered_queue_state_matches_raw_resume_key;
           Alcotest.test_case "exposes goal usage when available" `Quick test_runtime_state_exposes_goal_usage_when_available;
+          Alcotest.test_case "exposes Goal Loop state" `Quick test_runtime_state_exposes_goal_loops;
+          Alcotest.test_case "accepts absent Goal Loop state" `Quick
+            test_runtime_state_goal_loops_compatibility_and_optional_fields;
           Alcotest.test_case "exposes context status" `Quick test_runtime_state_exposes_context_status;
           Alcotest.test_case "projects Terminal Console idle mode" `Quick test_terminal_console_model_projects_idle;
           Alcotest.test_case "projects Terminal Console running rows sanitized" `Quick
             test_terminal_console_model_projects_running_sanitized;
+          Alcotest.test_case "projects Terminal Console running Goal Loop sanitized" `Quick
+            test_terminal_console_model_projects_goal_loop_running_sanitized;
+          Alcotest.test_case "projects Terminal Console terminal Goal Loop rows" `Quick
+            test_terminal_console_model_projects_goal_loop_terminal_rows;
           Alcotest.test_case "projects Terminal Console retrying rows" `Quick
             test_terminal_console_model_projects_retrying;
           Alcotest.test_case "projects Terminal Console attention rows" `Quick
@@ -17614,6 +18645,8 @@ let () =
             test_terminal_console_tui_log_paths_are_compact;
           Alcotest.test_case "renders task detail context" `Quick
             test_terminal_console_tui_task_detail_panel_includes_context;
+          Alcotest.test_case "renders task detail Goal Loop" `Quick
+            test_terminal_console_tui_task_detail_includes_goal_loop;
           Alcotest.test_case "omits absent task detail fields" `Quick
             test_terminal_console_tui_task_detail_omits_absent_optional_fields;
           Alcotest.test_case "separates Tasks panel rows" `Quick
@@ -17634,6 +18667,8 @@ let () =
             test_terminal_console_tui_web_handoff_guidance_only;
           Alcotest.test_case "keeps invalid local path inspection UI-local" `Quick
             test_terminal_console_tui_invalid_path_is_ui_local;
+          Alcotest.test_case "keeps Goal Loop diagnostics path inspection read-only" `Quick
+            test_terminal_console_tui_goal_loop_diagnostics_path_is_read_only;
           Alcotest.test_case "renders Terminal Console contextual help/footer" `Quick
             test_terminal_console_tui_footer_help_content;
           Alcotest.test_case "records only non-mutating Terminal Console safe aids" `Quick
@@ -17661,6 +18696,8 @@ let () =
             test_websocket_compozy_progress_snapshot_shape;
           Alcotest.test_case "serves context status live snapshot and HTTP state" `Quick
             test_websocket_context_status_snapshot_and_http_state;
+          Alcotest.test_case "serves Goal Loop state in HTTP and live snapshots" `Quick
+            test_server_goal_loop_snapshot_surfaces;
           Alcotest.test_case "serves sandbox metadata in HTTP and live snapshots" `Quick
             test_server_sandbox_metadata_snapshot_surfaces;
         ] );
@@ -17914,6 +18951,25 @@ let () =
             test_claude_stream_dispatch_updates_activity_and_preserves_raw_logs;
           Alcotest.test_case "updates activity from Cursor stream-json logs" `Quick
             test_cursor_stream_dispatch_updates_activity_and_preserves_raw_logs;
+          Alcotest.test_case "Goal Loop domain transitions" `Quick test_goal_loop_domain_transitions;
+          Alcotest.test_case "Goal Loop dispatch creates running state" `Quick
+            test_orchestrator_goal_loop_dispatch_creates_running_state;
+          Alcotest.test_case "Goal Loop skips non-enabled stages" `Quick
+            test_orchestrator_goal_loop_dispatch_skips_non_enabled_stage;
+          Alcotest.test_case "Goal Loop activity preserves Goal Usage" `Quick
+            test_orchestrator_goal_loop_activity_preserves_goal_usage;
+          Alcotest.test_case "Goal Loop retry updates attempt" `Quick
+            test_orchestrator_goal_loop_retry_updates_attempt_and_next_action;
+          Alcotest.test_case "Goal Loop budget exhaustion records stop" `Quick
+            test_orchestrator_goal_loop_budget_exhaustion_records_stop;
+          Alcotest.test_case "Goal Loop preserves Stage Goal Handoff prompt" `Quick
+            test_orchestrator_goal_loop_preserves_stage_goal_handoff_prompt;
+          Alcotest.test_case "Goal Loop successful exit requires evidence" `Quick
+            test_orchestrator_goal_loop_successful_exit_requires_evidence;
+          Alcotest.test_case "Goal Loop successful exit retries without evidence" `Quick
+            test_orchestrator_goal_loop_successful_exit_retries_without_evidence;
+          Alcotest.test_case "Goal Loop keeps completion lifecycle unchanged" `Quick
+            test_orchestrator_goal_loop_keeps_completion_lifecycle_unchanged;
           Alcotest.test_case "commits stage before success status" `Quick test_orchestrator_commits_stage_before_success_status;
           Alcotest.test_case "renders stage commit classification messages" `Quick
             test_stage_commit_classification_renders_messages;

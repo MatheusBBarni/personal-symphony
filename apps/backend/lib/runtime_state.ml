@@ -1,6 +1,26 @@
 type tokens = { input_tokens : int; output_tokens : int; total_tokens : int }
 type goal_usage = { status : string option; time_used_seconds : float option; tokens_used : int option }
 type context_status = { state : string; summary : string; diagnostics_path : string option }
+type goal_loop_budget = { max_turns : int option; max_runtime_ms : int option; max_tokens : int option }
+
+type goal_loop = {
+  issue_id : string;
+  issue_identifier : string;
+  run_id : string;
+  goal : string;
+  state : string;
+  stage_agent : string option;
+  harness_name : string option;
+  harness_kind : string option;
+  attempt_count : int;
+  budget : goal_loop_budget;
+  latest_evidence : string option;
+  stop_outcome : string option;
+  stop_reason : string option;
+  next_action : string option;
+  diagnostics_path : string option;
+  updated_at : string;
+}
 
 type running = {
   issue : Issue.t;
@@ -112,6 +132,7 @@ type t = {
   running : running list;
   retrying : retrying list;
   issue_errors : issue_error list;
+  goal_loops : goal_loop list;
   status_order : string list;
   readiness_gaps : readiness_gap list;
   context_statuses : (string * context_status) list;
@@ -130,8 +151,10 @@ type t = {
   last_error : string option;
 }
 
+let empty_goal_loop_budget = { max_turns = None; max_runtime_ms = None; max_tokens = None }
+
 let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps = []) ?(status_order = []) ?ordered_queue
-    ?(intake_evaluations = []) ?compozy_progress ?(compozy_progresses = []) ?last_error () =
+    ?(intake_evaluations = []) ?(goal_loops = []) ?compozy_progress ?(compozy_progresses = []) ?last_error () =
   let compozy_progresses =
     match (compozy_progresses, compozy_progress) with [], Some progress -> [ progress ] | _ -> compozy_progresses
   in
@@ -142,6 +165,7 @@ let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps
     issues = [];
     retrying = [];
     issue_errors = [];
+    goal_loops;
     status_order;
     readiness_gaps;
     context_statuses = [];
@@ -159,6 +183,9 @@ let empty ?workspace_repository_name ?(tracker_kind = "github") ?(readiness_gaps
     context_diagnostics = [];
     last_error;
   }
+
+let option_string = function Some value -> `String value | None -> `Null
+let option_int = function Some value -> `Int value | None -> `Null
 
 let tokens_to_yojson tokens =
   `Assoc
@@ -201,6 +228,38 @@ let context_status_to_yojson (status : context_status) =
       ("summary", `String status.summary);
       ("diagnostics_path", (match status.diagnostics_path with Some path -> `String path | None -> `Null));
     ]
+
+let goal_loop_budget_to_yojson (budget : goal_loop_budget) =
+  `Assoc
+    [
+      ("max_turns", option_int budget.max_turns);
+      ("max_runtime_ms", option_int budget.max_runtime_ms);
+      ("max_tokens", option_int budget.max_tokens);
+    ]
+
+let goal_loop_to_yojson (loop : goal_loop) =
+  `Assoc
+    [
+      ("issue_id", `String loop.issue_id);
+      ("issue_identifier", `String loop.issue_identifier);
+      ("run_id", `String loop.run_id);
+      ("goal", `String loop.goal);
+      ("state", `String loop.state);
+      ("stage_agent", option_string loop.stage_agent);
+      ("harness_name", option_string loop.harness_name);
+      ("harness_kind", option_string loop.harness_kind);
+      ("attempt_count", `Int loop.attempt_count);
+      ("budget", goal_loop_budget_to_yojson loop.budget);
+      ("latest_evidence", option_string loop.latest_evidence);
+      ("stop_outcome", option_string loop.stop_outcome);
+      ("stop_reason", option_string loop.stop_reason);
+      ("next_action", option_string loop.next_action);
+      ("diagnostics_path", option_string loop.diagnostics_path);
+      ("updated_at", `String loop.updated_at);
+    ]
+
+let goal_loop_for_issue state issue_id =
+  List.find_opt (fun (loop : goal_loop) -> loop.issue_id = issue_id) state.goal_loops
 
 let issue_to_yojson issue =
   `Assoc
@@ -409,6 +468,53 @@ let json_string_member name json =
 let json_int_member name json =
   match json_member name json with Some (`Int value) -> Some value | _ -> None
 
+let goal_loop_budget_of_yojson json =
+  match json with
+  | `Assoc _ ->
+      {
+        max_turns = json_int_member "max_turns" json;
+        max_runtime_ms = json_int_member "max_runtime_ms" json;
+        max_tokens = json_int_member "max_tokens" json;
+      }
+  | _ -> empty_goal_loop_budget
+
+let goal_loop_of_yojson json =
+  match
+    ( json_string_member "issue_id" json,
+      json_string_member "issue_identifier" json,
+      json_string_member "run_id" json,
+      json_string_member "goal" json,
+      json_string_member "state" json,
+      json_string_member "updated_at" json )
+  with
+  | Some issue_id, Some issue_identifier, Some run_id, Some goal, Some state, Some updated_at ->
+      let budget = match json_member "budget" json with Some budget -> goal_loop_budget_of_yojson budget | None -> empty_goal_loop_budget in
+      Some
+        {
+          issue_id;
+          issue_identifier;
+          run_id;
+          goal;
+          state;
+          stage_agent = json_string_member "stage_agent" json;
+          harness_name = json_string_member "harness_name" json;
+          harness_kind = json_string_member "harness_kind" json;
+          attempt_count = Option.value (json_int_member "attempt_count" json) ~default:0;
+          budget;
+          latest_evidence = json_string_member "latest_evidence" json;
+          stop_outcome = json_string_member "stop_outcome" json;
+          stop_reason = json_string_member "stop_reason" json;
+          next_action = json_string_member "next_action" json;
+          diagnostics_path = json_string_member "diagnostics_path" json;
+          updated_at;
+        }
+  | _ -> None
+
+let goal_loops_from_snapshot_yojson json =
+  match json_member "goal_loops" json with
+  | Some (`List loops) -> List.filter_map goal_loop_of_yojson loops
+  | _ -> []
+
 let ordered_queue_entry_of_yojson json =
   match json_string_member "issue_identifier" json with
   | None -> None
@@ -521,6 +627,7 @@ let to_yojson state =
       ("running", `List (List.map (running_to_yojson state) state.running));
       ("retrying", `List (List.map (retrying_to_yojson state) state.retrying));
       ("issue_errors", `List (List.map issue_error_to_yojson state.issue_errors));
+      ("goal_loops", `List (List.map goal_loop_to_yojson state.goal_loops));
       ("status_order", `List (List.map (fun status -> `String status) state.status_order));
       ("readiness_gaps", `List (List.map readiness_gap_to_yojson state.readiness_gaps));
       ( "usage_totals",

@@ -6,6 +6,8 @@ type issueItem = {
   description: string,
   error: string,
   goalUsage: string,
+  goalLoop: string,
+  goalLoopState: string,
   contextStatus: string,
   harnessIdentity: string,
   intakeState: string,
@@ -183,6 +185,16 @@ let intakeStateTone = state =>
   | _ => "border-neutral-700 bg-neutral-900 text-neutral-300"
   }
 
+let goalLoopTone = state =>
+  switch state->toLowerCase {
+  | "goal_met" => "border-emerald-800 bg-emerald-950/60 text-emerald-100"
+  | "needs_attention" => "border-red-900 bg-red-950/70 text-red-100"
+  | "budget_exhausted" => "border-amber-800 bg-amber-950/70 text-amber-100"
+  | "retrying" => "border-yellow-800 bg-yellow-950/60 text-yellow-100"
+  | "running" => "border-teal-800 bg-teal-950/40 text-teal-100"
+  | _ => "border-neutral-800 bg-neutral-900 text-neutral-300"
+  }
+
 let issueCard = (issue: issueItem) =>
   <article
     key=issue.identifier
@@ -252,6 +264,14 @@ let issueCard = (issue: issueItem) =>
       >
         <span className="font-medium text-neutral-100"> {React.string("Goal Usage")} </span>
         <span className="ml-2"> {React.string(value)} </span>
+      </div>
+    }}
+    {switch issue.goalLoop {
+    | "" => React.null
+    | value =>
+      <div className={"mt-3 rounded border px-3 py-2 text-xs leading-5 " ++ goalLoopTone(issue.goalLoopState)}>
+        <span className="font-medium"> {React.string("Goal Loop")} </span>
+        <div className="mt-1 break-words"> {React.string(value)} </div>
       </div>
     }}
     {switch issue.contextStatus {

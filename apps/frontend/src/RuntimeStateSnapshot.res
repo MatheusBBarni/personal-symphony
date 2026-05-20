@@ -36,6 +36,35 @@ function goalUsageText(value) {
   }
   return parts.join(" | ");
 }
+function goalLoopBudgetText(value) {
+  if (!value) return "";
+  const parts = [];
+  if (value.max_turns !== null && value.max_turns !== undefined) {
+    parts.push("maxTurns " + value.max_turns);
+  }
+  if (value.max_runtime_ms !== null && value.max_runtime_ms !== undefined) {
+    parts.push("maxRuntimeMs " + value.max_runtime_ms);
+  }
+  if (value.max_tokens !== null && value.max_tokens !== undefined) {
+    parts.push("maxTokens " + value.max_tokens);
+  }
+  return parts.join(" | ");
+}
+function goalLoopText(value) {
+  if (!value) return "";
+  const parts = [];
+  if (value.state) parts.push("state " + value.state);
+  if (value.attempt_count !== null && value.attempt_count !== undefined) {
+    parts.push("attempt " + value.attempt_count);
+  }
+  if (value.stop_outcome) parts.push("outcome " + value.stop_outcome);
+  const budget = goalLoopBudgetText(value.budget);
+  if (budget) parts.push("budget " + budget);
+  if (value.latest_evidence) parts.push("evidence " + value.latest_evidence);
+  if (value.stop_reason) parts.push("stop reason " + value.stop_reason);
+  if (value.next_action) parts.push("next action " + value.next_action);
+  return parts.join(" | ");
+}
 function contextStatusText(value) {
   if (!value || !value.state) return "";
   const label = String(value.state).replace(/_/g, " ");
@@ -60,6 +89,31 @@ type goalUsage = {
   status: option<string>,
   time_used_seconds: option<float>,
   tokens_used: option<int>,
+}
+
+type goalLoopBudget = {
+  max_turns: option<int>,
+  max_runtime_ms: option<int>,
+  max_tokens: option<int>,
+}
+
+type goalLoop = {
+  issue_id: string,
+  issue_identifier: string,
+  run_id: string,
+  goal: string,
+  state: string,
+  stage_agent: option<string>,
+  harness_name: option<string>,
+  harness_kind: option<string>,
+  attempt_count: int,
+  budget: goalLoopBudget,
+  latest_evidence: option<string>,
+  stop_outcome: option<string>,
+  stop_reason: option<string>,
+  next_action: option<string>,
+  diagnostics_path: option<string>,
+  updated_at: string,
 }
 
 type contextStatus = {
@@ -151,6 +205,7 @@ type runtimeState = {
   running: array<runningIssue>,
   retrying: array<taskError>,
   issue_errors: array<blockedTaskError>,
+  goal_loops: array<goalLoop>,
   status_order: array<string>,
   ordered_queue: option<orderedQueue>,
   intake_evaluations: array<intakeEvaluation>,
@@ -167,6 +222,7 @@ type runtimeState = {
 @val external goalUsageText: option<goalUsage> => string = "goalUsageText"
 @val external contextStatusText: option<contextStatus> => string = "contextStatusText"
 @send external toLowerCase: string => string = "toLowerCase"
+@val external goalLoopText: option<goalLoop> => string = "goalLoopText"
 
 let readinessText = state =>
   if Array.length(arrayOrEmpty(state.readiness_gaps)) > 0 {
@@ -216,6 +272,21 @@ let goalUsageForIssue = (state, issueId) => {
     }
   }
 }
+
+let goalLoopForIssue = (state, issueId) =>
+  arrayOrEmpty(state.goal_loops)->Array.find(loop => loop.issue_id == issueId)
+
+let goalLoopTextForIssue = (state, issueId) =>
+  switch goalLoopForIssue(state, issueId) {
+  | Some(loop) => goalLoopText(Some(loop))
+  | None => ""
+  }
+
+let goalLoopStateForIssue = (state, issueId) =>
+  switch goalLoopForIssue(state, issueId) {
+  | Some(loop) => stringOrEmpty(Some(loop.state))
+  | None => ""
+  }
 
 let contextStatusForIssue = (state, issueId) => {
   switch arrayOrEmpty(state.running)->Array.find(issue => issue.issue_id == issueId) {
@@ -340,6 +411,8 @@ let snapshotFromState = state => {
       description: issue.description->stringOrEmpty->shortDescription,
       error: taskErrorForIssue(state, issue.issue_id),
       goalUsage: goalUsageForIssue(state, issue.issue_id),
+      goalLoop: goalLoopTextForIssue(state, issue.issue_id),
+      goalLoopState: goalLoopStateForIssue(state, issue.issue_id),
       contextStatus: contextStatusForIssue(state, issue.issue_id),
       harnessIdentity: harnessIdentityForIssue(state, issue.issue_id),
       intakeState: intakeStateLabel(intakeEvaluation),

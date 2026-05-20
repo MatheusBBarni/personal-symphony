@@ -88,6 +88,26 @@ sockets[0].onmessage({
         },
       },
     ],
+    goal_loops: [
+      {
+        issue_id: "I1",
+        issue_identifier: "#1",
+        run_id: "goal-loop-I1-1",
+        goal: "Verify dashboard Goal Loop visibility",
+        state: "running",
+        stage_agent: "engineer",
+        harness_name: "engineer",
+        harness_kind: "claude",
+        attempt_count: 1,
+        budget: { max_turns: 4, max_runtime_ms: 3600000, max_tokens: 200000 },
+        latest_evidence: "Agent dispatched.",
+        stop_outcome: null,
+        stop_reason: null,
+        next_action: "Continue monitoring evidence.",
+        diagnostics_path: null,
+        updated_at: "2026-05-04T00:00:01Z",
+      },
+    ],
     retrying: [
       {
         issue_id: "I2",
@@ -128,6 +148,8 @@ assert.equal(snapshots[0].intake_evaluations[0].state, "ready");
 assert.equal(snapshots[0].running[0].sandbox_enabled, true);
 assert.equal(snapshots[0].running[0].sandbox_provider, "docker");
 assert.equal(snapshots[0].running[0].sandbox_reuse_outcome, "reused");
+assert.equal(snapshots[0].goal_loops[0].state, "running");
+assert.equal(snapshots[0].goal_loops[0].latest_evidence, "Agent dispatched.");
 assert.equal(snapshots[0].retrying[0].context_status.state, "timed_out");
 assert.equal(snapshots[0].compozy_progress.current_step, "task_02.md");
 assert.equal(snapshots[0].compozy_progress.completed, 1);
@@ -148,6 +170,11 @@ assert.equal(dashboardSnapshot.issues[0].harnessIdentity, "engineer (claude)");
 assert.equal(dashboardSnapshot.issues[0].intakeState, "Ready for intake");
 assert.equal(dashboardSnapshot.issues[0].intakeReason, "Tracker state matches configured Symphony-ready Status.");
 assert.equal(dashboardSnapshot.issues[0].sandbox, "docker reused");
+assert.equal(
+  dashboardSnapshot.issues[0].goalLoop,
+  "state running | attempt 1 | budget maxTurns 4 | maxRuntimeMs 3600000 | maxTokens 200000 | evidence Agent dispatched. | next action Continue monitoring evidence.",
+);
+assert.equal(dashboardSnapshot.issues[0].goalLoopState, "running");
 assert.equal(dashboardSnapshot.compozyProgress.runId, "compozy:compozy-tasks-run-integration");
 assert.equal(dashboardSnapshot.compozyProgress.currentStep, "task_02.md");
 assert.equal(dashboardSnapshot.compozyProgress.completed, "1");
@@ -175,6 +202,11 @@ assert.match(lifecycleMarkup, /Stage agent/);
 assert.match(lifecycleMarkup, /engineer/);
 assert.match(lifecycleMarkup, /Sandbox/);
 assert.match(lifecycleMarkup, /docker reused/);
+assert.match(lifecycleMarkup, /Goal Loop/);
+assert.match(lifecycleMarkup, /state running \| attempt 1/);
+assert.match(lifecycleMarkup, /budget maxTurns 4 \| maxRuntimeMs 3600000 \| maxTokens 200000/);
+assert.match(lifecycleMarkup, /evidence Agent dispatched\./);
+assert.match(lifecycleMarkup, /next action Continue monitoring evidence\./);
 assert.match(lifecycleMarkup, /PR readiness/);
 assert.match(lifecycleMarkup, /handoff_failed/);
 assert.match(lifecycleMarkup, /Handoff status/);
@@ -484,6 +516,62 @@ const richDashboardSnapshot = snapshotFromState({
     { issue_id: "I-name", harness_name: "reviewer", harness_kind: null },
     { issue_id: "I-kind", harness_name: null, harness_kind: "pi" },
   ],
+  goal_loops: [
+    {
+      issue_id: "I-run",
+      issue_identifier: "#10",
+      run_id: "goal-loop-I-run",
+      goal: "Finish implementation with verification",
+      state: "goal_met",
+      stage_agent: "planner",
+      harness_name: "planner",
+      harness_kind: "codex",
+      attempt_count: 2,
+      budget: { max_turns: 4, max_runtime_ms: 3600000, max_tokens: 200000 },
+      latest_evidence: "pnpm test passed.",
+      stop_outcome: "goal_met",
+      stop_reason: "All checks passed.",
+      next_action: "Review the Stage Commit.",
+      diagnostics_path: ".symphony/state/diagnostics/goal-loop-I-run.json",
+      updated_at: "2026-05-04T00:03:01Z",
+    },
+    {
+      issue_id: "I-blocked",
+      issue_identifier: "#13",
+      run_id: "goal-loop-I-blocked",
+      goal: "Resolve missing evidence",
+      state: "needs_attention",
+      stage_agent: "engineer",
+      harness_name: "codex",
+      harness_kind: "codex",
+      attempt_count: 3,
+      budget: { max_turns: 3, max_runtime_ms: null, max_tokens: null },
+      latest_evidence: "Evidence command exited with code 1.",
+      stop_outcome: "needs_attention",
+      stop_reason: "Deterministic evidence is missing.",
+      next_action: "Operator attention is required before the loop can continue.",
+      diagnostics_path: null,
+      updated_at: "2026-05-04T00:03:02Z",
+    },
+    {
+      issue_id: "I-retry",
+      issue_identifier: "#14",
+      run_id: "goal-loop-I-retry",
+      goal: "Finish before budget limit",
+      state: "budget_exhausted",
+      stage_agent: "engineer",
+      harness_name: "codex",
+      harness_kind: "codex",
+      attempt_count: 5,
+      budget: { max_turns: 4, max_runtime_ms: null, max_tokens: null },
+      latest_evidence: "maxTurns reached before deterministic evidence.",
+      stop_outcome: "budget_exhausted",
+      stop_reason: "maxTurns reached before deterministic evidence.",
+      next_action: "Review the budget exhaustion before continuing the task.",
+      diagnostics_path: null,
+      updated_at: "2026-05-04T00:03:03Z",
+    },
+  ],
   retrying: [
     {
       issue_id: "I-retry",
@@ -526,6 +614,8 @@ assert.equal(richDashboardSnapshot.orderedQueue[0].title, "");
 assert.equal(richDashboardSnapshot.orderedQueue[0].skipReason, "not dispatchable");
 assert.equal(richDashboardSnapshot.issues[0].description, "No description provided.");
 assert.equal(richDashboardSnapshot.issues[0].goalUsage, "status running | time 1.5s | tokens 7");
+assert.match(richDashboardSnapshot.issues[0].goalLoop, /state goal_met \| attempt 2 \| outcome goal_met/);
+assert.match(richDashboardSnapshot.issues[0].goalLoop, /evidence pnpm test passed\./);
 assert.equal(richDashboardSnapshot.issues[0].contextStatus, "in progress");
 assert.equal(richDashboardSnapshot.issues[0].harnessIdentity, "planner (codex)");
 assert.equal(richDashboardSnapshot.issues[1].harnessIdentity, "reviewer");
@@ -538,11 +628,16 @@ assert.equal(
   "Ordered Queue entry is waiting for first-admission eligibility.",
 );
 assert.equal(richDashboardSnapshot.issues[3].goalUsage, "status blocked | tokens 8");
+assert.match(richDashboardSnapshot.issues[3].goalLoop, /state needs_attention \| attempt 3/);
+assert.match(richDashboardSnapshot.issues[3].goalLoop, /stop reason Deterministic evidence is missing\./);
 assert.equal(richDashboardSnapshot.issues[4].error, "will retry");
 assert.equal(richDashboardSnapshot.issues[4].goalUsage, "time 3s");
+assert.match(richDashboardSnapshot.issues[4].goalLoop, /state budget_exhausted \| attempt 5/);
+assert.match(richDashboardSnapshot.issues[4].goalLoop, /maxTurns reached before deterministic evidence\./);
 assert.equal(richDashboardSnapshot.issues[4].contextStatus, "timed out: Context Command timed out");
 assert.equal(richDashboardSnapshot.issues[5].error, "");
 assert.equal(richDashboardSnapshot.issues[5].intakeState, "Already admitted");
+assert.equal(richDashboardSnapshot.issues[5].goalLoop, "");
 
 const richMarkup = renderToStaticMarkup(
   React.createElement(Dashboard, { snapshot: richDashboardSnapshot, error: "live socket warning" }),
@@ -560,6 +655,10 @@ assert.match(richMarkup, /Pending work item details/);
 assert.match(richMarkup, /not dispatchable/);
 assert.match(richMarkup, /Goal Usage/);
 assert.match(richMarkup, /status running \| time 1\.5s \| tokens 7/);
+assert.match(richMarkup, /Goal Loop/);
+assert.match(richMarkup, /outcome goal_met/);
+assert.match(richMarkup, /state needs_attention/);
+assert.match(richMarkup, /state budget_exhausted/);
 assert.match(richMarkup, /Context Status/);
 assert.match(richMarkup, /timed out: Context Command timed out/);
 assert.match(richMarkup, /Harness/);

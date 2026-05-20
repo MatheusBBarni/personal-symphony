@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Codify Goal Loop domain language and runtime ADR"
 type: docs
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 01: Codify Goal Loop domain language and runtime ADR
@@ -28,11 +29,11 @@ This task establishes the repository-level language and architecture decision fo
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Review `_prd.md`, `_techspec.md`, and ADR-001 through ADR-004.
-- [ ] 1.2 Add Goal Loop glossary entries and avoid-list language to `CONTEXT.md`.
-- [ ] 1.3 Add a repo-level ADR describing Runtime-owned Goal Loop semantics and lifecycle boundaries.
-- [ ] 1.4 Update README references only where needed to introduce the new terms.
-- [ ] 1.5 Add or update documentation assertions in backend tests.
+- [x] 1.1 Review `_prd.md`, `_techspec.md`, and ADR-001 through ADR-004.
+- [x] 1.2 Add Goal Loop glossary entries and avoid-list language to `CONTEXT.md`.
+- [x] 1.3 Add a repo-level ADR describing Runtime-owned Goal Loop semantics and lifecycle boundaries.
+- [x] 1.4 Update README references only where needed to introduce the new terms.
+- [x] 1.5 Add or update documentation assertions in backend tests.
 
 ## Implementation Details
 Use the TechSpec "Integration Points" and "Technical Considerations" sections for the accepted language and boundaries. The repository ADR should summarize the stage-scoped configuration, persisted Runtime State model, evidence command gate, and no-delivery-authority constraint without duplicating every task detail.
@@ -65,13 +66,19 @@ Use the TechSpec "Integration Points" and "Technical Considerations" sections fo
 
 ## Tests
 - Unit tests:
-  - [ ] `apps/backend/test/test_backend.ml` asserts Goal Loop terms exist in `CONTEXT.md`.
-  - [ ] `apps/backend/test/test_backend.ml` asserts Stage Goal Handoff remains described as launch-time behavior.
-  - [ ] `apps/backend/test/test_backend.ml` asserts Goal Usage is not described as completion evidence.
+  - [x] `apps/backend/test/test_backend.ml` asserts Goal Loop terms exist in `CONTEXT.md`.
+  - [x] `apps/backend/test/test_backend.ml` asserts Stage Goal Handoff remains described as launch-time behavior.
+  - [x] `apps/backend/test/test_backend.ml` asserts Goal Usage is not described as completion evidence.
 - Integration tests:
-  - [ ] Existing docs/test command for repository documentation passes after the ADR and glossary update.
+  - [x] Existing docs/test validation passes after the ADR and glossary update.
 - Test coverage target: >=80%
 - All tests must pass
+
+### Verification Notes
+- `opam exec -- dune exec --root . --build-dir /private/tmp/symphony-goal-loop-dune-inner ./apps/backend/test/test_backend.exe -- test docs`
+- `node scripts/validate-docs-examples.js`
+- `opam exec -- dune runtest --root . --build-dir /private/tmp/symphony-goal-loop-dune-final`
+- `pnpm docs:test` did not reach the repository script because local `pnpm` exits with `[ERROR] fetch failed`; the underlying docs validator script passed directly.
 
 ## Success Criteria
 - All tests passing

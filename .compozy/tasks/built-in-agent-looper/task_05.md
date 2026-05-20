@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Expose Goal Loop state through Runtime State JSON"
 type: backend
 complexity: medium
 dependencies:
   - task_04
+
 ---
 
 # Task 05: Expose Goal Loop state through Runtime State JSON
@@ -29,11 +30,11 @@ This task projects canonical Goal Loop state into the existing Runtime State sna
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add Runtime State Goal Loop types and JSON serialization.
-- [ ] 5.2 Add top-level `goal_loops` to Runtime State snapshots.
-- [ ] 5.3 Add helpers to look up loop state by issue id.
-- [ ] 5.4 Add JSON compatibility tests for snapshots with and without Goal Loop data.
-- [ ] 5.5 Add HTTP/websocket snapshot coverage if Runtime State test coverage requires it.
+- [x] 5.1 Add Runtime State Goal Loop types and JSON serialization.
+- [x] 5.2 Add top-level `goal_loops` to Runtime State snapshots.
+- [x] 5.3 Add helpers to look up loop state by issue id.
+- [x] 5.4 Add JSON compatibility tests for snapshots with and without Goal Loop data.
+- [x] 5.5 Add HTTP/websocket snapshot coverage if Runtime State test coverage requires it.
 
 ## Implementation Details
 Use the TechSpec "API Endpoints" section. Do not add new endpoints; extend the existing Runtime State payload and let existing server delivery continue to carry the full snapshot.
@@ -61,13 +62,13 @@ Use the TechSpec "API Endpoints" section. Do not add new endpoints; extend the e
 
 ## Tests
 - Unit tests:
-  - [ ] `Runtime_state.to_yojson` includes `goal_loops` when loop state exists.
-  - [ ] Empty Runtime State serializes `goal_loops` as an empty list or compatible absent-safe value.
-  - [ ] Goal Loop JSON includes issue id, run id, state, stop outcome, evidence, next action, and timestamp.
-  - [ ] Missing optional fields serialize as `null` or are omitted consistently with existing Runtime State conventions.
+  - [x] `Runtime_state.to_yojson` includes `goal_loops` when loop state exists.
+  - [x] Empty Runtime State serializes `goal_loops` as an empty list or compatible absent-safe value.
+  - [x] Goal Loop JSON includes issue id, run id, state, stop outcome, evidence, next action, and timestamp.
+  - [x] Missing optional fields serialize as `null` or are omitted consistently with existing Runtime State conventions.
 - Integration tests:
-  - [ ] `/api/v1/state` includes `goal_loops`.
-  - [ ] Live Dashboard initial websocket snapshot includes `goal_loops`.
+  - [x] `/api/v1/state` includes `goal_loops`.
+  - [x] Live Dashboard initial websocket snapshot includes `goal_loops`.
 - Test coverage target: >=80%
 - All tests must pass
 
