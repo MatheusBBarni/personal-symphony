@@ -308,8 +308,14 @@ function assertTerminalConsoleGuidance(readme) {
     "Agent Worktree details",
     "Task Branch context",
     "safe local aids",
-    "Web Dashboard handoff command",
+    "opening focused Terminal Console settings with `s`",
+    "Terminal Console theme in ignored Runtime Home state",
+    "Runtime Settings `server.port`",
+    "starting or reusing the loopback Web Dashboard with `w`",
+    "compatible loopback Web Dashboard",
     "do not retry tasks, pause or resume dispatch, update tracker status",
+    "Terminal Console V1 dashboard controls are loopback-only",
+    "server-generated local dashboard auth token",
     "symphony --web --port 8080",
     "Live Dashboard Connection as a Runtime State stream",
     "`symphony --once`",
@@ -327,7 +333,13 @@ function assertTerminalConsoleGuidance(readme) {
     "`symphony --once` prints non-interactive terminal output",
     "The **Terminal Console** uses in-process **Runtime State** snapshots",
     "The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream",
+    "**Terminal Console** settings opened with `s`",
+    "ignored **Runtime Home** UI state",
+    "only Runtime Settings `server.port`",
+    "**Terminal Console** V1 dashboard controls are loopback-only",
+    "Pressing `w` in the **Terminal Console** starts or reuses a compatible loopback **Web Dashboard**",
     "**Terminal Console** local aids must not retry tasks",
+    "change any **Runtime Contract** field other than scoped `server.port`",
   ];
 
   for (const phrase of requiredContext) {
@@ -339,18 +351,37 @@ function assertTerminalConsoleGuidance(readme) {
   const adrPath = "docs/adr/0024-default-rich-terminal-console.md";
   const adr = readDoc(adrPath);
   const requiredAdr = [
-    "Accepted",
+    "Accepted, amended 2026-05-20",
     "Normal `symphony` runs open the read-first Terminal Console by default",
     "`symphony --web` keeps Web Dashboard mode separate",
     "The `symphony --once` command keeps",
     "non-interactive terminal output",
     "Runtime State snapshots",
+    "open focused Terminal Console settings with `s`",
+    "start or reuse the loopback Web Dashboard with `w`",
+    "only Runtime Settings `server.port`",
+    "Terminal Console V1 dashboard controls are loopback-only",
     "must not retry tasks, pause or resume dispatch",
+    "change any Runtime Contract field other than scoped `server.port`",
   ];
 
   for (const phrase of requiredAdr) {
     if (!adr.includes(phrase)) {
       fail(`${adrPath} is missing Terminal Console decision text for ${phrase}`);
+    }
+  }
+
+  const authAdrPath = "docs/adr/0025-dashboard-loopback-and-auth.md";
+  const authAdr = readDoc(authAdrPath);
+  const requiredAuthAdr = [
+    "Non-loopback hosts require a generated local dashboard auth token",
+    "`symphony_auth` URL query parameter",
+    "Runtime State HTTP endpoints and the Live Dashboard Connection",
+  ];
+
+  for (const phrase of requiredAuthAdr) {
+    if (!authAdr.includes(phrase)) {
+      fail(`${authAdrPath} is missing Web Dashboard auth decision text for ${phrase}`);
     }
   }
 

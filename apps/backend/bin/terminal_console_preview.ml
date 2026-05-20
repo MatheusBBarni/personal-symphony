@@ -178,6 +178,8 @@ let run () =
           Shell.local_surface ~label:"Workspace Repository" ~root:(Sys.getcwd ());
           Shell.local_surface ~label:"Runtime Home" ~root:(Filename.concat (Sys.getcwd ()) ".symphony");
         ];
+      settings = Shell.default_settings;
+      save_settings = Shell.default_save_settings;
     }
   in
   Shell.run runtime

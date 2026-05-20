@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Change `w` From Handoff to Start or Reuse Action"
 type: backend
 complexity: medium
@@ -7,6 +7,7 @@ dependencies:
   - task_03
   - task_04
   - task_05
+
 ---
 
 # Task 06: Change `w` From Handoff to Start or Reuse Action

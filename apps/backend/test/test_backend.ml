@@ -4151,6 +4151,7 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
   let readme = read "README.md" in
   let context = read "CONTEXT.md" in
   let adr = read "docs/adr/0024-default-rich-terminal-console.md" in
+  let auth_adr = read "docs/adr/0025-dashboard-loopback-and-auth.md" in
   List.iter
     (fun expected ->
       Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
@@ -4163,8 +4164,14 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
       "Logs progress";
       "Agent Worktree details";
       "Task Branch context";
-      "Web Dashboard handoff command";
+      "opening focused Terminal Console settings with `s`";
+      "Terminal Console theme in ignored Runtime Home state";
+      "Runtime Settings `server.port`";
+      "starting or reusing the loopback Web Dashboard with `w`";
+      "compatible loopback Web Dashboard";
       "do not retry tasks, pause or resume dispatch, update tracker status";
+      "Terminal Console V1 dashboard controls are loopback-only";
+      "server-generated local dashboard auth token";
       "symphony --web --port 8080";
       "Live Dashboard Connection as a Runtime State stream";
       "`symphony --once`";
@@ -4178,18 +4185,36 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
       "`symphony --once` prints non-interactive terminal output";
       "The **Terminal Console** uses in-process **Runtime State** snapshots";
       "The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream";
+      "**Terminal Console** settings opened with `s`";
+      "ignored **Runtime Home** UI state";
+      "only Runtime Settings `server.port`";
+      "**Terminal Console** V1 dashboard controls are loopback-only";
+      "Pressing `w` in the **Terminal Console** starts or reuses a compatible loopback **Web Dashboard**";
       "**Terminal Console** local aids must not retry tasks";
+      "change any **Runtime Contract** field other than scoped `server.port`";
     ];
   List.iter
     (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
     [
-      "Accepted";
+      "Accepted, amended 2026-05-20";
       "Normal `symphony` runs open the read-first Terminal Console by default";
       "`symphony --web` keeps Web Dashboard mode separate";
       "The `symphony --once` command keeps";
       "non-interactive terminal output";
       "Runtime State snapshots";
+      "open focused Terminal Console settings with `s`";
+      "start or reuse the loopback Web Dashboard with `w`";
+      "only Runtime Settings `server.port`";
+      "Terminal Console V1 dashboard controls are loopback-only";
       "must not retry tasks, pause or resume dispatch";
+      "change any Runtime Contract field other than scoped `server.port`";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("dashboard auth ADR includes " ^ expected) true (contains_substring auth_adr expected))
+    [
+      "Non-loopback hosts require a generated local dashboard auth token";
+      "`symphony_auth` URL query parameter";
+      "Runtime State HTTP endpoints and the Live Dashboard Connection";
     ];
   Alcotest.(check bool) "README avoids TUI product wording" false (contains_substring readme "TUI");
   Alcotest.(check bool) "ADR avoids TUI product wording" false (contains_substring adr "TUI")
@@ -7054,6 +7079,8 @@ let test_terminal_console_tui_refresh_invokes_only_refresh_aid () =
       safe_aid = (fun aid -> calls := aid :: !calls);
       web_handoff = Shell.default_web_handoff ();
       local_surfaces = [];
+      settings = Shell.default_settings;
+      save_settings = Shell.default_save_settings;
     }
   in
   let updated, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'r')) model in
@@ -7123,11 +7150,12 @@ let test_terminal_console_tui_footer_help_content () =
   let footer = Shell.render_model model |> fun rendered -> rendered.Shell.footer in
   List.iter
     (fun expected -> check_line_contains ("footer has " ^ expected) [ footer ] expected)
-    [ "[q]quit"; "[Tab]tabs"; "[/]search"; "[r]refresh"; "[w]web"; "[o]path"; "[?]help" ];
+    [ "[q]quit"; "[Tab]tabs"; "[/]search"; "[r]refresh"; "[s]settings"; "[w]web"; "[o]path"; "[?]help" ];
   let help = Shell.apply_key (Shell.Character '?') model in
   Alcotest.(check bool) "question mark opens command modal" true
     help.model.Shell.interaction.Shell.help_visible;
   Alcotest.(check (option string)) "modal status" (Some "Commands shown") help.model.Shell.status_message;
+  check_line_contains "help includes settings" Shell.help_lines "s open Terminal Console settings";
   let queue = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
   check_line_absent "modal help is not appended to active panel" queue "Help";
   check_line_absent "commands stay out of active panel" queue "switch tabs";
@@ -7135,6 +7163,175 @@ let test_terminal_console_tui_footer_help_content () =
   Alcotest.(check bool) "escape closes command modal" false
     closed.model.Shell.interaction.Shell.help_visible;
   Alcotest.(check (option string)) "closed status" (Some "Commands hidden") closed.model.Shell.status_message
+
+let terminal_console_settings_modal model =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  match model.Shell.interaction.Shell.settings_modal with
+  | Some modal -> modal
+  | None -> Alcotest.fail "expected settings modal"
+
+let check_terminal_console_settings_closed label model =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  Alcotest.(check bool) label true
+    (match model.Shell.interaction.Shell.settings_modal with None -> true | Some _ -> false)
+
+let test_terminal_console_tui_settings_modal_opens_separately () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let opened = Shell.apply_key (Shell.Character 's') model in
+  let modal = terminal_console_settings_modal opened.model in
+  Alcotest.(check (option string)) "settings status" (Some "Settings shown") opened.model.Shell.status_message;
+  Alcotest.(check bool) "help hidden" false opened.model.Shell.interaction.Shell.help_visible;
+  check_line_contains "modal theme line" (Shell.settings_modal_lines opened.model.Shell.settings modal)
+    "Terminal Console theme: cursor-dark";
+  check_line_contains "modal port line" (Shell.settings_modal_lines opened.model.Shell.settings modal)
+    "Web Dashboard port: 8080";
+  let queue = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_absent "settings modal is not appended to active panel" queue "Terminal Console Settings";
+  check_line_absent "settings fields stay out of active panel" queue "Web Dashboard port"
+
+let test_terminal_console_tui_settings_cancel_keeps_saved_values () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let settings : Shell.settings_state = { theme = "cursor-dark"; port = 8080 } in
+  let model = Shell.initial_model ~settings (Runtime_state.empty ()) in
+  let opened = Shell.apply_key (Shell.Character 's') model in
+  let changed_theme = Shell.apply_key Shell.Right_key opened.model in
+  let focused_port = Shell.apply_key Shell.Down_key changed_theme.model in
+  let edited_port = Shell.apply_key Shell.Backspace_key focused_port.model in
+  let cancelled = Shell.apply_key Shell.Escape_key edited_port.model in
+  check_terminal_console_settings_closed "escape closes settings modal" cancelled.model;
+  Alcotest.(check string) "theme unchanged" "cursor-dark" cancelled.model.Shell.settings.Shell.theme;
+  Alcotest.(check int) "port unchanged" 8080 cancelled.model.Shell.settings.Shell.port;
+  Alcotest.(check (option string)) "cancel status" (Some "Settings cancelled") cancelled.model.Shell.status_message
+
+let test_terminal_console_tui_settings_theme_cycle_and_applies_theme () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let module Color = Tui.Color in
+  let module Theme = Tui.Theme in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let opened = Shell.apply_key (Shell.Character 's') model in
+  let rec collect count model acc =
+    if count = 0 then List.rev acc
+    else
+      let modal = terminal_console_settings_modal model in
+      let next = Shell.apply_key Shell.Right_key model in
+      collect (count - 1) next.model (modal.Shell.draft_theme :: acc)
+  in
+  Alcotest.(check (list string)) "cycles supported themes" Terminal_console_settings.supported_themes
+    (collect (List.length Terminal_console_settings.supported_themes) opened.model []);
+  Alcotest.(check bool) "no-color maps all slots to default" true
+    (Shell.theme_for_name "no-color" Theme.Bg_base = Color.Default);
+  let light_settings : Shell.settings_state = { theme = "light"; port = 8080 } in
+  let root = Shell.view (Shell.initial_model ~settings:light_settings (Runtime_state.empty ())) in
+  Alcotest.(check bool) "root uses selected light theme" true
+    ((root.Tui.Node.style).Tui.Style.bg = Some (Shell.theme_for_name "light" Theme.Bg_base))
+
+let terminal_console_test_runtime ?(settings = Symphony_terminal_console_shell.Terminal_console_tui.default_settings)
+    ?(save_settings = Symphony_terminal_console_shell.Terminal_console_tui.default_save_settings) () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  {
+    Shell.initial_state = Runtime_state.empty ();
+    initial_logs = [];
+    subscribe = (fun _ -> ());
+    safe_aid = (fun _ -> ());
+    web_handoff = Shell.default_web_handoff ();
+    local_surfaces = [];
+    settings;
+    save_settings;
+  }
+
+let apply_terminal_console_runtime_keys runtime model keys =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  List.fold_left
+    (fun model key -> Shell.update runtime (Shell.Key_press key) model |> fst)
+    model keys
+
+let repeated_key key count = List.init count (fun _ -> key)
+
+let test_terminal_console_tui_invalid_port_rejects_before_save () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let save_calls = ref 0 in
+  let runtime =
+    terminal_console_test_runtime
+      ~save_settings:(fun settings ->
+        incr save_calls;
+        Shell.Settings_saved settings)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let model =
+    apply_terminal_console_runtime_keys runtime model
+      [ Shell.Character 's'; Shell.Down_key; Shell.Character 'x'; Shell.Enter_key ]
+  in
+  Alcotest.(check int) "save not called for invalid port" 0 !save_calls;
+  let modal = terminal_console_settings_modal model in
+  check_line_contains "validation explains numeric port"
+    (Option.to_list modal.Shell.validation_message)
+    "server.port must be numeric"
+
+let test_terminal_console_tui_settings_save_uses_runtime_callback () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let saved = ref [] in
+  let runtime =
+    terminal_console_test_runtime
+      ~save_settings:(fun settings ->
+        saved := settings :: !saved;
+        Shell.Settings_saved settings)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let keys =
+    [ Shell.Character 's'; Shell.Right_key; Shell.Down_key ]
+    @ repeated_key Shell.Backspace_key 4
+    @ [ Shell.Character '4'; Shell.Character '5'; Shell.Character '4'; Shell.Character '5'; Shell.Enter_key ]
+  in
+  let model = apply_terminal_console_runtime_keys runtime model keys in
+  check_terminal_console_settings_closed "save closes settings modal" model;
+  (match !saved with
+  | [ settings ] ->
+      Alcotest.(check string) "saved theme" "dark" settings.Shell.theme;
+      Alcotest.(check int) "saved port" 4545 settings.Shell.port
+  | _ -> Alcotest.fail "expected one settings save call");
+  Alcotest.(check string) "model theme updated" "dark" model.Shell.settings.Shell.theme;
+  Alcotest.(check int) "model port updated" 4545 model.Shell.settings.Shell.port;
+  Alcotest.(check (option string)) "save status"
+    (Some "Settings saved: Terminal Console theme dark | Web Dashboard port 4545")
+    model.Shell.status_message
+
+let test_terminal_console_tui_cancelled_settings_do_not_call_save () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let settings : Shell.settings_state = { theme = "light"; port = 9090 } in
+  let save_calls = ref 0 in
+  let runtime =
+    terminal_console_test_runtime ~settings
+      ~save_settings:(fun next ->
+        incr save_calls;
+        Shell.Settings_saved next)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let model =
+    apply_terminal_console_runtime_keys runtime model
+      [ Shell.Character 's'; Shell.Right_key; Shell.Down_key; Shell.Character '1'; Shell.Escape_key ]
+  in
+  Alcotest.(check int) "save not called after cancel" 0 !save_calls;
+  check_terminal_console_settings_closed "cancel closes settings modal" model;
+  Alcotest.(check string) "theme remains persisted value" "light" model.Shell.settings.Shell.theme;
+  Alcotest.(check int) "port remains persisted value" 9090 model.Shell.settings.Shell.port
+
+let test_terminal_console_tui_closed_settings_preserves_existing_controls () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let cancelled =
+    Shell.apply_key (Shell.Character 's') model |> fun opened -> Shell.apply_key Shell.Escape_key opened.model
+  in
+  let moved = Shell.apply_key Shell.Right_key cancelled.model in
+  Alcotest.(check string) "tab navigation still works" "Logs"
+    (Shell.focused_tab_title moved.model.Shell.interaction.Shell.active_tab);
+  let search = Shell.apply_key (Shell.Character '/') moved.model in
+  Alcotest.(check bool) "search still opens" true search.model.Shell.interaction.Shell.filter_active;
+  let help = Shell.apply_key Shell.Escape_key search.model |> fun closed -> Shell.apply_key (Shell.Character '?') closed.model in
+  Alcotest.(check bool) "help still opens" true help.model.Shell.interaction.Shell.help_visible
 
 let test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
@@ -18000,6 +18197,20 @@ let () =
             test_terminal_console_tui_invalid_path_is_ui_local;
           Alcotest.test_case "renders Terminal Console contextual help/footer" `Quick
             test_terminal_console_tui_footer_help_content;
+          Alcotest.test_case "opens Terminal Console settings modal separately" `Quick
+            test_terminal_console_tui_settings_modal_opens_separately;
+          Alcotest.test_case "cancels Terminal Console settings drafts" `Quick
+            test_terminal_console_tui_settings_cancel_keeps_saved_values;
+          Alcotest.test_case "cycles and applies Terminal Console settings themes" `Quick
+            test_terminal_console_tui_settings_theme_cycle_and_applies_theme;
+          Alcotest.test_case "rejects invalid Terminal Console settings port before save" `Quick
+            test_terminal_console_tui_invalid_port_rejects_before_save;
+          Alcotest.test_case "saves Terminal Console settings through runtime callback" `Quick
+            test_terminal_console_tui_settings_save_uses_runtime_callback;
+          Alcotest.test_case "cancelled Terminal Console settings skip runtime save" `Quick
+            test_terminal_console_tui_cancelled_settings_do_not_call_save;
+          Alcotest.test_case "settings modal preserves closed Terminal Console controls" `Quick
+            test_terminal_console_tui_closed_settings_preserves_existing_controls;
           Alcotest.test_case "records only non-mutating Terminal Console safe aids" `Quick
             test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids;
           Alcotest.test_case "stores latest Terminal Console runtime state" `Quick

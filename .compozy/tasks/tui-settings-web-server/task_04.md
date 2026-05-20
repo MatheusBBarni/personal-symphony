@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Wire Runtime Callbacks Into Terminal Console"
 type: backend
 complexity: medium
 dependencies:
   - task_01
   - task_03
+
 ---
 
 # Task 04: Wire Runtime Callbacks Into Terminal Console

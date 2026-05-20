@@ -65,11 +65,14 @@ and Task Branch context.
 Compozy PRD Run progress appears when Compozy tracking is selected.
 
 The Terminal Console is safe to keep open while Symphony runs. Its MVP safe local aids are limited to
-refreshing the latest in-memory Runtime State snapshot, navigating and filtering tabs, showing the
-Web Dashboard handoff command, and inspecting validated local paths such as the Workspace Repository
-or Runtime Home. These aids do not retry tasks, pause or resume dispatch, update tracker status, merge
-or push Task Branches, open pull requests, change Runtime Contract files, or otherwise mutate task
-lifecycle state.
+refreshing the latest in-memory Runtime State snapshot, navigating and filtering tabs, opening focused Terminal Console settings with `s`, starting or reusing the loopback Web Dashboard with `w`, and inspecting validated local paths such as the Workspace Repository or Runtime Home.
+
+The `s` settings surface persists Terminal Console theme in ignored Runtime Home state and persists the
+Web Dashboard port by updating only Runtime Settings `server.port`. It is not a general Runtime
+Settings editor and does not edit `server.host`, tracker, Git, agent, Harness, Sandbox, queue, or
+lifecycle settings. The `w` action starts or reuses a compatible loopback Web Dashboard for the current
+Workspace Repository and Runtime Home, then shows the dashboard URL. If the configured port is occupied
+by an incompatible listener, Symphony reports a conflict instead of attaching to it. Settings and `w` do not retry tasks, pause or resume dispatch, update tracker status, merge or push Task Branches, open pull requests, or otherwise mutate task lifecycle state.
 
 Use Web Dashboard mode when browser-level inspection is more useful:
 
@@ -78,7 +81,9 @@ symphony --web --port 8080
 ```
 
 The Web Dashboard keeps using the Live Dashboard Connection as a Runtime State stream. It is not a
-Terminal Console command channel.
+Terminal Console command channel. Terminal Console V1 dashboard controls are loopback-only; non-loopback
+Web Dashboard access remains an explicit Runtime Settings choice and continues to require the
+server-generated local dashboard auth token for Runtime State HTTP and Live Dashboard Connection access.
 
 For a non-interactive check, use `symphony --once`; it prints terminal output and exits without
 starting the foreground Terminal Console loop.

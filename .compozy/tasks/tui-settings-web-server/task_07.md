@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Update Product Docs and Project ADR"
 type: docs
 complexity: low
 dependencies:
   - task_05
   - task_06
+
 ---
 
 # Task 07: Update Product Docs and Project ADR
@@ -34,11 +35,11 @@ This task updates repository-level product language after the settings and dashb
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Review existing Terminal Console and Web Dashboard language in README, CONTEXT, and ADRs.
-- [ ] 7.2 Update `CONTEXT.md` to describe scoped Terminal Console setup controls.
-- [ ] 7.3 Update README with the settings shortcut, persistent theme, persistent dashboard port, and `w` start/reuse behavior.
-- [ ] 7.4 Add or amend a project ADR for the Runtime Contract exception and local service action.
-- [ ] 7.5 Update docs assertions in backend tests and run docs checks.
+- [x] 7.1 Review existing Terminal Console and Web Dashboard language in README, CONTEXT, and ADRs.
+- [x] 7.2 Update `CONTEXT.md` to describe scoped Terminal Console setup controls.
+- [x] 7.3 Update README with the settings shortcut, persistent theme, persistent dashboard port, and `w` start/reuse behavior.
+- [x] 7.4 Add or amend a project ADR for the Runtime Contract exception and local service action.
+- [x] 7.5 Update docs assertions in backend tests and run docs checks.
 
 ## Implementation Details
 Use the TechSpec "Integration Points" and ADR-003 "Consequences" sections. Keep the documentation narrow: V1 is not a general Runtime Settings editor, not a command channel for the Live Dashboard Connection, and not a task lifecycle control surface.
@@ -72,19 +73,19 @@ Use the TechSpec "Integration Points" and ADR-003 "Consequences" sections. Keep 
 
 ## Tests
 - Unit tests:
-  - [ ] Docs assertions expect `s` settings behavior in README.
-  - [ ] Docs assertions expect `w` start/reuse behavior instead of handoff-only behavior.
-  - [ ] Docs assertions stop requiring the old `Web Dashboard handoff command` phrase.
-  - [ ] Docs assertions expect Terminal Console theme to persist in ignored Runtime Home state.
-  - [ ] Docs assertions expect only `server.port` to be updated through scoped Runtime Settings behavior.
-  - [ ] Docs assertions preserve "must not retry tasks, pause or resume dispatch, update tracker status" lifecycle boundary language.
-  - [ ] Docs assertions preserve loopback-only Terminal Console V1 behavior.
-  - [ ] Docs assertions preserve non-loopback generated dashboard auth token expectations.
-  - [ ] Secret-free docs assertions still reject token value markers.
-  - [ ] `scripts/validate-docs-examples.js` keeps the product wording guard against `TUI`.
+  - [x] Docs assertions expect `s` settings behavior in README.
+  - [x] Docs assertions expect `w` start/reuse behavior instead of handoff-only behavior.
+  - [x] Docs assertions stop requiring the old `Web Dashboard handoff command` phrase.
+  - [x] Docs assertions expect Terminal Console theme to persist in ignored Runtime Home state.
+  - [x] Docs assertions expect only `server.port` to be updated through scoped Runtime Settings behavior.
+  - [x] Docs assertions preserve "must not retry tasks, pause or resume dispatch, update tracker status" lifecycle boundary language.
+  - [x] Docs assertions preserve loopback-only Terminal Console V1 behavior.
+  - [x] Docs assertions preserve non-loopback generated dashboard auth token expectations.
+  - [x] Secret-free docs assertions still reject token value markers.
+  - [x] `scripts/validate-docs-examples.js` keeps the product wording guard against `TUI`.
 - Integration tests:
-  - [ ] `pnpm docs:test` passes when available.
-  - [ ] Backend docs assertion tests pass with the amended Terminal Console language.
+  - [x] `pnpm docs:test` passes when available.
+  - [x] Backend docs assertion tests pass with the amended Terminal Console language.
 - Test coverage target: >=80%
 - All tests must pass
 

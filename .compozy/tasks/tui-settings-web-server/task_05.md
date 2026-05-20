@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Implement Settings Modal and Theme Application"
 type: backend
 complexity: high
 dependencies:
   - task_01
   - task_04
+
 ---
 
 # Task 05: Implement Settings Modal and Theme Application
@@ -34,12 +35,12 @@ This task adds the focused Terminal Console settings UI opened by `s`. It lets t
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Review current Terminal Console model, key handling, help modal, footer, and theme code.
-- [ ] 5.2 Add settings modal state and draft values to the Terminal Console interaction model.
-- [ ] 5.3 Add key handling for opening, editing, saving, and cancelling settings.
-- [ ] 5.4 Render settings status and validation feedback without overlapping existing panels or help.
-- [ ] 5.5 Apply selected theme values to Terminal Console rendering.
-- [ ] 5.6 Add focused tests for modal state, footer/help, theme selection, port validation, and cancel behavior.
+- [x] 5.1 Review current Terminal Console model, key handling, help modal, footer, and theme code.
+- [x] 5.2 Add settings modal state and draft values to the Terminal Console interaction model.
+- [x] 5.3 Add key handling for opening, editing, saving, and cancelling settings.
+- [x] 5.4 Render settings status and validation feedback without overlapping existing panels or help.
+- [x] 5.5 Apply selected theme values to Terminal Console rendering.
+- [x] 5.6 Add focused tests for modal state, footer/help, theme selection, port validation, and cancel behavior.
 
 ## Implementation Details
 Use the TechSpec "Component Overview" and "Testing Approach" sections. Keep changes centered in `apps/backend/bin/terminal_console_tui.ml` and use existing TUI component/theme patterns instead of adding toolkit-level settings primitives.
@@ -70,18 +71,18 @@ Use the TechSpec "Component Overview" and "Testing Approach" sections. Keep chan
 
 ## Tests
 - Unit tests:
-  - [ ] Pressing `s` opens the settings modal.
-  - [ ] Footer includes `[s]settings` in relevant Terminal Console states.
-  - [ ] Help modal includes the settings command.
-  - [ ] `Escape` or cancel closes the modal without saving draft values.
-  - [ ] Settings modal does not render inside the active panel or merge with the help modal.
-  - [ ] Theme selection cycles or selects `cursor-dark`, `dark`, `light`, `high-contrast`, and `no-color`.
-  - [ ] Invalid port input shows a validation message and does not call save.
-  - [ ] Selected theme affects rendered spans or design theme output.
+  - [x] Pressing `s` opens the settings modal.
+  - [x] Footer includes `[s]settings` in relevant Terminal Console states.
+  - [x] Help modal includes the settings command.
+  - [x] `Escape` or cancel closes the modal without saving draft values.
+  - [x] Settings modal does not render inside the active panel or merge with the help modal.
+  - [x] Theme selection cycles or selects `cursor-dark`, `dark`, `light`, `high-contrast`, and `no-color`.
+  - [x] Invalid port input shows a validation message and does not call save.
+  - [x] Selected theme affects rendered spans or design theme output.
 - Integration tests:
-  - [ ] Saving valid settings calls the runtime save callback with the selected theme and port.
-  - [ ] Cancelled settings changes leave persisted values unchanged.
-  - [ ] Existing navigation, filtering, and help behavior still works when the settings modal is closed.
+  - [x] Saving valid settings calls the runtime save callback with the selected theme and port.
+  - [x] Cancelled settings changes leave persisted values unchanged.
+  - [x] Existing navigation, filtering, and help behavior still works when the settings modal is closed.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -4,6 +4,8 @@ module Projection = Terminal_console_model
 
 type web_handoff = { command : string; url : string }
 type local_surface = { label : string; root : string }
+type settings_state = { theme : string; port : int }
+type settings_save_result = Settings_saved of settings_state | Settings_rejected of string | Settings_failed of string
 
 type runtime = {
   initial_state : Runtime_state.t;
@@ -12,9 +14,20 @@ type runtime = {
   safe_aid : Projection.safe_aid -> unit;
   web_handoff : web_handoff;
   local_surfaces : local_surface list;
+  settings : settings_state;
+  save_settings : settings_state -> settings_save_result;
 }
 
 type active_tab = Queue | Logs | Tasks | Readiness | Attention
+
+type settings_field = Settings_theme | Settings_port
+
+type settings_modal = {
+  draft_theme : string;
+  draft_port : string;
+  focused_field : settings_field;
+  validation_message : string option;
+}
 
 type row_selection = {
   active : int;
@@ -30,6 +43,7 @@ type interaction = {
   filter_text : string;
   filter_active : bool;
   help_visible : bool;
+  settings_modal : settings_modal option;
   logs_scroll : int;
   expanded_queue_id : string option;
 }
@@ -40,6 +54,7 @@ type model = {
   status_message : string option;
   logs : string list;
   terminal_size : terminal_size option;
+  settings : settings_state;
   interaction : interaction;
 }
 
@@ -80,6 +95,8 @@ type msg = Snapshot_received of Runtime_state.t | Key_press of ui_key | Resize o
 
 let compile_anchor = "terminal-console-tui"
 let minimum_terminal_size = { columns = 80; rows = 24 }
+let default_settings = { theme = Terminal_console_settings.default_theme; port = 8080 }
+let default_save_settings settings = Settings_saved settings
 let default_web_handoff ?(host = "127.0.0.1") ?(port = 8080) () =
   { command = Printf.sprintf "symphony --web --port %d" port; url = Printf.sprintf "http://%s:%d/" host port }
 
@@ -94,6 +111,7 @@ let default_interaction =
     filter_text = "";
     filter_active = false;
     help_visible = false;
+    settings_modal = None;
     logs_scroll = 0;
     expanded_queue_id = None;
   }
@@ -154,7 +172,7 @@ let append_log_line model line =
   in
   { model with logs; interaction = { model.interaction with logs_scroll } }
 
-let initial_model ?terminal_size ?(logs = []) state =
+let initial_model ?terminal_size ?(logs = []) ?(settings = default_settings) state =
   let snapshot = Projection.of_runtime_state state in
   {
     snapshot;
@@ -162,6 +180,7 @@ let initial_model ?terminal_size ?(logs = []) state =
     status_message = None;
     logs = keep_recent_logs (sanitize_logs logs);
     terminal_size;
+    settings;
     interaction = default_interaction;
   }
 
@@ -717,6 +736,7 @@ let help_commands =
     ("Space", "expand selected Queue task stage");
     ("/", "search visible rows");
     ("r", "refresh latest in-memory Runtime State snapshot");
+    ("s", "open Terminal Console settings");
     ("w", "show Web Dashboard handoff");
     ("o", "inspect selected local path");
     ("Esc / ?", "close this modal");
@@ -851,6 +871,7 @@ let contextual_footer ?(interaction = default_interaction) handoff_available =
         movement;
         "[/]search";
         "[r]refresh";
+        "[s]settings";
         handoff;
         "[o]path";
         "[?]help";
@@ -1025,7 +1046,116 @@ let toggle_queue_expansion model =
       let interaction = { model.interaction with expanded_queue_id } in
       transition (update_interaction ~status_message model interaction)
 
-let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key model =
+let supported_settings_themes = Terminal_console_settings.supported_themes
+
+let settings_theme_index theme =
+  let rec loop index = function
+    | [] -> 0
+    | candidate :: rest -> if candidate = theme then index else loop (index + 1) rest
+  in
+  loop 0 supported_settings_themes
+
+let settings_theme_at index =
+  let count = List.length supported_settings_themes in
+  let normalized = (index mod count + count) mod count in
+  List.nth supported_settings_themes normalized
+
+let move_settings_theme delta theme = settings_theme_at (settings_theme_index theme + delta)
+
+let settings_field_label = function Settings_theme -> "Terminal Console theme" | Settings_port -> "Web Dashboard port"
+
+let move_settings_field delta = function
+  | Settings_theme -> if delta > 0 then Settings_port else Settings_port
+  | Settings_port -> if delta > 0 then Settings_theme else Settings_theme
+
+let open_settings_modal model =
+  let modal =
+    {
+      draft_theme = model.settings.theme;
+      draft_port = string_of_int model.settings.port;
+      focused_field = Settings_theme;
+      validation_message = None;
+    }
+  in
+  let interaction =
+    {
+      model.interaction with
+      filter_active = false;
+      help_visible = false;
+      settings_modal = Some modal;
+    }
+  in
+  transition (update_interaction ~status_message:"Settings shown" model interaction)
+
+let close_settings_modal ?(status_message = "Settings cancelled") model =
+  let interaction = { model.interaction with settings_modal = None } in
+  transition (update_interaction ~status_message model interaction)
+
+let update_settings_modal model modal ?status_message () =
+  let interaction = { model.interaction with settings_modal = Some modal } in
+  transition (update_interaction ?status_message model interaction)
+
+let printable_settings_char = function
+  | '\032' .. '\126' -> true
+  | _ -> false
+
+let save_settings_modal ~save_settings model modal =
+  match Terminal_console_settings.validate_port modal.draft_port with
+  | Terminal_console_settings.Port_invalid reason ->
+      let modal = { modal with validation_message = Some reason } in
+      update_settings_modal model modal ~status_message:reason ()
+  | Terminal_console_settings.Port_valid port -> (
+      let theme = Terminal_console_settings.theme_of_validation (Terminal_console_settings.validate_theme modal.draft_theme) in
+      match save_settings { theme; port } with
+      | Settings_saved settings ->
+          let interaction = { model.interaction with settings_modal = None } in
+          let status_message =
+            Printf.sprintf "Settings saved: Terminal Console theme %s | Web Dashboard port %d" settings.theme
+              settings.port
+          in
+          transition (update_interaction ~status_message { model with settings } interaction)
+      | Settings_rejected reason ->
+          let modal = { modal with validation_message = Some reason } in
+          update_settings_modal model modal ~status_message:reason ()
+      | Settings_failed reason ->
+          let message = "Settings save failed: " ^ reason in
+          let modal = { modal with validation_message = Some message } in
+          update_settings_modal model modal ~status_message:message ())
+
+let apply_settings_key ~save_settings key model modal =
+  match key with
+  | Escape_key -> close_settings_modal model
+  | Enter_key -> save_settings_modal ~save_settings model modal
+  | Tab_key | Down_key | Character 'j' ->
+      let modal = { modal with focused_field = move_settings_field 1 modal.focused_field; validation_message = None } in
+      update_settings_modal model modal
+        ~status_message:("Settings field: " ^ settings_field_label modal.focused_field)
+        ()
+  | Up_key | Character 'k' ->
+      let modal = { modal with focused_field = move_settings_field (-1) modal.focused_field; validation_message = None } in
+      update_settings_modal model modal
+        ~status_message:("Settings field: " ^ settings_field_label modal.focused_field)
+        ()
+  | Left_key | Character 'h' when modal.focused_field = Settings_theme ->
+      let modal = { modal with draft_theme = move_settings_theme (-1) modal.draft_theme; validation_message = None } in
+      update_settings_modal model modal ~status_message:("Terminal Console theme: " ^ modal.draft_theme) ()
+  | Right_key | Character 'l' when modal.focused_field = Settings_theme ->
+      let modal = { modal with draft_theme = move_settings_theme 1 modal.draft_theme; validation_message = None } in
+      update_settings_modal model modal ~status_message:("Terminal Console theme: " ^ modal.draft_theme) ()
+  | Backspace_key when modal.focused_field = Settings_port ->
+      let draft_port =
+        if modal.draft_port = "" then "" else String.sub modal.draft_port 0 (String.length modal.draft_port - 1)
+      in
+      update_settings_modal model { modal with draft_port; validation_message = None } ()
+  | Character c when modal.focused_field = Settings_port && printable_settings_char c ->
+      let draft_port = modal.draft_port ^ String.make 1 c in
+      update_settings_modal model { modal with draft_port; validation_message = None } ()
+  | Space_key when modal.focused_field = Settings_port ->
+      let draft_port = modal.draft_port ^ " " in
+      update_settings_modal model { modal with draft_port; validation_message = None } ()
+  | _ -> transition model
+
+let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) ?(save_settings = default_save_settings) key model =
   if model.interaction.filter_active then
     match key with
     | Escape_key ->
@@ -1041,17 +1171,22 @@ let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key
   else if model.interaction.help_visible then
     match key with
     | Character 'q' -> transition ~quit:true model
+    | Character 's' -> open_settings_modal model
     | Character '?' | Escape_key ->
         let interaction = { model.interaction with help_visible = false } in
         transition (update_interaction ~status_message:"Commands hidden" model interaction)
     | _ -> transition model
   else
+    match model.interaction.settings_modal with
+    | Some modal -> apply_settings_key ~save_settings key model modal
+    | None -> (
     match key with
     | Character 'q' -> transition ~quit:true model
     | Escape_key -> transition ~quit:true model
     | Character '?' ->
         let interaction = { model.interaction with help_visible = true } in
         transition (update_interaction ~status_message:"Commands shown" model interaction)
+    | Character 's' -> open_settings_modal model
     | Character '/' ->
         let interaction = { model.interaction with filter_active = true } in
         transition (update_interaction ~status_message:"Search visible rows" model interaction)
@@ -1087,7 +1222,7 @@ let apply_key ?(web_handoff = default_web_handoff ()) ?(local_surfaces = []) key
         if model.interaction.active_tab = Logs then move_log_scroll (-(logs_scroll_step model)) model else transition model
     | Space_key | Character ' ' ->
         if model.interaction.active_tab = Queue then toggle_queue_expansion model else transition model
-    | Character _ | Enter_key | Backspace_key -> transition model
+    | Character _ | Enter_key | Backspace_key -> transition model)
 
 let render_model model =
   let rendered =
@@ -1132,9 +1267,24 @@ let terminal_console_theme =
        ~status_info:terminal_console_info
        ())
 
+let theme_for_name name =
+  match String.lowercase_ascii (Util.trim name) with
+  | "cursor-dark" -> terminal_console_theme
+  | name -> (
+      match Theme.named name with Some theme -> theme | None -> terminal_console_theme)
+
 let terminal_console_design = Components.make_design ~theme:terminal_console_theme ()
 
-let theme_color slot = terminal_console_theme slot
+let active_render_theme = ref terminal_console_theme
+
+let with_render_theme theme f =
+  let previous = !active_render_theme in
+  active_render_theme := theme;
+  Fun.protect ~finally:(fun () -> active_render_theme := previous) f
+
+let current_design () = Components.make_design ~theme:!active_render_theme ()
+
+let theme_color slot = !active_render_theme slot
 
 let span ?(attrs = []) ?(bg = Theme.Bg_surface) slot text =
   Span.make ~style:Style.(make ~fg:(theme_color slot) ~bg:(theme_color bg) ~attrs ()) text
@@ -1425,13 +1575,37 @@ let command_help_row (key, label) =
 
 let help_modal_node () =
   Components.modal ~id:"terminal-console-command-modal" ~tone:Components.Info
-    ~design:terminal_console_design
-    ~style:Style.(make ~width:(Cells 72) ~height:(Cells 14) ())
+    ~design:(current_design ())
+    ~style:Style.(make ~width:(Cells 72) ~height:(Cells 15) ())
     "Commands"
     [
       Components.column
         ~style:Style.(make ~flex_grow:1. ())
         (List.map command_help_row help_commands);
+    ]
+
+let settings_modal_lines settings modal =
+  let marker field = if modal.focused_field = field then "> " else "  " in
+  let validation =
+    match modal.validation_message with None -> [] | Some message -> [ "Validation: " ^ message ]
+  in
+  [
+    marker Settings_theme ^ "Terminal Console theme: " ^ modal.draft_theme;
+    marker Settings_port ^ "Web Dashboard port: " ^ (if modal.draft_port = "" then "<empty>" else modal.draft_port);
+    Printf.sprintf "Current saved values: theme %s | Web Dashboard port %d" settings.theme settings.port;
+  ]
+  @ validation
+  @ [ "Enter save | Esc cancel | Up/Down field | Left/Right theme | type port" ]
+
+let settings_modal_node settings modal =
+  Components.modal ~id:"terminal-console-settings-modal" ~tone:Components.Info
+    ~design:(current_design ())
+    ~style:Style.(make ~width:(Cells 78) ~height:(Cells 10) ())
+    "Terminal Console Settings"
+    [
+      Components.column
+        ~style:Style.(make ~flex_grow:1. ())
+        (content_line_nodes (settings_modal_lines settings modal));
     ]
 
 let find_panel rendered title = List.find_opt (fun panel -> panel.title = title) rendered.panels
@@ -1493,7 +1667,7 @@ let header_node rendered active_tab mode =
   in
   let badges =
     [ (tab_tone active_tab, tab_title active_tab); (status_badge_tone mode, rendered.status_label) ]
-    |> List.map (fun (tone, label) -> Components.badge ~tone ~design:terminal_console_design label)
+    |> List.map (fun (tone, label) -> Components.badge ~tone ~design:(current_design ()) label)
   in
   Components.box
     ~style:
@@ -1506,6 +1680,7 @@ let header_node rendered active_tab mode =
     ]
 
 let view model =
+  with_render_theme (theme_for_name model.settings.theme) (fun () ->
   let rendered = render_model model in
   let panel = active_panel rendered model.interaction in
   let active_tab = model.interaction.active_tab in
@@ -1520,9 +1695,9 @@ let view model =
         [
           Components.row ~gap:2
             (List.map (fun tab -> tab_node (tab = active_tab) tab) tab_order);
-        ];
+      ];
       Components.panel panel.title ~tone:(tab_tone active_tab)
-        ~design:terminal_console_design
+        ~design:(current_design ())
         ~style:
           Style.(
             make ~flex_grow:1. ~flex_shrink:1. ~min_height:(Cells 0)
@@ -1539,16 +1714,21 @@ let view model =
       footer_node rendered;
     ]
   in
-  let children = if model.interaction.help_visible then children @ [ help_modal_node () ] else children in
+  let children =
+    match model.interaction.settings_modal with
+    | Some modal -> children @ [ settings_modal_node model.settings modal ]
+    | None when model.interaction.help_visible -> children @ [ help_modal_node () ]
+    | None -> children
+  in
   Components.box
     ~style:
       Style.(
         make ~width:(Percent 1.) ~height:(Percent 1.) ~flex_direction:Column
           ~padding:(spacing_xy ~x:1 ~y:0) ~gap:1 ~bg:(theme_color Theme.Bg_base)
           ~fg:(theme_color Theme.Fg_default) ())
-    children
+    children)
 
-let init runtime () = (initial_model ~logs:runtime.initial_logs runtime.initial_state, ())
+let init runtime () = (initial_model ~logs:runtime.initial_logs ~settings:runtime.settings runtime.initial_state, ())
 
 let update runtime msg model =
   match msg with
@@ -1564,7 +1744,8 @@ let update runtime msg model =
         false )
   | Key_press key ->
       let transition =
-        apply_key ~web_handoff:runtime.web_handoff ~local_surfaces:runtime.local_surfaces key model
+        apply_key ~web_handoff:runtime.web_handoff ~local_surfaces:runtime.local_surfaces
+          ~save_settings:runtime.save_settings key model
       in
       List.iter runtime.safe_aid transition.safe_aids;
       (transition.model, transition.quit)
