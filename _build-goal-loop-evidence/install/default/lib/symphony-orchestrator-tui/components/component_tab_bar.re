@@ -1,1 +1,0 @@
-../../../../../default/apps/tui/lib/components/component_tab_bar.re

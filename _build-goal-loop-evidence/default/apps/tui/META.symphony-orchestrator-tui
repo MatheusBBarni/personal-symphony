@@ -1,6 +1,0 @@
-description = ""
-requires = "toffee unix uutf"
-archive(byte) = "tui.cma"
-archive(native) = "tui.cmxa"
-plugin(byte) = "tui.cma"
-plugin(native) = "tui.cmxs"

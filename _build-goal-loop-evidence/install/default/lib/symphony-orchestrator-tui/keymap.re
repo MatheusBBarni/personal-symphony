@@ -1,1 +1,0 @@
-../../../../default/apps/tui/lib/keymap.re

@@ -1,9 +1,0 @@
-package "backend" (
-  directory = "backend"
-  description = ""
-  requires = "cmdliner threads unix yojson"
-  archive(byte) = "symphony_backend.cma"
-  archive(native) = "symphony_backend.cmxa"
-  plugin(byte) = "symphony_backend.cma"
-  plugin(native) = "symphony_backend.cmxs"
-)

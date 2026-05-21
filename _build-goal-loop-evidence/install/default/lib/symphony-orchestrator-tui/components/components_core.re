@@ -1,1 +1,0 @@
-../../../../../default/apps/tui/lib/components/components_core.re
