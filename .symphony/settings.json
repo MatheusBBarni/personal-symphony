@@ -6,9 +6,13 @@
   "project": {
     "statusField": "Status",
     "activeStates": [
-      "pending", "in_planning", "in_progress", "in_execution", "in_review"
+      "pending",
+      "in_planning",
+      "in_progress",
+      "in_execution",
+      "in_review"
     ],
-    "terminalStates": [ "human_attention", "completed", "failed", "skipped" ],
+    "terminalStates": ["human_attention", "completed", "failed", "skipped"],
     "startStatus": "in_progress",
     "reviewStatus": "in_review",
     "retryStatus": "pending",
@@ -21,7 +25,7 @@
       "kind": "codex",
       "command": "codex exec",
       "model": "gpt-5.5",
-      "reasoningEffort": "medium",
+      "reasoningEffort": "xhigh",
       "loop": { "enabled": true, "command": "/goal" }
     },
     "pi": {
@@ -36,7 +40,7 @@
     "planner": {
       "harness": "codex",
       "model": "gpt-5.4",
-      "reasoningEffort": "high",
+      "reasoningEffort": "xhigh",
       "turnTimeoutMs": 3600000,
       "readTimeoutMs": 5000,
       "stallTimeoutMs": 300000
@@ -60,7 +64,7 @@
   },
   "git": {
     "taskBranchPrefix": "symphony/task-",
-    "protectedTrunkBranches": [ "main" ],
+    "protectedTrunkBranches": ["main"],
     "autoMerge": false,
     "mergeAttentionStatus": "human_attention",
     "cleanup": { "removeWorktreeAfterMerge": true, "keepTaskBranch": false }
@@ -126,7 +130,7 @@
     "defaultAgent": "engineer",
     "stages": [
       {
-        "states": [ "pending", "in_planning" ],
+        "states": ["pending", "in_planning"],
         "agent": "planner",
         "skills": [],
         "startStatus": "in_planning",
@@ -141,7 +145,7 @@
         }
       },
       {
-        "states": [ "in_progress", "in_execution" ],
+        "states": ["in_progress", "in_execution"],
         "agent": "engineer",
         "skills": [],
         "startStatus": "in_execution",
@@ -152,7 +156,8 @@
           "enabled": true,
           "evidence": {
             "command": [
-              "sh", "-lc",
+              "sh",
+              "-lc",
               "opam exec -- dune build @all --root . --build-dir _build-goal-loop-evidence >/dev/null && git diff --check && printf 'dune build @all and git diff --check passed'"
             ],
             "cwd": "agentWorktree",
@@ -161,8 +166,8 @@
           },
           "budget": {
             "maxTurns": 4,
-            "maxRuntimeMs": 3600000,
-            "maxTokens": 200000
+            "maxRuntimeMs": 10800000,
+            "maxTokens": 5000000
           }
         },
         "commit": {
@@ -173,7 +178,7 @@
         }
       },
       {
-        "states": [ "in_review" ],
+        "states": ["in_review"],
         "agent": "reviewer",
         "skills": [],
         "startStatus": "in_review",
@@ -184,7 +189,8 @@
           "enabled": true,
           "evidence": {
             "command": [
-              "sh", "-lc",
+              "sh",
+              "-lc",
               "opam exec -- dune build @all --root . --build-dir _build-goal-loop-evidence >/dev/null && git diff --check && printf 'dune build @all and git diff --check passed'"
             ],
             "cwd": "agentWorktree",
@@ -194,7 +200,7 @@
           "budget": {
             "maxTurns": 4,
             "maxRuntimeMs": 3600000,
-            "maxTokens": 200000
+            "maxTokens": 2000000
           }
         },
         "commit": {
