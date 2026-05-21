@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Add Goal Loop domain model and transition rules"
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 02: Add Goal Loop domain model and transition rules

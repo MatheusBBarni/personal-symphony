@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Render Goal Loop state in Terminal Console"
 type: backend
 complexity: medium
 dependencies:
   - task_05
   - task_08
+
 ---
 
 # Task 09: Render Goal Loop state in Terminal Console
@@ -30,11 +31,11 @@ This task makes Goal Loop state visible in the default read-first Terminal Conso
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Add Goal Loop projection fields to Terminal Console model rows or details.
-- [ ] 9.2 Sanitize evidence, stop reason, next action, and diagnostics paths.
-- [ ] 9.3 Render Goal Loop details near Goal Usage and Context Status.
-- [ ] 9.4 Update preview fixtures if the display needs representative data.
-- [ ] 9.5 Add projection and rendering tests.
+- [x] 9.1 Add Goal Loop projection fields to Terminal Console model rows or details.
+- [x] 9.2 Sanitize evidence, stop reason, next action, and diagnostics paths.
+- [x] 9.3 Render Goal Loop details near Goal Usage and Context Status.
+- [x] 9.4 Update preview fixtures if the display needs representative data.
+- [x] 9.5 Add projection and rendering tests.
 
 ## Implementation Details
 Use the TechSpec "Surface Integration" and "Monitoring and Observability" sections. The Terminal Console should read from Runtime State only and must not add commands that mutate Goal Loop state.
@@ -64,14 +65,14 @@ Use the TechSpec "Surface Integration" and "Monitoring and Observability" sectio
 
 ## Tests
 - Unit tests:
-  - [ ] Running loop state appears in the relevant task detail.
-  - [ ] `goal_met` state shows latest evidence and stop outcome.
-  - [ ] `needs_attention` state shows stop reason and next action.
-  - [ ] `budget_exhausted` state shows budget stop reason.
-  - [ ] Evidence and diagnostics values are sanitized for terminal output.
+  - [x] Running loop state appears in the relevant task detail.
+  - [x] `goal_met` state shows latest evidence and stop outcome.
+  - [x] `needs_attention` state shows stop reason and next action.
+  - [x] `budget_exhausted` state shows budget stop reason.
+  - [x] Evidence and diagnostics values are sanitized for terminal output.
 - Integration tests:
-  - [ ] Terminal Console fixture snapshot includes Goal Loop detail without layout regressions.
-  - [ ] Terminal Console local aids remain read-only and do not mutate loop state.
+  - [x] Terminal Console fixture snapshot includes Goal Loop detail without layout regressions.
+  - [x] Terminal Console local aids remain read-only and do not mutate loop state.
 - Test coverage target: >=80%
 - All tests must pass
 
