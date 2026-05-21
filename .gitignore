@@ -2,6 +2,10 @@ node_modules/
 .pnpm-store/
 _build/
 _build_*/
+_build-*/
+.dune/
+.sandbox/
+install/default/
 dist/
 vendor/
 apps/frontend/lib/

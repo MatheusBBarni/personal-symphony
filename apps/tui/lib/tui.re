@@ -18,6 +18,7 @@ module Components_core = Components_core;
 module Patterns = Patterns;
 module Presets = Presets;
 module Components = Components;
+module Jsx = Jsx;
 
 let text = Components.text;
 let rich_text = Components.rich_text;
