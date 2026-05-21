@@ -1,341 +1,284 @@
-/skill:pi-ralph-wiggum {"kind":"Stage Goal Context","issue_identifier":"compozy:tui-settings-web-server","title":"Compozy PRD run: tui-settings-web-server","description":null,"comments":[],"url":null,"current_project_status":"in_review","labels":[],"priority":null,"blocker_references":[],"attempt":1,"stage_agent_name":"reviewer"}
+You are the Engineer agent for the Symphony Orchestrator Repository.
+
+You are a senior software engineer specializing in OCaml, ReScript, Rust, React, TypeScript, and JavaScript.
+
+Responsibilities:
+- Implement only the scoped issue.
+- Use CONTEXT.md terms and follow AGENTS.md.
+- Prefer existing module boundaries and tests over new abstractions.
+- Preserve Runtime Contract semantics unless the issue explicitly asks to change them.
+- Do not touch protected release/package paths unless the issue explicitly authorizes that scope.
+- Edit ReScript .res sources only; never commit generated .res.js files.
+- Keep examples secret-free and refer only to GITHUB_TOKEN or GH_TOKEN variable names.
+- Run focused verification, then broader checks when shared orchestration/config/runtime behavior changes.
+
+Stage Commit is enabled for this stage. Leave the worktree ready for a local commit boundary before review.
 
 ---
 
-You are the Reviewer agent for the Symphony Orchestrator Repository.
-
-Review completed engineer work before it moves to Done.
-
-Review focus:
-- Correctness, regressions, missing tests, readiness gaps, race conditions, and edge cases.
-- Compliance with CONTEXT.md terminology and AGENTS.md boundaries.
-- Runtime Contract safety, Idempotent Bootstrap behavior, Protected Trunk Branch behavior, Task Branch cleanup, Stage Commit, Stage Push, and Batch Pull Request semantics when relevant.
-- Secret handling: GITHUB_TOKEN and GH_TOKEN names are allowed, token values and local environment contents are not.
-- Frontend source hygiene: .res edits only, no committed generated .res.js files.
-- Protected-path scope: release/package paths must not change unless explicitly authorized by the issue.
-
-Run focused checks when practical. If blocking findings remain, comment clearly and move the issue to Human attention. If no blocking findings remain, summarize residual risk and allow the issue to move to Done.
-
----
-
-Stage agent: reviewer
+Stage agent: engineer
 
 # Compozy PRD Run Stage
 
-Run: compozy:tui-settings-web-server
-PRD directory: tui-settings-web-server
+Run: compozy:tui-jsx-api
+PRD directory: tui-jsx-api
 Task step status: completed
-Completed task steps: 7/7
+Completed task steps: 6/6
 
 ## Completed Compozy Task Steps
 
-- task_01.md: Add Terminal Console Settings Persistence
-- task_02.md: Add Dashboard Identity Endpoint
-- task_03.md: Extract Dashboard Start and Reuse Service
-- task_04.md: Wire Runtime Callbacks Into Terminal Console
-- task_05.md: Implement Settings Modal and Theme Application
-- task_06.md: Change `w` From Handoff to Start or Reuse Action
-- task_07.md: Update Product Docs and Project ADR
+- task_01.md: Add `Tui.Jsx` Namespace And Core Wrapper Conventions
+- task_02.md: Add JSX Wrappers For Existing Components
+- task_03.md: Add JSX Wrappers For Existing Patterns
+- task_04.md: Add JSX `agent_workspace` Parity Example
+- task_05.md: Document JSX Quickstart, Supported Surface, And Migration Path
+- task_06.md: Finalize TUI Package Verification And Bundle Readiness
 
 ## PRD (`_prd.md`)
 
-# Terminal Console Settings and Web Dashboard Start PRD
+# TUI JSX API PRD
 
 ## Overview
 
-Terminal Console Settings and Web Dashboard Start reduces setup friction for solo local developers operating Symphony from a Workspace Repository.
+Build an adoption-ready JSX authoring kit for `symphony-orchestrator-tui`. The feature gives Reason/OCaml developers a familiar, tree-shaped way to build standalone terminal tools while keeping direct component calls available as the lower-level API.
 
-V1 adds a focused settings menu to the Terminal Console. The user can persist their Terminal Console theme, persist the Web Dashboard port, and press `w` to start or reuse the local loopback Web Dashboard for the current Workspace Repository and Runtime Home. The feature keeps the Terminal Console as the main local operating surface without turning it into a general Runtime Settings editor or a task lifecycle control panel.
+The primary product outcome is external adoption. A new package evaluator should be able to land on the TUI docs, understand that JSX is the recommended path for new screens, and build a small standalone terminal UI without reading Symphony-specific source code first.
 
 ## Goals
 
-- Reduce manual setup steps for Terminal Console appearance and Web Dashboard access.
-- Let users persist the immediate local operating experience from inside the Terminal Console.
-- Make the Web Dashboard reachable from the Terminal Console with one visible, reliable action.
-- Preserve the product boundary that Terminal Console setup controls do not mutate task lifecycle state.
-- Keep V1 narrow enough to validate user value before expanding local cockpit behavior.
+- Make JSX the recommended authoring path for new TUI screens.
+- Help a new user build a small standalone TUI from docs in under 30 minutes.
+- Provide public examples that make the package easier to evaluate without reading internal Symphony code.
+- Preserve current TUI behavior for existing users.
 
 ## User Stories
 
-- As a solo local developer, I want to open settings from the Terminal Console so that I can adjust my local operating experience without leaving Symphony.
-- As a solo local developer, I want my Terminal Console theme choice to persist so that the console remains comfortable across sessions.
-- As a solo local developer, I want to set the Web Dashboard port from the Terminal Console so that I do not need to edit Runtime Settings by hand for a common local setup change.
-- As a solo local developer, I want `w` to start or reuse the local Web Dashboard and show the URL so that I can move from terminal monitoring to browser monitoring without remembering a command.
-- As a security-conscious operator, I want Terminal Console dashboard controls to stay loopback-only so that local convenience does not accidentally expose Runtime State.
+- As a Reason/OCaml developer, I want JSX-style TUI examples so I can quickly understand how to compose screens.
+- As a package evaluator, I want a clear recommended path so I can decide whether the library fits my project.
+- As an existing TUI user, I want direct component calls to remain supported so my current code keeps working.
+- As a maintainer, I want docs and examples that reduce repeated onboarding explanation.
 
 ## Core Features
 
-### Critical: Settings Menu
-
-The Terminal Console provides a focused settings surface opened with `s`. The footer and help modal show the settings shortcut wherever it is relevant.
-
-The menu is limited to V1 setup controls: Terminal Console theme and Web Dashboard port. It does not expose task lifecycle controls, tracker configuration, Git policy, agent routing, non-loopback host exposure, or a general Runtime Settings editor.
-
-### Critical: Persistent Theme Selection
-
-The user can choose from a small supported set of Terminal Console themes. The selected theme persists across Terminal Console sessions.
-
-The theme setting affects the Terminal Console product surface. It does not change Web Dashboard styling and does not introduce a broad theme platform for every Symphony surface.
-
-### Critical: Persistent Dashboard Port
-
-The user can edit the Web Dashboard port as a numeric value. The selected port persists across Terminal Console sessions.
-
-The product must reject invalid values before any user-visible side effect. Invalid examples include empty input, nonnumeric input, out-of-range values, and values that cannot be used for the local dashboard.
-
-### Critical: `w` Starts Or Reuses Web Dashboard
-
-Pressing `w` starts or reuses a compatible loopback Web Dashboard for the current Workspace Repository and Runtime Home, then shows the dashboard URL.
-
-If the dashboard is already available and compatible, Symphony reports the existing URL instead of starting another server. If the configured port is occupied by something incompatible, Symphony reports a clear conflict instead of attaching to an unrelated process.
-
-### High: Clear Local Feedback
-
-The Terminal Console shows concise feedback for saved settings, invalid port input, dashboard startup, compatible reuse, unavailable dashboard, and port conflicts.
-
-The feedback must help the user decide the next action without leaving the Terminal Console for routine setup cases.
+1. **Recommended JSX Authoring Path**: Public docs present JSX as the default for new TUI screens.
+2. **Standalone Quickstart**: A short path from install to a working terminal screen.
+3. **Public JSX Examples**: At least three runnable examples covering basic layout, dashboard/status UI, and workflow-oriented UI.
+4. **Migration Guidance**: Explain how existing direct component-call examples map to JSX.
+5. **Supported Surface Guide**: Make clear which components are ready for JSX use in V1.
+6. **Compatibility Messaging**: State that direct components remain supported as the lower-level API.
 
 ## User Experience
 
-The user starts Symphony in a Workspace Repository and lands in the Terminal Console. The footer shows `s` for settings and `w` for the Web Dashboard.
+A new user lands on the TUI README, sees JSX as the recommended path, runs a quickstart, and gets a small terminal UI working without understanding Symphony internals. They can then open examples that match common standalone terminal-tool needs: simple layout, status/dashboard display, and command-center style workflow UI.
 
-When the user presses `s`, a settings menu opens over the console. The user can move between theme and dashboard port fields, change values, save them, or exit without saving. Saved changes are confirmed in the Terminal Console and apply to later sessions.
-
-When the user presses `w`, Symphony checks whether a compatible local Web Dashboard is already available. If yes, the console shows the dashboard URL. If not, Symphony starts the local loopback dashboard and then shows the URL. If startup fails or the port is occupied by an incompatible process, the console reports the reason in plain language.
-
-The experience should feel like a local setup surface, not a new orchestration control surface. Settings and `w` are visible enough to discover, but they do not compete with the console’s primary Runtime State monitoring workflow.
+Existing users should not feel forced into migration. The docs should frame JSX as the recommended path for new screens and direct components as stable lower-level primitives.
 
 ## High-Level Technical Constraints
 
-- The feature must use existing Symphony product language: Workspace Repository, Runtime Home, Runtime Contract, Runtime Settings, Terminal Console, Web Dashboard, and Live Dashboard Connection.
-- Terminal Console dashboard controls are loopback-only in V1.
-- V1 must preserve the existing non-loopback Web Dashboard auth expectation: non-loopback access remains governed outside Terminal Console settings.
-- The feature must not expose or log token values, local `.env` contents, webhook URLs, or secrets.
-- The Terminal Console must not mutate task lifecycle state, issue state, queues, stages, Task Branches, or orchestration results.
+- The JSX kit must preserve existing TUI rendering behavior from a user perspective.
+- The package must remain useful to standalone Reason/OCaml users, not only Symphony contributors.
+- JSX docs must not imply React runtime compatibility.
+- Existing direct component-call usage remains supported.
 
 ## Non-Goals (Out of Scope)
 
-- General Runtime Settings editor.
-- Editing `server.host` or enabling non-loopback exposure from the Terminal Console.
-- Stop, restart, or kill controls for dashboard processes.
-- Automatic browser opening.
-- Web Dashboard visual redesign.
-- Web Dashboard settings UI.
-- Task lifecycle actions from the settings menu.
-- Tracker, Git, agent, Harness, Sandbox, or queue configuration.
-- Reusable settings framework in the TUI toolkit package.
-- Remote dashboard sharing or LAN/Tailscale setup flows.
+- Full Terminal Console migration.
+- React runtime compatibility.
+- Covering every TUI component or pattern in V1.
+- A new state-management model.
+- Deprecating direct `Tui.Components` or `Tui.Patterns` usage.
 
 ## Phased Rollout Plan
 
 ### MVP (Phase 1)
 
-- Add `s` settings access with footer/help visibility.
-- Support persistent Terminal Console theme selection.
-- Support persistent numeric Web Dashboard port editing.
-- Make `w` start or reuse a compatible loopback Web Dashboard and show the URL.
-- Show clear feedback for save, invalid input, startup, reuse, and conflict cases.
-
-Success criteria:
-
-- A solo developer can persist theme and dashboard port without editing files manually.
-- A solo developer can press `w` and either get a working local dashboard URL or a clear reason why not.
-- Terminal Console setup controls do not mutate task lifecycle state.
+- Publish JSX quickstart, supported surface guide, migration notes, and 2-3 runnable examples.
+- Success: a new user can build a small standalone TUI from docs in under 30 minutes.
 
 ### Phase 2
 
-- Add richer dashboard status visibility inside the Terminal Console.
-- Consider an explicit open-browser action after V1 validates start/reuse behavior.
-- Refine settings discoverability based on observed usage.
-
-Success criteria:
-
-- Users can understand dashboard availability at a glance.
-- Additional actions remain local-service controls, not orchestration controls.
+- Expand examples based on V1 gaps and user feedback.
+- Success: common standalone terminal-tool layouts no longer require reading lower-level examples first.
 
 ### Phase 3
 
-- Evaluate whether more local setup controls belong in the Terminal Console.
-- Consider a broader local cockpit only if repeated setup needs justify it.
-- Revisit whether any reusable settings primitives belong in the TUI toolkit.
-
-Success criteria:
-
-- Expansion decisions are backed by observed setup friction, not generic settings-platform ambition.
-- Product boundaries remain clear in documentation and user-facing labels.
+- Consider positioning JSX as the main authoring story across all new public examples.
+- Success: docs, examples, and maintainer guidance consistently point new users to JSX first.
 
 ## Success Metrics
 
-- Manual setup reduction: reduce direct file edits or remembered dashboard commands for theme and port setup by at least 80%.
-- Dashboard start/reuse success: at least 95% of local `w` attempts either produce a dashboard URL or a clear actionable failure within 3 seconds.
-- Port validation clarity: 100% of invalid port inputs are rejected before dashboard start/reuse side effects.
-- Discoverability: `s` and `w` appear in footer/help in all relevant Terminal Console states.
-- Boundary preservation: no task lifecycle state changes occur from settings navigation, settings save, or dashboard start/reuse actions.
+- New-user quickstart completion: under 30 minutes.
+- Public example coverage: at least 3 JSX examples.
+- Documentation coverage: quickstart, supported surface, migration guidance, compatibility notes.
+- Adoption clarity: README names JSX as the recommended path for new TUI screens.
+- Compatibility confidence: direct component-call path remains documented and supported.
 
 ## Risks and Mitigations
 
-- Risk: Users assume the settings menu can edit every Runtime Setting.
-  Mitigation: Label the surface as focused Terminal Console setup and keep V1 limited to theme and dashboard port.
-- Risk: Users expect LAN or Tailscale exposure from the settings menu.
-  Mitigation: Make V1 loopback-only and document that non-loopback exposure remains outside Terminal Console settings.
-- Risk: `w` starting a local service surprises users who remember handoff-only behavior.
-  Mitigation: Update product language and make the action label explicit: start or reuse Web Dashboard.
-- Risk: Port conflicts create confusing failures.
-  Mitigation: Use plain status messages that distinguish invalid input, incompatible listener, and failed dashboard start.
-- Risk: The settings surface becomes a path to orchestration controls.
-  Mitigation: Keep task lifecycle actions explicitly out of scope and require separate product decisions for expansion.
+- **Risk: users think direct components are deprecated.** Mitigation: explicitly document them as stable lower-level primitives.
+- **Risk: JSX default feels overpromised if V1 surface is too small.** Mitigation: publish a clear supported surface guide.
+- **Risk: examples look polished but do not help real users build.** Mitigation: anchor success on the 30-minute standalone build path.
+- **Risk: external docs drift toward Symphony-specific terminology.** Mitigation: write examples for standalone terminal tools first.
 
 ## Architecture Decision Records
 
-- [ADR-001: Scope the Terminal Console Settings MVP](adrs/adr-001.md) - Defines V1 as a narrow Terminal Console settings menu plus idempotent Web Dashboard local service control.
-- [ADR-002: Select Narrow Setup MVP Product Approach](adrs/adr-002.md) - Selects the setup-friction-focused product approach and records the V1 decisions for persistence, `s`, `w`, and loopback-only behavior.
+- [ADR-001: Constrain JSX TUI V1 To An Existing Node Authoring Layer](adrs/adr-001.md) - Superseded conservative scope.
+- [ADR-002: Adopt Public JSX Kit Scope](adrs/adr-002.md) - Accepted public JSX kit direction.
+- [ADR-003: Select Adoption-Ready Public JSX Kit Approach](adrs/adr-003.md) - Accepted external-adoption-first PRD approach.
 
 ## Open Questions
 
-- Which exact theme names should V1 expose?
-- What wording should distinguish “compatible dashboard reused” from “port occupied by another process”?
-- Should Phase 2 include an open-browser action, or should that remain outside the Terminal Console?
+- Final supported JSX component set for V1.
+- Exact three public examples to include.
+- Whether migration guidance should include before-and-after snippets for every supported component.
+
+## Research Sources
+
+- [Reason JSX](https://reasonml.github.io/docs/en/jsx)
+- [ReasonReact JSX](https://reasonml.github.io/reason-react/docs/en/jsx)
+- [OpenTUI React bindings](https://opentui.com/docs/bindings/react/)
+- [Ink](https://github.com/vadimdemedes/ink)
+- [Stack Overflow Developer Survey 2025](https://survey.stackoverflow.co/2025/technology)
+- [GitHub Octoverse 2025](https://github.blog/news-insights/octoverse/octoverse-a-new-developer-joins-github-every-second-as-ai-leads-typescript-to-1/)
 
 ## TechSpec (`_techspec.md`)
 
-# Terminal Console Settings and Web Dashboard Start TechSpec
+# TUI JSX API TechSpec
 
 ## Executive Summary
 
-Implement V1 as a narrow backend-owned Terminal Console extension. The Terminal Console gets a product-specific settings modal, `server.port` is persisted to the Runtime Contract, Terminal Console theme is persisted to ignored Runtime Home UI state, and `w` starts or reuses an in-process loopback Web Dashboard service backed by the same Runtime State handoff.
+Implement the TUI JSX API as public Reason wrapper modules over existing `Tui.Components` and `Tui.Patterns`. The wrappers expose JSX-friendly `make` functions, require explicit text nodes, return `Tui.Node.t`, and preserve direct component calls as the lower-level API.
 
-The main trade-off is accepting one tightly scoped Runtime Contract write from the Terminal Console for `server.port` while keeping local theme state outside the Runtime Contract. This preserves existing Web Dashboard port semantics without turning Terminal Console settings into a general Runtime Settings editor.
+Primary trade-off: broad V1 wrapper coverage improves external adoption but increases parity and documentation work. The design keeps risk contained by avoiding a second renderer, separate component tree, or implicit string-child conversion.
 
 ## System Architecture
 
 ### Component Overview
 
-- `Terminal_console_tui`: owns `s` settings modal, key handling, draft values, validation feedback, and user-facing status messages.
-- `Terminal_console_runtime`: owns Runtime State handoff and passes callbacks for settings persistence and dashboard start/reuse into the UI runtime.
-- `Terminal_console_settings`: new backend Reason module for theme state under `.symphony/state/terminal-console/settings.json` and scoped `server.port` updates in `.symphony/settings.json`.
-- `Dashboard_service`: new backend Reason module that probes identity, starts `Server.serve` on a background thread, and returns started/reused/conflict/failure results.
-- `Server`: adds dashboard identity response support while keeping existing Runtime State HTTP and Live Dashboard Connection behavior unchanged.
+- **Tui.Jsx**: Public module namespace for JSX authoring wrappers.
+- **JSX wrapper modules**: Thin wrappers around existing `Components` and `Patterns`.
+- **Existing TUI model**: `Tui.Node.t` remains the only rendered tree shape.
+- **Examples**: Add JSX examples, with `agent_workspace` as the first parity target.
+- **Docs**: Update README and examples index to present JSX as the recommended path for new screens.
 
 ## Implementation Design
 
 ### Core Interfaces
 
-Implementation is Reason/OCaml. The Go struct below is a template-required shape for the identity contract other components depend on:
-
-```go
-type DashboardIdentity struct {
-    WorkspaceRoot string `json:"workspace_root"`
-    RuntimeHome   string `json:"runtime_home"`
-    Mode          string `json:"mode"`
-    AuthRequired  bool   `json:"auth_required"`
-}
-```
+Reason implementation shape:
 
 ```reason
-type dashboard_result =
-  | Started(string)
-  | Reused(string)
-  | Conflict(string)
-  | Failed(string);
-
-type settings_save = {
-  theme: string,
-  port: int,
+module Text = {
+  let make = (~id=?, ~style=Style.default, ~value) =>
+    Components.text(~id?, ~style, value);
 };
+
+module Box = {
+  let make = (~id=?, ~style=Style.default, ~children) =>
+    Components.box(~id?, ~style, children);
+};
+```
+
+Required contract sketch for task planning:
+
+```go
+type JSXComponent interface {
+    Render(children []TuiNode) TuiNode
+}
+
+type TuiNode struct {
+    ID       string
+    Kind     string
+    Children []TuiNode
+}
 ```
 
 ### Data Models
 
-- Runtime Contract update: mutate only `server.port` in `.symphony/settings.json`; preserve unrelated known and unknown JSON fields.
-- Local UI state file: `.symphony/state/terminal-console/settings.json`.
-- Local UI state JSON: `{ "theme": "cursor-dark" }`.
-- Supported V1 themes: `cursor-dark` default, `dark`, `light`, `high-contrast`, `no-color`.
-- Dashboard identity JSON: workspace root, runtime home, mode, auth requirement, server host, server port.
+- No new persisted data model.
+- `Tui.Node.t` remains the only runtime tree model.
+- JSX children are typed lists of `Tui.Node.t`.
+- Text content is explicit through text-node wrappers, not implicit string children.
 
 ### API Endpoints
 
-- `GET /api/v1/dashboard/identity`: returns dashboard identity for compatible loopback reuse checks.
-- Existing `/api/v1/state`, `/api/v1/refresh`, and `/api/v1/state/live` behavior remains unchanged.
-- For non-loopback Web Dashboard mode, identity must follow existing dashboard auth rules or be unavailable; Terminal Console V1 starts only loopback servers.
+None. This is a package authoring surface, not a server feature.
 
 ## Integration Points
 
-- Runtime Contract: `server.port` remains the source of truth for dashboard port.
-- Runtime Home state: Terminal Console theme is local ignored state.
-- Web Dashboard server: `w` uses the same Runtime State provider as the active Terminal Console.
-- Docs/domain language: update `CONTEXT.md`, README, and a project ADR because Terminal Console now has scoped local setup controls.
+No external service integration. The only integration boundary is the existing public `symphony-orchestrator-tui` package export surface.
 
 ## Impact Analysis
 
 | Component | Impact Type | Description and Risk | Required Action |
-|---|---|---|---|
-| `terminal_console_tui.ml` | modified | Adds modal state, `s`, settings save, and `w` result rendering | Extend model/key tests |
-| `terminal_console_runtime.ml` | modified | Adds callbacks for settings and dashboard actions | Test callback wiring |
-| `main.ml` | modified | Reuses extracted dashboard startup path | Keep CLI `--web` behavior equivalent |
-| `Server` | modified | Adds identity endpoint | Test loopback/auth behavior |
-| `Config`/settings helper | modified/new | Scoped `server.port` writer | Test validation and field preservation |
-| `Runtime_home`/state helper | modified/new | Adds ignored UI state path handling | Test bootstrap idempotency preserved |
-| Docs/ADRs | modified | Updates Terminal Console contract language | Run docs checks if touched |
+| --- | --- | --- | --- |
+| `apps/tui/lib/tui.re` | Modified | Exports the JSX namespace. Medium risk if public API names collide. | Add `Jsx` module export carefully. |
+| `apps/tui/lib/components/*` | Referenced | Existing behavior is the semantic source of truth. Low risk if wrappers stay thin. | Do not alter component semantics for JSX. |
+| `apps/tui/lib/patterns.re` | Referenced | Most patterns get JSX wrappers, excluding edge-case presets. Medium coverage risk. | Prioritize patterns used by `agent_workspace`. |
+| `apps/tui/examples/agent_workspace.ml` | Modified or paired | First parity target. Medium risk if example behavior drifts. | Add JSX version and compare rendered output. |
+| `apps/tui/README.md` | Modified | Main external adoption path. | Add quickstart, supported surface, and compatibility guidance. |
+| `apps/tui/test/test_tui.re` | Modified | Parity and wrapper coverage tests. | Add focused JSX tests. |
 
 ## Testing Approach
 
 ### Unit Tests
 
-- Port validation: empty, nonnumeric, zero, negative, over `65535`, valid values.
-- Theme loading: missing file defaults to `cursor-dark`; invalid theme falls back with visible feedback.
-- Runtime Contract writer preserves unrelated fields and updates only `server.port`.
-- Settings modal key flow: open with `s`, edit, save, cancel, render footer/help.
+- Verify wrappers return rendered output equivalent to direct components for representative primitives.
+- Cover explicit text-node behavior.
+- Cover most supported `Components` and `Patterns` wrappers enough to prevent drift.
 
 ### Integration Tests
 
-- `w` starts a loopback dashboard from readiness-blocked Terminal Console state.
-- `w` reuses a compatible identity endpoint for the same Workspace Repository and Runtime Home.
-- `w` reports conflict for unrelated listener, mismatched workspace, or mismatched runtime home.
-- Existing `--web` startup, auth, Live Dashboard Connection, and Runtime State HTTP tests remain green.
-- Non-mutation tests assert settings and `w` do not update tracker status, queue state, Task Branches, or orchestration lifecycle state.
+- Render the JSX `agent_workspace` example and compare against the direct-call target.
+- Run package-level TUI tests through `pnpm --filter @symphony-orchestrator/tui test`.
 
 ## Development Sequencing
 
 ### Build Order
 
-1. Add settings models and persistence helpers for theme state and scoped `server.port` updates - no dependencies.
-2. Extract dashboard service startup and identity response support - depends on step 1 for normalized workspace/runtime identity values.
-3. Extend Terminal Console runtime callbacks and `terminal_console_tui.ml` modal state - depends on steps 1 and 2.
-4. Update README, `CONTEXT.md`, and project ADR language for scoped local setup controls - depends on step 3 behavior.
-5. Add focused Alcotest coverage for settings, dashboard start/reuse, identity conflicts, and non-mutation - depends on steps 1 through 4.
-6. Run verification: targeted tests first, then `pnpm test`, `pnpm backend:build`, and docs checks if docs changed - depends on step 5.
+1. Add `Tui.Jsx` namespace and minimal wrapper conventions - no dependencies.
+2. Add core wrappers for text, box, row, column, and panel - depends on step 1.
+3. Add broad wrappers for existing `Components` and `Patterns`, excluding presets - depends on step 2.
+4. Add JSX `agent_workspace` parity example - depends on step 3.
+5. Add focused wrapper and rendered parity tests - depends on steps 3 and 4.
+6. Update README, examples index, supported surface guide, and migration notes - depends on steps 3 through 5.
+7. Run TUI package verification - depends on steps 1 through 6.
 
 ### Technical Dependencies
 
-- No new external packages.
-- No frontend implementation required for V1.
-- No Runtime Contract default change required.
+- Existing Reason support in the package remains required.
+- No new runtime package should be introduced unless the implementation proves Reason JSX support cannot work with current tooling.
+- Dune/opam package metadata must stay consistent with the public package surface.
 
 ## Monitoring and Observability
 
-- Emit secret-free dashboard service events: started, reused, conflict, failed.
-- Include `server_host`, `server_port`, `workspace_root`, `runtime_home`, and `auth_required`; never include token values.
-- Surface user-facing status messages in the Terminal Console for saved settings, invalid input, started, reused, conflict, and failed.
+No runtime monitoring is required. The useful visibility is package-level:
+
+- Test coverage for wrapper parity.
+- Example render stability.
+- Documentation completeness against the 30-minute quickstart goal.
 
 ## Technical Considerations
 
 ### Key Decisions
 
-- Persist `server.port` in Runtime Settings; persist theme in ignored Runtime Home state.
-- Keep the settings UI product-specific instead of introducing reusable TUI settings abstractions.
-- Use an in-process background dashboard service instead of a child `symphony --web` process.
-- Require identity-based reuse rather than port-only reuse.
+- **Wrapper modules over existing components**: preserves `Tui.Node.t` and current renderer behavior.
+- **Explicit text nodes**: avoids hidden string coercion and keeps child typing predictable.
+- **Broad V1 coverage**: supports adoption-ready positioning, with presets excluded to control scope.
+- **`agent_workspace` parity target**: exercises realistic standalone command-center composition.
+- **TUI-only verification**: keeps completion scoped to the changed package.
 
 ### Known Risks
 
-- JSON formatting churn in `.symphony/settings.json`; mitigate with structured update tests and unknown-field retention.
-- Background server thread failures; mitigate by isolating startup and returning explicit failure statuses.
-- Identity mismatch confusion; mitigate with distinct messages for compatible reuse, occupied port, and different Workspace Repository.
-- Settings scope creep; mitigate by keeping V1 fields hardcoded to theme and `server.port`.
+- Wrapper drift from direct components. Mitigation: parity tests and thin delegation.
+- Broad coverage delays delivery. Mitigation: prioritize wrappers needed for `agent_workspace`.
+- User confusion around explicit text nodes. Mitigation: quickstart explains the rule early.
+- Public API naming collisions. Mitigation: isolate wrappers under `Tui.Jsx`.
 
 ## Architecture Decision Records
 
-- [ADR-001: Scope the Terminal Console Settings MVP](adrs/adr-001.md) - Defines the narrow settings and Web Dashboard local service control scope.
-- [ADR-002: Select Narrow Setup MVP Product Approach](adrs/adr-002.md) - Records the setup-friction-focused product approach.
-- [ADR-003: Terminal Console Settings and Dashboard Service Architecture](adrs/adr-003.md) - Selects the persistence, settings UI, dashboard service, and identity-reuse architecture.
+- [ADR-001: Constrain JSX TUI V1 To An Existing Node Authoring Layer](adrs/adr-001.md) - Superseded conservative scope.
+- [ADR-002: Adopt Public JSX Kit Scope](adrs/adr-002.md) - Accepted public JSX kit direction.
+- [ADR-003: Select Adoption-Ready Public JSX Kit Approach](adrs/adr-003.md) - Accepted external-adoption-first PRD approach.
+- [ADR-004: Implement JSX As Wrapper Modules Over Existing TUI Components](adrs/adr-004.md) - Accepted technical wrapper-module architecture.
 

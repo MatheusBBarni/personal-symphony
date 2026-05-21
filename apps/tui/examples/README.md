@@ -2,11 +2,14 @@
 
 These examples show the main ways to use the `symphony-orchestrator-tui` package. Commands are meant to run from `apps/tui`.
 
+For new screens, start with the JSX authoring path: `demo` for the renderer loop, `operations_dashboard` for dense status UI, and `agent_workspace_jsx` for a workflow-oriented command center. Direct component-call examples remain useful lower-level references.
+
 | Example | Source | README | Run |
 | --- | --- | --- | --- |
 | `demo` | [demo.ml](demo.ml) | [demo/README.md](demo/README.md) | `opam exec -- dune exec examples/demo.exe` |
 | `operations_dashboard` | [operations_dashboard.ml](operations_dashboard.ml) | [operations_dashboard/README.md](operations_dashboard/README.md) | `opam exec -- dune exec examples/operations_dashboard.exe` |
 | `agent_workspace` | [agent_workspace.ml](agent_workspace.ml) | [agent_workspace/README.md](agent_workspace/README.md) | `opam exec -- dune exec examples/agent_workspace.exe` |
+| `agent_workspace_jsx` | [agent_workspace_jsx.re](agent_workspace_jsx.re) | [agent_workspace/README.md](agent_workspace/README.md) | `opam exec -- dune exec examples/agent_workspace_jsx.exe` |
 | `opencode_splash` | [opencode_splash.ml](opencode_splash.ml) | [opencode_splash/README.md](opencode_splash/README.md) | `opam exec -- dune exec examples/opencode_splash.exe` |
 | `opencode_session` | [opencode_session.ml](opencode_session.ml) | [opencode_session/README.md](opencode_session/README.md) | `opam exec -- dune exec examples/opencode_session.exe` |
 
@@ -14,13 +17,14 @@ These examples show the main ways to use the `symphony-orchestrator-tui` package
 
 - Start with `demo` when learning the basic component tree and renderer flow.
 - Use `operations_dashboard` for dense dashboard layouts with metrics, tables, and logs.
-- Use `agent_workspace` for message-first layouts with a navigator, transcript, composer, and side panel.
+- Use `agent_workspace_jsx` for the recommended wrapper-module path for message-first layouts with a navigator, transcript, composer, and side panel.
+- Use `agent_workspace` as the direct-call parity reference for the same layout.
 - Use `opencode_splash` to study responsive full-screen composition and OpenCode-inspired presets.
 - Use `opencode_session` to study viewport-driven branching, alternate-screen preview behavior, and a more complete session layout.
 
 ## Terminal Behavior
 
-`demo`, `operations_dashboard`, and `agent_workspace` print fixed-size snapshots.
+`demo`, `operations_dashboard`, `agent_workspace`, and `agent_workspace_jsx` print fixed-size snapshots.
 
 `opencode_splash` and `opencode_session` use the active terminal size, enter the alternate screen when stdin/stdout are interactive, and exit on any key. In non-interactive output they print an ANSI snapshot instead.
 

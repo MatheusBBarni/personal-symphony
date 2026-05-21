@@ -1,3 +1,3 @@
 (executables
- (names demo operations_dashboard agent_workspace opencode_splash opencode_session)
+ (names demo operations_dashboard agent_workspace agent_workspace_jsx opencode_splash opencode_session)
  (libraries symphony-orchestrator-tui))

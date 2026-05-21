@@ -1,11 +1,13 @@
 ---
-status: pending
+status: completed
 title: "Add JSX `agent_workspace` Parity Example"
 type: backend
 complexity: medium
 dependencies:
   - task_02
   - task_03
+
+
 ---
 
 # Task 04: Add JSX `agent_workspace` Parity Example

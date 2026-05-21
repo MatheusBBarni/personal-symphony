@@ -1,5 +1,7 @@
 open Tui;
 
+module J = Tui.Jsx;
+
 let contains_sub = (haystack, needle) => {
   let haystack_len = String.length(haystack);
   let needle_len = String.length(needle);
@@ -10,6 +12,9 @@ let contains_sub = (haystack, needle) => {
 
   needle_len == 0 || loop(0);
 };
+
+let render_node = (~width, ~height, ~node) =>
+  Renderer.render_to_string(Renderer.create(~width, ~height, node));
 
 let plain_snapshot = () => {
   let root =
@@ -63,8 +68,21 @@ let rich_text_inherits_node_paint = () => {
   let root =
     rich_text(
       ~style=
-        Style.(make(~fg=Color.ansi(1), ~bg=Color.ansi(2), ~attrs=[Attr.Bold], ())),
-      [Span.make(~style=Style.(make(~fg=Color.ansi(3), ~attrs=[Attr.Underline], ())), "X")],
+        Style.(
+          make(
+            ~fg=Color.ansi(1),
+            ~bg=Color.ansi(2),
+            ~attrs=[Attr.Bold],
+            (),
+          )
+        ),
+      [
+        Span.make(
+          ~style=
+            Style.(make(~fg=Color.ansi(3), ~attrs=[Attr.Underline], ())),
+          "X",
+        ),
+      ],
     );
   let renderer = Renderer.create(~width=2, ~height=1, root);
   let surface = Renderer.request_render(renderer);
@@ -89,9 +107,584 @@ let rich_text_inherits_node_paint = () => {
       "span keeps child attrs",
       true,
       Attr.mem(Attr.Underline, cell.style.attrs),
-    )
+    );
   | None => Alcotest.fail("missing rendered cell")
   };
+};
+
+let jsx_text_matches_component_text = () => {
+  let direct = Components.text("Hello");
+  let wrapped = Tui.Jsx.Text.make(~value="Hello", ());
+  let render = node =>
+    Renderer.render_to_string(Renderer.create(~width=8, ~height=1, node));
+
+  Alcotest.(check(string))(
+    "visible text",
+    render(direct),
+    render(wrapped),
+  );
+  switch (wrapped.kind) {
+  | Text(_) => ()
+  | _ => Alcotest.fail("jsx text did not return a text node")
+  };
+};
+
+let jsx_box_renders_explicit_text_children = () => {
+  let style = Style.(make(~width=Cells(12), ~height=Cells(1), ()));
+  let direct = Components.box(~style, [Components.text("Child")]);
+  let wrapped =
+    Tui.Jsx.Box.make(
+      ~style,
+      ~children=[Tui.Jsx.Text.make(~value="Child", ())],
+      (),
+    );
+  let render = node =>
+    Renderer.render_to_string(Renderer.create(~width=12, ~height=1, node));
+  let output = render(wrapped);
+
+  Alcotest.(check(string))("box output", render(direct), output);
+  Alcotest.(check(bool))(
+    "explicit text child",
+    true,
+    contains_sub(output, "Child"),
+  );
+};
+
+let direct_component_calls_render_with_jsx_export = () => {
+  let root =
+    Tui.box(
+      ~style=Style.(make(~width=Cells(12), ~height=Cells(1), ())),
+      [Tui.text("Direct")],
+    );
+  let output =
+    Renderer.render_to_string(Renderer.create(~width=12, ~height=1, root));
+
+  Alcotest.(check(bool))(
+    "direct components still render",
+    true,
+    contains_sub(output, "Direct"),
+  );
+};
+
+let jsx_component_wrappers_match_direct_components = () => {
+  let direct =
+    Components.column([
+      Components.rich_text([
+        Span.make(~style=Style.(make(~attrs=[Attr.Bold], ())), "Rich"),
+      ]),
+      Components.row([
+        Components.text("Row"),
+        Components.vertical_rule(
+          ~style=Style.(make(~height=Cells(1), ())),
+          (),
+        ),
+        Components.spacer(~style=Style.(make(~width=Cells(1), ())), ()),
+      ]),
+      Components.input(~placeholder="filter", ()),
+      Components.select([
+        Components.option(~description="ready", "Ready"),
+        Components.option(~value="run", ~description="active", "Running"),
+      ]),
+      Components.scroll_box([Components.text("Scrolled")]),
+      Components.progress_bar(~label="build", 0.5),
+      Components.sparkline([0.1, 0.4, 0.9]),
+      Components.panel(
+        "Panel",
+        [
+          Components.badge(~tone=Components.Success, "ok"),
+          Components.tab_bar([("Logs", true), ("Files", false)]),
+        ],
+      ),
+      Components.key_value([("branch", "main"), ("state", "ready")]),
+      Components.table([("TASK", 8), ("STATE", 6)], [["build", "ok"]]),
+      Components.split(
+        [Components.text("left")],
+        [Components.text("right")],
+      ),
+      Components.divider(~title="Data", ()),
+      Components.callout(
+        ~title="Note",
+        [Components.text("explicit child")],
+      ),
+      Components.empty_state(
+        ~detail="No rows",
+        ~action="Press r",
+        "Nothing here",
+      ),
+      Components.toolbar([("q", "uit"), ("/", "filter")]),
+      Components.meter(~label="CPU", ~value="67%", 0.67),
+    ]);
+
+  let wrapped =
+    J.Column.make(
+      ~children=[
+        J.RichText.make(
+          ~spans=[
+            Span.make(~style=Style.(make(~attrs=[Attr.Bold], ())), "Rich"),
+          ],
+          (),
+        ),
+        J.Row.make(
+          ~children=[
+            J.Text.make(~value="Row", ()),
+            J.VerticalRule.make(
+              ~style=Style.(make(~height=Cells(1), ())),
+              (),
+            ),
+            J.Spacer.make(~style=Style.(make(~width=Cells(1), ())), ()),
+          ],
+          (),
+        ),
+        J.Input.make(~placeholder="filter", ()),
+        J.Select.make(
+          ~options=[
+            J.Option.make(~description="ready", ~name="Ready", ()),
+            J.Option.make(
+              ~value="run",
+              ~description="active",
+              ~name="Running",
+              (),
+            ),
+          ],
+          (),
+        ),
+        J.ScrollBox.make(
+          ~children=[J.Text.make(~value="Scrolled", ())],
+          (),
+        ),
+        J.ProgressBar.make(~label="build", ~fraction=0.5, ()),
+        J.Sparkline.make(~values=[0.1, 0.4, 0.9], ()),
+        J.Panel.make(
+          ~title="Panel",
+          ~children=[
+            J.Badge.make(~tone=Components.Success, ~label="ok", ()),
+            J.TabBar.make(~tabs=[("Logs", true), ("Files", false)], ()),
+          ],
+          (),
+        ),
+        J.KeyValue.make(
+          ~pairs=[("branch", "main"), ("state", "ready")],
+          (),
+        ),
+        J.Table.make(
+          ~columns=[("TASK", 8), ("STATE", 6)],
+          ~rows=[["build", "ok"]],
+          (),
+        ),
+        J.Split.make(
+          ~left=[J.Text.make(~value="left", ())],
+          ~right=[J.Text.make(~value="right", ())],
+          (),
+        ),
+        J.Divider.make(~title="Data", ()),
+        J.Callout.make(
+          ~title="Note",
+          ~children=[J.Text.make(~value="explicit child", ())],
+          (),
+        ),
+        J.EmptyState.make(
+          ~detail="No rows",
+          ~action="Press r",
+          ~title="Nothing here",
+          (),
+        ),
+        J.Toolbar.make(~items=[("q", "uit"), ("/", "filter")], ()),
+        J.Meter.make(~label="CPU", ~value="67%", ~fraction=0.67, ()),
+      ],
+      (),
+    );
+
+  Alcotest.(check(string))(
+    "component wrapper output",
+    render_node(~width=96, ~height=42, ~node=direct),
+    render_node(~width=96, ~height=42, ~node=wrapped),
+  );
+};
+
+let jsx_pattern_wrappers_match_direct_patterns = () => {
+  let direct =
+    Components.column([
+      Patterns.header(
+        ~subtitle="sub",
+        ~badges=[(Components.Success, "live")],
+        "Header",
+      ),
+      Patterns.rule_panel([Components.text("rule body")]),
+      Patterns.metric_card(
+        ~label="CPU",
+        ~value="67%",
+        ~detail="steady",
+        ~progress=0.67,
+        ~sparkline=[0.2, 0.5, 0.7],
+        (),
+      ),
+      Patterns.log_feed([
+        ("12:00", "INFO", "started"),
+        ("12:01", "OK", "ready"),
+      ]),
+      Patterns.section_title("Section"),
+      Patterns.nav_item(~active=true, ~meta="now", "Inbox"),
+      Patterns.message(
+        ~tone=Components.Info,
+        ~author="User",
+        ~time="12:02",
+        "Hello",
+      ),
+      Patterns.timeline([(Components.Success, "tests", "passing")]),
+      Patterns.composer(~placeholder="Ask", ()),
+      Patterns.command_bar([("q", "uit"), ("?", "help")]),
+      Patterns.footer([("Tab", "focus")]),
+      Patterns.modal(
+        ~style=Style.(make(~width=Cells(24), ~height=Cells(7), ())),
+        "Modal",
+        [Components.text("body")],
+      ),
+      Patterns.app_shell(
+        ~title="Shell",
+        ~subtitle="frame",
+        [Components.text("body")],
+      ),
+    ]);
+
+  let wrapped =
+    J.Column.make(
+      ~children=[
+        J.Header.make(
+          ~subtitle="sub",
+          ~badges=[(Components.Success, "live")],
+          ~title="Header",
+          (),
+        ),
+        J.RulePanel.make(
+          ~children=[J.Text.make(~value="rule body", ())],
+          (),
+        ),
+        J.MetricCard.make(
+          ~label="CPU",
+          ~value="67%",
+          ~detail="steady",
+          ~progress=0.67,
+          ~sparkline=[0.2, 0.5, 0.7],
+          (),
+        ),
+        J.LogFeed.make(
+          ~entries=[("12:00", "INFO", "started"), ("12:01", "OK", "ready")],
+          (),
+        ),
+        J.SectionTitle.make(~title="Section", ()),
+        J.NavItem.make(~active=true, ~meta="now", ~label="Inbox", ()),
+        J.Message.make(
+          ~tone=Components.Info,
+          ~author="User",
+          ~time="12:02",
+          ~body="Hello",
+          (),
+        ),
+        J.Timeline.make(
+          ~entries=[(Components.Success, "tests", "passing")],
+          (),
+        ),
+        J.Composer.make(~placeholder="Ask", ()),
+        J.CommandBar.make(~items=[("q", "uit"), ("?", "help")], ()),
+        J.Footer.make(~shortcuts=[("Tab", "focus")], ()),
+        J.Modal.make(
+          ~style=Style.(make(~width=Cells(24), ~height=Cells(7), ())),
+          ~title="Modal",
+          ~children=[J.Text.make(~value="body", ())],
+          (),
+        ),
+        J.AppShell.make(
+          ~title="Shell",
+          ~subtitle="frame",
+          ~children=[J.Text.make(~value="body", ())],
+          (),
+        ),
+      ],
+      (),
+    );
+
+  Alcotest.(check(string))(
+    "pattern wrapper output",
+    render_node(~width=96, ~height=56, ~node=direct),
+    render_node(~width=96, ~height=56, ~node=wrapped),
+  );
+};
+
+let direct_agent_workspace_root = () => {
+  let sessions = [
+    Patterns.section_title("Sessions"),
+    Patterns.nav_item(~active=true, ~meta="now", "ocaml-tui"),
+    Patterns.nav_item(~meta="12m", "renderer-bugs"),
+    Patterns.nav_item(~meta="1h", "release-notes"),
+    Patterns.nav_item(~meta="2h", "perf-pass"),
+    Patterns.section_title(~tone=Components.Info, "Workspaces"),
+    Patterns.nav_item(~meta="main", "opencaml"),
+    Patterns.nav_item(~meta="dirty", "demo-kit"),
+  ];
+  let transcript = [
+    Patterns.message(
+      ~tone=Components.Info,
+      ~author="User",
+      ~time="14:12",
+      "Build components so people can recreate this kind of terminal UI.",
+    ),
+    Patterns.message(
+      ~tone=Components.Success,
+      ~author="Assistant",
+      ~time="14:13",
+      "Added dashboard primitives: panels, badges, metric cards, tables, logs, tabs, and command bars.",
+    ),
+    Patterns.message(
+      ~tone=Components.Accent,
+      ~author="Assistant",
+      ~time="14:16",
+      "Now adding workspace primitives for chat-heavy layouts: side navigation, messages, timelines, and a composer.",
+    ),
+  ];
+  let activity = [
+    Patterns.timeline([
+      (Components.Success, "tests", "10 passing"),
+      (Components.Info, "build", "dune build @all"),
+      (Components.Warning, "review", "image parity needs source pixels"),
+      (Components.Accent, "example", "agent_workspace.exe"),
+    ]),
+    Components.panel(
+      "Context",
+      [
+        Components.key_value(
+          ~label_width=9,
+          [
+            ("branch", "no git repo"),
+            ("package", "tui"),
+            ("layout", "Toffee flex"),
+            ("target", "132x38"),
+          ],
+        ),
+      ],
+    ),
+  ];
+
+  Patterns.app_shell(
+    ~title="Agent Workspace",
+    ~subtitle="message-first terminal interface",
+    ~badges=[
+      (Components.Success, "online"),
+      (Components.Accent, "model"),
+      (Components.Info, "tools"),
+    ],
+    ~footer_items=[
+      ("q", "uit"),
+      ("n", "ew"),
+      ("/", "search"),
+      ("?", "help"),
+      ("Tab", "focus"),
+    ],
+    [
+      Components.split(
+        ~left_width=28,
+        [
+          Components.panel(
+            "Navigator",
+            ~style=Style.(make(~height=Percent(1.), ())),
+            sessions,
+          ),
+        ],
+        [
+          Components.box(
+            ~style=
+              Style.(
+                make(~flex_direction=Row, ~gap=1, ~height=Percent(1.), ())
+              ),
+            [
+              Components.panel(
+                "Conversation",
+                ~style=Style.(make(~flex_grow=1., ~height=Percent(1.), ())),
+                [
+                  Components.scroll_box(
+                    ~style=Style.(make(~flex_grow=1., ())),
+                    transcript,
+                  ),
+                  Patterns.composer(
+                    ~placeholder="Ask for code, tests, or a review",
+                    (),
+                  ),
+                ],
+              ),
+              Components.panel(
+                "Run State",
+                ~tone=Components.Info,
+                ~style=
+                  Style.(make(~width=Cells(36), ~height=Percent(1.), ())),
+                activity,
+              ),
+            ],
+          ),
+        ],
+      ),
+    ],
+  );
+};
+
+let jsx_agent_workspace_root = () => {
+  let sessions = [
+    J.SectionTitle.make(~title="Sessions", ()),
+    J.NavItem.make(~active=true, ~meta="now", ~label="ocaml-tui", ()),
+    J.NavItem.make(~meta="12m", ~label="renderer-bugs", ()),
+    J.NavItem.make(~meta="1h", ~label="release-notes", ()),
+    J.NavItem.make(~meta="2h", ~label="perf-pass", ()),
+    J.SectionTitle.make(~tone=Components.Info, ~title="Workspaces", ()),
+    J.NavItem.make(~meta="main", ~label="opencaml", ()),
+    J.NavItem.make(~meta="dirty", ~label="demo-kit", ()),
+  ];
+  let transcript = [
+    J.Message.make(
+      ~tone=Components.Info,
+      ~author="User",
+      ~time="14:12",
+      ~body=
+        "Build components so people can recreate this kind of terminal UI.",
+      (),
+    ),
+    J.Message.make(
+      ~tone=Components.Success,
+      ~author="Assistant",
+      ~time="14:13",
+      ~body=
+        "Added dashboard primitives: panels, badges, metric cards, tables, logs, tabs, and command bars.",
+      (),
+    ),
+    J.Message.make(
+      ~tone=Components.Accent,
+      ~author="Assistant",
+      ~time="14:16",
+      ~body=
+        "Now adding workspace primitives for chat-heavy layouts: side navigation, messages, timelines, and a composer.",
+      (),
+    ),
+  ];
+  let activity = [
+    J.Timeline.make(
+      ~entries=[
+        (Components.Success, "tests", "10 passing"),
+        (Components.Info, "build", "dune build @all"),
+        (Components.Warning, "review", "image parity needs source pixels"),
+        (Components.Accent, "example", "agent_workspace.exe"),
+      ],
+      (),
+    ),
+    J.Panel.make(
+      ~title="Context",
+      ~children=[
+        J.KeyValue.make(
+          ~label_width=9,
+          ~pairs=[
+            ("branch", "no git repo"),
+            ("package", "tui"),
+            ("layout", "Toffee flex"),
+            ("target", "132x38"),
+          ],
+          (),
+        ),
+      ],
+      (),
+    ),
+  ];
+
+  J.AppShell.make(
+    ~title="Agent Workspace",
+    ~subtitle="message-first terminal interface",
+    ~badges=[
+      (Components.Success, "online"),
+      (Components.Accent, "model"),
+      (Components.Info, "tools"),
+    ],
+    ~footer_items=[
+      ("q", "uit"),
+      ("n", "ew"),
+      ("/", "search"),
+      ("?", "help"),
+      ("Tab", "focus"),
+    ],
+    ~children=[
+      J.Split.make(
+        ~left_width=28,
+        ~left=[
+          J.Panel.make(
+            ~title="Navigator",
+            ~style=Style.(make(~height=Percent(1.), ())),
+            ~children=sessions,
+            (),
+          ),
+        ],
+        ~right=[
+          J.Box.make(
+            ~style=
+              Style.(
+                make(~flex_direction=Row, ~gap=1, ~height=Percent(1.), ())
+              ),
+            ~children=[
+              J.Panel.make(
+                ~title="Conversation",
+                ~style=Style.(make(~flex_grow=1., ~height=Percent(1.), ())),
+                ~children=[
+                  J.ScrollBox.make(
+                    ~style=Style.(make(~flex_grow=1., ())),
+                    ~children=transcript,
+                    (),
+                  ),
+                  J.Composer.make(
+                    ~placeholder="Ask for code, tests, or a review",
+                    (),
+                  ),
+                ],
+                (),
+              ),
+              J.Panel.make(
+                ~title="Run State",
+                ~tone=Components.Info,
+                ~style=
+                  Style.(make(~width=Cells(36), ~height=Percent(1.), ())),
+                ~children=activity,
+                (),
+              ),
+            ],
+            (),
+          ),
+        ],
+        (),
+      ),
+    ],
+    (),
+  );
+};
+
+let jsx_agent_workspace_matches_direct_example = () => {
+  let direct =
+    render_node(~width=132, ~height=38, ~node=direct_agent_workspace_root());
+  let wrapped =
+    render_node(~width=132, ~height=38, ~node=jsx_agent_workspace_root());
+  let wide_wrapped =
+    render_node(~width=180, ~height=38, ~node=jsx_agent_workspace_root());
+
+  Alcotest.(check(string))("agent workspace parity", direct, wrapped);
+  Alcotest.(check(bool))(
+    "session labels",
+    true,
+    contains_sub(wrapped, "ocaml-tui")
+    && contains_sub(wrapped, "renderer-bugs"),
+  );
+  Alcotest.(check(bool))(
+    "conversation and composer",
+    true,
+    contains_sub(wrapped, "Assistant")
+    && contains_sub(wrapped, "Ask for code, tests, or a review"),
+  );
+  Alcotest.(check(bool))(
+    "run state labels",
+    true,
+    contains_sub(wide_wrapped, "Run State")
+    && contains_sub(wide_wrapped, "10 passing"),
+  );
 };
 
 let input_editing = () => {
@@ -281,7 +874,11 @@ let table_component_handles_uneven_rows = () => {
     );
   let output =
     Renderer.render_to_string(Renderer.create(~width=12, ~height=4, root));
-  Alcotest.(check(bool))("keeps short row", true, contains_sub(output, "x"));
+  Alcotest.(check(bool))(
+    "keeps short row",
+    true,
+    contains_sub(output, "x"),
+  );
   Alcotest.(check(bool))(
     "truncates long cell and ignores extra cells",
     true,
@@ -536,10 +1133,11 @@ let component_design_injects_theme = () => {
       "uses custom badge background",
       true,
       node.style.bg == Some(Color.ansi(7)),
-    )
+    );
   | None => Alcotest.fail("badge not found")
   };
-  let surface = Renderer.request_render(Renderer.create(~width=4, ~height=1, root));
+  let surface =
+    Renderer.request_render(Renderer.create(~width=4, ~height=1, root));
   switch (Surface.get(surface, ~x=1, ~y=0)) {
   | Some(cell) =>
     Alcotest.(check(string))("badge label cell", "o", cell.Surface.text);
@@ -547,7 +1145,7 @@ let component_design_injects_theme = () => {
       "rendered badge label background",
       true,
       cell.style.bg == Some(Color.ansi(7)),
-    )
+    );
   | None => Alcotest.fail("badge label cell not rendered")
   };
   let light_design = Components.make_design(~theme=Theme.light, ());
@@ -618,7 +1216,8 @@ let theme_helpers_cover_palettes_and_named_lookup = () => {
     Alcotest.(check(bool))(
       "named high contrast",
       true,
-      theme(Theme.Accent_primary) == Theme.high_contrast_dark(Theme.Accent_primary),
+      theme(Theme.Accent_primary)
+      == Theme.high_contrast_dark(Theme.Accent_primary),
     )
   | None => Alcotest.fail("theme not found")
   };
@@ -633,7 +1232,8 @@ let theme_helpers_cover_palettes_and_named_lookup = () => {
     true,
     palette.Theme.fg_default == Theme.dark(Theme.Fg_default),
   );
-  let custom = Theme.with_slot(Theme.Accent_primary, Color.ansi(3), Theme.light);
+  let custom =
+    Theme.with_slot(Theme.Accent_primary, Color.ansi(3), Theme.light);
   Alcotest.(check(bool))(
     "override slot",
     true,
@@ -782,6 +1382,41 @@ let () =
             "rich text inherits node paint",
             `Quick,
             rich_text_inherits_node_paint,
+          ),
+        ],
+      ),
+      (
+        "jsx",
+        [
+          Alcotest.test_case(
+            "text matches component",
+            `Quick,
+            jsx_text_matches_component_text,
+          ),
+          Alcotest.test_case(
+            "box renders explicit text children",
+            `Quick,
+            jsx_box_renders_explicit_text_children,
+          ),
+          Alcotest.test_case(
+            "direct calls still render",
+            `Quick,
+            direct_component_calls_render_with_jsx_export,
+          ),
+          Alcotest.test_case(
+            "component wrapper parity",
+            `Quick,
+            jsx_component_wrappers_match_direct_components,
+          ),
+          Alcotest.test_case(
+            "pattern wrapper parity",
+            `Quick,
+            jsx_pattern_wrappers_match_direct_patterns,
+          ),
+          Alcotest.test_case(
+            "agent workspace parity",
+            `Quick,
+            jsx_agent_workspace_matches_direct_example,
           ),
         ],
       ),

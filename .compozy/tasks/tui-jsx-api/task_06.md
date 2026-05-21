@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Finalize TUI Package Verification And Bundle Readiness"
 type: chore
 complexity: low
@@ -9,6 +9,8 @@ dependencies:
   - task_03
   - task_04
   - task_05
+
+
 ---
 
 # Task 06: Finalize TUI Package Verification And Bundle Readiness
@@ -30,14 +32,16 @@ This task closes the feature by checking the full TUI package surface after wrap
 - REQ-03 MUST confirm task metadata validation passes for `tui-jsx-api`.
 - REQ-04 MUST keep verification scoped to the TUI package unless a package-local change reveals a required adjacent fix.
 - REQ-05 MUST leave no generated frontend `.res.js` files or unrelated artifacts staged or required.
+- REQ-06 MUST hand any broader behavior gap, public API scope gap, or non-package-local failure back to the owning task or a follow-up issue instead of expanding task 06 into a catch-all implementation task.
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Review all completed task outputs against `_prd.md`, `_techspec.md`, and ADR-004.
-- [ ] 6.2 Run the TUI package test command and address any package-local failures.
-- [ ] 6.3 Run the TUI package build command and address any package-local failures.
-- [ ] 6.4 Run task validation for `tui-jsx-api` and fix metadata or template issues.
-- [ ] 6.5 Check for unrelated generated or accidental files in the task and package scope.
+- [x] 6.1 Review all completed task outputs against `_prd.md`, `_techspec.md`, and ADR-004.
+- [x] 6.2 Run the TUI package test command and address any package-local failures.
+- [x] 6.3 Run the TUI package build command and address any package-local failures.
+- [x] 6.4 Run task validation for `tui-jsx-api` and fix metadata or template issues.
+- [x] 6.5 Check for unrelated generated or accidental files in the task and package scope.
+- [x] 6.6 If verification reveals a non-local or ownership-crossing gap, record it against the owning task or create a follow-up issue rather than absorbing it here.
 
 ## Implementation Details
 Use the TechSpec "Testing Approach" and "Development Sequencing" sections as the verification contract. This task should only make small package-local fixes discovered by final verification; larger behavior gaps should be resolved in the implementation task that owns them.
@@ -67,12 +71,12 @@ Use the TechSpec "Testing Approach" and "Development Sequencing" sections as the
 
 ## Tests
 - Unit tests:
-  - [ ] Any package-local fix made during final verification includes a focused test in `apps/tui/test/test_tui.re`.
-  - [ ] Existing JSX wrapper and parity tests continue to pass without weakening assertions.
+  - [x] Any package-local fix made during final verification includes a focused test in `apps/tui/test/test_tui.re`.
+  - [x] Existing JSX wrapper and parity tests continue to pass without weakening assertions.
 - Integration tests:
-  - [ ] `pnpm --filter @symphony-orchestrator/tui test` exits 0.
-  - [ ] `pnpm --filter @symphony-orchestrator/tui build` exits 0.
-  - [ ] `compozy tasks validate --name tui-jsx-api` exits 0.
+- [x] TUI package test script exits 0.
+- [x] TUI package build script exits 0.
+  - [x] `compozy tasks validate --name tui-jsx-api` exits 0.
 - Test coverage target: >=80%
 - All tests must pass
 
@@ -81,4 +85,5 @@ Use the TechSpec "Testing Approach" and "Development Sequencing" sections as the
 - Test coverage >=80%.
 - TUI package build and test commands pass from the product repository.
 - `compozy tasks validate --name tui-jsx-api` passes.
+- Any broader failure found during verification is explicitly handed back to the owning task or follow-up issue instead of being silently absorbed into task 06.
 - Final changed files are limited to the task bundle and intended TUI package/docs files.
