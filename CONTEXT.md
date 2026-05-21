@@ -320,11 +320,13 @@ _Avoid_: merge worktrees, copy workspace, finish branch
 The default terminal interface for operating Personal Symphony in a Workspace Repository.
 Normal `symphony` runs open the read-first Terminal Console unless the operator selects Web Dashboard mode, one-shot output, or another explicit CLI action.
 The Terminal Console renders Runtime State snapshots for active work, retrying work, task attention, Readiness Gaps, Ordered Queue progress, Compozy PRD Run progress, Agent Worktree details, and Task Branch context.
-Its MVP aids are limited to local reading, refresh, navigation, filtering, Web Dashboard handoff guidance, and validated local path inspection; they must not mutate task lifecycle state.
+Its V1 local aids are limited to local reading, refresh, navigation, filtering, focused Terminal Console settings, loopback Web Dashboard start or reuse, and validated local path inspection.
+Its scoped settings may persist Terminal Console theme in ignored Runtime Home state and update only Runtime Settings `server.port`; they are not a general Runtime Settings editor and must not mutate task lifecycle state.
 _Avoid_: TUI, terminal UI
 
 **Web Dashboard**:
 The optional browser interface for operating Personal Symphony in a Workspace Repository.
+The Web Dashboard may be started explicitly with `symphony --web`; Terminal Console V1 may also start or reuse a compatible loopback Web Dashboard for the current Workspace Repository and Runtime Home.
 _Avoid_: web server, front-end
 
 **Web Dashboard Refactor**:
@@ -439,8 +441,11 @@ _Avoid_: reinitialize, reset
 - The **Terminal Console** uses in-process **Runtime State** snapshots for display.
 - The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream, not a command channel.
 - A readiness-blocked **Terminal Console** renders **Readiness Gaps** and remediation text without starting orchestration.
-- **Terminal Console** local aids may refresh the latest in-memory **Runtime State** snapshot, navigate, filter, show **Web Dashboard** handoff guidance, or inspect validated local paths.
-- **Terminal Console** local aids must not retry tasks, pause or resume dispatch, update tracker status, merge or push **Task Branches**, open pull requests, change the **Runtime Contract**, or otherwise mutate task lifecycle state.
+- **Terminal Console** settings opened with `s` may persist Terminal Console theme in ignored **Runtime Home** UI state and may update only Runtime Settings `server.port`.
+- **Terminal Console** V1 dashboard controls are loopback-only and do not edit Runtime Settings `server.host` or enable non-loopback exposure.
+- Pressing `w` in the **Terminal Console** starts or reuses a compatible loopback **Web Dashboard** for the current **Workspace Repository** and **Runtime Home**, then reports the dashboard URL or a port conflict.
+- **Terminal Console** local aids may refresh the latest in-memory **Runtime State** snapshot, navigate, filter, open focused settings, start or reuse the loopback **Web Dashboard**, or inspect validated local paths.
+- **Terminal Console** local aids must not retry tasks, pause or resume dispatch, update tracker status, merge or push **Task Branches**, open pull requests, change any **Runtime Contract** field other than scoped `server.port`, or otherwise mutate task lifecycle state.
 - A **Runtime Home** may contain many **Agent Workspaces**.
 - An **Agent Worktree** is an **Agent Workspace**.
 - The **Runtime Settings** may define many named **Agent Harnesses** under `harnesses`.

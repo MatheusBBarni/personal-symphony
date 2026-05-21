@@ -96,7 +96,9 @@ let subscribe_state handoff dispatch =
     loop initial_version
 
 let runtime_of_handoff ?(safe_aid = fun _ -> ()) ?(web_handoff = Terminal_console_tui.default_web_handoff ())
-    ?(local_surfaces = []) ?(initial_logs = []) handoff : Terminal_console_tui.runtime =
+    ?(local_surfaces = []) ?(settings = Terminal_console_tui.default_settings)
+    ?(save_settings = Terminal_console_tui.default_save_settings) ?(initial_logs = []) handoff :
+    Terminal_console_tui.runtime =
   {
     initial_state = latest_state handoff;
     initial_logs;
@@ -104,13 +106,17 @@ let runtime_of_handoff ?(safe_aid = fun _ -> ()) ?(web_handoff = Terminal_consol
     safe_aid;
     web_handoff;
     local_surfaces;
+    settings;
+    save_settings;
   }
 
-let run ?(run_ui = Terminal_console_tui.run) ?start_orchestration ?safe_aid ?web_handoff ?local_surfaces ?initial_logs
-    ~initial_state () =
+let run ?(run_ui = Terminal_console_tui.run) ?start_orchestration ?safe_aid ?web_handoff ?local_surfaces ?settings
+    ?save_settings ?initial_logs ~initial_state () =
   let handoff = create_state_handoff initial_state in
   Fun.protect
     ~finally:(fun () -> close_state_handoff handoff)
     (fun () ->
       Option.iter (fun start -> start ~notify_state:(publish_state handoff)) start_orchestration;
-      run_ui (runtime_of_handoff ?safe_aid ?web_handoff ?local_surfaces ?initial_logs handoff))
+      run_ui
+        (runtime_of_handoff ?safe_aid ?web_handoff ?local_surfaces ?settings ?save_settings ?initial_logs
+           handoff))

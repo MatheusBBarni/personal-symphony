@@ -4442,6 +4442,7 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
   let readme = read "README.md" in
   let context = read "CONTEXT.md" in
   let adr = read "docs/adr/0024-default-rich-terminal-console.md" in
+  let auth_adr = read "docs/adr/0025-dashboard-loopback-and-auth.md" in
   List.iter
     (fun expected ->
       Alcotest.(check bool) ("README includes " ^ expected) true (contains_substring readme expected))
@@ -4454,8 +4455,14 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
       "Logs progress";
       "Agent Worktree details";
       "Task Branch context";
-      "Web Dashboard handoff command";
+      "opening focused Terminal Console settings with `s`";
+      "Terminal Console theme in ignored Runtime Home state";
+      "Runtime Settings `server.port`";
+      "starting or reusing the loopback Web Dashboard with `w`";
+      "compatible loopback Web Dashboard";
       "do not retry tasks, pause or resume dispatch, update tracker status";
+      "Terminal Console V1 dashboard controls are loopback-only";
+      "server-generated local dashboard auth token";
       "symphony --web --port 8080";
       "Live Dashboard Connection as a Runtime State stream";
       "`symphony --once`";
@@ -4469,18 +4476,36 @@ let test_terminal_console_docs_document_default_runtime_semantics () =
       "`symphony --once` prints non-interactive terminal output";
       "The **Terminal Console** uses in-process **Runtime State** snapshots";
       "The **Live Dashboard Connection** remains the **Web Dashboard** Runtime State stream";
+      "**Terminal Console** settings opened with `s`";
+      "ignored **Runtime Home** UI state";
+      "only Runtime Settings `server.port`";
+      "**Terminal Console** V1 dashboard controls are loopback-only";
+      "Pressing `w` in the **Terminal Console** starts or reuses a compatible loopback **Web Dashboard**";
       "**Terminal Console** local aids must not retry tasks";
+      "change any **Runtime Contract** field other than scoped `server.port`";
     ];
   List.iter
     (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
     [
-      "Accepted";
+      "Accepted, amended 2026-05-20";
       "Normal `symphony` runs open the read-first Terminal Console by default";
       "`symphony --web` keeps Web Dashboard mode separate";
       "The `symphony --once` command keeps";
       "non-interactive terminal output";
       "Runtime State snapshots";
+      "open focused Terminal Console settings with `s`";
+      "start or reuse the loopback Web Dashboard with `w`";
+      "only Runtime Settings `server.port`";
+      "Terminal Console V1 dashboard controls are loopback-only";
       "must not retry tasks, pause or resume dispatch";
+      "change any Runtime Contract field other than scoped `server.port`";
+    ];
+  List.iter
+    (fun expected -> Alcotest.(check bool) ("dashboard auth ADR includes " ^ expected) true (contains_substring auth_adr expected))
+    [
+      "Non-loopback hosts require a generated local dashboard auth token";
+      "`symphony_auth` URL query parameter";
+      "Runtime State HTTP endpoints and the Live Dashboard Connection";
     ];
   Alcotest.(check bool) "README avoids TUI product wording" false (contains_substring readme "TUI");
   Alcotest.(check bool) "ADR avoids TUI product wording" false (contains_substring adr "TUI")
@@ -4721,6 +4746,157 @@ let test_server_host_settings () =
       write "not-a-host";
       Alcotest.check_raises "rejects non-IP host" (Config.Invalid_config "server.host must be an IPv4 bind address")
         (fun () -> ignore (Config.from_settings_file ~workspace_root:root settings)))
+
+let check_terminal_console_theme label expected result =
+  Alcotest.(check string) label expected (Terminal_console_settings.theme_of_validation result)
+
+let check_terminal_console_theme_fallback expected_requested result =
+  match result with
+  | Terminal_console_settings.Theme_fallback { requested; fallback; reason } ->
+      Alcotest.(check (option string)) "requested theme" expected_requested requested;
+      Alcotest.(check string) "fallback theme" Terminal_console_settings.default_theme fallback;
+      Alcotest.(check bool) "fallback explains reason" true (String.length reason > 0)
+  | Terminal_console_settings.Theme_valid theme ->
+      Alcotest.fail ("expected fallback result, got " ^ theme)
+
+let check_terminal_console_port_valid input expected =
+  match Terminal_console_settings.validate_port input with
+  | Terminal_console_settings.Port_valid port -> Alcotest.(check int) ("valid port " ^ input) expected port
+  | Terminal_console_settings.Port_invalid reason ->
+      Alcotest.fail (Printf.sprintf "expected %S to be valid: %s" input reason)
+
+let check_terminal_console_port_invalid input =
+  match Terminal_console_settings.validate_port input with
+  | Terminal_console_settings.Port_invalid reason ->
+      Alcotest.(check bool) ("invalid port explains " ^ input) true (String.length reason > 0)
+  | Terminal_console_settings.Port_valid port ->
+      Alcotest.fail (Printf.sprintf "expected %S to be invalid, got %d" input port)
+
+let test_terminal_console_theme_missing_defaults_without_writes () =
+  with_temp_dir "symphony-terminal-theme-missing-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let path = Terminal_console_settings.settings_path home in
+      Alcotest.(check bool) "theme settings missing before load" false (Sys.file_exists path);
+      check_terminal_console_theme "missing theme defaults" Terminal_console_settings.default_theme
+        (Terminal_console_settings.load_theme home);
+      Alcotest.(check bool) "missing load does not write settings" false (Sys.file_exists path);
+      Alcotest.(check bool) "missing load does not create terminal state dir" false
+        (Sys.file_exists (Filename.dirname path)))
+
+let test_terminal_console_theme_round_trips_supported_values () =
+  with_temp_dir "symphony-terminal-theme-round-trip-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      List.iter
+        (fun theme ->
+          check_terminal_console_theme ("saved theme " ^ theme) theme (Terminal_console_settings.save_theme home theme);
+          check_terminal_console_theme ("loaded theme " ^ theme) theme (Terminal_console_settings.load_theme home))
+        Terminal_console_settings.supported_themes)
+
+let test_terminal_console_theme_unsupported_falls_back () =
+  with_temp_dir "symphony-terminal-theme-fallback-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let path = Terminal_console_settings.settings_path home in
+      Util.mkdir_p (Filename.dirname path);
+      Util.write_file path {|{"theme":"solarized"}|};
+      check_terminal_console_theme_fallback (Some "solarized") (Terminal_console_settings.load_theme home);
+      let before = Util.read_file path in
+      check_terminal_console_theme_fallback (Some "neon") (Terminal_console_settings.save_theme home "neon");
+      Alcotest.(check string) "unsupported save leaves state unchanged" before (Util.read_file path))
+
+let test_terminal_console_port_validation () =
+  List.iter check_terminal_console_port_invalid [ ""; "not-a-port"; "0"; "-1"; "65536" ];
+  List.iter
+    (fun (input, expected) -> check_terminal_console_port_valid input expected)
+    [ ("1", 1); ("8080", 8080); ("65535", 65535) ]
+
+let read_json_file path = Yojson.Safe.from_string (Util.read_file path)
+
+let json_member path json = List.fold_left (fun node key -> Yojson.Safe.Util.member key node) json path
+
+let test_terminal_console_port_update_preserves_top_level_settings () =
+  with_temp_dir "symphony-terminal-port-top-level-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      Util.write_file home.settings_path
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {"enabled": false},
+  "customTop": {"preserved": ["yes"]},
+  "server": {"host": "127.0.0.1", "port": 8080}
+}|};
+      (match Terminal_console_settings.save_dashboard_port home "9090" with
+      | Terminal_console_settings.Port_updated port -> Alcotest.(check int) "updated port" 9090 port
+      | Terminal_console_settings.Port_rejected reason | Terminal_console_settings.Port_update_failed reason ->
+          Alcotest.fail reason);
+      let json = read_json_file home.settings_path in
+      Alcotest.(check int) "server.port updated" 9090 (Yojson.Safe.Util.to_int (json_member [ "server"; "port" ] json));
+      Alcotest.(check string) "top-level unknown preserved" "yes"
+        (json_member [ "customTop"; "preserved" ] json |> Yojson.Safe.Util.to_list |> List.hd
+       |> Yojson.Safe.Util.to_string))
+
+let test_terminal_console_port_update_preserves_server_nested_settings () =
+  with_temp_dir "symphony-terminal-port-server-nested-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      Util.write_file home.settings_path
+        {|{
+  "tracker": {"owner": "acme", "repo": "widgets", "projectNumber": 7},
+  "stageAgents": {"enabled": false},
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "identity": {"mode": "loopback", "extra": true}
+  }
+}|};
+      (match Terminal_console_settings.save_dashboard_port home "1" with
+      | Terminal_console_settings.Port_updated port -> Alcotest.(check int) "updated port" 1 port
+      | Terminal_console_settings.Port_rejected reason | Terminal_console_settings.Port_update_failed reason ->
+          Alcotest.fail reason);
+      let json = read_json_file home.settings_path in
+      Alcotest.(check int) "server.port updated" 1 (Yojson.Safe.Util.to_int (json_member [ "server"; "port" ] json));
+      Alcotest.(check string) "server host preserved" "127.0.0.1"
+        (Yojson.Safe.Util.to_string (json_member [ "server"; "host" ] json));
+      Alcotest.(check string) "nested server unknown preserved" "loopback"
+        (Yojson.Safe.Util.to_string (json_member [ "server"; "identity"; "mode" ] json));
+      Alcotest.(check bool) "nested server bool preserved" true
+        (Yojson.Safe.Util.to_bool (json_member [ "server"; "identity"; "extra" ] json)))
+
+let test_terminal_console_invalid_port_preserves_settings_bytes () =
+  with_temp_dir "symphony-terminal-port-invalid-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      Util.write_file home.settings_path
+        {|{"server":{"host":"127.0.0.1","port":8080},"custom":"keep exact"}|};
+      let before = Util.read_file home.settings_path in
+      (match Terminal_console_settings.save_dashboard_port home "65536" with
+      | Terminal_console_settings.Port_rejected reason ->
+          Alcotest.(check bool) "rejected invalid port explains reason" true (String.length reason > 0)
+      | Terminal_console_settings.Port_updated port ->
+          Alcotest.fail (Printf.sprintf "expected invalid port rejection, got %d" port)
+      | Terminal_console_settings.Port_update_failed reason -> Alcotest.fail reason);
+      Alcotest.(check string) "invalid port leaves settings byte-for-byte" before (Util.read_file home.settings_path))
+
+let test_terminal_console_settings_preserve_bootstrap_idempotency () =
+  with_temp_dir "symphony-terminal-settings-bootstrap-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      Util.write_file home.settings_path {|{"custom": true}|};
+      ignore (Terminal_console_settings.save_theme home "dark");
+      let _, second = Runtime_home.bootstrap root in
+      Alcotest.(check string) "Runtime Contract preserved" {|{"custom": true}|} (Util.read_file home.settings_path);
+      Alcotest.(check bool) "settings skipped after terminal state save" true
+        (List.exists
+           (fun item ->
+             item.Runtime_home.path = home.settings_path && item.Runtime_home.status = Runtime_home.Skipped_existing)
+           second))
+
+let test_terminal_console_settings_path_stays_under_ignored_state () =
+  with_temp_dir "symphony-terminal-state-path-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let path = Terminal_console_settings.settings_path home in
+      let state_dir = Filename.concat home.runtime_dir "state" in
+      let expected = Filename.concat (Filename.concat state_dir "terminal-console") "settings.json" in
+      Alcotest.(check string) "state path" expected path;
+      Alcotest.(check bool) "path under Runtime Home state" true
+        (Util.starts_with ~prefix:(state_dir ^ Filename.dir_sep) path);
+      let ignore_contents = Util.read_file (Filename.concat home.runtime_dir ".gitignore") in
+      Alcotest.(check bool) "Runtime Home state ignored" true (contains_substring ignore_contents "/state/"))
 
 let test_runtime_env_loading () =
   let original_github_token = Sys.getenv_opt "GITHUB_TOKEN" in
@@ -7412,6 +7588,8 @@ let test_terminal_console_tui_refresh_invokes_only_refresh_aid () =
       safe_aid = (fun aid -> calls := aid :: !calls);
       web_handoff = Shell.default_web_handoff ();
       local_surfaces = [];
+      settings = Shell.default_settings;
+      save_settings = Shell.default_save_settings;
     }
   in
   let updated, _ = Shell.update runtime (Shell.Key_press (Shell.Character 'r')) model in
@@ -7521,11 +7699,12 @@ let test_terminal_console_tui_footer_help_content () =
   let footer = Shell.render_model model |> fun rendered -> rendered.Shell.footer in
   List.iter
     (fun expected -> check_line_contains ("footer has " ^ expected) [ footer ] expected)
-    [ "[q]quit"; "[Tab]tabs"; "[/]search"; "[r]refresh"; "[w]web"; "[o]path"; "[?]help" ];
+    [ "[q]quit"; "[Tab]tabs"; "[/]search"; "[r]refresh"; "[s]settings"; "[w]web"; "[o]path"; "[?]help" ];
   let help = Shell.apply_key (Shell.Character '?') model in
   Alcotest.(check bool) "question mark opens command modal" true
     help.model.Shell.interaction.Shell.help_visible;
   Alcotest.(check (option string)) "modal status" (Some "Commands shown") help.model.Shell.status_message;
+  check_line_contains "help includes settings" Shell.help_lines "s open Terminal Console settings";
   let queue = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
   check_line_absent "modal help is not appended to active panel" queue "Help";
   check_line_absent "commands stay out of active panel" queue "switch tabs";
@@ -7533,6 +7712,196 @@ let test_terminal_console_tui_footer_help_content () =
   Alcotest.(check bool) "escape closes command modal" false
     closed.model.Shell.interaction.Shell.help_visible;
   Alcotest.(check (option string)) "closed status" (Some "Commands hidden") closed.model.Shell.status_message
+
+let terminal_console_settings_modal model =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  match model.Shell.interaction.Shell.settings_modal with
+  | Some modal -> modal
+  | None -> Alcotest.fail "expected settings modal"
+
+let check_terminal_console_settings_closed label model =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  Alcotest.(check bool) label true
+    (match model.Shell.interaction.Shell.settings_modal with None -> true | Some _ -> false)
+
+let test_terminal_console_tui_settings_modal_opens_separately () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let opened = Shell.apply_key (Shell.Character 's') model in
+  let modal = terminal_console_settings_modal opened.model in
+  Alcotest.(check (option string)) "settings status" (Some "Settings shown") opened.model.Shell.status_message;
+  Alcotest.(check bool) "help hidden" false opened.model.Shell.interaction.Shell.help_visible;
+  check_line_contains "modal theme line" (Shell.settings_modal_lines opened.model.Shell.settings modal)
+    "Terminal Console theme: cursor-dark";
+  check_line_contains "modal port line" (Shell.settings_modal_lines opened.model.Shell.settings modal)
+    "Web Dashboard port: 8080";
+  let queue = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_absent "settings modal is not appended to active panel" queue "Terminal Console Settings";
+  check_line_absent "settings fields stay out of active panel" queue "Web Dashboard port"
+
+let test_terminal_console_tui_settings_cancel_keeps_saved_values () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let settings : Shell.settings_state = { theme = "cursor-dark"; port = 8080 } in
+  let model = Shell.initial_model ~settings (Runtime_state.empty ()) in
+  let opened = Shell.apply_key (Shell.Character 's') model in
+  let changed_theme = Shell.apply_key Shell.Right_key opened.model in
+  let focused_port = Shell.apply_key Shell.Down_key changed_theme.model in
+  let edited_port = Shell.apply_key Shell.Backspace_key focused_port.model in
+  let cancelled = Shell.apply_key Shell.Escape_key edited_port.model in
+  check_terminal_console_settings_closed "escape closes settings modal" cancelled.model;
+  Alcotest.(check string) "theme unchanged" "cursor-dark" cancelled.model.Shell.settings.Shell.theme;
+  Alcotest.(check int) "port unchanged" 8080 cancelled.model.Shell.settings.Shell.port;
+  Alcotest.(check (option string)) "cancel status" (Some "Settings cancelled") cancelled.model.Shell.status_message
+
+let test_terminal_console_tui_settings_theme_cycle_and_applies_theme () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let module Color = Tui.Color in
+  let module Theme = Tui.Theme in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let opened = Shell.apply_key (Shell.Character 's') model in
+  let rec collect count model acc =
+    if count = 0 then List.rev acc
+    else
+      let modal = terminal_console_settings_modal model in
+      let next = Shell.apply_key Shell.Right_key model in
+      collect (count - 1) next.model (modal.Shell.draft_theme :: acc)
+  in
+  Alcotest.(check (list string)) "cycles supported themes" Terminal_console_settings.supported_themes
+    (collect (List.length Terminal_console_settings.supported_themes) opened.model []);
+  Alcotest.(check bool) "no-color maps all slots to default" true
+    (Shell.theme_for_name "no-color" Theme.Bg_base = Color.Default);
+  let light_settings : Shell.settings_state = { theme = "light"; port = 8080 } in
+  let root = Shell.view (Shell.initial_model ~settings:light_settings (Runtime_state.empty ())) in
+  Alcotest.(check bool) "root uses selected light theme" true
+    ((root.Tui.Node.style).Tui.Style.bg = Some (Shell.theme_for_name "light" Theme.Bg_base))
+
+let terminal_console_test_runtime ?(settings = Symphony_terminal_console_shell.Terminal_console_tui.default_settings)
+    ?(web_handoff = Symphony_terminal_console_shell.Terminal_console_tui.default_web_handoff ())
+    ?(save_settings = Symphony_terminal_console_shell.Terminal_console_tui.default_save_settings) () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  {
+    Shell.initial_state = Runtime_state.empty ();
+    initial_logs = [];
+    subscribe = (fun _ -> ());
+    safe_aid = (fun _ -> ());
+    web_handoff;
+    local_surfaces = [];
+    settings;
+    save_settings;
+  }
+
+let apply_terminal_console_runtime_keys runtime model keys =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  List.fold_left
+    (fun model key -> Shell.update runtime (Shell.Key_press key) model |> fst)
+    model keys
+
+let repeated_key key count = List.init count (fun _ -> key)
+
+let test_terminal_console_tui_invalid_port_rejects_before_save () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let save_calls = ref 0 in
+  let runtime =
+    terminal_console_test_runtime
+      ~save_settings:(fun settings ->
+        incr save_calls;
+        Shell.Settings_saved settings)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let model =
+    apply_terminal_console_runtime_keys runtime model
+      [ Shell.Character 's'; Shell.Down_key; Shell.Character 'x'; Shell.Enter_key ]
+  in
+  Alcotest.(check int) "save not called for invalid port" 0 !save_calls;
+  let modal = terminal_console_settings_modal model in
+  check_line_contains "validation explains numeric port"
+    (Option.to_list modal.Shell.validation_message)
+    "server.port must be numeric"
+
+let test_terminal_console_tui_settings_save_uses_runtime_callback () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let saved = ref [] in
+  let runtime =
+    terminal_console_test_runtime
+      ~save_settings:(fun settings ->
+        saved := settings :: !saved;
+        Shell.Settings_saved settings)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let keys =
+    [ Shell.Character 's'; Shell.Right_key; Shell.Down_key ]
+    @ repeated_key Shell.Backspace_key 4
+    @ [ Shell.Character '4'; Shell.Character '5'; Shell.Character '4'; Shell.Character '5'; Shell.Enter_key ]
+  in
+  let model = apply_terminal_console_runtime_keys runtime model keys in
+  check_terminal_console_settings_closed "save closes settings modal" model;
+  (match !saved with
+  | [ settings ] ->
+      Alcotest.(check string) "saved theme" "dark" settings.Shell.theme;
+      Alcotest.(check int) "saved port" 4545 settings.Shell.port
+  | _ -> Alcotest.fail "expected one settings save call");
+  Alcotest.(check string) "model theme updated" "dark" model.Shell.settings.Shell.theme;
+  Alcotest.(check int) "model port updated" 4545 model.Shell.settings.Shell.port;
+  Alcotest.(check (option string)) "save status"
+    (Some "Settings saved: Terminal Console theme dark | Web Dashboard port 4545")
+    model.Shell.status_message
+
+let test_terminal_console_tui_settings_save_updates_web_handoff () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let runtime =
+    terminal_console_test_runtime ~web_handoff:(Shell.default_web_handoff ~host:"127.0.0.1" ~port:8080 ())
+      ~save_settings:(fun settings -> Shell.Settings_saved settings)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let keys =
+    [ Shell.Character 's'; Shell.Right_key; Shell.Down_key ]
+    @ repeated_key Shell.Backspace_key 4
+    @ [ Shell.Character '4'; Shell.Character '5'; Shell.Character '4'; Shell.Character '5'; Shell.Enter_key; Shell.Character 'w' ]
+  in
+  let model = apply_terminal_console_runtime_keys runtime model keys in
+  match model.Shell.status_message with
+  | Some message ->
+      check_line_contains "handoff command uses saved port" [ message ] "symphony --web --port 4545";
+      check_line_contains "handoff url uses saved port" [ message ] "http://127.0.0.1:4545/"
+  | None -> Alcotest.fail "expected Web Dashboard handoff after saving settings"
+
+let test_terminal_console_tui_cancelled_settings_do_not_call_save () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let settings : Shell.settings_state = { theme = "light"; port = 9090 } in
+  let save_calls = ref 0 in
+  let runtime =
+    terminal_console_test_runtime ~settings
+      ~save_settings:(fun next ->
+        incr save_calls;
+        Shell.Settings_saved next)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let model =
+    apply_terminal_console_runtime_keys runtime model
+      [ Shell.Character 's'; Shell.Right_key; Shell.Down_key; Shell.Character '1'; Shell.Escape_key ]
+  in
+  Alcotest.(check int) "save not called after cancel" 0 !save_calls;
+  check_terminal_console_settings_closed "cancel closes settings modal" model;
+  Alcotest.(check string) "theme remains persisted value" "light" model.Shell.settings.Shell.theme;
+  Alcotest.(check int) "port remains persisted value" 9090 model.Shell.settings.Shell.port
+
+let test_terminal_console_tui_closed_settings_preserves_existing_controls () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let cancelled =
+    Shell.apply_key (Shell.Character 's') model |> fun opened -> Shell.apply_key Shell.Escape_key opened.model
+  in
+  let moved = Shell.apply_key Shell.Right_key cancelled.model in
+  Alcotest.(check string) "tab navigation still works" "Logs"
+    (Shell.focused_tab_title moved.model.Shell.interaction.Shell.active_tab);
+  let search = Shell.apply_key (Shell.Character '/') moved.model in
+  Alcotest.(check bool) "search still opens" true search.model.Shell.interaction.Shell.filter_active;
+  let help = Shell.apply_key Shell.Escape_key search.model |> fun closed -> Shell.apply_key (Shell.Character '?') closed.model in
+  Alcotest.(check bool) "help still opens" true help.model.Shell.interaction.Shell.help_visible
 
 let test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids () =
   let module Runtime = Symphony_terminal_console_shell.Terminal_console_runtime in
@@ -7767,6 +8136,201 @@ let with_websocket_client ?auth_token ?(request = websocket_request ()) state f 
       let _upgrade = read_http_upgrade client_fd in
       let initial = read_websocket_text_frame client_fd in
       f ~set_state:(fun state -> current_state := state) ~live ~client_fd ~initial)
+
+let dashboard_identity ?(workspace_root = "/workspace") ?(runtime_home = "/workspace/.symphony")
+    ?(mode = Dashboard_service.terminal_console_mode) ?(auth_required = false) ?(server_host = "127.0.0.1")
+    ?(server_port = 8080) () =
+  Server.make_dashboard_identity ~workspace_root ~runtime_home ~mode ~auth_required ~server_host ~server_port
+
+let check_dashboard_reused label = function
+  | Dashboard_service.Reused url ->
+      Alcotest.(check bool) (label ^ " url") true (String.starts_with ~prefix:"http://127.0.0.1:" url)
+  | Dashboard_service.Started _ -> Alcotest.fail (label ^ ": expected reuse, got started")
+  | Dashboard_service.Conflict reason -> Alcotest.fail (label ^ ": expected reuse, got conflict: " ^ reason)
+  | Dashboard_service.Failed reason -> Alcotest.fail (label ^ ": expected reuse, got failure: " ^ reason)
+
+let check_dashboard_conflict label = function
+  | Dashboard_service.Conflict reason ->
+      Alcotest.(check bool) (label ^ " explains conflict") true (String.length reason > 0)
+  | Dashboard_service.Reused _ -> Alcotest.fail (label ^ ": expected conflict, got reuse")
+  | Dashboard_service.Started _ -> Alcotest.fail (label ^ ": expected conflict, got started")
+  | Dashboard_service.Failed reason -> Alcotest.fail (label ^ ": expected conflict, got failure: " ^ reason)
+
+let check_dashboard_started label = function
+  | Dashboard_service.Started url ->
+      Alcotest.(check bool) (label ^ " url") true (String.starts_with ~prefix:"http://127.0.0.1:" url)
+  | Dashboard_service.Reused _ -> Alcotest.fail (label ^ ": expected start, got reuse")
+  | Dashboard_service.Conflict reason -> Alcotest.fail (label ^ ": expected start, got conflict: " ^ reason)
+  | Dashboard_service.Failed reason -> Alcotest.fail (label ^ ": expected start, got failure: " ^ reason)
+
+let check_dashboard_failed label = function
+  | Dashboard_service.Failed reason ->
+      Alcotest.(check bool) (label ^ " explains failure") true (String.length reason > 0);
+      Alcotest.(check bool) (label ^ " remains secret-free") false (contains_substring reason "secret")
+  | Dashboard_service.Started _ -> Alcotest.fail (label ^ ": expected failure, got started")
+  | Dashboard_service.Reused _ -> Alcotest.fail (label ^ ": expected failure, got reuse")
+  | Dashboard_service.Conflict reason -> Alcotest.fail (label ^ ": expected failure, got conflict: " ^ reason)
+
+let http_body response =
+  match substring_index response "\r\n\r\n" with
+  | Some index ->
+      let start = index + 4 in
+      String.sub response start (String.length response - start)
+  | None -> response
+
+let test_dashboard_identity_route_payload_and_auth () =
+  let identity =
+    dashboard_identity ~workspace_root:"/repo" ~runtime_home:"/repo/.symphony" ~mode:Dashboard_service.web_dashboard_mode
+      ~auth_required:true ~server_host:"0.0.0.0" ~server_port:9090 ()
+  in
+  let unauthorized =
+    Server.handle_request ~auth_token:"secret" ~identity (fun () -> Runtime_state.empty ())
+      { Server.request_line = "GET /api/v1/dashboard/identity HTTP/1.1"; path = "/api/v1/dashboard/identity"; headers = [] }
+  in
+  Alcotest.(check bool) "identity requires auth when configured" true (contains_substring unauthorized "401 Unauthorized");
+  let authorized =
+    Server.handle_request ~auth_token:"secret" ~identity (fun () -> Runtime_state.empty ())
+      {
+        Server.request_line = "GET /api/v1/dashboard/identity?symphony_auth=secret HTTP/1.1";
+        path = "/api/v1/dashboard/identity";
+        headers = [];
+      }
+  in
+  let open Yojson.Safe.Util in
+  let json = Yojson.Safe.from_string (http_body authorized) in
+  Alcotest.(check string) "workspace root" "/repo" (json |> member "workspace_root" |> to_string);
+  Alcotest.(check string) "runtime home" "/repo/.symphony" (json |> member "runtime_home" |> to_string);
+  Alcotest.(check string) "mode" Dashboard_service.web_dashboard_mode (json |> member "mode" |> to_string);
+  Alcotest.(check bool) "auth required" true (json |> member "auth_required" |> to_bool);
+  Alcotest.(check string) "server host" "0.0.0.0" (json |> member "server_host" |> to_string);
+  Alcotest.(check int) "server port" 9090 (json |> member "server_port" |> to_int)
+
+let test_dashboard_service_identity_compatibility_decisions () =
+  let expected = dashboard_identity ~workspace_root:"/repo" ~runtime_home:"/repo/.symphony" ~server_port:8123 () in
+  check_dashboard_reused "matching identity"
+    (Dashboard_service.evaluate_identity ~expected ~actual:expected ~url:"http://127.0.0.1:8123/");
+  check_dashboard_conflict "workspace mismatch"
+    (Dashboard_service.evaluate_identity ~expected
+       ~actual:(dashboard_identity ~workspace_root:"/other" ~runtime_home:"/repo/.symphony" ~server_port:8123 ())
+       ~url:"http://127.0.0.1:8123/");
+  check_dashboard_conflict "runtime home mismatch"
+    (Dashboard_service.evaluate_identity ~expected
+       ~actual:(dashboard_identity ~workspace_root:"/repo" ~runtime_home:"/other/.symphony" ~server_port:8123 ())
+       ~url:"http://127.0.0.1:8123/");
+  check_dashboard_conflict "mode mismatch"
+    (Dashboard_service.evaluate_identity ~expected
+       ~actual:
+         (dashboard_identity ~workspace_root:"/repo" ~runtime_home:"/repo/.symphony"
+            ~mode:Dashboard_service.web_dashboard_mode ~server_port:8123 ())
+       ~url:"http://127.0.0.1:8123/");
+  check_dashboard_conflict "auth mismatch"
+    (Dashboard_service.evaluate_identity ~expected
+       ~actual:
+         (dashboard_identity ~workspace_root:"/repo" ~runtime_home:"/repo/.symphony" ~auth_required:true
+            ~server_port:8123 ())
+       ~url:"http://127.0.0.1:8123/")
+
+let test_dashboard_service_malformed_identity_is_conflict () =
+  let expected = dashboard_identity () in
+  let probe_result =
+    match Dashboard_service.identity_of_string {|{"workspace_root":true}|} with
+    | Dashboard_service.Decoded identity -> Dashboard_service.Probe_identity identity
+    | Dashboard_service.Decode_error reason -> Dashboard_service.Probe_conflict reason
+  in
+  check_dashboard_conflict "malformed identity"
+    (Dashboard_service.start_or_reuse_from_probe ~expected ~url:"http://127.0.0.1:8080/" ~probe_result
+       ~start:(fun () -> Alcotest.fail "malformed identity must not start"))
+
+let test_dashboard_service_starts_loopback_and_serves_state () =
+  with_temp_dir "symphony-dashboard-start-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let port = 8123 in
+      let state = Runtime_state.empty ~last_error:"ready dashboard state" () in
+      let expected =
+        Dashboard_service.make_identity ~workspace_root:root ~runtime_home:home.runtime_dir
+          ~mode:Dashboard_service.terminal_console_mode ~auth_token:None ~host:"127.0.0.1" ~port
+      in
+      check_dashboard_started "terminal dashboard start"
+        (Dashboard_service.start_or_reuse_from_probe ~expected ~url:"http://127.0.0.1:8123/"
+           ~probe_result:Dashboard_service.No_listener
+           ~start:(fun () -> Dashboard_service.Started "http://127.0.0.1:8123/"));
+      let identity = expected in
+      let response =
+        Server.handle_request ~identity (fun () -> state)
+          { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+      in
+      let open Yojson.Safe.Util in
+      let json = response |> http_body |> Yojson.Safe.from_string in
+      Alcotest.(check (option string)) "started dashboard serves state" (Some "ready dashboard state")
+        (json |> member "last_error" |> to_option to_string))
+
+let test_dashboard_service_reuses_compatible_listener () =
+  with_temp_dir "symphony-dashboard-reuse-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let expected =
+        Dashboard_service.make_identity ~workspace_root:root ~runtime_home:home.runtime_dir
+          ~mode:Dashboard_service.terminal_console_mode ~auth_token:None ~host:"127.0.0.1" ~port:8124
+      in
+      check_dashboard_reused "compatible dashboard"
+        (Dashboard_service.start_or_reuse_from_probe ~expected ~url:"http://127.0.0.1:8124/"
+           ~probe_result:(Dashboard_service.Probe_identity expected)
+           ~start:(fun () -> Alcotest.fail "compatible identity must reuse")))
+
+let test_dashboard_service_conflicts_on_incompatible_listener () =
+  with_temp_dir "symphony-dashboard-conflict-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let expected =
+        Dashboard_service.make_identity ~workspace_root:root ~runtime_home:home.runtime_dir
+          ~mode:Dashboard_service.terminal_console_mode ~auth_token:None ~host:"127.0.0.1" ~port:8125
+      in
+      let actual =
+        dashboard_identity ~workspace_root:"/different-workspace" ~runtime_home:home.runtime_dir ~server_port:8125 ()
+      in
+      check_dashboard_conflict "incompatible listener"
+        (Dashboard_service.start_or_reuse_from_probe ~expected ~url:"http://127.0.0.1:8125/"
+           ~probe_result:(Dashboard_service.Probe_identity actual)
+           ~start:(fun () -> Alcotest.fail "incompatible identity must not start")))
+
+let test_dashboard_service_bind_failure_is_failed () =
+  check_dashboard_failed "bind failure"
+    (Dashboard_service.Failed
+       (Dashboard_service.secret_free_exception (Unix.Unix_error (Unix.EADDRINUSE, "bind", "secret-token"))))
+
+let test_dashboard_service_terminal_live_connection_broadcasts_updates () =
+  let state = Runtime_state.empty ~last_error:"initial terminal dashboard" () in
+  with_websocket_client state (fun ~set_state ~live ~client_fd ~initial:_ ->
+      set_state (Runtime_state.empty ~last_error:"updated terminal dashboard" ());
+      Server.broadcast_live_state live;
+      let open Yojson.Safe.Util in
+      let json = read_websocket_text_frame client_fd |> Yojson.Safe.from_string in
+      Alcotest.(check (option string)) "live dashboard receives update" (Some "updated terminal dashboard")
+        (json |> member "last_error" |> to_option to_string))
+
+let test_dashboard_service_web_dashboard_mode_serves_runtime_state () =
+  with_temp_dir "symphony-web-dashboard-service-" (fun root ->
+      let home, _ = Runtime_home.bootstrap root in
+      let port = 8126 in
+      let state =
+        Runtime_state.empty
+          ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set tracker owner" } ]
+          ~last_error:"web readiness state" ()
+      in
+      let identity =
+        Dashboard_service.make_identity ~workspace_root:root ~runtime_home:home.runtime_dir
+          ~mode:Dashboard_service.web_dashboard_mode ~auth_token:None ~host:"127.0.0.1" ~port
+      in
+      check_dashboard_started "web dashboard mode"
+        (Dashboard_service.start_or_reuse_from_probe ~expected:identity ~url:"http://127.0.0.1:8126/"
+           ~probe_result:Dashboard_service.No_listener
+           ~start:(fun () -> Dashboard_service.Started "http://127.0.0.1:8126/"));
+      let response =
+        Server.handle_request ~identity (fun () -> state)
+          { Server.request_line = "GET /api/v1/state HTTP/1.1"; path = "/api/v1/state"; headers = [] }
+      in
+      let open Yojson.Safe.Util in
+      let json = response |> http_body |> Yojson.Safe.from_string in
+      Alcotest.(check string) "web readiness gap" "tracker.owner"
+        (json |> member "readiness_gaps" |> to_list |> List.hd |> member "requirement" |> to_string))
 
 let test_websocket_accept_and_initial_snapshot () =
   Alcotest.(check string) "RFC accept key" "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
@@ -18272,6 +18836,24 @@ let () =
           Alcotest.test_case "requires git repository root" `Quick test_root_validation;
           Alcotest.test_case "loads settings and prompt" `Quick test_settings_and_prompt_loading;
           Alcotest.test_case "parses server host settings" `Quick test_server_host_settings;
+          Alcotest.test_case "loads default Terminal Console theme without writes" `Quick
+            test_terminal_console_theme_missing_defaults_without_writes;
+          Alcotest.test_case "round-trips supported Terminal Console themes" `Quick
+            test_terminal_console_theme_round_trips_supported_values;
+          Alcotest.test_case "falls back from unsupported Terminal Console theme" `Quick
+            test_terminal_console_theme_unsupported_falls_back;
+          Alcotest.test_case "validates Terminal Console dashboard port input" `Quick
+            test_terminal_console_port_validation;
+          Alcotest.test_case "updates server port and preserves top-level Runtime Settings" `Quick
+            test_terminal_console_port_update_preserves_top_level_settings;
+          Alcotest.test_case "updates server port and preserves nested server Runtime Settings" `Quick
+            test_terminal_console_port_update_preserves_server_nested_settings;
+          Alcotest.test_case "rejects invalid server port without changing Runtime Settings" `Quick
+            test_terminal_console_invalid_port_preserves_settings_bytes;
+          Alcotest.test_case "Terminal Console settings preserve bootstrap idempotency" `Quick
+            test_terminal_console_settings_preserve_bootstrap_idempotency;
+          Alcotest.test_case "Terminal Console settings path stays under ignored state" `Quick
+            test_terminal_console_settings_path_stays_under_ignored_state;
           Alcotest.test_case "loads runtime env file" `Quick test_runtime_env_loading;
           Alcotest.test_case "rejects repo URL in settings" `Quick test_repo_url_readiness_gap;
           Alcotest.test_case "writes ignore rules" `Quick test_runtime_gitignore_contents;
@@ -18671,6 +19253,22 @@ let () =
             test_terminal_console_tui_goal_loop_diagnostics_path_is_read_only;
           Alcotest.test_case "renders Terminal Console contextual help/footer" `Quick
             test_terminal_console_tui_footer_help_content;
+          Alcotest.test_case "opens Terminal Console settings modal separately" `Quick
+            test_terminal_console_tui_settings_modal_opens_separately;
+          Alcotest.test_case "cancels Terminal Console settings drafts" `Quick
+            test_terminal_console_tui_settings_cancel_keeps_saved_values;
+          Alcotest.test_case "cycles and applies Terminal Console settings themes" `Quick
+            test_terminal_console_tui_settings_theme_cycle_and_applies_theme;
+          Alcotest.test_case "rejects invalid Terminal Console settings port before save" `Quick
+            test_terminal_console_tui_invalid_port_rejects_before_save;
+          Alcotest.test_case "saves Terminal Console settings through runtime callback" `Quick
+            test_terminal_console_tui_settings_save_uses_runtime_callback;
+          Alcotest.test_case "settings save refreshes Web Dashboard handoff" `Quick
+            test_terminal_console_tui_settings_save_updates_web_handoff;
+          Alcotest.test_case "cancelled Terminal Console settings skip runtime save" `Quick
+            test_terminal_console_tui_cancelled_settings_do_not_call_save;
+          Alcotest.test_case "settings modal preserves closed Terminal Console controls" `Quick
+            test_terminal_console_tui_closed_settings_preserves_existing_controls;
           Alcotest.test_case "records only non-mutating Terminal Console safe aids" `Quick
             test_terminal_console_runtime_safe_aid_handler_records_non_mutating_aids;
           Alcotest.test_case "stores latest Terminal Console runtime state" `Quick
@@ -18686,6 +19284,24 @@ let () =
         ] );
       ( "server",
         [
+          Alcotest.test_case "serves dashboard identity payload and auth" `Quick
+            test_dashboard_identity_route_payload_and_auth;
+          Alcotest.test_case "classifies dashboard identity compatibility" `Quick
+            test_dashboard_service_identity_compatibility_decisions;
+          Alcotest.test_case "treats malformed dashboard identity as conflict" `Quick
+            test_dashboard_service_malformed_identity_is_conflict;
+          Alcotest.test_case "starts loopback dashboard service and serves Runtime State" `Quick
+            test_dashboard_service_starts_loopback_and_serves_state;
+          Alcotest.test_case "reuses compatible dashboard service listener" `Quick
+            test_dashboard_service_reuses_compatible_listener;
+          Alcotest.test_case "reports incompatible dashboard listener as conflict" `Quick
+            test_dashboard_service_conflicts_on_incompatible_listener;
+          Alcotest.test_case "reports dashboard bind failure as failed" `Quick
+            test_dashboard_service_bind_failure_is_failed;
+          Alcotest.test_case "broadcasts Terminal Console dashboard live updates" `Quick
+            test_dashboard_service_terminal_live_connection_broadcasts_updates;
+          Alcotest.test_case "keeps Web Dashboard mode Runtime State serving" `Quick
+            test_dashboard_service_web_dashboard_mode_serves_runtime_state;
           Alcotest.test_case "handles websocket upgrade and initial snapshot" `Quick test_websocket_accept_and_initial_snapshot;
           Alcotest.test_case "broadcasts after state change" `Quick test_websocket_broadcast_after_state_change;
           Alcotest.test_case "serves readiness live snapshot and diagnostic state" `Quick test_websocket_readiness_snapshot_and_http_state;

@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Add Terminal Console Settings Persistence"
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 01: Add Terminal Console Settings Persistence
@@ -31,11 +32,11 @@ This task adds the persistence boundary for the Terminal Console setup values be
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Review `_prd.md`, `_techspec.md`, ADR-001, ADR-002, and ADR-003.
-- [ ] 1.2 Add a ReasonML backend settings helper for theme state and scoped dashboard port persistence.
-- [ ] 1.3 Keep Runtime Home path handling idempotent and avoid overwriting unrelated Runtime Contract content.
-- [ ] 1.4 Add validation results for supported themes and dashboard port inputs.
-- [ ] 1.5 Add focused backend tests for theme loading, theme saving, port validation, and JSON preservation.
+- [x] 1.1 Review `_prd.md`, `_techspec.md`, ADR-001, ADR-002, and ADR-003.
+- [x] 1.2 Add a ReasonML backend settings helper for theme state and scoped dashboard port persistence.
+- [x] 1.3 Keep Runtime Home path handling idempotent and avoid overwriting unrelated Runtime Contract content.
+- [x] 1.4 Add validation results for supported themes and dashboard port inputs.
+- [x] 1.5 Add focused backend tests for theme loading, theme saving, port validation, and JSON preservation.
 
 ## Implementation Details
 Use the TechSpec "Data Models" and "Development Sequencing" sections for the accepted persistence split. Keep the implementation in backend code and avoid introducing a reusable TUI settings framework or a Runtime Contract default change.
@@ -68,17 +69,17 @@ Use the TechSpec "Data Models" and "Development Sequencing" sections for the acc
 
 ## Tests
 - Unit tests:
-  - [ ] Missing Terminal Console state file returns `cursor-dark` without creating unrelated files.
-  - [ ] Saved `cursor-dark`, `dark`, `light`, `high-contrast`, and `no-color` themes round-trip.
-  - [ ] Unsupported theme values fall back safely and report that fallback to the caller.
-  - [ ] Port validation rejects empty, nonnumeric, `0`, negative, and `65536` inputs.
-  - [ ] Port validation accepts `1`, `8080`, and `65535`.
+  - [x] Missing Terminal Console state file returns `cursor-dark` without creating unrelated files.
+  - [x] Saved `cursor-dark`, `dark`, `light`, `high-contrast`, and `no-color` themes round-trip.
+  - [x] Unsupported theme values fall back safely and report that fallback to the caller.
+  - [x] Port validation rejects empty, nonnumeric, `0`, negative, and `65536` inputs.
+  - [x] Port validation accepts `1`, `8080`, and `65535`.
 - Integration tests:
-  - [ ] Updating `server.port` preserves unrelated top-level Runtime Settings fields.
-  - [ ] Updating `server.port` preserves unknown nested fields under `server`.
-  - [ ] Invalid port input leaves `.symphony/settings.json` byte-for-byte unchanged.
-  - [ ] Bootstrap idempotency remains unchanged for existing Runtime Contract files.
-  - [ ] Terminal Console settings state path stays under ignored Runtime Home state.
+  - [x] Updating `server.port` preserves unrelated top-level Runtime Settings fields.
+  - [x] Updating `server.port` preserves unknown nested fields under `server`.
+  - [x] Invalid port input leaves `.symphony/settings.json` byte-for-byte unchanged.
+  - [x] Bootstrap idempotency remains unchanged for existing Runtime Contract files.
+  - [x] Terminal Console settings state path stays under ignored Runtime Home state.
 - Test coverage target: >=80%
 - All tests must pass
 

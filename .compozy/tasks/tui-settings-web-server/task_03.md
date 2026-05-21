@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Extract Dashboard Start and Reuse Service"
 type: backend
 complexity: high
 dependencies:
   - task_02
+
 ---
 
 # Task 03: Extract Dashboard Start and Reuse Service
@@ -32,11 +33,11 @@ This task extracts Web Dashboard startup into a reusable backend service that ca
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Review current Web Dashboard startup branches in `main.ml`.
-- [ ] 3.2 Add dashboard service outcomes for started, reused, conflict, and failed states.
-- [ ] 3.3 Add identity probing and compatibility checks for the configured loopback port.
-- [ ] 3.4 Extract foreground and background server startup paths without changing existing CLI behavior.
-- [ ] 3.5 Add tests for no-listener startup, compatible reuse, incompatible listener, and bind failure behavior.
+- [x] 3.1 Review current Web Dashboard startup branches in `main.ml`.
+- [x] 3.2 Add dashboard service outcomes for started, reused, conflict, and failed states.
+- [x] 3.3 Add identity probing and compatibility checks for the configured loopback port.
+- [x] 3.4 Extract foreground and background server startup paths without changing existing CLI behavior.
+- [x] 3.5 Add tests for no-listener startup, compatible reuse, incompatible listener, and bind failure behavior.
 
 ## Implementation Details
 Use the TechSpec "Component Overview", "Integration Points", and "Monitoring and Observability" sections. Keep the service backend-owned and avoid adding stop, restart, kill, or browser-open controls.
@@ -70,19 +71,19 @@ Use the TechSpec "Component Overview", "Integration Points", and "Monitoring and
 
 ## Tests
 - Unit tests:
-  - [ ] Matching identity for the same Workspace Repository and Runtime Home returns a reuse result.
-  - [ ] Mismatched Workspace Repository returns a conflict result.
-  - [ ] Mismatched Runtime Home returns a conflict result.
-  - [ ] Auth mismatch returns a conflict result.
-  - [ ] Missing or malformed identity response returns a conflict result instead of reuse.
-  - [ ] Bind failure returns a failed result with a secret-free message.
+  - [x] Matching identity for the same Workspace Repository and Runtime Home returns a reuse result.
+  - [x] Mismatched Workspace Repository returns a conflict result.
+  - [x] Mismatched Runtime Home returns a conflict result.
+  - [x] Auth mismatch returns a conflict result.
+  - [x] Missing or malformed identity response returns a conflict result instead of reuse.
+  - [x] Bind failure returns a failed result with a secret-free message.
 - Integration tests:
-  - [ ] No listener on the configured loopback port starts a dashboard service.
-  - [ ] Compatible existing listener is reused without starting a second server.
-  - [ ] Started dashboard serves the current Runtime State.
-  - [ ] Live Dashboard Connection receives updates when the Terminal Console handoff publishes state.
-  - [ ] Existing `symphony --web` readiness-state path still serves Runtime State.
-  - [ ] Existing `symphony --web` orchestrator path still serves live Runtime State.
+  - [x] No listener on the configured loopback port starts a dashboard service.
+  - [x] Compatible existing listener is reused without starting a second server.
+  - [x] Started dashboard serves the current Runtime State.
+  - [x] Live Dashboard Connection receives updates when the Terminal Console handoff publishes state.
+  - [x] Existing `symphony --web` readiness-state path still serves Runtime State.
+  - [x] Existing `symphony --web` orchestrator path still serves live Runtime State.
 - Test coverage target: >=80%
 - All tests must pass
 

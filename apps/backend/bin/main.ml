@@ -279,6 +279,35 @@ let run_runtime port once web queue_arg merge_args overrides =
           let state = Runtime_readiness.state ?ordered_queue ~queue_parse_problems config in
           let terminal_console_host = config.server.host in
           let terminal_console_port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
+          let terminal_console_theme =
+            match Terminal_console_settings.load_theme home with
+            | Terminal_console_settings.Theme_valid theme -> theme
+            | Terminal_console_settings.Theme_fallback { fallback; reason; _ } ->
+                terminal_console_initial_logs := !terminal_console_initial_logs @ [ reason ];
+                fallback
+          in
+          let terminal_console_settings : Terminal_console_tui.settings_state =
+            { theme = terminal_console_theme; port = terminal_console_port }
+          in
+          let save_terminal_console_settings (settings : Terminal_console_tui.settings_state) =
+            match Terminal_console_settings.validate_theme settings.theme with
+            | Terminal_console_settings.Theme_fallback { reason; _ } -> Terminal_console_tui.Settings_rejected reason
+            | Terminal_console_settings.Theme_valid theme -> (
+                match Terminal_console_settings.validate_port (string_of_int settings.port) with
+                | Terminal_console_settings.Port_invalid reason -> Terminal_console_tui.Settings_rejected reason
+                | Terminal_console_settings.Port_valid _ -> (
+                    try
+                      match Terminal_console_settings.save_theme home theme with
+                      | Terminal_console_settings.Theme_fallback { reason; _ } ->
+                          Terminal_console_tui.Settings_rejected reason
+                      | Terminal_console_settings.Theme_valid saved_theme -> (
+                          match Terminal_console_settings.save_dashboard_port home (string_of_int settings.port) with
+                          | Terminal_console_settings.Port_rejected reason -> Terminal_console_tui.Settings_rejected reason
+                          | Terminal_console_settings.Port_update_failed reason -> Terminal_console_tui.Settings_failed reason
+                          | Terminal_console_settings.Port_updated port ->
+                              Terminal_console_tui.Settings_saved { theme = saved_theme; port })
+                    with exn -> Terminal_console_tui.Settings_failed (Printexc.to_string exn)))
+          in
           let terminal_console_web_handoff =
             Terminal_console_tui.default_web_handoff ~host:terminal_console_host ~port:terminal_console_port ()
           in
@@ -303,7 +332,10 @@ let run_runtime port once web queue_arg merge_args overrides =
               let auth_token = if Server.host_requires_auth host then Some (Server.generate_auth_token ()) else None in
               render_web_dashboard_starting ?auth_token ~host ~port ();
               let live = Server.create_live_state ~get_state:(fun () -> state) in
-              run_until_stopped (fun () -> Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> state) ())
+              run_until_stopped (fun () ->
+                  Dashboard_service.serve_foreground ~workspace_root:config.repository_root
+                    ~runtime_home:home.runtime_dir ~host ~port ~mode:Dashboard_service.web_dashboard_mode ~auth_token
+                    ~live ~get_state:(fun () -> state) ())
           | Web_dashboard Runtime_policy.Run_orchestrator ->
               let host = config.server.host in
               let port = Option.value port ~default:(Option.value config.server.port ~default:8080) in
@@ -324,15 +356,19 @@ let run_runtime port once web queue_arg merge_args overrides =
               orchestrator_ref := Some orchestrator;
               ignore (Thread.create Orchestrator.run_forever orchestrator);
               run_until_stopped (fun () ->
-                  Server.serve ?auth_token ~live ~host ~port ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
+                  Dashboard_service.serve_foreground ~workspace_root:config.repository_root
+                    ~runtime_home:home.runtime_dir ~host ~port ~mode:Dashboard_service.web_dashboard_mode ~auth_token
+                    ~live ~get_state:(fun () -> Orchestrator.get_state orchestrator) ())
           | Terminal_console_readiness ->
               Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
-                ~local_surfaces:terminal_console_local_surfaces ~initial_logs:!terminal_console_initial_logs
+                ~local_surfaces:terminal_console_local_surfaces ~settings:terminal_console_settings
+                ~save_settings:save_terminal_console_settings ~initial_logs:!terminal_console_initial_logs
                 ~initial_state:state ();
               0
           | Terminal_console_orchestrator ->
               Terminal_console_runtime.run ~web_handoff:terminal_console_web_handoff
-                ~local_surfaces:terminal_console_local_surfaces ~initial_logs:!terminal_console_initial_logs
+                ~local_surfaces:terminal_console_local_surfaces ~settings:terminal_console_settings
+                ~save_settings:save_terminal_console_settings ~initial_logs:!terminal_console_initial_logs
                 ~initial_state:state
                 ~start_orchestration:(fun ~notify_state ->
                   let orchestrator = Orchestrator.make ?ordered_queue ~config ~prompt_template ~notify_state () in
