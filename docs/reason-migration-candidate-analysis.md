@@ -3,7 +3,7 @@
 Module-by-module assessment for Phase 2 continuation and beyond. All files under `apps/backend/lib/`.
 
 Excluded from conversion: `orchestrator.ml`, `server.ml`, `config.ml`, `runtime_home.ml`.
-Already converted: `util.re`, `issue.re`, `prompt.re`, `ordered_queue.re`, `cli_mode.re`, `runtime_policy.re`, `terminal_console.re`, `workspace.re`, `simple_yaml.re`, `workflow.re`, `runtime_startup.re`, `runtime_readiness.re`, `cli_command.re`.
+Already converted: `util.re`, `issue.re`, `prompt.re`, `ordered_queue.re`, `cli_mode.re`, `runtime_policy.re`, `terminal_console.re`, `workspace.re`, `simple_yaml.re`, `workflow.re`, `runtime_startup.re`, `runtime_readiness.re`, `cli_command.re`, `update_cli.re`, `manual_merge.re`, `terminal_console_model.re`.
 
 ## Tier 1 — Trivial (DONE)
 
@@ -26,13 +26,13 @@ Convert in a single pass. Negligible risk.
 | `simple_yaml.ml` | 84 | 1 (`workflow.ml`) | Mini YAML parser using `Hashtbl`, refs, `Buffer`. Only consumer is `workflow.ml`. |
 | `cli_command.ml` | 219 | 0 | Heavy Cmdliner `Arg`/`Term` DSL. The local-open `Arg.(...)` syntax needs careful Reason translation. No dependents. 2 tests. |
 
-## Tier 3 — Medium, wider blast radius
+## Tier 3 — Medium, wider blast radius (PARTIAL)
 
 | Module | Lines | Imported by | Notes |
 |--------|-------|-------------|-------|
-| `update_cli.ml` | 237 | 0 | Self-contained CLI subcommand. No dedicated tests. |
-| `manual_merge.ml` | 282 | 0 | Heavily coupled to excluded `orchestrator.ml` (calls `run_shell_capture`, `task_branch`, etc.). 12 tests. |
-| `terminal_console_model.ml` | 368 | 0 | View-model construction and text sanitization. 20+ tests in `runtime-state` group. |
+| `update_cli.re` | 237 | 0 | DONE. Self-contained CLI subcommand. No dedicated tests. |
+| `manual_merge.re` | 282 | 0 | DONE. Heavily coupled to excluded `orchestrator.ml` (calls `run_shell_capture`, `task_branch`, etc.). 12 tests. |
+| `terminal_console_model.re` | 368 | 0 | DONE. View-model construction and text sanitization. 20+ tests in `runtime-state` group. |
 | `issue_tracker.ml` | 333 | 3 | Widest dependency surface (7 modules). Record-with-function-fields pattern. ~15 indirect tests. |
 | `runtime_state.ml` | 467 | 8 | Most-imported candidate. Many `to_yojson` functions. 14+ tests. |
 
@@ -52,8 +52,8 @@ Tier 1 (one pass):  cli_mode → runtime_policy → terminal_console → workspa
 Tier 2 batch A:     simple_yaml + workflow (pair, they form a dependency chain)
 Tier 2 batch B:     runtime_startup → runtime_readiness
 Tier 2 batch C:     cli_command
-Tier 3 batch A:     update_cli → manual_merge
-Tier 3 batch B:     terminal_console_model
+Tier 3 batch A:     update_cli (DONE) → manual_merge (DONE)
+Tier 3 batch B:     terminal_console_model (DONE)
 Tier 4 (dependency-first):
                     compozy_tasks_tracker → compozy_lifecycle → runtime_state
                     → issue_tracker → github_tracker → minibeads_tracker
