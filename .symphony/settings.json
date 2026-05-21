@@ -1,52 +1,35 @@
 {
   "tracker": {
     "kind": "compozy_tasks",
-    "compozy": {
-      "root": ".compozy/tasks",
-      "maxTaskStepRetries": 2
-    }
+    "compozy": { "root": ".compozy/tasks", "maxTaskStepRetries": 2 }
   },
   "project": {
     "statusField": "Status",
     "activeStates": [
-      "pending",
-      "in_planning",
-      "in_progress",
-      "in_execution",
-      "in_review"
+      "pending", "in_planning", "in_progress", "in_execution", "in_review"
     ],
-    "terminalStates": ["human_attention", "completed", "failed", "skipped"],
+    "terminalStates": [ "human_attention", "completed", "failed", "skipped" ],
     "startStatus": "in_progress",
     "reviewStatus": "in_review",
     "retryStatus": "pending",
     "ensureStatuses": true
   },
-  "polling": {
-    "intervalMs": 30000
-  },
-  "workspace": {
-    "root": ".symphony/workspaces"
-  },
+  "polling": { "intervalMs": 30000 },
+  "workspace": { "root": ".symphony/workspaces" },
   "harnesses": {
     "codex": {
       "kind": "codex",
       "command": "codex exec",
       "model": "gpt-5.5",
       "reasoningEffort": "medium",
-      "loop": {
-        "enabled": true,
-        "command": "/goal"
-      }
+      "loop": { "enabled": true, "command": "/goal" }
     },
     "pi": {
       "kind": "pi",
       "command": "pi --model <model> --thinking <reasoning> --print --no-session",
       "model": "zai/GLM-5.1",
       "reasoningEffort": "high",
-      "loop": {
-        "enabled": true,
-        "command": "/skill:pi-ralph-wiggum"
-      }
+      "loop": { "enabled": true, "command": "/skill:pi-ralph-wiggum" }
     }
   },
   "agents": {
@@ -77,13 +60,10 @@
   },
   "git": {
     "taskBranchPrefix": "symphony/task-",
-    "protectedTrunkBranches": ["main"],
+    "protectedTrunkBranches": [ "main" ],
     "autoMerge": false,
     "mergeAttentionStatus": "human_attention",
-    "cleanup": {
-      "removeWorktreeAfterMerge": true,
-      "keepTaskBranch": false
-    }
+    "cleanup": { "removeWorktreeAfterMerge": true, "keepTaskBranch": false }
   },
   "pullRequest": {
     "enabled": true,
@@ -137,9 +117,7 @@
           "reason": "Packaged platform binaries are release payloads."
         }
       ],
-      "authorization": {
-        "issueSection": "Protected Path Authorization"
-      }
+      "authorization": { "issueSection": "Protected Path Authorization" }
     }
   },
   "stageAgents": {
@@ -148,15 +126,13 @@
     "defaultAgent": "engineer",
     "stages": [
       {
-        "states": ["pending", "in_planning"],
+        "states": [ "pending", "in_planning" ],
         "agent": "planner",
         "skills": [],
         "startStatus": "in_planning",
         "successStatus": "in_progress",
         "retryStatus": "pending",
-        "goal": {
-          "enabled": true
-        },
+        "goal": { "enabled": true },
         "commit": {
           "enabled": false,
           "type": "docs",
@@ -165,21 +141,18 @@
         }
       },
       {
-        "states": ["in_progress", "in_execution"],
+        "states": [ "in_progress", "in_execution" ],
         "agent": "engineer",
         "skills": [],
         "startStatus": "in_execution",
         "successStatus": "in_review",
         "retryStatus": "pending",
-        "goal": {
-          "enabled": false
-        },
+        "goal": { "enabled": false },
         "goalLoop": {
           "enabled": true,
           "evidence": {
             "command": [
-              "sh",
-              "-lc",
+              "sh", "-lc",
               "opam exec -- dune build @all --root . --build-dir _build-goal-loop-evidence >/dev/null && git diff --check && printf 'dune build @all and git diff --check passed'"
             ],
             "cwd": "agentWorktree",
@@ -200,21 +173,18 @@
         }
       },
       {
-        "states": ["in_review"],
+        "states": [ "in_review" ],
         "agent": "reviewer",
         "skills": [],
         "startStatus": "in_review",
         "successStatus": "completed",
         "retryStatus": "human_attention",
-        "goal": {
-          "enabled": true
-        },
+        "goal": { "enabled": true },
         "goalLoop": {
           "enabled": true,
           "evidence": {
             "command": [
-              "sh",
-              "-lc",
+              "sh", "-lc",
               "opam exec -- dune build @all --root . --build-dir _build-goal-loop-evidence >/dev/null && git diff --check && printf 'dune build @all and git diff --check passed'"
             ],
             "cwd": "agentWorktree",
@@ -241,7 +211,5 @@
     "maxTurns": 10,
     "maxRetryBackoffMs": 300000
   },
-  "server": {
-    "port": 8080
-  }
+  "server": { "port": 8080 }
 }

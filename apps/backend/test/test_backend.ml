@@ -7735,6 +7735,8 @@ let test_terminal_console_tui_settings_modal_opens_separately () =
     "Terminal Console theme: cursor-dark";
   check_line_contains "modal port line" (Shell.settings_modal_lines opened.model.Shell.settings modal)
     "Web Dashboard port: 8080";
+  check_line_absent "modal omits saved values" (Shell.settings_modal_lines opened.model.Shell.settings modal)
+    "Current saved values";
   let queue = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
   check_line_absent "settings modal is not appended to active panel" queue "Terminal Console Settings";
   check_line_absent "settings fields stay out of active panel" queue "Web Dashboard port"

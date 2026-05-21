@@ -1628,7 +1628,7 @@ let help_modal_node () =
         (List.map command_help_row help_commands);
     ]
 
-let settings_modal_lines settings modal =
+let settings_modal_lines _settings modal =
   let marker field = if modal.focused_field = field then "> " else "  " in
   let validation =
     match modal.validation_message with None -> [] | Some message -> [ "Validation: " ^ message ]
@@ -1636,7 +1636,6 @@ let settings_modal_lines settings modal =
   [
     marker Settings_theme ^ "Terminal Console theme: " ^ modal.draft_theme;
     marker Settings_port ^ "Web Dashboard port: " ^ (if modal.draft_port = "" then "<empty>" else modal.draft_port);
-    Printf.sprintf "Current saved values: theme %s | Web Dashboard port %d" settings.theme settings.port;
   ]
   @ validation
   @ [ "Enter save | Esc cancel | Up/Down field | Left/Right theme | type port" ]
@@ -1644,7 +1643,7 @@ let settings_modal_lines settings modal =
 let settings_modal_node settings modal =
   Components.modal ~id:"terminal-console-settings-modal" ~tone:Components.Info
     ~design:(current_design ())
-    ~style:Style.(make ~width:(Cells 78) ~height:(Cells 10) ())
+    ~style:Style.(make ~width:(Cells 78) ~height:(Cells 9) ())
     "Terminal Console Settings"
     [
       Components.column
