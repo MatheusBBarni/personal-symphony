@@ -26,26 +26,16 @@ Create a Reason source file with a `Tui.Jsx` tree and render it:
 
 ```reason
 open Tui;
-
-module J = Tui.Jsx;
+open Tui.Jsx;
 
 let root =
-  J.AppShell.make(
-    ~title="Build",
-    ~subtitle="standalone terminal tool",
-    ~children=[
-      J.Panel.make(
-        ~title="Status",
-        ~children=[
-          J.Text.make(~value="Hello from OCaml", ()),
-          J.ProgressBar.make(~label="compile", ~fraction=0.72, ()),
-          J.Input.make(~placeholder="type here", ()),
-        ],
-        (),
-      ),
-    ],
-    (),
-  );
+  <AppShell title="Build" subtitle="standalone terminal tool">
+    <Panel title="Status">
+      <Text value="Hello from OCaml" />
+      <ProgressBar label="compile" fraction=0.72 />
+      <Input placeholder="type here" />
+    </Panel>
+  </AppShell>;
 
 let () = {
   let renderer = Renderer.create(~width=60, ~height=12, root);
@@ -65,7 +55,7 @@ opam exec -- dune exec examples/agent_workspace_jsx.exe
 Use `Tui.Jsx` for new screens. Use the lower layers when you need control or are maintaining existing direct-call code.
 
 - Core: `Geometry`, `Color`, `Theme`, `Style`, `Surface`, `Node`, `Layout`, `Renderer`, `Terminal`, `Viewport`, `Key`, and `Keymap`.
-- JSX: `Tui.Jsx` wrapper modules with `make` functions that return `Tui.Node.t`.
+- JSX: `Tui.Jsx` wrapper modules with `createElement` entrypoints for Reason JSX tags and `make` functions for programmatic composition. Both return `Tui.Node.t`.
 - Components: `text`, `rich_text`, `box`, `input`, `select`, `scroll_box`, `progress_bar`, `sparkline`, `panel`, `badge`, `tab_bar`, `key_value`, `table`, `split`, `row`, `column`, `divider`, `callout`, `empty_state`, `toolbar`, and `meter`.
 - Patterns: `Patterns.app_shell`, `header`, `rule_panel`, `metric_card`, `log_feed`, `message`, `timeline`, `composer`, `command_bar`, `footer`, and `modal`.
 - Presets: `Presets.Open_code.wordmark`, `model_status`, `command_block`, `hint_bar`, and `tip`.
@@ -81,11 +71,26 @@ Component wrappers: `Text`, `RichText`, `VerticalRule`, `Box`, `Spacer`, `Input`
 
 Pattern wrappers: `RulePanel`, `Modal`, `Header`, `MetricCard`, `LogFeed`, `SectionTitle`, `NavItem`, `Message`, `Timeline`, `Composer`, `CommandBar`, `Footer`, and `AppShell`.
 
+After `open Tui.Jsx`, wrapper modules can be written as Reason JSX elements:
+
+```reason
+let status =
+  <Panel title="Status" tone=Components.Info>
+    <Message
+      tone=Components.Info
+      author="User"
+      time="14:12"
+      body="Build the package payload"
+    />
+    <Text value="Plain text child" />
+  </Panel>;
+```
+
 V1 intentionally keeps a few APIs direct-call only:
 
 - `Components.repeat` and `Components.fit` are table-formatting helpers, not JSX authoring constructors.
 - `Tui.Presets.Open_code.*` stays under `Tui.Presets` because those helpers are preset examples rather than neutral building blocks.
-- Text content is explicit. Use `Tui.Jsx.Text.make(~value="...", ())`; string children are not converted implicitly.
+- Text content is explicit. Use `<Text value="..." />` or `Tui.Jsx.Text.make(~value="...", ())`; string children are not converted implicitly.
 - `Tui.Jsx` is not a React runtime and does not provide React state, hooks, reconciliation, or DOM compatibility.
 
 ## Migrating Direct Calls
@@ -109,18 +114,13 @@ Equivalent `Tui.Jsx` wrapper call:
 
 ```reason
 open Tui;
-
-module J = Tui.Jsx;
+open Tui.Jsx;
 
 let root =
-  J.Panel.make(
-    ~title="Status",
-    ~children=[
-      J.Text.make(~value="Build ready", ()),
-      J.Meter.make(~label="coverage", ~value="82%", ~fraction=0.82, ()),
-    ],
-    (),
-  );
+  <Panel title="Status">
+    <Text value="Build ready" />
+    <Meter label="coverage" value="82%" fraction=0.82 />
+  </Panel>;
 ```
 
 Keep using direct `Components` and `Patterns` calls when you want lower-level helper functions, table string fitting, preset examples, or existing code that does not benefit from tree-shaped wrapper modules. Both paths produce `Tui.Node.t` and render through the same `Renderer`.

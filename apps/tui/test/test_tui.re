@@ -150,6 +150,42 @@ let jsx_box_renders_explicit_text_children = () => {
   );
 };
 
+let jsx_element_syntax_renders_message_and_panel = () => {
+  let direct =
+    Components.panel(
+      ~tone=Components.Info,
+      "Status",
+      [
+        Patterns.message(
+          ~tone=Components.Info,
+          ~author="User",
+          ~time="12:02",
+          "Hello",
+        ),
+        Components.text("Plain child"),
+      ],
+    );
+  let wrapped = {
+    Tui.Jsx.(
+      <Panel title="Status" tone=Components.Info>
+        <Message
+          tone=Components.Info
+          author="User"
+          time="12:02"
+          body="Hello"
+        />
+        <Text value="Plain child" />
+      </Panel>
+    );
+  };
+
+  Alcotest.(check(string))(
+    "jsx element output",
+    render_node(~width=48, ~height=12, ~node=direct),
+    render_node(~width=48, ~height=12, ~node=wrapped),
+  );
+};
+
 let direct_component_calls_render_with_jsx_export = () => {
   let root =
     Tui.box(
@@ -1397,6 +1433,11 @@ let () =
             "box renders explicit text children",
             `Quick,
             jsx_box_renders_explicit_text_children,
+          ),
+          Alcotest.test_case(
+            "element syntax renders message and panel",
+            `Quick,
+            jsx_element_syntax_renders_message_and_panel,
           ),
           Alcotest.test_case(
             "direct calls still render",
