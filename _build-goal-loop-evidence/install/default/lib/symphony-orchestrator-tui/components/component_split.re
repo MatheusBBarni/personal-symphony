@@ -1,0 +1,1 @@
+../../../../../default/apps/tui/lib/components/component_split.re

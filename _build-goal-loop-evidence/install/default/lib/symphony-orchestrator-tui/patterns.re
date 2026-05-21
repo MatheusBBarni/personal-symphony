@@ -1,0 +1,1 @@
+../../../../default/apps/tui/lib/patterns.re

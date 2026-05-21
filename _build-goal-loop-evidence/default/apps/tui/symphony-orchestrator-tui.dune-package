@@ -1,0 +1,354 @@
+(lang dune 3.23)
+(name symphony-orchestrator-tui)
+(sections (lib .) (libexec .) (doc ../../doc/symphony-orchestrator-tui))
+(files
+ (lib
+  (.private/tui__Tui_utf.cmi
+   .private/tui__Tui_utf.cmt
+   META
+   attr.re
+   color.re
+   components/component_badge.re
+   components/component_callout.re
+   components/component_design.re
+   components/component_divider.re
+   components/component_empty_state.re
+   components/component_key_value.re
+   components/component_layout.re
+   components/component_meter.re
+   components/component_panel.re
+   components/component_split.re
+   components/component_tab_bar.re
+   components/component_table.re
+   components/component_toolbar.re
+   components/components.re
+   components/components_core.re
+   dune-package
+   geometry.re
+   jsx.re
+   key.re
+   keymap.re
+   layout.re
+   node.re
+   opam
+   patterns.re
+   presets.re
+   render.re
+   renderer.re
+   span.re
+   style.re
+   surface.re
+   terminal.re
+   theme.re
+   tui.a
+   tui.cma
+   tui.cmi
+   tui.cmt
+   tui.cmx
+   tui.cmxa
+   tui.re
+   tui__.cmi
+   tui__.cmt
+   tui__.cmx
+   tui__.ml
+   tui__Attr.cmi
+   tui__Attr.cmt
+   tui__Attr.cmx
+   tui__Color.cmi
+   tui__Color.cmt
+   tui__Color.cmx
+   tui__Component_badge.cmi
+   tui__Component_badge.cmt
+   tui__Component_badge.cmx
+   tui__Component_callout.cmi
+   tui__Component_callout.cmt
+   tui__Component_callout.cmx
+   tui__Component_design.cmi
+   tui__Component_design.cmt
+   tui__Component_design.cmx
+   tui__Component_divider.cmi
+   tui__Component_divider.cmt
+   tui__Component_divider.cmx
+   tui__Component_empty_state.cmi
+   tui__Component_empty_state.cmt
+   tui__Component_empty_state.cmx
+   tui__Component_key_value.cmi
+   tui__Component_key_value.cmt
+   tui__Component_key_value.cmx
+   tui__Component_layout.cmi
+   tui__Component_layout.cmt
+   tui__Component_layout.cmx
+   tui__Component_meter.cmi
+   tui__Component_meter.cmt
+   tui__Component_meter.cmx
+   tui__Component_panel.cmi
+   tui__Component_panel.cmt
+   tui__Component_panel.cmx
+   tui__Component_split.cmi
+   tui__Component_split.cmt
+   tui__Component_split.cmx
+   tui__Component_tab_bar.cmi
+   tui__Component_tab_bar.cmt
+   tui__Component_tab_bar.cmx
+   tui__Component_table.cmi
+   tui__Component_table.cmt
+   tui__Component_table.cmx
+   tui__Component_toolbar.cmi
+   tui__Component_toolbar.cmt
+   tui__Component_toolbar.cmx
+   tui__Components.cmi
+   tui__Components.cmt
+   tui__Components.cmx
+   tui__Components_core.cmi
+   tui__Components_core.cmt
+   tui__Components_core.cmx
+   tui__Geometry.cmi
+   tui__Geometry.cmt
+   tui__Geometry.cmx
+   tui__Jsx.cmi
+   tui__Jsx.cmt
+   tui__Jsx.cmx
+   tui__Key.cmi
+   tui__Key.cmt
+   tui__Key.cmx
+   tui__Keymap.cmi
+   tui__Keymap.cmt
+   tui__Keymap.cmx
+   tui__Layout.cmi
+   tui__Layout.cmt
+   tui__Layout.cmx
+   tui__Node.cmi
+   tui__Node.cmt
+   tui__Node.cmx
+   tui__Patterns.cmi
+   tui__Patterns.cmt
+   tui__Patterns.cmx
+   tui__Presets.cmi
+   tui__Presets.cmt
+   tui__Presets.cmx
+   tui__Render.cmi
+   tui__Render.cmt
+   tui__Render.cmx
+   tui__Renderer.cmi
+   tui__Renderer.cmt
+   tui__Renderer.cmx
+   tui__Span.cmi
+   tui__Span.cmt
+   tui__Span.cmx
+   tui__Style.cmi
+   tui__Style.cmt
+   tui__Style.cmx
+   tui__Surface.cmi
+   tui__Surface.cmt
+   tui__Surface.cmx
+   tui__Terminal.cmi
+   tui__Terminal.cmt
+   tui__Terminal.cmx
+   tui__Theme.cmi
+   tui__Theme.cmt
+   tui__Theme.cmx
+   tui__Tui_utf.cmx
+   tui__Utf.cmi
+   tui__Utf.cmt
+   tui__Utf.cmx
+   tui__Viewport.cmi
+   tui__Viewport.cmt
+   tui__Viewport.cmx
+   tui_utf.re
+   utf.re
+   viewport.re))
+ (libexec (tui.cmxs))
+ (doc (LICENSE README.md)))
+(library
+ (name symphony-orchestrator-tui)
+ (kind normal)
+ (archives (byte tui.cma) (native tui.cmxa))
+ (plugins (byte tui.cma) (native tui.cmxs))
+ (native_archives tui.a)
+ (requires unix uutf toffee)
+ (main_module_name Tui)
+ (modes byte native)
+ (obj_dir (private_dir .private))
+ (modules
+  (wrapped
+   (group
+    (alias
+     (obj_name tui__)
+     (visibility public)
+     (kind alias)
+     (source (path Tui__) (impl (path tui__.ml-gen))))
+    (name Tui)
+    (modules
+     (module
+      (obj_name tui__Attr)
+      (visibility public)
+      (source (path Attr) (impl (path attr.re))))
+     (module
+      (obj_name tui__Color)
+      (visibility public)
+      (source (path Color) (impl (path color.re))))
+     (module
+      (obj_name tui__Component_badge)
+      (visibility public)
+      (source
+       (path Component_badge)
+       (impl (path components/component_badge.re))))
+     (module
+      (obj_name tui__Component_callout)
+      (visibility public)
+      (source
+       (path Component_callout)
+       (impl (path components/component_callout.re))))
+     (module
+      (obj_name tui__Component_design)
+      (visibility public)
+      (source
+       (path Component_design)
+       (impl (path components/component_design.re))))
+     (module
+      (obj_name tui__Component_divider)
+      (visibility public)
+      (source
+       (path Component_divider)
+       (impl (path components/component_divider.re))))
+     (module
+      (obj_name tui__Component_empty_state)
+      (visibility public)
+      (source
+       (path Component_empty_state)
+       (impl (path components/component_empty_state.re))))
+     (module
+      (obj_name tui__Component_key_value)
+      (visibility public)
+      (source
+       (path Component_key_value)
+       (impl (path components/component_key_value.re))))
+     (module
+      (obj_name tui__Component_layout)
+      (visibility public)
+      (source
+       (path Component_layout)
+       (impl (path components/component_layout.re))))
+     (module
+      (obj_name tui__Component_meter)
+      (visibility public)
+      (source
+       (path Component_meter)
+       (impl (path components/component_meter.re))))
+     (module
+      (obj_name tui__Component_panel)
+      (visibility public)
+      (source
+       (path Component_panel)
+       (impl (path components/component_panel.re))))
+     (module
+      (obj_name tui__Component_split)
+      (visibility public)
+      (source
+       (path Component_split)
+       (impl (path components/component_split.re))))
+     (module
+      (obj_name tui__Component_tab_bar)
+      (visibility public)
+      (source
+       (path Component_tab_bar)
+       (impl (path components/component_tab_bar.re))))
+     (module
+      (obj_name tui__Component_table)
+      (visibility public)
+      (source
+       (path Component_table)
+       (impl (path components/component_table.re))))
+     (module
+      (obj_name tui__Component_toolbar)
+      (visibility public)
+      (source
+       (path Component_toolbar)
+       (impl (path components/component_toolbar.re))))
+     (module
+      (obj_name tui__Components)
+      (visibility public)
+      (source (path Components) (impl (path components/components.re))))
+     (module
+      (obj_name tui__Components_core)
+      (visibility public)
+      (source
+       (path Components_core)
+       (impl (path components/components_core.re))))
+     (module
+      (obj_name tui__Geometry)
+      (visibility public)
+      (source (path Geometry) (impl (path geometry.re))))
+     (module
+      (obj_name tui__Jsx)
+      (visibility public)
+      (source (path Jsx) (impl (path jsx.re))))
+     (module
+      (obj_name tui__Key)
+      (visibility public)
+      (source (path Key) (impl (path key.re))))
+     (module
+      (obj_name tui__Keymap)
+      (visibility public)
+      (source (path Keymap) (impl (path keymap.re))))
+     (module
+      (obj_name tui__Layout)
+      (visibility public)
+      (source (path Layout) (impl (path layout.re))))
+     (module
+      (obj_name tui__Node)
+      (visibility public)
+      (source (path Node) (impl (path node.re))))
+     (module
+      (obj_name tui__Patterns)
+      (visibility public)
+      (source (path Patterns) (impl (path patterns.re))))
+     (module
+      (obj_name tui__Presets)
+      (visibility public)
+      (source (path Presets) (impl (path presets.re))))
+     (module
+      (obj_name tui__Render)
+      (visibility public)
+      (source (path Render) (impl (path render.re))))
+     (module
+      (obj_name tui__Renderer)
+      (visibility public)
+      (source (path Renderer) (impl (path renderer.re))))
+     (module
+      (obj_name tui__Span)
+      (visibility public)
+      (source (path Span) (impl (path span.re))))
+     (module
+      (obj_name tui__Style)
+      (visibility public)
+      (source (path Style) (impl (path style.re))))
+     (module
+      (obj_name tui__Surface)
+      (visibility public)
+      (source (path Surface) (impl (path surface.re))))
+     (module
+      (obj_name tui__Terminal)
+      (visibility public)
+      (source (path Terminal) (impl (path terminal.re))))
+     (module
+      (obj_name tui__Theme)
+      (visibility public)
+      (source (path Theme) (impl (path theme.re))))
+     (module
+      (obj_name tui)
+      (visibility public)
+      (source (path Tui) (impl (path tui.re))))
+     (module
+      (obj_name tui__Tui_utf)
+      (visibility private)
+      (source (path Tui_utf) (impl (path tui_utf.re))))
+     (module
+      (obj_name tui__Utf)
+      (visibility public)
+      (source (path Utf) (impl (path utf.re))))
+     (module
+      (obj_name tui__Viewport)
+      (visibility public)
+      (source (path Viewport) (impl (path viewport.re))))))
+   (wrapped true))))
