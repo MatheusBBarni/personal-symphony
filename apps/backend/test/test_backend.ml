@@ -7776,6 +7776,7 @@ let test_terminal_console_tui_settings_theme_cycle_and_applies_theme () =
     ((root.Tui.Node.style).Tui.Style.bg = Some (Shell.theme_for_name "light" Theme.Bg_base))
 
 let terminal_console_test_runtime ?(settings = Symphony_terminal_console_shell.Terminal_console_tui.default_settings)
+    ?(web_handoff = Symphony_terminal_console_shell.Terminal_console_tui.default_web_handoff ())
     ?(save_settings = Symphony_terminal_console_shell.Terminal_console_tui.default_save_settings) () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   {
@@ -7783,7 +7784,7 @@ let terminal_console_test_runtime ?(settings = Symphony_terminal_console_shell.T
     initial_logs = [];
     subscribe = (fun _ -> ());
     safe_aid = (fun _ -> ());
-    web_handoff = Shell.default_web_handoff ();
+    web_handoff;
     local_surfaces = [];
     settings;
     save_settings;
@@ -7846,6 +7847,26 @@ let test_terminal_console_tui_settings_save_uses_runtime_callback () =
   Alcotest.(check (option string)) "save status"
     (Some "Settings saved: Terminal Console theme dark | Web Dashboard port 4545")
     model.Shell.status_message
+
+let test_terminal_console_tui_settings_save_updates_web_handoff () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let runtime =
+    terminal_console_test_runtime ~web_handoff:(Shell.default_web_handoff ~host:"127.0.0.1" ~port:8080 ())
+      ~save_settings:(fun settings -> Shell.Settings_saved settings)
+      ()
+  in
+  let model, _ = Shell.init runtime () in
+  let keys =
+    [ Shell.Character 's'; Shell.Right_key; Shell.Down_key ]
+    @ repeated_key Shell.Backspace_key 4
+    @ [ Shell.Character '4'; Shell.Character '5'; Shell.Character '4'; Shell.Character '5'; Shell.Enter_key; Shell.Character 'w' ]
+  in
+  let model = apply_terminal_console_runtime_keys runtime model keys in
+  match model.Shell.status_message with
+  | Some message ->
+      check_line_contains "handoff command uses saved port" [ message ] "symphony --web --port 4545";
+      check_line_contains "handoff url uses saved port" [ message ] "http://127.0.0.1:4545/"
+  | None -> Alcotest.fail "expected Web Dashboard handoff after saving settings"
 
 let test_terminal_console_tui_cancelled_settings_do_not_call_save () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -19242,6 +19263,8 @@ let () =
             test_terminal_console_tui_invalid_port_rejects_before_save;
           Alcotest.test_case "saves Terminal Console settings through runtime callback" `Quick
             test_terminal_console_tui_settings_save_uses_runtime_callback;
+          Alcotest.test_case "settings save refreshes Web Dashboard handoff" `Quick
+            test_terminal_console_tui_settings_save_updates_web_handoff;
           Alcotest.test_case "cancelled Terminal Console settings skip runtime save" `Quick
             test_terminal_console_tui_cancelled_settings_do_not_call_save;
           Alcotest.test_case "settings modal preserves closed Terminal Console controls" `Quick

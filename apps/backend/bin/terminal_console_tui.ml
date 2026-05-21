@@ -54,6 +54,7 @@ type model = {
   status_message : string option;
   logs : string list;
   terminal_size : terminal_size option;
+  web_handoff : web_handoff;
   settings : settings_state;
   interaction : interaction;
 }
@@ -99,6 +100,14 @@ let default_settings = { theme = Terminal_console_settings.default_theme; port =
 let default_save_settings settings = Settings_saved settings
 let default_web_handoff ?(host = "127.0.0.1") ?(port = 8080) () =
   { command = Printf.sprintf "symphony --web --port %d" port; url = Printf.sprintf "http://%s:%d/" host port }
+
+let web_handoff_host handoff =
+  match Util.drop_prefix ~prefix:"http://" handoff.url with
+  | Some rest -> (
+      match String.split_on_char ':' rest with host :: _ when Util.trim host <> "" -> host | _ -> "127.0.0.1")
+  | None -> "127.0.0.1"
+
+let web_handoff_with_port handoff port = default_web_handoff ~host:(web_handoff_host handoff) ~port ()
 
 let local_surface ~label ~root = { label = Projection.sanitize label; root }
 
@@ -172,7 +181,8 @@ let append_log_line model line =
   in
   { model with logs; interaction = { model.interaction with logs_scroll } }
 
-let initial_model ?terminal_size ?(logs = []) ?(settings = default_settings) state =
+let initial_model ?terminal_size ?(logs = []) ?(web_handoff = default_web_handoff ())
+    ?(settings = default_settings) state =
   let snapshot = Projection.of_runtime_state state in
   {
     snapshot;
@@ -180,6 +190,7 @@ let initial_model ?terminal_size ?(logs = []) ?(settings = default_settings) sta
     status_message = None;
     logs = keep_recent_logs (sanitize_logs logs);
     terminal_size;
+    web_handoff;
     settings;
     interaction = default_interaction;
   }
@@ -1141,11 +1152,12 @@ let save_settings_modal ~save_settings model modal =
       match save_settings { theme; port } with
       | Settings_saved settings ->
           let interaction = { model.interaction with settings_modal = None } in
+          let web_handoff = web_handoff_with_port model.web_handoff settings.port in
           let status_message =
             Printf.sprintf "Settings saved: Terminal Console theme %s | Web Dashboard port %d" settings.theme
               settings.port
           in
-          transition (update_interaction ~status_message { model with settings } interaction)
+          transition (update_interaction ~status_message { model with settings; web_handoff } interaction)
       | Settings_rejected reason ->
           let modal = { modal with validation_message = Some reason } in
           update_settings_modal model modal ~status_message:reason ()
@@ -1760,7 +1772,10 @@ let view model =
           ~fg:(theme_color Theme.Fg_default) ())
     children)
 
-let init runtime () = (initial_model ~logs:runtime.initial_logs ~settings:runtime.settings runtime.initial_state, ())
+let init runtime () =
+  ( initial_model ~logs:runtime.initial_logs ~web_handoff:runtime.web_handoff ~settings:runtime.settings
+      runtime.initial_state,
+    () )
 
 let update runtime msg model =
   match msg with
@@ -1776,7 +1791,7 @@ let update runtime msg model =
         false )
   | Key_press key ->
       let transition =
-        apply_key ~web_handoff:runtime.web_handoff ~local_surfaces:runtime.local_surfaces
+        apply_key ~web_handoff:model.web_handoff ~local_surfaces:runtime.local_surfaces
           ~save_settings:runtime.save_settings key model
       in
       List.iter runtime.safe_aid transition.safe_aids;

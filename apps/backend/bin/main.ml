@@ -296,17 +296,17 @@ let run_runtime port once web queue_arg merge_args overrides =
                 match Terminal_console_settings.validate_port (string_of_int settings.port) with
                 | Terminal_console_settings.Port_invalid reason -> Terminal_console_tui.Settings_rejected reason
                 | Terminal_console_settings.Port_valid _ -> (
-                    match Terminal_console_settings.save_dashboard_port home (string_of_int settings.port) with
-                    | Terminal_console_settings.Port_rejected reason -> Terminal_console_tui.Settings_rejected reason
-                    | Terminal_console_settings.Port_update_failed reason -> Terminal_console_tui.Settings_failed reason
-                    | Terminal_console_settings.Port_updated port -> (
-                        try
-                          match Terminal_console_settings.save_theme home theme with
-                          | Terminal_console_settings.Theme_valid saved_theme ->
-                              Terminal_console_tui.Settings_saved { theme = saved_theme; port }
-                          | Terminal_console_settings.Theme_fallback { reason; _ } ->
-                              Terminal_console_tui.Settings_rejected reason
-                        with exn -> Terminal_console_tui.Settings_failed (Printexc.to_string exn))))
+                    try
+                      match Terminal_console_settings.save_theme home theme with
+                      | Terminal_console_settings.Theme_fallback { reason; _ } ->
+                          Terminal_console_tui.Settings_rejected reason
+                      | Terminal_console_settings.Theme_valid saved_theme -> (
+                          match Terminal_console_settings.save_dashboard_port home (string_of_int settings.port) with
+                          | Terminal_console_settings.Port_rejected reason -> Terminal_console_tui.Settings_rejected reason
+                          | Terminal_console_settings.Port_update_failed reason -> Terminal_console_tui.Settings_failed reason
+                          | Terminal_console_settings.Port_updated port ->
+                              Terminal_console_tui.Settings_saved { theme = saved_theme; port })
+                    with exn -> Terminal_console_tui.Settings_failed (Printexc.to_string exn)))
           in
           let terminal_console_web_handoff =
             Terminal_console_tui.default_web_handoff ~host:terminal_console_host ~port:terminal_console_port ()
