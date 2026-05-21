@@ -10288,8 +10288,9 @@ let test_orchestrator_stage_capacity_prevents_duplicate_dispatch () =
           {
             state with
             running = [ running_row running_issue; running_row retrying_issue; running_row blocked_issue ];
-          });
+      });
       Orchestrator.mark_retrying orchestrator retrying_issue.id "retry later";
+      Hashtbl.replace orchestrator.Orchestrator.retry_due retrying_issue.id (Unix.time () +. 60.);
       Orchestrator.mark_blocked orchestrator blocked_issue.id "blocked";
       Orchestrator.poll_once orchestrator;
       let state = Orchestrator.get_state orchestrator in
@@ -12997,6 +12998,89 @@ let test_compozy_final_step_hands_off_to_reviewer_before_task_pr () =
           Alcotest.(check string) "handoff mode" "task" handoff.mode;
           Alcotest.(check string) "handoff status" "completed" handoff.status
       | None -> Alcotest.fail "expected task pull request handoff")
+
+let test_compozy_completed_review_failure_enters_attention_not_retry () =
+  with_temp_dir "symphony-compozy-review-attention-" (fun root ->
+      let compozy_root, _prd_dir, _task_01 = setup_compozy_repo root "review-attention-feature" in
+      let reviewer =
+        compozy_stage ~start_status:"in_review" ~success_status:"completed" ~retry_status:"human_attention"
+          "reviewer" [ "in_review" ]
+      in
+      let base_config = compozy_test_config_with_stages root compozy_root [ reviewer ] in
+      let config =
+        {
+          base_config with
+          Config.tracker =
+            {
+              base_config.tracker with
+              terminal_states = "human_attention" :: base_config.tracker.terminal_states;
+            };
+        }
+      in
+      let root_run =
+        Compozy_tasks_tracker.prd_run_of_directory ~compozy_root
+          (Filename.concat compozy_root "review-attention-feature")
+        |> require_ok "build root Compozy PRD run"
+      in
+      let issue = { (Compozy_tasks_tracker.issue_of_prd_run root_run) with Issue.state = "in_review" } in
+      let workspace =
+        match Orchestrator.shell_prepare_workspace config ~loop_start_branch:"feature/start" issue with
+        | Ok workspace -> workspace
+        | Error error -> Alcotest.fail error
+      in
+      let workspace_compozy_root = Filename.concat (Filename.concat workspace.Workspace.path ".compozy") "tasks" in
+      let workspace_task =
+        Filename.concat (Filename.concat workspace_compozy_root "review-attention-feature") "task_01.md"
+      in
+      Compozy_tasks_tracker.update_status ~compozy_root:workspace_compozy_root workspace_task "completed"
+      |> require_ok "complete workspace Compozy step";
+      let orchestrator = Orchestrator.make ~config ~prompt_template:"Compozy {{ issue.identifier }}" () in
+      Orchestrator.update_state orchestrator (fun state ->
+          {
+            state with
+            Runtime_state.running =
+              [
+                {
+                  Runtime_state.issue;
+                  stage_agent = Some "reviewer";
+                  harness_name = Some "pi";
+                  harness_kind = Some "pi";
+                  sandbox_enabled = None;
+                  sandbox_provider = None;
+                  sandbox_reuse_outcome = None;
+                  stage_states = [ "in_review" ];
+                  session_id = Some "review";
+                  turn_count = 0;
+                  last_event = Some "launched";
+                  last_message = None;
+                  started_at = Util.now_iso8601 ();
+                  last_event_at = None;
+                  tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                  goal_usage = None;
+                };
+              ];
+          });
+      Orchestrator.mark_child_failed orchestrator
+        { (compozy_child issue workspace) with stage = Some reviewer }
+        "review evidence failed";
+      let state = Orchestrator.get_state orchestrator in
+      Alcotest.(check int) "terminal retry status does not queue retry" 0
+        (List.length state.Runtime_state.retrying);
+      Alcotest.(check int) "attention issue recorded" 1 (List.length state.Runtime_state.issue_errors);
+      (match state.Runtime_state.issue_errors with
+      | [ issue_error ] ->
+          Alcotest.(check string) "preserves failure reason" "review evidence failed" issue_error.error
+      | _ -> Alcotest.fail "expected one issue error");
+      Alcotest.(check string) "completed task stays completed" "completed"
+        (compozy_task_status workspace_compozy_root workspace_task);
+      match state.Runtime_state.compozy_progress with
+      | Some progress ->
+          Alcotest.(check (option string)) "blocked lifecycle" (Some "blocked") progress.lifecycle_state;
+          Alcotest.(check (option string)) "attention dispatch" (Some "human_attention") progress.dispatch_state;
+          Alcotest.(check bool) "reason keeps original failure" true
+            (option_exists (fun reason -> contains_substring reason "review evidence failed") progress.reason);
+          Alcotest.(check int) "completed count preserved" 1 progress.completed
+      | None -> Alcotest.fail "expected Compozy progress after review attention")
 
 let require_poll_ok label = function
   | Ok value -> value
@@ -19504,6 +19588,8 @@ let () =
             test_compozy_reap_preserves_relaunched_next_step_child;
           Alcotest.test_case "hands completed Compozy runs to reviewer before Task Pull Request" `Quick
             test_compozy_final_step_hands_off_to_reviewer_before_task_pr;
+          Alcotest.test_case "moves failed completed Compozy review to attention without stale retry" `Quick
+            test_compozy_completed_review_failure_enters_attention_not_retry;
           Alcotest.test_case "retries failed Compozy task step then advances" `Quick
             test_compozy_failed_step_retries_then_advances_to_next_step;
           Alcotest.test_case "dispatch preserves external Compozy root path" `Quick

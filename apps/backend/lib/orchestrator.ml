@@ -3764,10 +3764,52 @@ let dispatch_issue orchestrator issue =
             | None -> ());
             render_dispatch_started issue)
 
-let mark_retrying orchestrator issue_id error =
+let mark_terminal_retry_attention ?child orchestrator (row : Runtime_state.running) status error =
+  let issue_id = row.issue.id in
+  Hashtbl.remove orchestrator.attempts issue_id;
+  Hashtbl.remove orchestrator.retry_due issue_id;
+  Hashtbl.remove orchestrator.previous_attempt_outputs issue_id;
+  Hashtbl.replace orchestrator.blocked (block_key row.issue) error;
+  let next_issue =
+    if move_issue_status orchestrator row.issue status then (
+      let next_issue = { row.issue with Issue.state = status } in
+      Hashtbl.replace orchestrator.blocked (block_key next_issue) error;
+      next_issue)
+    else row.issue
+  in
+  (match child with Some child -> mark_compozy_child_blocked orchestrator child error | None -> ());
+  let goal_loop_updated_at = Util.now_iso8601 () in
+  update_state orchestrator (fun state ->
+      {
+        state with
+        running = List.filter (fun (running : Runtime_state.running) -> running.issue.id <> issue_id) state.running;
+        retrying = List.filter (fun (retry : Runtime_state.retrying) -> retry.issue_id <> issue_id) state.retrying;
+        issue_errors =
+          {
+            Runtime_state.issue_id;
+            issue_identifier = row.issue.identifier;
+            error;
+            goal_usage = row.goal_usage;
+          }
+          :: List.filter (fun (issue_error : Runtime_state.issue_error) -> issue_error.issue_id <> issue_id)
+               state.issue_errors;
+        last_error = Some error;
+      }
+      |> Runtime_state.clear_context_status issue_id
+      |> update_goal_loop_in_state issue_id (fun loop ->
+             Goal_loop.stop_needs_attention loop error goal_loop_updated_at));
+  update_ordered_queue_entries orchestrator ~attention:(row.issue.identifier, Some error) ~candidates:[ next_issue ] ()
+
+let mark_retrying ?(terminal_attention = false) ?child orchestrator issue_id error =
   match List.find_opt (fun (row : Runtime_state.running) -> row.issue.id = issue_id) orchestrator.state.running with
   | None -> ()
   | Some row ->
+      let stage = stage_from_running orchestrator.config row in
+      let target_retry_status = retry_status ?stage orchestrator row.issue in
+      (match target_retry_status with
+      | Some status when terminal_attention && not (issue_state_is_dispatchable orchestrator status) ->
+          mark_terminal_retry_attention ?child orchestrator row status error
+      | _ ->
       let next_attempt = Option.value (Hashtbl.find_opt orchestrator.attempts issue_id) ~default:0 + 1 in
       Hashtbl.replace orchestrator.attempts issue_id next_attempt;
       let retry_child = List.find_opt (fun child -> child.issue_id = issue_id) orchestrator.children in
@@ -3812,8 +3854,7 @@ let mark_retrying orchestrator issue_id error =
         update_goal_loop_in_state issue_id
           (fun loop -> Goal_loop.schedule_retry loop (next_attempt + 1) error goal_loop_updated_at)
           state);
-      let stage = stage_from_running orchestrator.config row in
-      (match retry_status ?stage orchestrator row.issue with
+      (match target_retry_status with
       | None -> ()
       | Some status -> ignore (move_issue_status orchestrator row.issue status));
       render_dispatch_retrying
@@ -3822,10 +3863,11 @@ let mark_retrying orchestrator issue_id error =
              ?workspace:(Option.map (fun (child : child) -> child.workspace) retry_child)
              orchestrator.config row.issue)
         row.issue.identifier next_attempt error;
-      update_ordered_queue_entries orchestrator ~candidates:[ row.issue ] ()
+      update_ordered_queue_entries orchestrator ~candidates:[ row.issue ] ())
 
 type compozy_failure =
   | Not_compozy_failure
+  | Compozy_completed_run_failure
   | Compozy_retry_step
   | Compozy_next_after_failure of Compozy_tasks_tracker.prd_run
   | Compozy_finished_after_failure of Compozy_tasks_tracker.prd_run * string
@@ -3837,6 +3879,7 @@ let record_compozy_task_step_failure orchestrator child error =
     | Error _ as error -> error
     | Ok run -> (
         match run.current_step with
+        | None when Compozy_tasks_tracker.completed_prd_run run -> Ok Compozy_completed_run_failure
         | None -> Error (Printf.sprintf "no runnable Compozy task step for %s" run.id)
         | Some step ->
             let retry_count = step.retry_count + 1 in
@@ -3979,10 +4022,11 @@ let mark_child_failed orchestrator child error =
   match record_compozy_task_step_failure orchestrator child error with
   | Error failure_error ->
       render_commit_failed child.issue_identifier failure_error;
-      mark_retrying orchestrator child.issue_id failure_error
-  | Ok Not_compozy_failure -> mark_retrying orchestrator child.issue_id error
+      mark_retrying ~child orchestrator child.issue_id failure_error
+  | Ok Not_compozy_failure -> mark_retrying ~child orchestrator child.issue_id error
+  | Ok Compozy_completed_run_failure -> mark_retrying ~terminal_attention:true ~child orchestrator child.issue_id error
   | Ok Compozy_retry_step ->
-      mark_retrying orchestrator child.issue_id error;
+      mark_retrying ~child orchestrator child.issue_id error;
       refresh_compozy_child_progress orchestrator child
   | Ok (Compozy_next_after_failure run) ->
       let next_issue = compozy_issue_with_lifecycle_dispatch_state orchestrator.config run in
