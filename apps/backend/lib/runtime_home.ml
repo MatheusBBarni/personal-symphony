@@ -2,6 +2,13 @@ type bootstrap_status = Created | Already_present | Skipped_existing
 
 type bootstrap_item = { path : string; status : bootstrap_status }
 
+type bootstrap_selected_harness = { name : string; kind : string }
+
+type bootstrap_guidance =
+  | Bootstrap_selected_harness of bootstrap_selected_harness
+  | Bootstrap_no_usable_harness
+  | Bootstrap_existing_settings_preserved
+
 type t = {
   workspace_root : string;
   runtime_dir : string;
@@ -10,6 +17,8 @@ type t = {
   env_path : string;
   agents_dir : string;
 }
+
+type bootstrap_result = { home : t; report : bootstrap_item list; guidance : bootstrap_guidance }
 
 exception Runtime_home_error of string
 
@@ -309,11 +318,67 @@ let ensure_file report path content =
     Util.write_file path content;
     { path; status = Created } :: report)
 
-let bootstrap workspace_root =
+let bootstrap_probe_harness (definition : Bootstrap_harness_detection.harness_definition) =
+  {
+    Config.name = definition.Bootstrap_harness_detection.name;
+    kind = definition.Bootstrap_harness_detection.kind;
+    command = definition.Bootstrap_harness_detection.executable;
+    model = Config.default_model;
+    reasoning_effort = Config.default_reasoning_effort;
+    turn_timeout_ms = 3600000;
+    read_timeout_ms = 5000;
+    stall_timeout_ms = 300000;
+    loop_enabled = false;
+    loop_command = "";
+  }
+
+let default_bootstrap_probe : Bootstrap_harness_detection.probe =
+  {
+    executable_available = Config.executable_available;
+    auth_signal =
+      (fun (definition : Bootstrap_harness_detection.harness_definition) ->
+        match definition.Bootstrap_harness_detection.name with
+        | "claude" ->
+            if Config.claude_env_auth_configured () || Config.claude_credentials_configured () then
+              Bootstrap_harness_detection.Authenticated
+            else Bootstrap_harness_detection.Auth_missing
+        | "pi" ->
+            if Config.pi_any_auth_configured () || Config.pi_any_env_configured () then
+              Bootstrap_harness_detection.Authenticated
+            else Bootstrap_harness_detection.Auth_missing
+        | _ -> Bootstrap_harness_detection.Auth_not_checked);
+    status_signal =
+      (fun (definition : Bootstrap_harness_detection.harness_definition) ->
+        match definition.Bootstrap_harness_detection.name with
+        | "cursor" | "cursor-force" ->
+            if
+              Config.executable_available definition.Bootstrap_harness_detection.executable
+              && Config.cursor_harness_auth_configured (bootstrap_probe_harness definition)
+            then
+              Bootstrap_harness_detection.Status_succeeded
+            else Bootstrap_harness_detection.Status_failed
+        | _ -> Bootstrap_harness_detection.Status_not_checked);
+  }
+
+let bootstrap_guidance_of_detection (detection : Bootstrap_harness_detection.detection_result) =
+  match detection.Bootstrap_harness_detection.selected with
+  | Some status ->
+      Bootstrap_selected_harness
+        { name = status.Bootstrap_harness_detection.name; kind = status.Bootstrap_harness_detection.kind }
+  | None -> Bootstrap_no_usable_harness
+
+let bootstrap_with_guidance ?(probe = default_bootstrap_probe) workspace_root =
   let home = paths workspace_root in
+  let settings_exists = Sys.file_exists home.settings_path in
+  let settings_content, guidance =
+    if settings_exists then (settings_json, Bootstrap_existing_settings_preserved)
+    else
+      let detection = Bootstrap_harness_detection.detect ~probe () in
+      (Bootstrap_settings.to_string detection, bootstrap_guidance_of_detection detection)
+  in
   let report = [] in
   let report = ensure_dir report home.runtime_dir in
-  let report = ensure_file report home.settings_path settings_json in
+  let report = ensure_file report home.settings_path settings_content in
   let report = ensure_file report home.prompt_path prompt_md in
   let report = ensure_file report (Filename.concat home.runtime_dir ".env.example") env_example in
   let report = ensure_file report (Filename.concat home.runtime_dir ".gitignore") gitignore in
@@ -324,7 +389,11 @@ let bootstrap workspace_root =
   let report = ensure_file report (Filename.concat home.agents_dir "planner.md") planner_agent_md in
   let report = ensure_file report (Filename.concat home.agents_dir "engineer.md") engineer_agent_md in
   let report = ensure_file report (Filename.concat home.agents_dir "reviewer.md") reviewer_agent_md in
-  (home, List.rev report)
+  { home; report = List.rev report; guidance }
+
+let bootstrap workspace_root =
+  let result = bootstrap_with_guidance workspace_root in
+  (result.home, result.report)
 
 let is_env_name name =
   let valid_char = function 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' -> true | _ -> false in

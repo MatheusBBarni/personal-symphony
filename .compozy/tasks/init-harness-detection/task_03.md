@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Add Structured Bootstrap Settings Builder
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 3: Add Structured Bootstrap Settings Builder
@@ -31,11 +32,11 @@ Replace the static settings template concept with a structured Runtime Settings 
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Create the structured settings builder module.
-- [ ] 3.2 Preserve existing tracker, project, polling, workspace, sandbox, Git, pull request, stage, agent, and server defaults.
-- [ ] 3.3 Generate all supported Harness definitions with the existing command and loop defaults.
-- [ ] 3.4 Route Logical Agents to the selected Harness or preserve no-Harness fallback routes.
-- [ ] 3.5 Add tests that parse generated settings through `Config.from_settings_file`.
+- [x] 3.1 Create the structured settings builder module.
+- [x] 3.2 Preserve existing tracker, project, polling, workspace, sandbox, Git, pull request, stage, agent, and server defaults.
+- [x] 3.3 Generate all supported Harness definitions with the existing command and loop defaults.
+- [x] 3.4 Route Logical Agents to the selected Harness or preserve no-Harness fallback routes.
+- [x] 3.5 Add tests that parse generated settings through `Config.from_settings_file`.
 
 ## Implementation Details
 Create `apps/backend/lib/bootstrap_settings.re` and model the current default Runtime Settings from `apps/backend/lib/runtime_home.ml` as structured JSON. Reference the TechSpec "Data Models" and "Integration Points" sections for the selected-Harness routing behavior. Tests should assert shape and parser compatibility rather than comparing a large raw JSON string byte-for-byte.

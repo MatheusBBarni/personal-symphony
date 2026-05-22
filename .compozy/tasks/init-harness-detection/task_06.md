@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Document Adaptive Bootstrap Semantics
 type: docs
 complexity: medium
 dependencies:
   - task_05
+
 ---
 
 # Task 6: Document Adaptive Bootstrap Semantics

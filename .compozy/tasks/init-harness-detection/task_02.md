@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Add Default Local Harness Probe Adapter
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 2: Add Default Local Harness Probe Adapter
