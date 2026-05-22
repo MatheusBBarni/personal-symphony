@@ -17,6 +17,8 @@ opam exec -- dune exec examples/agent_workspace_jsx.exe
 
 Use `agent_workspace_jsx` when evaluating the recommended `Tui.Jsx` authoring path. Use `agent_workspace` when you want the lower-level direct `Components` and `Patterns` calls for comparison. Both examples render the same screen model through `Tui.Renderer`.
 
+The backend Terminal Console in `apps/backend` is the production dogfooding surface for the same authoring path; this example remains a package-level parity reference, not the owner of product-specific Terminal Console behavior.
+
 ## What It Demonstrates
 
 - `Tui.Jsx.AppShell` for an application frame with status badges and footer commands.

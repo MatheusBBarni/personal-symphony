@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: Capture Terminal Console Baseline Preview And Contract Inventory
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 1: Capture Terminal Console Baseline Preview And Contract Inventory
@@ -28,11 +29,11 @@ Capture the current backend Terminal Console rendering contract before any sourc
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Capture the current backend build state for the Terminal Console shell library.
-- [ ] 1.2 Run the Terminal Console preview executable and save representative output as baseline evidence.
-- [ ] 1.3 Inventory public `Terminal_console_tui` types, values, helpers, and record fields used outside the module.
-- [ ] 1.4 Map existing backend tests to the parity areas listed in the TechSpec testing approach.
-- [ ] 1.5 Document preview coverage gaps for help modal, settings modal, minimum terminal size, or other states not emitted by the current preview executable.
+- [x] 1.1 Capture the current backend build state for the Terminal Console shell library.
+- [x] 1.2 Run the Terminal Console preview executable and save representative output as baseline evidence.
+- [x] 1.3 Inventory public `Terminal_console_tui` types, values, helpers, and record fields used outside the module.
+- [x] 1.4 Map existing backend tests to the parity areas listed in the TechSpec testing approach.
+- [x] 1.5 Document preview coverage gaps for help modal, settings modal, minimum terminal size, or other states not emitted by the current preview executable.
 
 ## Implementation Details
 Create a small evidence note under `.compozy/tasks/backend-tui-jsx-rewrite/evidence/` for the baseline command output and contract inventory. Use the TechSpec "Integration Points" and "Testing Approach" sections as the source of truth for what must stay compatible.
@@ -66,13 +67,13 @@ Create a small evidence note under `.compozy/tasks/backend-tui-jsx-rewrite/evide
 
 ## Tests
 - Unit tests:
-  - [ ] Run `pnpm backend:build` before evidence capture to confirm the preview executable and shell library compile.
-  - [ ] Run `pnpm test` if any backend test helper or source file is changed while collecting evidence.
-  - [ ] Confirm no generated frontend `.res.js` files are created or modified.
+  - [x] Run `pnpm backend:build` before evidence capture to confirm the preview executable and shell library compile.
+  - [x] Run `pnpm test` if any backend test helper or source file is changed while collecting evidence.
+  - [x] Confirm no generated frontend `.res.js` files are created or modified.
 - Integration tests:
-  - [ ] Run the built `terminal_console_preview` executable and save the non-interactive output.
-  - [ ] Confirm the preview output includes queue, readiness, attention, task detail, log, and Runtime State projection signals from the mock state.
-  - [ ] Confirm the evidence note explicitly marks missing preview states instead of treating them as covered.
+  - [x] Run the built `terminal_console_preview` executable and save the non-interactive output.
+  - [x] Confirm the preview output includes queue, readiness, attention, task detail, log, and Runtime State projection signals from the mock state.
+  - [x] Confirm the evidence note explicitly marks missing preview states instead of treating them as covered.
 - Test coverage target: >=80%
 - All tests must pass
 
