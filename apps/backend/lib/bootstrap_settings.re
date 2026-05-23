@@ -140,16 +140,25 @@ let logical_agent =
     | Some(selected) => selected.name
     | None => default.fallback_harness
     };
+  let override_fields =
+    switch (selected_harness) {
+    | Some(_) => []
+    | None => [
+        ("model", str(default.model)),
+        ("reasoningEffort", str(default.reasoning_effort)),
+      ]
+    };
   (
     default.name,
-    obj([
-      ("harness", str(harness)),
-      ("model", str(default.model)),
-      ("reasoningEffort", str(default.reasoning_effort)),
-      ("turnTimeoutMs", int(3600000)),
-      ("readTimeoutMs", int(5000)),
-      ("stallTimeoutMs", int(300000)),
-    ]),
+    obj(
+      [("harness", str(harness))]
+      @ override_fields
+      @ [
+        ("turnTimeoutMs", int(3600000)),
+        ("readTimeoutMs", int(5000)),
+        ("stallTimeoutMs", int(300000)),
+      ],
+    ),
   );
 };
 

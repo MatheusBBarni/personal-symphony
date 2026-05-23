@@ -4651,6 +4651,16 @@ let assert_all_default_logical_agents_route_to expected json =
         (bootstrap_settings_string [ "agents"; name; "harness" ] json))
     [ "planner"; "engineer"; "reviewer" ]
 
+let assert_selected_logical_agents_use_harness_defaults expected json =
+  assert_all_default_logical_agents_route_to expected json;
+  List.iter
+    (fun name ->
+      Alcotest.(check bool) (name ^ " model inherits Harness default") true
+        (bootstrap_settings_member json [ "agents"; name; "model" ] = `Null);
+      Alcotest.(check bool) (name ^ " reasoning inherits Harness default") true
+        (bootstrap_settings_member json [ "agents"; name; "reasoningEffort" ] = `Null))
+    [ "planner"; "engineer"; "reviewer" ]
+
 let test_bootstrap_settings_routes_selected_harnesses_to_logical_agents () =
   let cases =
     [
@@ -4665,7 +4675,7 @@ let test_bootstrap_settings_routes_selected_harnesses_to_logical_agents () =
   in
   List.iter
     (fun (expected, settings) ->
-      assert_all_default_logical_agents_route_to expected settings.Bootstrap_settings.json;
+      assert_selected_logical_agents_use_harness_defaults expected settings.Bootstrap_settings.json;
       Alcotest.(check (option string)) (expected ^ " selected metadata") (Some expected)
         (Option.map
            (fun (selected : Bootstrap_settings.selected_harness) -> selected.Bootstrap_settings.name)
@@ -4701,7 +4711,7 @@ let test_bootstrap_settings_never_assigns_cursor_force_automatically () =
   in
   Alcotest.(check string) "cursor-force remains defined" "cursor"
     (bootstrap_settings_string [ "harnesses"; "cursor-force"; "kind" ] selected_cursor.Bootstrap_settings.json);
-  assert_all_default_logical_agents_route_to "cursor" selected_cursor.Bootstrap_settings.json;
+  assert_selected_logical_agents_use_harness_defaults "cursor" selected_cursor.Bootstrap_settings.json;
   assert_default_logical_agent_routes cursor_force_only.Bootstrap_settings.json;
   List.iter
     (fun json ->
@@ -4778,6 +4788,7 @@ let test_runtime_contract_docs_use_current_harness_examples () =
   let read path = Util.read_file (repository_file path) in
   let readme = read "README.md" in
   let context = read "CONTEXT.md" in
+  let adr = read "docs/adr/0021-agent-harness-runtime-settings.md" in
   List.iter
     (fun text ->
       Alcotest.(check bool) "documents harnesses section" true (contains_substring text "\"harnesses\": {");
@@ -4797,6 +4808,22 @@ let test_runtime_contract_docs_use_current_harness_examples () =
       "\"command\": \"cursor-agent -p --model <model> --output-format stream-json\"";
       "\"command\": \"cursor-agent -p --force --model <model> --output-format stream-json\"";
       "\"command\": \"/goal\"";
+      "adaptive missing-settings Bootstrap";
+      "selected Agent Harness";
+      "existing Runtime Settings are preserved";
+      "default Logical Agents route to the selected Harness";
+      "remains the dispatch authority";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("ADR includes adaptive Bootstrap " ^ expected) true (contains_substring adr expected))
+    [
+      "amended 2026-05-08, 2026-05-17, and 2026-05-23";
+      "Bootstrap may seed missing Runtime Settings";
+      "route default Logical Agents to the selected Harness";
+      "not auto-selected";
+      "Existing `.symphony/settings.json` files are preserved byte-for-byte";
+      "Runtime readiness remains the dispatch authority";
     ];
   List.iter
     (fun obsolete ->
@@ -4860,7 +4887,7 @@ let test_runtime_contract_docs_cover_sandbox_settings () =
   List.iter
     (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
     [
-      "Accepted, amended 2026-05-08 and 2026-05-17";
+      "Accepted, amended 2026-05-08, 2026-05-17, and 2026-05-23";
       "top-level `sandbox` block";
       "`sandbox.enabled` is `true`";
       "`sandbox.type` must be `docker`";
@@ -5126,6 +5153,9 @@ let test_project_adr_documents_migration_and_loop_semantics () =
       "cursor-agent -p --model <model> --output-format stream-json";
       "cursor-agent -p --force --model <model> --output-format stream-json";
       "Cursor Harness readiness validation checks only selected Cursor Harnesses";
+      "Bootstrap may seed missing Runtime Settings";
+      "adaptive missing-settings Bootstrap";
+      "Runtime readiness remains the dispatch authority";
       "Bootstrap defaults enable Codex loop with `/goal` and disable Claude, Cursor, and PI loops";
     ]
 

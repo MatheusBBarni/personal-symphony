@@ -56,6 +56,13 @@ Edit `.symphony/settings.json` to choose an Issue Tracker, set tracker-specific 
 status states, and set runtime commands. Runtime Settings reference secrets by environment variable
 name; secret values belong only in the Local Environment.
 
+When `.symphony/settings.json` is missing, Bootstrap seeds it with normal Runtime Settings from a
+local, allowlisted Agent Harness detection pass. The output names a selected Agent Harness when one is
+usable, reports when no supported usable Agent Harness was found, or says that
+existing Runtime Settings are preserved on repeated Bootstrap. Existing settings are preserved without
+regeneration. This adaptive missing-settings Bootstrap is onboarding guidance only: runtime readiness
+remains the dispatch authority before any agent work starts.
+
 ### Default Terminal Console
 
 Run `symphony` from the Workspace Repository root to start the default read-first Terminal Console.
@@ -343,6 +350,12 @@ never secret values.
 To assign Cursor to any Logical Agent, set `agents.<name>.harness` to `cursor` or `cursor-force`.
 Keep `stageAgents.stages[]` routing by Logical Agent name rather than placing provider fields on the
 stage itself.
+
+Generated first-run Runtime Settings keep all supported Harness definitions available for editing. When
+Bootstrap detects a usable supported Harness, the default Logical Agents route to the selected Harness;
+when no Harness is usable, the default Logical Agent routes remain `codex`, `claude`, and `pi` so the
+next manual edit is explicit. Repeated Bootstrap preserves existing Runtime Contract files and does not
+reinterpret, regenerate, or rewrite Harness settings.
 
 Legacy settings that place Harness definitions under `agents.*`, such as `agents.pi.kind`, are
 migration input. When the new Runtime Settings shape is in use, Symphony reports a blocking Readiness

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, amended 2026-05-08 and 2026-05-17
+Accepted, amended 2026-05-08, 2026-05-17, and 2026-05-23
 
 ## Context
 
@@ -27,6 +27,10 @@ Legacy harness-shaped `agents.*` entries remain migration input, but they are no
 Stage Agent mappings select logical agents with `stageAgents.stages[].agent`. Stage-level `stageAgents.stages[].harness` is legacy input and is a blocking Readiness Gap. The remediation is to move Harness selection to `agents.<logical-agent>.harness`.
 
 Readiness validation uses enabled Stage Agent mappings resolved through logical agents as the dispatch boundary for Agent Harness launch requirements. Required Agent Harness fields and launch environment checks are validated for selected Agent Harnesses; unused Agent Harness definitions do not block dispatch solely because their launch path is unavailable.
+
+Bootstrap may seed missing Runtime Settings from a local, allowlisted Agent Harness detection pass when `.symphony/settings.json` does not exist. Generated first-run settings keep all supported Harness definitions for editability, route default Logical Agents to the selected Harness when one is detected, and keep `cursor-force` as an explicit editable Harness that is not auto-selected. If no supported usable Harness is detected, Bootstrap still creates the Runtime Contract with the default Logical Agent routes and reports install or authentication guidance.
+
+This adaptive missing-settings Bootstrap is an onboarding signal, not runtime truth. Existing `.symphony/settings.json` files are preserved byte-for-byte and are not reinterpreted, regenerated, or rewritten by repeated Bootstrap. Runtime readiness remains the dispatch authority for validating the selected Agent Harness before any Stage Agent launches.
 
 The Optional Docker Sandbox remains separate from Agent Harness selection. Runtime Settings may define a top-level `sandbox` block that defaults to disabled. When `sandbox.enabled` is `true`, `sandbox.type` must be `docker`, required sandbox fields and live Docker availability become dispatch-blocking readiness inputs, and Symphony launches the selected Agent Harness through an Agent Worktree-scoped Sandbox container instead of redefining the Harness kind.
 
@@ -80,4 +84,4 @@ Runtime Settings parsing, readiness validation, launch command rendering, timeou
 
 Sandbox parsing, readiness validation, and Runtime State metadata are additional Runtime Contract concerns, but Sandbox must not become an Agent Harness kind or a stage-level routing concept.
 
-The Runtime Contract changes, so Bootstrap must preserve existing user-edited Runtime Settings and create new defaults only when files are missing.
+The Runtime Contract changes, so Bootstrap must preserve existing user-edited Runtime Settings and create new defaults only when files are missing. Adaptive first-run defaults reduce onboarding edits on machines with a usable Harness, but they also make the readiness boundary important: selected-Harness guidance must not imply dispatch is ready until Runtime Settings readiness has passed.
