@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: Define Bootstrap Harness Detection Boundary
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 1: Define Bootstrap Harness Detection Boundary
@@ -29,11 +30,11 @@ Define the pure Bootstrap Harness detection boundary that later tasks will use f
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define the secret-free Harness status and detection result types.
-- [ ] 1.2 Define the injected probe contract for executable, auth, and bounded status checks.
-- [ ] 1.3 Define supported Harness metadata and the deterministic selection priority.
-- [ ] 1.4 Define guidance categories for selected, missing, and nonselectable Harness outcomes.
-- [ ] 1.5 Add focused Alcotest coverage for pure selection and guidance classification.
+- [x] 1.1 Define the secret-free Harness status and detection result types.
+- [x] 1.2 Define the injected probe contract for executable, auth, and bounded status checks.
+- [x] 1.3 Define supported Harness metadata and the deterministic selection priority.
+- [x] 1.4 Define guidance categories for selected, missing, and nonselectable Harness outcomes.
+- [x] 1.5 Add focused Alcotest coverage for pure selection and guidance classification.
 
 ## Implementation Details
 Create `apps/backend/lib/bootstrap_harness_detection.re` as the owner of the detection domain described in the TechSpec "Core Interfaces" and ADR-003. Keep the module pure for this task: tests should inject probe results directly and must not invoke real `codex`, `claude`, `cursor-agent`, or `pi` commands. Add tests in `apps/backend/test/test_backend.ml` near the existing Runtime Home and Harness readiness coverage.
@@ -63,14 +64,14 @@ Create `apps/backend/lib/bootstrap_harness_detection.re` as the owner of the det
 
 ## Tests
 - Unit tests:
-  - [ ] Codex-only probe result selects `codex` while marking Codex readiness confidence as executable-only.
-  - [ ] Claude-only, Cursor-only, and PI-only probe results each select their matching Harness.
-  - [ ] Multiple usable Harnesses select the deterministic priority winner and leave all statuses inspectable.
-  - [ ] `cursor-force` usable-looking input is retained as nonselectable and never becomes the selected Harness.
-  - [ ] No usable Harness produces no selected Harness and includes remediation categories.
-  - [ ] Token-like marker strings cannot appear in detection result fields or guidance lines.
+  - [x] Codex-only probe result selects `codex` while marking Codex readiness confidence as executable-only.
+  - [x] Claude-only, Cursor-only, and PI-only probe results each select their matching Harness.
+  - [x] Multiple usable Harnesses select the deterministic priority winner and leave all statuses inspectable.
+  - [x] `cursor-force` usable-looking input is retained as nonselectable and never becomes the selected Harness.
+  - [x] No usable Harness produces no selected Harness and includes remediation categories.
+  - [x] Token-like marker strings cannot appear in detection result fields or guidance lines.
 - Integration tests:
-  - [ ] Compile the backend test suite with the new Reason module available to OCaml tests.
+  - [x] Compile the backend test suite with the new Reason module available to OCaml tests.
 - Test coverage target: >=80%
 - All tests must pass
 

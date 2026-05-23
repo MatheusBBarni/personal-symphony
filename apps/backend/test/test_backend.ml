@@ -4144,6 +4144,165 @@ let test_project_status_order_uses_transition_flow () =
   Alcotest.(check (list string)) "kanban status order" [ "To-Do"; "In progress"; "In review"; "Done" ]
     (Config.project_status_order config)
 
+let bootstrap_secret_markers =
+  [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "CURSOR_API_KEY="; "GITHUB_TOKEN=" ]
+
+let assert_text_contains label text expected =
+  Alcotest.(check bool) label true (contains_substring text expected)
+
+let assert_text_absent label text unexpected =
+  Alcotest.(check bool) label false (contains_substring text unexpected)
+
+let assert_bootstrap_texts_secret_free label texts =
+  List.iter
+    (fun marker ->
+      Alcotest.(check bool) (label ^ " secret marker absent " ^ marker) false
+        (List.exists (fun text -> contains_substring text marker) texts))
+    bootstrap_secret_markers
+
+let bootstrap_harness_probe ?(executables = []) ?(auth = []) ?(status = []) () :
+    Bootstrap_harness_detection.probe =
+  let assoc name values default = match List.assoc_opt name values with Some value -> value | None -> default in
+  {
+    executable_available = (fun executable -> List.exists (( = ) executable) executables);
+    auth_signal =
+      (fun (definition : Bootstrap_harness_detection.harness_definition) ->
+        assoc definition.Bootstrap_harness_detection.name auth Bootstrap_harness_detection.Auth_missing);
+    status_signal =
+      (fun (definition : Bootstrap_harness_detection.harness_definition) ->
+        assoc definition.Bootstrap_harness_detection.name status Bootstrap_harness_detection.Status_failed);
+  }
+
+let bootstrap_guidance_text guidance = Runtime_startup.bootstrap_guidance_lines guidance |> String.concat "\n"
+
+let test_bootstrap_guidance_renderer_selected_harness () =
+  let selected : Runtime_home.bootstrap_selected_harness = { name = "claude"; kind = "claude" } in
+  let lines = Runtime_startup.bootstrap_guidance_lines (Runtime_home.Bootstrap_selected_harness selected) in
+  let text = String.concat "\n" lines in
+  assert_text_contains "names selected Harness" text "selected Agent Harness claude (claude)";
+  assert_text_contains "states local detection provenance" text "local Bootstrap detection";
+  assert_text_contains "states readiness authority" text "runtime readiness remains the dispatch authority";
+  assert_text_contains "states readiness validation next step" text "runtime readiness validate the selected Harness";
+  assert_bootstrap_texts_secret_free "selected guidance" lines
+
+let test_bootstrap_guidance_renderer_no_usable_harness () =
+  let lines = Runtime_startup.bootstrap_guidance_lines Runtime_home.Bootstrap_no_usable_harness in
+  let text = String.concat "\n" lines in
+  assert_text_contains "reports no usable Harness" text "no supported usable Agent Harness";
+  assert_text_contains "reports Runtime Contract creation" text "Runtime Contract files";
+  assert_text_contains "reports install or auth next action" text "install or authenticate";
+  assert_text_contains "keeps runtime readiness authority" text "runtime readiness can validate dispatch";
+  assert_bootstrap_texts_secret_free "no Harness guidance" lines
+
+let test_bootstrap_guidance_renderer_existing_settings () =
+  let lines = Runtime_startup.bootstrap_guidance_lines Runtime_home.Bootstrap_existing_settings_preserved in
+  let text = String.concat "\n" lines in
+  assert_text_contains "reports preserved settings" text "existing Runtime Settings were preserved";
+  assert_text_contains "reports no regeneration" text "did not reinterpret, regenerate, or rewrite Harness settings";
+  assert_text_contains "reports manual settings path" text ".symphony/settings.json";
+  assert_text_absent "does not imply fresh selection" text "selected Agent Harness";
+  assert_bootstrap_texts_secret_free "existing settings guidance" lines
+
+let test_bootstrap_guidance_renderer_omits_raw_probe_output () =
+  let selected : Runtime_home.bootstrap_selected_harness = { name = "cursor"; kind = "cursor" } in
+  let lines =
+    Runtime_startup.bootstrap_guidance_lines (Runtime_home.Bootstrap_selected_harness selected)
+    @ Runtime_startup.bootstrap_guidance_lines Runtime_home.Bootstrap_no_usable_harness
+    @ Runtime_startup.bootstrap_guidance_lines Runtime_home.Bootstrap_existing_settings_preserved
+  in
+  List.iter
+    (fun marker ->
+      Alcotest.(check bool) ("raw probe output absent " ^ marker) false
+        (List.exists (fun text -> contains_substring text marker) lines))
+    [ "stdout"; "stderr"; "exit "; "Usage:"; "command output"; "gh auth"; "cursor-agent status:" ];
+  assert_bootstrap_texts_secret_free "all guidance" lines
+
+let test_bootstrap_with_guidance_reports_selected_harness_for_created_settings () =
+  with_temp_dir "symphony-bootstrap-guidance-selected-" (fun root ->
+      let probe =
+        bootstrap_harness_probe ~executables:[ "claude" ]
+          ~auth:[ ("claude", Bootstrap_harness_detection.Authenticated) ] ()
+      in
+      let bootstrap = Runtime_home.bootstrap_with_guidance ~probe root in
+      (match bootstrap.Runtime_home.guidance with
+      | Runtime_home.Bootstrap_selected_harness selected ->
+          Alcotest.(check string) "selected Harness name" "claude" selected.name;
+          Alcotest.(check string) "selected Harness kind" "claude" selected.kind
+      | _ -> Alcotest.fail "expected selected-Harness Bootstrap guidance");
+      let settings = Yojson.Safe.from_file bootstrap.home.settings_path in
+      Alcotest.(check string) "planner routes to selected Harness" "claude"
+        (Yojson.Safe.Util.(settings |> member "agents" |> member "planner" |> member "harness" |> to_string));
+      let guidance = bootstrap_guidance_text bootstrap.guidance in
+      assert_text_contains "created settings selected guidance" guidance "selected Agent Harness claude (claude)";
+      assert_text_contains "created settings readiness authority" guidance "runtime readiness remains the dispatch authority")
+
+let test_bootstrap_with_guidance_reports_no_usable_harness_for_created_settings () =
+  with_temp_dir "symphony-bootstrap-guidance-none-" (fun root ->
+      let bootstrap = Runtime_home.bootstrap_with_guidance ~probe:(bootstrap_harness_probe ()) root in
+      (match bootstrap.Runtime_home.guidance with
+      | Runtime_home.Bootstrap_no_usable_harness -> ()
+      | _ -> Alcotest.fail "expected no-usable-Harness Bootstrap guidance");
+      Alcotest.(check bool) "settings still created" true (Sys.file_exists bootstrap.home.settings_path);
+      let guidance = bootstrap_guidance_text bootstrap.guidance in
+      assert_text_contains "no Harness Runtime Contract created" guidance "Runtime Contract files";
+      assert_text_contains "no Harness next action" guidance "install or authenticate")
+
+let test_bootstrap_with_guidance_reports_existing_settings_preserved () =
+  with_temp_dir "symphony-bootstrap-guidance-existing-" (fun root ->
+      let selected_probe =
+        bootstrap_harness_probe ~executables:[ "claude" ]
+          ~auth:[ ("claude", Bootstrap_harness_detection.Authenticated) ] ()
+      in
+      let first = Runtime_home.bootstrap_with_guidance ~probe:selected_probe root in
+      let before = Util.read_file first.Runtime_home.home.settings_path in
+      let second = Runtime_home.bootstrap_with_guidance ~probe:(bootstrap_harness_probe ~executables:[ "codex" ] ()) root in
+      Alcotest.(check string) "settings preserved byte-for-byte" before
+        (Util.read_file second.Runtime_home.home.settings_path);
+      (match second.Runtime_home.guidance with
+      | Runtime_home.Bootstrap_existing_settings_preserved -> ()
+      | _ -> Alcotest.fail "expected existing-settings-preserved Bootstrap guidance");
+      let guidance = bootstrap_guidance_text second.Runtime_home.guidance in
+      assert_text_contains "existing settings preserved" guidance "existing Runtime Settings were preserved";
+      assert_text_contains "existing settings not regenerated" guidance
+        "did not reinterpret, regenerate, or rewrite Harness settings")
+
+let test_runtime_startup_prepare_carries_bootstrap_guidance () =
+  with_temp_dir "symphony-runtime-startup-guidance-" (fun root ->
+      init_repo root "main";
+      let probe =
+        bootstrap_harness_probe ~executables:[ "cursor-agent" ]
+          ~status:[ ("cursor", Bootstrap_harness_detection.Status_succeeded) ] ()
+      in
+      let original = Unix.getcwd () in
+      Fun.protect
+        ~finally:(fun () -> Unix.chdir original)
+        (fun () ->
+          Unix.chdir root;
+          match Runtime_startup.prepare_runtime ~bootstrap_probe:probe () with
+          | Error error -> Alcotest.fail ("prepare failed: " ^ error)
+          | Ok prepared -> (
+              match prepared.Runtime_startup.bootstrap_guidance with
+              | Runtime_home.Bootstrap_selected_harness selected ->
+                  Alcotest.(check string) "prepared selected Harness" "cursor" selected.Runtime_home.name;
+                  assert_text_contains "prepared guidance line" (bootstrap_guidance_text prepared.bootstrap_guidance)
+                    "runtime readiness remains the dispatch authority"
+              | _ -> Alcotest.fail "expected prepare_runtime selected-Harness guidance")))
+
+let test_terminal_console_initial_logs_include_guidance_before_startup_completed () =
+  let guidance =
+    Runtime_home.Bootstrap_selected_harness ({ name = "codex"; kind = "codex" } : Runtime_home.bootstrap_selected_harness)
+  in
+  let lines =
+    Runtime_startup.terminal_console_initial_log_lines
+      ~bootstrap_report_lines:[ "bootstrap 12 created 0 already configured" ] ~bootstrap_guidance:guidance
+      ~startup_completed_line:"startup ready terminal_console tracker compozy_tasks /tmp/tasks"
+  in
+  let text = String.concat "\n" lines in
+  match (substring_index text "bootstrap guidance:", substring_index text "startup ready terminal_console") with
+  | Some guidance_index, Some startup_index ->
+      Alcotest.(check bool) "guidance precedes startup completed" true (guidance_index < startup_index)
+  | _ -> Alcotest.fail "expected guidance and startup log lines"
+
 let test_bootstrap_idempotency_preserves_user_files () =
   with_temp_dir "symphony-bootstrap-" (fun root ->
       let home, first = Runtime_home.bootstrap root in
@@ -4181,7 +4340,8 @@ let test_bootstrap_idempotency_preserves_user_files () =
 
 let test_bootstrap_default_runtime_contract_shape () =
   with_temp_dir "symphony-bootstrap-default-contract-" (fun root ->
-      let home, _ = Runtime_home.bootstrap root in
+      let bootstrap = Runtime_home.bootstrap_with_guidance ~probe:(bootstrap_harness_probe ()) root in
+      let home = bootstrap.Runtime_home.home in
       let settings = Util.read_file home.settings_path in
       let json = Yojson.Safe.from_string settings in
       let member path =
@@ -4242,10 +4402,393 @@ let test_bootstrap_default_runtime_contract_shape () =
       Alcotest.(check (list string)) "bootstrapped disabled sandbox has no gaps" []
         (Config.readiness_gaps config |> sandbox_requirements))
 
+let detect_bootstrap_harness ?executables ?auth ?status () =
+  let probe = bootstrap_harness_probe ?executables ?auth ?status () in
+  Bootstrap_harness_detection.detect ~probe ()
+
+let bootstrap_harness_status name (result : Bootstrap_harness_detection.detection_result) =
+  match
+    List.find_opt
+      (fun (status : Bootstrap_harness_detection.harness_status) ->
+        status.Bootstrap_harness_detection.name = name)
+      result.Bootstrap_harness_detection.supported
+  with
+  | Some status -> status
+  | None -> Alcotest.fail ("expected Harness detection status " ^ name)
+
+let selected_bootstrap_harness_name result =
+  match result.Bootstrap_harness_detection.selected with
+  | Some status -> status.Bootstrap_harness_detection.name
+  | None -> Alcotest.fail "expected selected Bootstrap Harness"
+
+let has_bootstrap_guidance_category category result =
+  List.exists
+    (fun (item : Bootstrap_harness_detection.guidance_item) ->
+      item.Bootstrap_harness_detection.category = category)
+    result.Bootstrap_harness_detection.guidance
+
+let test_bootstrap_harness_detection_selects_codex_executable_only () =
+  let result = detect_bootstrap_harness ~executables:[ "codex" ] () in
+  Alcotest.(check string) "selected Harness" "codex" (selected_bootstrap_harness_name result);
+  let codex = bootstrap_harness_status "codex" result in
+  Alcotest.(check bool) "codex executable available" true codex.Bootstrap_harness_detection.executable_available;
+  Alcotest.(check bool) "codex usable" true codex.Bootstrap_harness_detection.probed_usable;
+  Alcotest.(check string) "codex confidence" "executable_only"
+    (Bootstrap_harness_detection.readiness_confidence_to_string
+       codex.Bootstrap_harness_detection.readiness_confidence);
+  Alcotest.(check string) "codex auth not checked" "auth_not_checked"
+    (Bootstrap_harness_detection.auth_signal_to_string codex.Bootstrap_harness_detection.auth_signal);
+  Alcotest.(check string) "codex status not checked" "status_not_checked"
+    (Bootstrap_harness_detection.status_signal_to_string codex.Bootstrap_harness_detection.status_signal);
+  Alcotest.(check bool) "selected guidance" true
+    (has_bootstrap_guidance_category Bootstrap_harness_detection.Selected_harness result)
+
+let test_bootstrap_harness_detection_selects_single_strong_harnesses () =
+  let check_selected label expected result =
+    Alcotest.(check string) label expected (selected_bootstrap_harness_name result)
+  in
+  let claude =
+    detect_bootstrap_harness ~executables:[ "claude" ]
+      ~auth:[ ("claude", Bootstrap_harness_detection.Authenticated) ] ()
+  in
+  check_selected "claude selected" "claude" claude;
+  Alcotest.(check string) "claude confidence" "install_and_auth"
+    (Bootstrap_harness_detection.readiness_confidence_to_string
+       (bootstrap_harness_status "claude" claude).Bootstrap_harness_detection.readiness_confidence);
+  let cursor =
+    detect_bootstrap_harness ~executables:[ "cursor-agent" ]
+      ~status:[ ("cursor", Bootstrap_harness_detection.Status_succeeded) ] ()
+  in
+  check_selected "cursor selected" "cursor" cursor;
+  Alcotest.(check string) "cursor confidence" "install_and_status"
+    (Bootstrap_harness_detection.readiness_confidence_to_string
+       (bootstrap_harness_status "cursor" cursor).Bootstrap_harness_detection.readiness_confidence);
+  let pi =
+    detect_bootstrap_harness ~executables:[ "pi" ]
+      ~auth:[ ("pi", Bootstrap_harness_detection.Authenticated) ] ()
+  in
+  check_selected "pi selected" "pi" pi;
+  Alcotest.(check string) "pi confidence" "install_and_auth"
+    (Bootstrap_harness_detection.readiness_confidence_to_string
+       (bootstrap_harness_status "pi" pi).Bootstrap_harness_detection.readiness_confidence)
+
+let test_bootstrap_harness_detection_uses_deterministic_priority () =
+  let result =
+    detect_bootstrap_harness
+      ~executables:[ "codex"; "claude"; "cursor-agent"; "pi" ]
+      ~auth:
+        [
+          ("claude", Bootstrap_harness_detection.Authenticated);
+          ("pi", Bootstrap_harness_detection.Authenticated);
+        ]
+      ~status:
+        [
+          ("cursor", Bootstrap_harness_detection.Status_succeeded);
+          ("cursor-force", Bootstrap_harness_detection.Status_succeeded);
+        ]
+      ()
+  in
+  Alcotest.(check (list string)) "selection priority" [ "claude"; "cursor"; "pi"; "codex" ]
+    Bootstrap_harness_detection.selection_priority;
+  Alcotest.(check string) "priority winner" "claude" (selected_bootstrap_harness_name result);
+  Alcotest.(check int) "all supported statuses inspectable" 5
+    (List.length result.Bootstrap_harness_detection.supported);
+  List.iter
+    (fun name ->
+      Alcotest.(check string) ("status exists " ^ name) name
+        (bootstrap_harness_status name result).Bootstrap_harness_detection.name)
+    [ "codex"; "claude"; "cursor"; "cursor-force"; "pi" ];
+  Alcotest.(check bool) "codex was usable but lower priority" true
+    (bootstrap_harness_status "codex" result).Bootstrap_harness_detection.auto_selectable
+
+let test_bootstrap_harness_detection_never_selects_cursor_force () =
+  let result =
+    detect_bootstrap_harness ~executables:[ "cursor-agent" ]
+      ~status:
+        [
+          ("cursor", Bootstrap_harness_detection.Status_failed);
+          ("cursor-force", Bootstrap_harness_detection.Status_succeeded);
+        ]
+      ()
+  in
+  Alcotest.(check bool) "no selected Harness" true (Option.is_none result.Bootstrap_harness_detection.selected);
+  let cursor_force = bootstrap_harness_status "cursor-force" result in
+  Alcotest.(check bool) "cursor-force probe looks usable" true
+    cursor_force.Bootstrap_harness_detection.probed_usable;
+  Alcotest.(check bool) "cursor-force is not selectable" false
+    cursor_force.Bootstrap_harness_detection.auto_selectable;
+  Alcotest.(check string) "cursor-force confidence" "nonselectable"
+    (Bootstrap_harness_detection.readiness_confidence_to_string
+       cursor_force.Bootstrap_harness_detection.readiness_confidence);
+  Alcotest.(check bool) "nonselectable guidance" true
+    (has_bootstrap_guidance_category Bootstrap_harness_detection.Nonselectable_harness result)
+
+let test_bootstrap_harness_detection_no_usable_guidance () =
+  let result = detect_bootstrap_harness () in
+  Alcotest.(check bool) "no selected Harness" true (Option.is_none result.Bootstrap_harness_detection.selected);
+  Alcotest.(check bool) "no usable guidance" true
+    (has_bootstrap_guidance_category Bootstrap_harness_detection.No_usable_harness result);
+  Alcotest.(check bool) "install remediation guidance" true
+    (has_bootstrap_guidance_category Bootstrap_harness_detection.Missing_install result);
+  Alcotest.(check bool) "guidance lines available" true
+    (List.length (Bootstrap_harness_detection.guidance_lines result) > 0);
+  List.iter
+    (fun (status : Bootstrap_harness_detection.harness_status) ->
+      if status.Bootstrap_harness_detection.selectable then
+        Alcotest.(check bool) ("not selectable " ^ status.Bootstrap_harness_detection.name) false
+          status.Bootstrap_harness_detection.auto_selectable)
+    result.Bootstrap_harness_detection.supported
+
+let test_bootstrap_harness_detection_result_is_secret_free () =
+  let result =
+    detect_bootstrap_harness
+      ~executables:[ "codex"; "claude"; "cursor-agent"; "pi" ]
+      ~auth:
+        [
+          ("claude", Bootstrap_harness_detection.Authenticated);
+          ("pi", Bootstrap_harness_detection.Authenticated);
+        ]
+      ~status:
+        [
+          ("cursor", Bootstrap_harness_detection.Status_succeeded);
+          ("cursor-force", Bootstrap_harness_detection.Status_succeeded);
+        ]
+      ()
+  in
+  let status_texts (status : Bootstrap_harness_detection.harness_status) =
+    [
+      status.name;
+      status.kind;
+      status.executable;
+      status.display_name;
+      Bootstrap_harness_detection.auth_signal_to_string status.auth_signal;
+      Bootstrap_harness_detection.status_signal_to_string status.status_signal;
+      Bootstrap_harness_detection.readiness_confidence_to_string status.readiness_confidence;
+      status.remediation;
+    ]
+  in
+  let guidance_texts (item : Bootstrap_harness_detection.guidance_item) =
+    [
+      Bootstrap_harness_detection.guidance_category_to_string item.category;
+      item.message;
+      Option.value item.harness_name ~default:"";
+    ]
+  in
+  let texts =
+    [ Bootstrap_harness_detection.settings_mode_to_string result.settings_mode ]
+    @ (result.supported |> List.map status_texts |> List.concat)
+    @ (result.guidance |> List.map guidance_texts |> List.concat)
+  in
+  List.iter
+    (fun marker ->
+      Alcotest.(check bool) ("secret marker absent " ^ marker) false
+        (List.exists (fun text -> contains_substring text marker) texts))
+    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "CURSOR_API_KEY="; "GITHUB_TOKEN=" ]
+
+let bootstrap_settings_member json path =
+  List.fold_left (fun node key -> Yojson.Safe.Util.member key node) json path
+
+let bootstrap_settings_string path json =
+  Yojson.Safe.Util.to_string (bootstrap_settings_member json path)
+
+let bootstrap_settings_bool path json =
+  Yojson.Safe.Util.to_bool (bootstrap_settings_member json path)
+
+let bootstrap_settings_list path json =
+  Yojson.Safe.Util.to_list (bootstrap_settings_member json path)
+
+let bootstrap_settings_object_keys path json =
+  match bootstrap_settings_member json path with
+  | `Assoc fields -> List.map fst fields
+  | _ -> Alcotest.fail "expected JSON object"
+
+let build_bootstrap_settings ?executables ?auth ?status () =
+  detect_bootstrap_harness ?executables ?auth ?status () |> Bootstrap_settings.build
+
+let write_bootstrap_settings settings f =
+  with_temp_dir "symphony-bootstrap-settings-" (fun root ->
+      Util.mkdir_p (Filename.concat root ".symphony/workspaces");
+      Util.mkdir_p (Filename.concat root ".symphony/agents");
+      let path = Filename.concat root "settings.json" in
+      Util.write_file path (Yojson.Safe.pretty_to_string settings.Bootstrap_settings.json);
+      f root path)
+
+let test_bootstrap_settings_includes_supported_harness_definitions () =
+  let settings = build_bootstrap_settings () in
+  let json = settings.Bootstrap_settings.json in
+  let harness_names = bootstrap_settings_object_keys [ "harnesses" ] json in
+  Alcotest.(check (list string)) "supported Harness definitions"
+    [ "codex"; "claude"; "cursor"; "cursor-force"; "pi" ]
+    harness_names;
+  Alcotest.(check string) "codex command" Config.default_codex_command
+    (bootstrap_settings_string [ "harnesses"; "codex"; "command" ] json);
+  Alcotest.(check bool) "codex loop enabled" true
+    (bootstrap_settings_bool [ "harnesses"; "codex"; "loop"; "enabled" ] json);
+  Alcotest.(check string) "codex loop command" Config.default_codex_loop_command
+    (bootstrap_settings_string [ "harnesses"; "codex"; "loop"; "command" ] json);
+  Alcotest.(check string) "claude command" Config.default_claude_command
+    (bootstrap_settings_string [ "harnesses"; "claude"; "command" ] json);
+  Alcotest.(check string) "cursor command" Config.default_cursor_command
+    (bootstrap_settings_string [ "harnesses"; "cursor"; "command" ] json);
+  Alcotest.(check string) "cursor-force command"
+    "cursor-agent -p --force --model <model> --output-format stream-json"
+    (bootstrap_settings_string [ "harnesses"; "cursor-force"; "command" ] json);
+  Alcotest.(check string) "pi command" Config.default_pi_command
+    (bootstrap_settings_string [ "harnesses"; "pi"; "command" ] json)
+
+let assert_default_logical_agent_routes json =
+  Alcotest.(check string) "planner Harness" "codex"
+    (bootstrap_settings_string [ "agents"; "planner"; "harness" ] json);
+  Alcotest.(check string) "engineer Harness" "claude"
+    (bootstrap_settings_string [ "agents"; "engineer"; "harness" ] json);
+  Alcotest.(check string) "reviewer Harness" "pi"
+    (bootstrap_settings_string [ "agents"; "reviewer"; "harness" ] json)
+
+let assert_all_default_logical_agents_route_to expected json =
+  List.iter
+    (fun name ->
+      Alcotest.(check string) (name ^ " selected Harness") expected
+        (bootstrap_settings_string [ "agents"; name; "harness" ] json))
+    [ "planner"; "engineer"; "reviewer" ]
+
+let assert_selected_logical_agents_use_harness_defaults expected json =
+  assert_all_default_logical_agents_route_to expected json;
+  List.iter
+    (fun name ->
+      Alcotest.(check bool) (name ^ " model inherits Harness default") true
+        (bootstrap_settings_member json [ "agents"; name; "model" ] = `Null);
+      Alcotest.(check bool) (name ^ " reasoning inherits Harness default") true
+        (bootstrap_settings_member json [ "agents"; name; "reasoningEffort" ] = `Null))
+    [ "planner"; "engineer"; "reviewer" ]
+
+let test_bootstrap_settings_routes_selected_harnesses_to_logical_agents () =
+  let cases =
+    [
+      ("claude", build_bootstrap_settings ~executables:[ "claude" ]
+                   ~auth:[ ("claude", Bootstrap_harness_detection.Authenticated) ] ());
+      ("cursor", build_bootstrap_settings ~executables:[ "cursor-agent" ]
+                   ~status:[ ("cursor", Bootstrap_harness_detection.Status_succeeded) ] ());
+      ("pi", build_bootstrap_settings ~executables:[ "pi" ]
+               ~auth:[ ("pi", Bootstrap_harness_detection.Authenticated) ] ());
+      ("codex", build_bootstrap_settings ~executables:[ "codex" ] ());
+    ]
+  in
+  List.iter
+    (fun (expected, settings) ->
+      assert_selected_logical_agents_use_harness_defaults expected settings.Bootstrap_settings.json;
+      Alcotest.(check (option string)) (expected ^ " selected metadata") (Some expected)
+        (Option.map
+           (fun (selected : Bootstrap_settings.selected_harness) -> selected.Bootstrap_settings.name)
+           settings.Bootstrap_settings.selected_harness))
+    cases
+
+let test_bootstrap_settings_preserves_no_harness_fallback_routes () =
+  let settings = build_bootstrap_settings () in
+  let json = settings.Bootstrap_settings.json in
+  Alcotest.(check bool) "no selected Harness metadata" true
+    (Option.is_none settings.Bootstrap_settings.selected_harness);
+  assert_default_logical_agent_routes json;
+  Alcotest.(check string) "planner model" Config.default_model
+    (bootstrap_settings_string [ "agents"; "planner"; "model" ] json);
+  Alcotest.(check string) "engineer model" "opus-4.7"
+    (bootstrap_settings_string [ "agents"; "engineer"; "model" ] json);
+  Alcotest.(check string) "reviewer model" "openai-codex/gpt-5.5"
+    (bootstrap_settings_string [ "agents"; "reviewer"; "model" ] json)
+
+let test_bootstrap_settings_never_assigns_cursor_force_automatically () =
+  let selected_cursor =
+    build_bootstrap_settings ~executables:[ "cursor-agent" ]
+      ~status:[ ("cursor", Bootstrap_harness_detection.Status_succeeded) ] ()
+  in
+  let cursor_force_only =
+    build_bootstrap_settings ~executables:[ "cursor-agent" ]
+      ~status:
+        [
+          ("cursor", Bootstrap_harness_detection.Status_failed);
+          ("cursor-force", Bootstrap_harness_detection.Status_succeeded);
+        ]
+      ()
+  in
+  Alcotest.(check string) "cursor-force remains defined" "cursor"
+    (bootstrap_settings_string [ "harnesses"; "cursor-force"; "kind" ] selected_cursor.Bootstrap_settings.json);
+  assert_selected_logical_agents_use_harness_defaults "cursor" selected_cursor.Bootstrap_settings.json;
+  assert_default_logical_agent_routes cursor_force_only.Bootstrap_settings.json;
+  List.iter
+    (fun json ->
+      List.iter
+        (fun name ->
+          Alcotest.(check bool) (name ^ " not cursor-force") false
+            (bootstrap_settings_string [ "agents"; name; "harness" ] json = "cursor-force"))
+        [ "planner"; "engineer"; "reviewer" ])
+    [ selected_cursor.Bootstrap_settings.json; cursor_force_only.Bootstrap_settings.json ]
+
+let test_bootstrap_settings_stage_agents_route_by_agent_only () =
+  let settings =
+    build_bootstrap_settings ~executables:[ "claude" ]
+      ~auth:[ ("claude", Bootstrap_harness_detection.Authenticated) ] ()
+  in
+  let json = settings.Bootstrap_settings.json in
+  let stages = bootstrap_settings_list [ "stageAgents"; "stages" ] json in
+  Alcotest.(check int) "stage count" 3 (List.length stages);
+  List.iteri
+    (fun index stage ->
+      Alcotest.(check bool) (Printf.sprintf "stage %d has agent" index) true
+        (Yojson.Safe.Util.member "agent" stage <> `Null);
+      Alcotest.(check bool) (Printf.sprintf "stage %d has no Harness" index) true
+        (Yojson.Safe.Util.member "harness" stage = `Null))
+    stages
+
+let test_bootstrap_settings_text_is_secret_free () =
+  let settings =
+    build_bootstrap_settings ~executables:[ "codex"; "claude"; "cursor-agent"; "pi" ]
+      ~auth:
+        [
+          ("claude", Bootstrap_harness_detection.Authenticated);
+          ("pi", Bootstrap_harness_detection.Authenticated);
+        ]
+      ~status:
+        [
+          ("cursor", Bootstrap_harness_detection.Status_succeeded);
+          ("cursor-force", Bootstrap_harness_detection.Status_succeeded);
+        ]
+      ()
+  in
+  let text = Yojson.Safe.pretty_to_string settings.Bootstrap_settings.json in
+  List.iter
+    (fun marker ->
+      Alcotest.(check bool) ("secret marker absent " ^ marker) false (contains_substring text marker))
+    [ "github_pat_"; "ghp_"; "sk-ant-"; "sk-proj-"; "xoxb-"; "ANTHROPIC_API_KEY="; "CURSOR_API_KEY="; "GITHUB_TOKEN=" ]
+
+let assert_parsed_bootstrap_settings label settings =
+  write_bootstrap_settings settings (fun root path ->
+      let config = Config.from_settings_file ~workspace_root:root path in
+      Alcotest.(check int) (label ^ " Harness definitions parse") 5 (List.length config.Config.agent_harnesses);
+      Alcotest.(check int) (label ^ " Logical Agents parse") 3 (List.length config.Config.logical_agents);
+      Alcotest.(check bool) (label ^ " explicit Harness model") true config.Config.agent_harnesses_explicit;
+      Alcotest.(check bool) (label ^ " sandbox disabled") false config.Config.sandbox.enabled;
+      Alcotest.(check (list string)) (label ^ " disabled sandbox gaps") []
+        (Config.readiness_gaps config |> sandbox_requirements))
+
+let test_bootstrap_settings_parse_through_config () =
+  [
+    ("no Harness", build_bootstrap_settings ());
+    ( "claude",
+      build_bootstrap_settings ~executables:[ "claude" ]
+        ~auth:[ ("claude", Bootstrap_harness_detection.Authenticated) ] () );
+    ( "cursor",
+      build_bootstrap_settings ~executables:[ "cursor-agent" ]
+        ~status:[ ("cursor", Bootstrap_harness_detection.Status_succeeded) ] () );
+    ("pi", build_bootstrap_settings ~executables:[ "pi" ]
+             ~auth:[ ("pi", Bootstrap_harness_detection.Authenticated) ] ());
+    ("codex", build_bootstrap_settings ~executables:[ "codex" ] ());
+  ]
+  |> List.iter (fun (label, settings) -> assert_parsed_bootstrap_settings label settings)
+
 let test_runtime_contract_docs_use_current_harness_examples () =
   let read path = Util.read_file (repository_file path) in
   let readme = read "README.md" in
   let context = read "CONTEXT.md" in
+  let adr = read "docs/adr/0021-agent-harness-runtime-settings.md" in
   List.iter
     (fun text ->
       Alcotest.(check bool) "documents harnesses section" true (contains_substring text "\"harnesses\": {");
@@ -4265,6 +4808,22 @@ let test_runtime_contract_docs_use_current_harness_examples () =
       "\"command\": \"cursor-agent -p --model <model> --output-format stream-json\"";
       "\"command\": \"cursor-agent -p --force --model <model> --output-format stream-json\"";
       "\"command\": \"/goal\"";
+      "adaptive missing-settings Bootstrap";
+      "selected Agent Harness";
+      "existing Runtime Settings are preserved";
+      "default Logical Agents route to the selected Harness";
+      "remains the dispatch authority";
+    ];
+  List.iter
+    (fun expected ->
+      Alcotest.(check bool) ("ADR includes adaptive Bootstrap " ^ expected) true (contains_substring adr expected))
+    [
+      "amended 2026-05-08, 2026-05-17, and 2026-05-23";
+      "Bootstrap may seed missing Runtime Settings";
+      "route default Logical Agents to the selected Harness";
+      "not auto-selected";
+      "Existing `.symphony/settings.json` files are preserved byte-for-byte";
+      "Runtime readiness remains the dispatch authority";
     ];
   List.iter
     (fun obsolete ->
@@ -4328,7 +4887,7 @@ let test_runtime_contract_docs_cover_sandbox_settings () =
   List.iter
     (fun expected -> Alcotest.(check bool) ("ADR includes " ^ expected) true (contains_substring adr expected))
     [
-      "Accepted, amended 2026-05-08 and 2026-05-17";
+      "Accepted, amended 2026-05-08, 2026-05-17, and 2026-05-23";
       "top-level `sandbox` block";
       "`sandbox.enabled` is `true`";
       "`sandbox.type` must be `docker`";
@@ -4594,6 +5153,9 @@ let test_project_adr_documents_migration_and_loop_semantics () =
       "cursor-agent -p --model <model> --output-format stream-json";
       "cursor-agent -p --force --model <model> --output-format stream-json";
       "Cursor Harness readiness validation checks only selected Cursor Harnesses";
+      "Bootstrap may seed missing Runtime Settings";
+      "adaptive missing-settings Bootstrap";
+      "Runtime readiness remains the dispatch authority";
       "Bootstrap defaults enable Codex loop with `/goal` and disable Claude, Cursor, and PI loops";
     ]
 
@@ -19004,6 +19566,24 @@ let () =
           Alcotest.test_case "bootstrap is idempotent" `Quick test_bootstrap_idempotency_preserves_user_files;
           Alcotest.test_case "bootstrap writes new Runtime Contract defaults" `Quick
             test_bootstrap_default_runtime_contract_shape;
+          Alcotest.test_case "renders selected-Harness Bootstrap guidance" `Quick
+            test_bootstrap_guidance_renderer_selected_harness;
+          Alcotest.test_case "renders no-usable-Harness Bootstrap guidance" `Quick
+            test_bootstrap_guidance_renderer_no_usable_harness;
+          Alcotest.test_case "renders existing-settings Bootstrap guidance" `Quick
+            test_bootstrap_guidance_renderer_existing_settings;
+          Alcotest.test_case "keeps Bootstrap guidance secret-free" `Quick
+            test_bootstrap_guidance_renderer_omits_raw_probe_output;
+          Alcotest.test_case "reports selected-Harness guidance for created settings" `Quick
+            test_bootstrap_with_guidance_reports_selected_harness_for_created_settings;
+          Alcotest.test_case "reports no-usable-Harness guidance for created settings" `Quick
+            test_bootstrap_with_guidance_reports_no_usable_harness_for_created_settings;
+          Alcotest.test_case "reports existing settings preserved guidance" `Quick
+            test_bootstrap_with_guidance_reports_existing_settings_preserved;
+          Alcotest.test_case "runtime startup carries Bootstrap guidance" `Quick
+            test_runtime_startup_prepare_carries_bootstrap_guidance;
+          Alcotest.test_case "Terminal Console logs include Bootstrap guidance before startup" `Quick
+            test_terminal_console_initial_logs_include_guidance_before_startup_completed;
           Alcotest.test_case "requires git repository root" `Quick test_root_validation;
           Alcotest.test_case "loads settings and prompt" `Quick test_settings_and_prompt_loading;
           Alcotest.test_case "parses server host settings" `Quick test_server_host_settings;
@@ -19038,6 +19618,38 @@ let () =
             test_runtime_startup_prepare_preserves_settings_with_overrides;
           Alcotest.test_case "runtime startup validates root before workspace override" `Quick
             test_runtime_startup_validates_root_before_workspace_override;
+        ] );
+      ( "bootstrap-harness-detection",
+        [
+          Alcotest.test_case "selects Codex with executable-only confidence" `Quick
+            test_bootstrap_harness_detection_selects_codex_executable_only;
+          Alcotest.test_case "selects single strong Harnesses" `Quick
+            test_bootstrap_harness_detection_selects_single_strong_harnesses;
+          Alcotest.test_case "uses deterministic selected-Harness priority" `Quick
+            test_bootstrap_harness_detection_uses_deterministic_priority;
+          Alcotest.test_case "never selects cursor-force automatically" `Quick
+            test_bootstrap_harness_detection_never_selects_cursor_force;
+          Alcotest.test_case "reports no usable Harness guidance" `Quick
+            test_bootstrap_harness_detection_no_usable_guidance;
+          Alcotest.test_case "keeps detection results secret-free" `Quick
+            test_bootstrap_harness_detection_result_is_secret_free;
+        ] );
+      ( "bootstrap-settings",
+        [
+          Alcotest.test_case "includes supported Harness definitions" `Quick
+            test_bootstrap_settings_includes_supported_harness_definitions;
+          Alcotest.test_case "routes selected Harnesses to Logical Agents" `Quick
+            test_bootstrap_settings_routes_selected_harnesses_to_logical_agents;
+          Alcotest.test_case "preserves no-Harness fallback Logical Agent routes" `Quick
+            test_bootstrap_settings_preserves_no_harness_fallback_routes;
+          Alcotest.test_case "never assigns cursor-force automatically" `Quick
+            test_bootstrap_settings_never_assigns_cursor_force_automatically;
+          Alcotest.test_case "keeps Stage Agents routed by agent only" `Quick
+            test_bootstrap_settings_stage_agents_route_by_agent_only;
+          Alcotest.test_case "keeps generated settings secret-free" `Quick
+            test_bootstrap_settings_text_is_secret_free;
+          Alcotest.test_case "parses generated settings through Config" `Quick
+            test_bootstrap_settings_parse_through_config;
         ] );
       ( "docs",
         [

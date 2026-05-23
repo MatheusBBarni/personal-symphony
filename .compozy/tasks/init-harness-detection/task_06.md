@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Document Adaptive Bootstrap Semantics
 type: docs
 complexity: medium
 dependencies:
   - task_05
+
 ---
 
 # Task 6: Document Adaptive Bootstrap Semantics
@@ -31,11 +32,11 @@ Update user-facing and architecture documentation to describe adaptive missing-s
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Update README setup text for selected-Harness, no-Harness, and existing-settings outcomes.
-- [ ] 6.2 Update the Agent Harness Runtime Settings ADR with the new Bootstrap amendment.
-- [ ] 6.3 Review `CONTEXT.md` for whether any glossary or relationship update is necessary.
-- [ ] 6.4 Extend docs tests for adaptive Bootstrap semantics and secret-free examples.
-- [ ] 6.5 Run docs and backend validation commands required by the changed assertions.
+- [x] 6.1 Update README setup text for selected-Harness, no-Harness, and existing-settings outcomes.
+- [x] 6.2 Update the Agent Harness Runtime Settings ADR with the new Bootstrap amendment.
+- [x] 6.3 Review `CONTEXT.md` for whether any glossary or relationship update is necessary.
+- [x] 6.4 Extend docs tests for adaptive Bootstrap semantics and secret-free examples.
+- [x] 6.5 Run docs and backend validation commands required by the changed assertions.
 
 ## Implementation Details
 Keep the documentation tied to the behavior implemented in Task 5. `README.md` should help a first-run individual developer understand what `symphony init` generated and what readiness still validates. The ADR should capture the architectural decision as an amendment to the existing Agent Harness Runtime Settings record rather than creating a competing runtime contract document.
@@ -67,15 +68,15 @@ Keep the documentation tied to the behavior implemented in Task 5. `README.md` s
 
 ## Tests
 - Unit tests:
-  - [ ] README assertion covers adaptive Bootstrap when settings are missing.
-  - [ ] README assertion covers existing settings preservation on repeated Bootstrap.
-  - [ ] ADR assertion covers selected-Harness guidance and runtime readiness authority.
-  - [ ] CONTEXT assertion is updated only if a glossary or relationship entry changes.
-  - [ ] Secret-free docs test still rejects token marker examples and secret assignments.
+  - [x] README assertion covers adaptive Bootstrap when settings are missing.
+  - [x] README assertion covers existing settings preservation on repeated Bootstrap.
+  - [x] ADR assertion covers selected-Harness guidance and runtime readiness authority.
+  - [x] CONTEXT assertion is updated only if a glossary or relationship entry changes.
+  - [x] Secret-free docs test still rejects token marker examples and secret assignments.
 - Integration tests:
-  - [ ] `pnpm test` passes after docs assertion updates.
-  - [ ] `pnpm docs:test` passes if the repository exposes that command for doc assertions.
-  - [ ] `compozy tasks validate --name init-harness-detection` passes for the completed task bundle.
+  - [x] `pnpm test` passes after docs assertion updates.
+  - [x] `pnpm docs:test` passes if the repository exposes that command for doc assertions.
+  - [x] `compozy tasks validate --name init-harness-detection` passes for the completed task bundle.
 - Test coverage target: >=80%
 - All tests must pass
 

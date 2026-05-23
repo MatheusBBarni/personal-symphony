@@ -90,6 +90,9 @@ let render_bootstrap_report report =
       Printf.eprintf "  %s %-7s %s\n%!" (status_badge item.status) (basename item.path) (dim item.path))
     report
 
+let render_bootstrap_guidance guidance =
+  Runtime_startup.bootstrap_guidance_lines guidance |> List.iter (fun line -> Printf.eprintf "%s\n%!" line)
+
 let tracker_issue_source config =
   match config.Config.tracker.kind with
   | "github" -> Printf.sprintf "%s/%s" config.tracker.owner config.tracker.repo
@@ -264,15 +267,19 @@ let run_runtime port once web queue_arg merge_args overrides =
         1
     | Ok prepared ->
         let home = prepared.Runtime_startup.home in
-        let terminal_console_initial_logs = ref (bootstrap_report_log_lines prepared.bootstrap_report) in
+        let terminal_console_initial_logs = ref [] in
         render_bootstrap_report prepared.bootstrap_report;
+        render_bootstrap_guidance prepared.bootstrap_guidance;
         let config = prepared.loaded.config in
         let prompt_template = prepared.loaded.prompt_template in
         let ordered_queue, queue_parse_problems = parse_ordered_queue_arg queue_arg in
         let mode = Cli_mode.select ~web in
         let mode_text = Cli_mode.to_string mode in
+        let startup_completed_line = startup_completed_log_line ~mode:mode_text ~config ~runtime_home:home.runtime_dir in
         terminal_console_initial_logs :=
-          !terminal_console_initial_logs @ [ startup_completed_log_line ~mode:mode_text ~config ~runtime_home:home.runtime_dir ];
+          Runtime_startup.terminal_console_initial_log_lines
+            ~bootstrap_report_lines:(bootstrap_report_log_lines prepared.bootstrap_report)
+            ~bootstrap_guidance:prepared.bootstrap_guidance ~startup_completed_line;
         render_startup_completed ~mode:mode_text ~config ~runtime_home:home.runtime_dir;
         if merge_args <> [] then run_manual_merge config merge_args
         else (
@@ -399,8 +406,9 @@ let init () =
         Printf.eprintf "event=init outcome=failed reason=%s\n%!" msg;
         1
     | Ok workspace_root ->
-        let _, report = Runtime_home.bootstrap workspace_root in
-        render_bootstrap_report report;
+        let bootstrap = Runtime_home.bootstrap_with_guidance workspace_root in
+        render_bootstrap_report bootstrap.Runtime_home.report;
+        render_bootstrap_guidance bootstrap.Runtime_home.guidance;
         Printf.eprintf "event=init outcome=completed runtime_home=%s\n%!" (Filename.concat workspace_root Runtime_home.runtime_dir_name);
         0
   with Runtime_home.Runtime_home_error msg ->

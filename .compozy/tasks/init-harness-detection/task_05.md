@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Thread And Render Bootstrap Guidance
 type: backend
 complexity: medium
 dependencies:
   - task_04
+
 ---
 
 # Task 5: Thread And Render Bootstrap Guidance
@@ -31,11 +32,11 @@ Expose the adaptive Bootstrap decision to users through explicit CLI and Termina
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Extend `Runtime_startup.prepared_runtime` to carry Bootstrap guidance.
-- [ ] 5.2 Add renderer helpers for selected-Harness, no-Harness, and existing-settings cases.
-- [ ] 5.3 Render guidance in explicit `symphony init`.
-- [ ] 5.4 Render guidance during implicit startup and append it to Terminal Console initial logs.
-- [ ] 5.5 Add output tests for wording, no-secret behavior, and readiness-authority phrasing.
+- [x] 5.1 Extend `Runtime_startup.prepared_runtime` to carry Bootstrap guidance.
+- [x] 5.2 Add renderer helpers for selected-Harness, no-Harness, and existing-settings cases.
+- [x] 5.3 Render guidance in explicit `symphony init`.
+- [x] 5.4 Render guidance during implicit startup and append it to Terminal Console initial logs.
+- [x] 5.5 Add output tests for wording, no-secret behavior, and readiness-authority phrasing.
 
 ## Implementation Details
 Modify `apps/backend/lib/runtime_startup.re` and `apps/backend/bin/main.ml` around the existing `prepared_runtime`, `bootstrap_report_log_lines`, `render_bootstrap_report`, and `init` flows. The existing startup code already carries Bootstrap report lines into `terminal_console_initial_logs`; append guidance lines in the same pipeline. Reference the TechSpec "Monitoring and Observability" section for required output cases.
@@ -66,15 +67,15 @@ Modify `apps/backend/lib/runtime_startup.re` and `apps/backend/bin/main.ml` arou
 
 ## Tests
 - Unit tests:
-  - [ ] Guidance renderer for selected Harness includes Harness name, local detection provenance, and runtime readiness authority.
-  - [ ] Guidance renderer for no usable Harness includes clear install or auth next steps.
-  - [ ] Guidance renderer for existing settings says settings were preserved and not regenerated.
-  - [ ] Guidance lines omit token-like markers and raw command output.
+  - [x] Guidance renderer for selected Harness includes Harness name, local detection provenance, and runtime readiness authority.
+  - [x] Guidance renderer for no usable Harness includes clear install or auth next steps.
+  - [x] Guidance renderer for existing settings says settings were preserved and not regenerated.
+  - [x] Guidance lines omit token-like markers and raw command output.
 - Integration tests:
-  - [ ] Explicit `symphony init` path renders selected-Harness guidance when settings are created.
-  - [ ] Explicit `symphony init` path renders existing-settings guidance on the second run.
-  - [ ] Implicit startup path carries guidance in `Runtime_startup.prepare_runtime` results.
-  - [ ] Terminal Console initial logs include Bootstrap guidance before the startup-completed line.
+  - [x] Explicit `symphony init` path renders selected-Harness guidance when settings are created.
+  - [x] Explicit `symphony init` path renders existing-settings guidance on the second run.
+  - [x] Implicit startup path carries guidance in `Runtime_startup.prepare_runtime` results.
+  - [x] Terminal Console initial logs include Bootstrap guidance before the startup-completed line.
 - Test coverage target: >=80%
 - All tests must pass
 
