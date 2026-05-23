@@ -17340,6 +17340,59 @@ let test_startup_reconciliation_already_contained_applies_cleanup_without_status
         (List.length (Orchestrator.get_state orchestrator).Runtime_state.startup_reconciliation);
       Alcotest.(check (list (pair string string))) "no status changes" [] (List.rev !statuses))
 
+let test_startup_reconciliation_opens_task_pull_request_on_protected_trunk () =
+  with_temp_dir "symphony-startup-reconcile-task-pr-protected-" (fun root ->
+      init_repo root "main";
+      ignore_runtime_home root;
+      let config =
+        {
+          (completed_stage_config root (git_policy ~auto_merge:true ())) with
+          Config.pull_request =
+            {
+              enabled = true;
+              mode = "task";
+              open_on_review = false;
+              base_branch = "main";
+              title = "Symphony task from <head_branch>";
+              body = "Opened automatically by Symphony when the task reached review.";
+            };
+        }
+      in
+      let issue = Issue.empty ~id:"I36" ~identifier:"#36" ~title:"Thirty six" ~state:"In review" in
+      let workspace = create_task_worktree config issue in
+      commit_file ~cwd:workspace.path "startup-task-pr.txt" "ready\n" "task 36";
+      let statuses = ref [] in
+      let attempts = ref [] in
+      let batch_pull_request_handoff _config ~head_branch =
+        attempts := head_branch :: !attempts;
+        Ok (Some "https://github.example/acme/widgets/pull/36")
+      in
+      let orchestrator =
+        Orchestrator.make ~fetch:(fun _ -> Ok [ issue ])
+          ~set_status:(fun _ issue status ->
+            statuses := (issue.Issue.identifier, status) :: !statuses;
+            Ok ())
+          ~batch_pull_request_handoff ~config ~prompt_template:"Issue {{ issue.identifier }}" ()
+      in
+      Orchestrator.poll_once orchestrator;
+      Alcotest.(check (list string)) "handoff attempted from Task Branch" [ "symphony/task-36" ]
+        (List.rev !attempts);
+      Alcotest.(check bool) "protected trunk not merged" false
+        (Sys.file_exists (Filename.concat root "startup-task-pr.txt"));
+      Alcotest.(check bool) "worktree retained for PR review" true (Sys.file_exists workspace.path);
+      Alcotest.(check bool) "Task Branch retained for PR review" true
+        (Sys.command ("cd " ^ Util.shell_quote root ^ " && git show-ref --verify --quiet refs/heads/symphony/task-36") = 0);
+      Alcotest.(check (list (pair string string))) "no attention status" [] (List.rev !statuses);
+      Alcotest.(check (list string)) "startup diagnostic" [ "task_pull_request_handoff" ]
+        (diagnostic_categories (Orchestrator.get_state orchestrator));
+      match (Orchestrator.get_state orchestrator).Runtime_state.pull_request with
+      | Some handoff ->
+          Alcotest.(check string) "status" "completed" handoff.status;
+          Alcotest.(check (option string)) "head branch" (Some "symphony/task-36") handoff.head_branch;
+          Alcotest.(check (option string)) "url"
+            (Some "https://github.example/acme/widgets/pull/36") handoff.url
+      | None -> Alcotest.fail "expected task pull request handoff state")
+
 let test_startup_reconciliation_moves_unsafe_candidates_to_attention () =
   with_temp_dir "symphony-startup-reconcile-attention-" (fun root ->
       init_repo root "feature/start";
@@ -19705,6 +19758,8 @@ let () =
             `Quick test_startup_reconciliation_merges_completed_worktrees_in_order;
           Alcotest.test_case "startup reconciliation cleans already-contained task branches"
             `Quick test_startup_reconciliation_already_contained_applies_cleanup_without_status_change;
+          Alcotest.test_case "startup reconciliation opens task pull request on protected trunk"
+            `Quick test_startup_reconciliation_opens_task_pull_request_on_protected_trunk;
           Alcotest.test_case "startup reconciliation moves unsafe candidates to attention"
             `Quick test_startup_reconciliation_moves_unsafe_candidates_to_attention;
           Alcotest.test_case "startup reconciliation blocks unauthorized protected paths"

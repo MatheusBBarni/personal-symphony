@@ -3295,6 +3295,72 @@ let record_startup_attention orchestrator issue branch workspace_path category m
       last_error = Some message;
     })
 
+let set_pull_request_handoff orchestrator ?issue ?head_branch status ?url ?error () =
+  let policy = orchestrator.config.Config.pull_request in
+  let head_branch = Option.value head_branch ~default:orchestrator.loop_start_branch in
+  let issue_identifier = Option.map (fun issue -> issue.Issue.identifier) issue in
+  let row =
+    {
+      Runtime_state.enabled = policy.enabled;
+      mode = policy.mode;
+      issue_identifier;
+      head_branch = Some head_branch;
+      base_branch = Some policy.base_branch;
+      status;
+      url;
+      error;
+    }
+  in
+  let same_handoff existing =
+    existing.Runtime_state.mode = row.mode
+    && existing.issue_identifier = row.issue_identifier
+    && existing.head_branch = row.head_branch
+    && existing.base_branch = row.base_branch
+  in
+  update_state orchestrator (fun state ->
+    {
+      state with
+      pull_request = Some row;
+      pull_requests = row :: List.filter (fun existing -> not (same_handoff existing)) state.pull_requests;
+      last_error = (match error with Some error -> Some error | None -> state.last_error);
+    })
+
+let attempt_batch_pull_request orchestrator =
+  let policy = orchestrator.config.Config.pull_request in
+  set_pull_request_handoff orchestrator "attempting" ();
+  note_current_compozy_batch_handoff orchestrator "attempting" None;
+  match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
+  | Ok url ->
+      orchestrator.batch_pull_request_completed <- true;
+      set_pull_request_handoff orchestrator "completed" ?url ();
+      note_current_compozy_batch_handoff orchestrator "completed" None;
+      render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
+  | Error error ->
+      set_pull_request_handoff orchestrator "retryable_failure" ~error ();
+      note_current_compozy_batch_handoff orchestrator "retryable_failure" (Some error);
+      render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
+
+let attempt_task_pull_request orchestrator issue =
+  let config = config_with_task_pull_request_issue orchestrator.config issue in
+  let policy = config.Config.pull_request in
+  let head_branch = task_branch config issue in
+  set_pull_request_handoff orchestrator ~issue ~head_branch "attempting" ();
+  match orchestrator.batch_pull_request_handoff config ~head_branch with
+  | Ok url ->
+      set_pull_request_handoff orchestrator ~issue ~head_branch "completed" ?url ();
+      render_pull_request_completed head_branch policy.base_branch
+  | Error error ->
+      set_pull_request_handoff orchestrator ~issue ~head_branch "retryable_failure" ~error ();
+      render_pull_request_failed head_branch policy.base_branch error
+
+let startup_task_pull_request_enabled config =
+  config.Config.pull_request.enabled && config.Config.pull_request.mode = "task"
+
+let attempt_startup_task_pull_request orchestrator issue branch workspace_path =
+  attempt_task_pull_request orchestrator issue;
+  record_startup_reconciliation orchestrator ~issue ~task_branch:branch ~workspace_path
+    "task_pull_request_handoff" "Task Branch Pull Request handoff attempted for completed worktree"
+
 let cleanup_task_worktree_for_issue config issue workspace_path =
   if config.Config.git.cleanup.remove_worktree_after_merge then
     ignore
@@ -3417,9 +3483,16 @@ let reconcile_startup_candidate orchestrator issue =
                   "attention_protected_paths" error;
                 record_startup_attention orchestrator issue branch workspace_path "attention_protected_paths" error
             | Ok () ->
-                if protected_loop_start orchestrator then
-                  record_startup_attention orchestrator issue branch workspace_path "attention_protected_trunk"
-                    "committed Task Branch work exists but Loop-Start Branch is protected"
+                let attempted_task_pull_request =
+                  if startup_task_pull_request_enabled orchestrator.config then (
+                    attempt_startup_task_pull_request orchestrator issue branch workspace_path;
+                    true)
+                  else false
+                in
+                if protected_loop_start orchestrator then (
+                  if not attempted_task_pull_request then
+                    record_startup_attention orchestrator issue branch workspace_path "attention_protected_trunk"
+                      "committed Task Branch work exists but Loop-Start Branch is protected")
                 else
                   match
                     integrate_task_branch orchestrator.config ~loop_start_branch:orchestrator.loop_start_branch
@@ -3452,64 +3525,6 @@ let reconcile_startup orchestrator candidates =
           record_startup_reconciliation orchestrator "startup_blocked_dirty_loop_start" message;
           set_error orchestrator message
       | Ok () -> List.iter (reconcile_startup_candidate orchestrator) candidates)
-
-let set_pull_request_handoff orchestrator ?issue ?head_branch status ?url ?error () =
-  let policy = orchestrator.config.Config.pull_request in
-  let head_branch = Option.value head_branch ~default:orchestrator.loop_start_branch in
-  let issue_identifier = Option.map (fun issue -> issue.Issue.identifier) issue in
-  let row =
-    {
-      Runtime_state.enabled = policy.enabled;
-      mode = policy.mode;
-      issue_identifier;
-      head_branch = Some head_branch;
-      base_branch = Some policy.base_branch;
-      status;
-      url;
-      error;
-    }
-  in
-  let same_handoff existing =
-    existing.Runtime_state.mode = row.mode
-    && existing.issue_identifier = row.issue_identifier
-    && existing.head_branch = row.head_branch
-    && existing.base_branch = row.base_branch
-  in
-  update_state orchestrator (fun state ->
-    {
-      state with
-      pull_request = Some row;
-      pull_requests = row :: List.filter (fun existing -> not (same_handoff existing)) state.pull_requests;
-      last_error = (match error with Some error -> Some error | None -> state.last_error);
-    })
-
-let attempt_batch_pull_request orchestrator =
-  let policy = orchestrator.config.Config.pull_request in
-  set_pull_request_handoff orchestrator "attempting" ();
-  note_current_compozy_batch_handoff orchestrator "attempting" None;
-  match orchestrator.batch_pull_request_handoff orchestrator.config ~head_branch:orchestrator.loop_start_branch with
-  | Ok url ->
-      orchestrator.batch_pull_request_completed <- true;
-      set_pull_request_handoff orchestrator "completed" ?url ();
-      note_current_compozy_batch_handoff orchestrator "completed" None;
-      render_pull_request_completed orchestrator.loop_start_branch policy.base_branch
-  | Error error ->
-      set_pull_request_handoff orchestrator "retryable_failure" ~error ();
-      note_current_compozy_batch_handoff orchestrator "retryable_failure" (Some error);
-      render_pull_request_failed orchestrator.loop_start_branch policy.base_branch error
-
-let attempt_task_pull_request orchestrator issue =
-  let config = config_with_task_pull_request_issue orchestrator.config issue in
-  let policy = config.Config.pull_request in
-  let head_branch = task_branch config issue in
-  set_pull_request_handoff orchestrator ~issue ~head_branch "attempting" ();
-  match orchestrator.batch_pull_request_handoff config ~head_branch with
-  | Ok url ->
-      set_pull_request_handoff orchestrator ~issue ~head_branch "completed" ?url ();
-      render_pull_request_completed head_branch policy.base_branch
-  | Error error ->
-      set_pull_request_handoff orchestrator ~issue ~head_branch "retryable_failure" ~error ();
-      render_pull_request_failed head_branch policy.base_branch error
 
 let status_is_review_status config status =
   match config.Config.tracker.project_status_on_success with
