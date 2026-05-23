@@ -6909,6 +6909,14 @@ let terminal_console_panel ?terminal_size ?logs state title =
     panel.Shell.lines
   else Shell.panel_lines (Shell.render_snapshot ?terminal_size ?logs snapshot) title
 
+let terminal_console_root_has_child id node =
+  List.exists (fun child -> child.Tui.Node.id = id) node.Tui.Node.children
+
+let terminal_console_view_output model =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let root = Shell.view model in
+  Tui.Renderer.render_to_string (Tui.Renderer.create ~width:100 ~height:28 root)
+
 let test_terminal_console_tui_project_title_and_tabs () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let state = Runtime_state.empty ~workspace_repository_name:"workspace-one" () in
@@ -7310,6 +7318,16 @@ let test_terminal_console_tui_logs_panel_newest_first_and_scrolls () =
   Alcotest.(check int) "down scrolls logs" 1 moved_down.model.Shell.interaction.Shell.logs_scroll;
   let moved_up = Shell.apply_key Shell.Up_key moved_down.model in
   Alcotest.(check int) "up scrolls logs" 0 moved_up.model.Shell.interaction.Shell.logs_scroll
+
+let test_terminal_console_tui_view_scroll_box_uses_active_tab_content () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model ~logs:[ "background log only" ] (Runtime_state.empty ()) in
+  let logs_model = Shell.apply_key Shell.Right_key model |> fun transition -> transition.Shell.model in
+  Alcotest.(check string) "logs tab active" "Logs"
+    (Shell.focused_tab_title logs_model.Shell.interaction.Shell.active_tab);
+  let output = terminal_console_view_output logs_model in
+  check_line_contains "active scroll box renders logs" [ output ] "background log only";
+  check_line_absent "queue content not rendered in active scroll box" [ output ] "No Ordered Queue state present."
 
 let test_terminal_console_tui_log_paths_are_compact () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -7740,6 +7758,20 @@ let test_terminal_console_tui_settings_modal_opens_separately () =
   let queue = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
   check_line_absent "settings modal is not appended to active panel" queue "Terminal Console Settings";
   check_line_absent "settings fields stay out of active panel" queue "Web Dashboard port"
+
+let test_terminal_console_tui_view_layers_modals_as_root_children () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (Runtime_state.empty ()) in
+  let help_model = Shell.apply_key (Shell.Character '?') model |> fun transition -> transition.Shell.model in
+  let help_root = Shell.view help_model in
+  Alcotest.(check bool) "help modal direct root child" true
+    (terminal_console_root_has_child "terminal-console-command-modal" help_root);
+  let settings_model = Shell.apply_key (Shell.Character 's') help_model |> fun transition -> transition.Shell.model in
+  let settings_root = Shell.view settings_model in
+  Alcotest.(check bool) "settings modal direct root child" true
+    (terminal_console_root_has_child "terminal-console-settings-modal" settings_root);
+  Alcotest.(check bool) "settings replaces help layer" false
+    (terminal_console_root_has_child "terminal-console-command-modal" settings_root)
 
 let test_terminal_console_tui_settings_cancel_keeps_saved_values () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -19362,6 +19394,8 @@ let () =
             test_terminal_console_tui_logs_panel_uses_background_logs;
           Alcotest.test_case "renders Logs newest first with scroll" `Quick
             test_terminal_console_tui_logs_panel_newest_first_and_scrolls;
+          Alcotest.test_case "renders active Logs tab in root scroll box" `Quick
+            test_terminal_console_tui_view_scroll_box_uses_active_tab_content;
           Alcotest.test_case "compacts Terminal Console log paths" `Quick
             test_terminal_console_tui_log_paths_are_compact;
           Alcotest.test_case "renders task detail context" `Quick
@@ -19394,6 +19428,8 @@ let () =
             test_terminal_console_tui_footer_help_content;
           Alcotest.test_case "opens Terminal Console settings modal separately" `Quick
             test_terminal_console_tui_settings_modal_opens_separately;
+          Alcotest.test_case "layers Terminal Console modals as root children" `Quick
+            test_terminal_console_tui_view_layers_modals_as_root_children;
           Alcotest.test_case "cancels Terminal Console settings drafts" `Quick
             test_terminal_console_tui_settings_cancel_keeps_saved_values;
           Alcotest.test_case "cycles and applies Terminal Console settings themes" `Quick

@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Convert Modal Header Active Panel And Root Layout To Literal JSX
 type: backend
 complexity: high
 dependencies:
   - task_03
+
 ---
 
 # Task 4: Convert Modal Header Active Panel And Root Layout To Literal JSX
@@ -30,12 +31,12 @@ Rewrite the remaining high-level Terminal Console view tree to literal `Tui.Jsx`
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Convert help modal and settings modal node construction to literal JSX with identical IDs, titles, tones, dimensions, and content.
-- [ ] 4.2 Convert header title, subtitle, badge row, and container layout to literal JSX with identical theme and style behavior.
-- [ ] 4.3 Convert tab strip and active panel composition to literal JSX while preserving active tab selection and panel title fallback behavior.
-- [ ] 4.4 Convert scroll-box and root layout composition to literal JSX while preserving sizing, padding, gap, and theme behavior.
-- [ ] 4.5 Preserve modal layering behavior for settings and help states.
-- [ ] 4.6 Add focused parity coverage for converted high-level layout behavior only where existing tests are insufficient.
+- [x] 4.1 Convert help modal and settings modal node construction to literal JSX with identical IDs, titles, tones, dimensions, and content.
+- [x] 4.2 Convert header title, subtitle, badge row, and container layout to literal JSX with identical theme and style behavior.
+- [x] 4.3 Convert tab strip and active panel composition to literal JSX while preserving active tab selection and panel title fallback behavior.
+- [x] 4.4 Convert scroll-box and root layout composition to literal JSX while preserving sizing, padding, gap, and theme behavior.
+- [x] 4.5 Preserve modal layering behavior for settings and help states.
+- [x] 4.6 Add focused parity coverage for converted high-level layout behavior only where existing tests are insufficient.
 
 ## Implementation Details
 Reference the TechSpec "Development Sequencing" steps for modal, header, root layout, active panel, and scroll-box conversion. Keep `render_model`, panel shaping, `apply_key`, `update`, runtime handoff, and safe-aid dispatch behavior unchanged except where source syntax must adapt.
@@ -66,13 +67,13 @@ Reference the TechSpec "Development Sequencing" steps for modal, header, root la
 
 ## Tests
 - Unit tests:
-  - [ ] Run Terminal Console tests for active home panel, readiness, attention, ordered queue, logs, task detail, root theme, footer help, settings modal, help modal, navigation, filtering, and safe aids.
-  - [ ] Add focused assertions if root-child modal layering, active-tab panel selection, or scroll-box content selection is not already covered.
-  - [ ] Run `pnpm test` after backend view tree changes.
+  - [x] Run Terminal Console tests for active home panel, readiness, attention, ordered queue, logs, task detail, root theme, footer help, settings modal, help modal, navigation, filtering, and safe aids.
+  - [x] Add focused assertions if root-child modal layering, active-tab panel selection, or scroll-box content selection is not already covered.
+  - [x] Run `pnpm test` after backend view tree changes.
 - Integration tests:
-  - [ ] Run `pnpm backend:build` to confirm the literal JSX root view compiles.
-  - [ ] Run `terminal_console_preview` and compare the rendered output against the task 1 baseline.
-  - [ ] Confirm the preview output still shows the same tabs, footer commands, headings, readiness content, attention content, queue content, and logs content.
+  - [x] Run `pnpm backend:build` to confirm the literal JSX root view compiles.
+  - [x] Run `terminal_console_preview` and compare the rendered output against the task 1 baseline.
+  - [x] Confirm the preview output still shows the same tabs, footer commands, headings, readiness content, attention content, queue content, and logs content.
 - Test coverage target: >=80%
 - All tests must pass
 

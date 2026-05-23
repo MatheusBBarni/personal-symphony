@@ -149,7 +149,7 @@ let mock_state () =
             ~stop_outcome:"needs_attention"
             ~stop_reason:"Runtime Contract wording needs maintainer approval."
             ~next_action:"Operator attention is required before the loop can continue."
-            ~diagnostics_path:"apps/backend/bin/terminal_console_tui.ml" ();
+            ~diagnostics_path:"apps/backend/bin/terminal_console_tui.re" ();
           goal_loop ~issue_id:"ISSUE-134" ~issue_identifier:"#134"
             ~goal:"Verify preview snapshot renders Goal Loop success"
             ~state:"goal_met" ~attempt_count:2
@@ -197,7 +197,7 @@ let mock_state () =
   base
   |> Runtime_state.set_context_status "ISSUE-128"
        (Runtime_state.make_context_status ~state:"ok" ~summary:"Context snapshot attached"
-          ~diagnostics_path:"apps/backend/bin/terminal_console_tui.ml" ())
+          ~diagnostics_path:"apps/backend/bin/terminal_console_tui.re" ())
   |> Runtime_state.set_context_status "ISSUE-130"
        (Runtime_state.make_context_status ~state:"warning" ~summary:"Logs tab needs visual review"
           ~diagnostics_path:"apps/backend/test/test_backend.ml" ())

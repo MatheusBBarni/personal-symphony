@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Close TUI JSX Wrapper Gaps And Parity Coverage
 type: refactor
 complexity: medium
 dependencies:
   - task_04
+
 ---
 
 # Task 5: Close TUI JSX Wrapper Gaps And Parity Coverage

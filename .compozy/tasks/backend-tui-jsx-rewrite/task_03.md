@@ -1,10 +1,12 @@
 ---
-status: pending
+status: completed
 title: Convert Leaf Node And Text Rendering Helpers To Literal JSX
 type: backend
 complexity: medium
 dependencies:
   - task_02
+
+
 ---
 
 # Task 3: Convert Leaf Node And Text Rendering Helpers To Literal JSX
@@ -29,12 +31,12 @@ Rewrite the lowest-level Terminal Console view helpers to use literal `Tui.Jsx` 
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Convert plain text line helper output to JSX-backed nodes with identical style and fallback behavior.
-- [ ] 3.2 Convert content rich-text line helper output to JSX-backed nodes while preserving span construction.
-- [ ] 3.3 Convert background log rich-text line helper output to JSX-backed nodes while preserving log-specific fallback text.
-- [ ] 3.4 Convert command help row rendering to JSX-backed rich text with identical key and label styling.
-- [ ] 3.5 Convert footer and tab node rendering to JSX-backed rich text with identical tone and attribute behavior.
-- [ ] 3.6 Add or adjust focused parity assertions for rendered text, log, footer, and tab output if existing tests do not cover the converted helpers.
+- [x] 3.1 Convert plain text line helper output to JSX-backed nodes with identical style and fallback behavior.
+- [x] 3.2 Convert content rich-text line helper output to JSX-backed nodes while preserving span construction.
+- [x] 3.3 Convert background log rich-text line helper output to JSX-backed nodes while preserving log-specific fallback text.
+- [x] 3.4 Convert command help row rendering to JSX-backed rich text with identical key and label styling.
+- [x] 3.5 Convert footer and tab node rendering to JSX-backed rich text with identical tone and attribute behavior.
+- [x] 3.6 Add or adjust focused parity assertions for rendered text, log, footer, and tab output if existing tests do not cover the converted helpers.
 
 ## Implementation Details
 Reference the TechSpec "Development Sequencing" step for leaf node helpers. Keep product-specific span and tone logic in the backend shell module; the TUI package should only receive reusable wrapper changes in the later wrapper-gap task.
@@ -64,13 +66,13 @@ Reference the TechSpec "Development Sequencing" step for leaf node helpers. Keep
 
 ## Tests
 - Unit tests:
-  - [ ] Run Terminal Console tests covering footer help content, no-color label distinction, log panel content, and rendered Runtime State fixtures.
-  - [ ] Add a focused assertion if the conversion exposes an untested leaf rendering contract such as log fallback text or tab tone attributes.
-  - [ ] Run `pnpm test` after backend rendering helper changes.
+  - [x] Run Terminal Console tests covering footer help content, no-color label distinction, log panel content, and rendered Runtime State fixtures.
+  - [x] Add a focused assertion if the conversion exposes an untested leaf rendering contract such as log fallback text or tab tone attributes.
+  - [x] Run `pnpm test` after backend rendering helper changes.
 - Integration tests:
-  - [ ] Run `pnpm backend:build` to confirm literal JSX compiles in the backend shell module.
-  - [ ] Run `terminal_console_preview` and compare leaf output against the task 1 baseline.
-  - [ ] Confirm no `apps/tui` package checks are required unless this task touched `apps/tui`.
+  - [x] Run `pnpm backend:build` to confirm literal JSX compiles in the backend shell module.
+  - [x] Run `terminal_console_preview` and compare leaf output against the task 1 baseline.
+  - [x] Confirm no `apps/tui` package checks are required unless this task touched `apps/tui`.
 - Test coverage target: >=80%
 - All tests must pass
 

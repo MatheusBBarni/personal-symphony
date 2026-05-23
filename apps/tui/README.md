@@ -4,6 +4,8 @@ Symphony TUI is an OCaml terminal UI toolkit. It provides a renderer-owned compo
 
 The package is intentionally framework-free. New screens should start with the `Tui.Jsx` authoring layer, which is a set of JSX-friendly wrapper modules over the same `Tui.Node.t` tree rendered by `Tui.Renderer`. Direct `Tui.Components` and `Tui.Patterns` calls remain stable lower-level APIs for callers that want the primitive functions.
 
+The backend Terminal Console in the Product Repository is the production dogfooding surface for `Tui.Jsx`: its product-specific view tree is authored in `apps/backend` with the reusable wrappers from this TUI Toolkit Package. That dogfooding does not move Terminal Console Runtime State projection, settings, shortcuts, or safe local aids into `apps/tui`; `apps/tui` remains reusable toolkit code.
+
 Unless noted otherwise, commands in this README run from `apps/tui`.
 
 ## Quick start

@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Convert Terminal Console Shell Module To Reason With Stable Public Contract
 type: refactor
 complexity: high
 dependencies:
   - task_01
+
 ---
 
 # Task 2: Convert Terminal Console Shell Module To Reason With Stable Public Contract
@@ -30,12 +31,12 @@ Convert the backend Terminal Console shell module from OCaml syntax to Reason sy
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Convert `apps/backend/bin/terminal_console_tui.ml` into a Reason-authored source for the same `terminal_console_tui` module.
-- [ ] 2.2 Preserve all public names consumed by backend runtime wiring, CLI wiring, preview code, and tests.
-- [ ] 2.3 Update `apps/backend/bin/dune` only if the source rename requires explicit compile-surface adjustment.
-- [ ] 2.4 Update backend caller/test syntax only where Reason record or variant access requires source-compatible adjustments.
-- [ ] 2.5 Keep the baseline preview output behavior unchanged after the conversion.
-- [ ] 2.6 Remove the old OCaml source file when the Reason source fully replaces the module.
+- [x] 2.1 Convert `apps/backend/bin/terminal_console_tui.ml` into a Reason-authored source for the same `terminal_console_tui` module.
+- [x] 2.2 Preserve all public names consumed by backend runtime wiring, CLI wiring, preview code, and tests.
+- [x] 2.3 Update `apps/backend/bin/dune` only if the source rename requires explicit compile-surface adjustment.
+- [x] 2.4 Update backend caller/test syntax only where Reason record or variant access requires source-compatible adjustments.
+- [x] 2.5 Keep the baseline preview output behavior unchanged after the conversion.
+- [x] 2.6 Remove the old OCaml source file when the Reason source fully replaces the module.
 
 ## Implementation Details
 Use the TechSpec "Core Interfaces" and "Integration Points" sections as the compatibility contract. The task should produce a compiling Reason module first, even if direct `Tui.Components` calls still remain for later JSX conversion tasks.
@@ -68,13 +69,13 @@ Use the TechSpec "Core Interfaces" and "Integration Points" sections as the comp
 
 ## Tests
 - Unit tests:
-  - [ ] Run focused backend Terminal Console tests in `apps/backend/test/test_backend.ml` for status labels, projection, settings, modal state, safe aids, and rendered panel helpers.
-  - [ ] Run `pnpm test` after the syntax conversion because the backend compile surface and Terminal Console behavior contract are touched.
-  - [ ] Confirm no tests require Runtime State, Runtime Settings, lifecycle, or safe-aid expectation changes.
+  - [x] Run focused backend Terminal Console tests in `apps/backend/test/test_backend.ml` for status labels, projection, settings, modal state, safe aids, and rendered panel helpers.
+  - [x] Run `pnpm test` after the syntax conversion because the backend compile surface and Terminal Console behavior contract are touched.
+  - [x] Confirm no tests require Runtime State, Runtime Settings, lifecycle, or safe-aid expectation changes.
 - Integration tests:
-  - [ ] Run `pnpm backend:build` to confirm Dune builds the Reason source under the existing module name.
-  - [ ] Run `terminal_console_preview` and compare output against the baseline evidence from task 1.
-  - [ ] Confirm `main.ml` and `terminal_console_runtime.ml` still compile against the same public names.
+  - [x] Run `pnpm backend:build` to confirm Dune builds the Reason source under the existing module name.
+  - [x] Run `terminal_console_preview` and compare output against the baseline evidence from task 1.
+  - [x] Confirm `main.ml` and `terminal_console_runtime.ml` still compile against the same public names.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Update Docs And Final Parity Verification Evidence
 type: docs
 complexity: medium
 dependencies:
   - task_05
+
 ---
 
 # Task 6: Update Docs And Final Parity Verification Evidence
@@ -30,12 +31,12 @@ Refresh documentation after the backend Terminal Console fully dogfoods `Tui.Jsx
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Update relevant `Tui.Jsx` documentation to mention backend Terminal Console dogfooding after full coverage is achieved.
-- [ ] 6.2 Update example guidance only if it currently implies examples are the only JSX validation surface.
-- [ ] 6.3 Refresh final parity evidence with after-rewrite preview output and comparison notes.
-- [ ] 6.4 Record final JSX coverage status and any allowed non-view lower-level direct API usage.
-- [ ] 6.5 Run backend verification and any required TUI/docs verification commands.
-- [ ] 6.6 Confirm generated or ignored artifacts are not accidentally staged.
+- [x] 6.1 Update relevant `Tui.Jsx` documentation to mention backend Terminal Console dogfooding after full coverage is achieved.
+- [x] 6.2 Update example guidance only if it currently implies examples are the only JSX validation surface.
+- [x] 6.3 Refresh final parity evidence with after-rewrite preview output and comparison notes.
+- [x] 6.4 Record final JSX coverage status and any allowed non-view lower-level direct API usage.
+- [x] 6.5 Run backend verification and any required TUI/docs verification commands.
+- [x] 6.6 Confirm generated or ignored artifacts are not accidentally staged.
 
 ## Implementation Details
 Reference the PRD "Docs And Example Alignment" feature and the TechSpec "Development Sequencing" final steps. Keep documentation concise and implementation-facing; do not add operator instructions for a behavior-preserving rewrite.
@@ -68,14 +69,14 @@ Reference the PRD "Docs And Example Alignment" feature and the TechSpec "Develop
 
 ## Tests
 - Unit tests:
-  - [ ] Run `pnpm test` for backend behavior coverage after final docs and evidence updates.
-  - [ ] Run `pnpm --filter @symphony-orchestrator/tui test` if any `apps/tui` source or wrapper tests changed in the rewrite.
-  - [ ] Run docs/example validation if `apps/tui` docs or examples changed.
+  - [x] Run `pnpm test` for backend behavior coverage after final docs and evidence updates.
+  - [x] Run `pnpm --filter @symphony-orchestrator/tui test` if any `apps/tui` source or wrapper tests changed in the rewrite.
+  - [x] Run docs/example validation if `apps/tui` docs or examples changed.
 - Integration tests:
-  - [ ] Run `pnpm backend:build` for final backend compile verification.
-  - [ ] Run `pnpm --filter @symphony-orchestrator/tui build` if any TUI package compile surface changed.
-  - [ ] Run `terminal_console_preview` and compare final output against the task 1 baseline.
-  - [ ] Confirm `git status --short` does not include generated `apps/frontend/src/*.res.js` files.
+  - [x] Run `pnpm backend:build` for final backend compile verification.
+  - [x] Run `pnpm --filter @symphony-orchestrator/tui build` if any TUI package compile surface changed.
+  - [x] Run `terminal_console_preview` and compare final output against the task 1 baseline.
+  - [x] Confirm `git status --short` does not include generated `apps/frontend/src/*.res.js` files.
 - Test coverage target: >=80%
 - All tests must pass
 
