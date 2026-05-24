@@ -17,6 +17,11 @@ type context_status = {
   text: string,
 };
 
+type inspect_detail = {
+  label: string,
+  value: string,
+};
+
 type goal_loop = {
   goal: string,
   state: string,
@@ -43,11 +48,14 @@ type task_row = {
   goal_usage: option(goal_usage),
   goal_loop: option(goal_loop),
   context_status: option(context_status),
+  inspect_details: list(inspect_detail),
 };
 
 type readiness_row = {
+  id: string,
   requirement: string,
   remediation: string,
+  inspect_details: list(inspect_detail),
 };
 
 type compozy_progress = {
@@ -68,6 +76,7 @@ type t = {
   summary: list(string),
   active: list(task_row),
   readiness: list(readiness_row),
+  queue_present: bool,
   queue: list(task_row),
   compozy: option(compozy_progress),
   compozy_progresses: list(compozy_progress),
@@ -191,6 +200,16 @@ let redact_secret_assignments = text => {
 let sanitize = text =>
   text |> strip_terminal_sequences |> redact_secret_assignments |> Util.trim;
 
+let inspect_value_max_length = 240;
+let inspect_detail_limit = 12;
+
+let truncate_inspect_value = text =>
+  if (String.length(text) <= inspect_value_max_length) {
+    text;
+  } else {
+    String.sub(text, 0, inspect_value_max_length - 3) ++ "...";
+  };
+
 let sanitize_option =
   fun
   | None => None
@@ -202,6 +221,31 @@ let sanitize_option =
         Some(sanitized);
       };
     };
+
+let inspect_detail = (label, value) =>
+  switch (sanitize_option(value)) {
+  | Some(value) =>
+    Some({
+      label: sanitize(label),
+      value: truncate_inspect_value(value),
+    })
+  | None => None
+  };
+
+let take = (count, values) => {
+  let rec loop = (remaining, kept, values) =>
+    switch (remaining, values) {
+    | (0, _)
+    | (_, []) => List.rev(kept)
+    | (remaining, [value, ...rest]) =>
+      loop(remaining - 1, [value, ...kept], rest)
+    };
+
+  loop(count, [], values);
+};
+
+let bounded_inspect_details = details =>
+  details |> List.filter_map(Fun.id) |> take(inspect_detail_limit);
 
 let goal_usage_text = (usage: Runtime_state.goal_usage) => {
   let parts =
@@ -385,6 +429,126 @@ let maybe_goal_loop = (state, issue_id) =>
     Runtime_state.goal_loop_for_issue(state, issue_id),
   );
 
+let task_state_blocked = state =>
+  switch (String.lowercase_ascii(state)) {
+  | "failed"
+  | "skipped"
+  | "budget_exhausted" => true
+  | _ => false
+  };
+
+let task_state_needs_attention = state =>
+  switch (String.lowercase_ascii(state)) {
+  | "attention"
+  | "needs_attention" => true
+  | _ => false
+  };
+
+let row_task_label = (row: task_row) =>
+  if (row.title == "") {
+    row.id;
+  } else {
+    row.id ++ " " ++ row.title;
+  };
+
+let task_row_inspect_details = (row: task_row) => {
+  let blocker =
+    switch (row.goal_loop) {
+    | Some(loop) => loop.stop_reason
+    | None =>
+      if (task_state_blocked(row.state)) {
+        row.detail;
+      } else {
+        None;
+      }
+    };
+
+  let status_detail_uses_row_detail =
+    task_state_blocked(row.state) || task_state_needs_attention(row.state);
+
+  bounded_inspect_details([
+    inspect_detail("Status", Some(row.state)),
+    inspect_detail("Blocker", blocker),
+    inspect_detail("Current error", row.error),
+    inspect_detail(
+      "Remediation",
+      switch (row.goal_loop) {
+      | Some(loop) => loop.next_action
+      | None => None
+      },
+    ),
+    inspect_detail(
+      "Attention",
+      if (task_state_needs_attention(row.state)) {
+        row.detail;
+      } else {
+        None;
+      },
+    ),
+    inspect_detail(
+      "Context Status",
+      switch (row.context_status) {
+      | Some(context) => Some(context.text)
+      | None => None
+      },
+    ),
+    inspect_detail("Task", Some(row_task_label(row))),
+    inspect_detail(
+      "Provenance",
+      if (status_detail_uses_row_detail) {
+        None;
+      } else {
+        row.detail;
+      },
+    ),
+    inspect_detail(
+      "Goal Loop",
+      switch (row.goal_loop) {
+      | Some(loop) => Some(loop.text)
+      | None => None
+      },
+    ),
+    inspect_detail(
+      "Goal Usage",
+      switch (row.goal_usage) {
+      | Some(usage) => usage.text
+      | None => None
+      },
+    ),
+    inspect_detail(
+      "Progress Evidence",
+      switch (row.goal_loop) {
+      | Some(loop) => loop.latest_evidence
+      | None => None
+      },
+    ),
+    inspect_detail(
+      "Diagnostics",
+      switch (row.goal_loop) {
+      | Some(loop) => loop.diagnostics_path
+      | None => None
+      },
+    ),
+  ]);
+};
+
+let with_task_inspect_details = (row: task_row) => {
+  ...row,
+  inspect_details: task_row_inspect_details(row),
+};
+
+let readiness_inspect_details = (row: readiness_row) =>
+  bounded_inspect_details([
+    inspect_detail("Status", Some("readiness_blocked")),
+    inspect_detail("Blocker", Some(row.requirement)),
+    inspect_detail("Remediation", Some(row.remediation)),
+  ]);
+
+let with_readiness_inspect_details = (row: readiness_row) => {
+  ...row,
+  inspect_details: readiness_inspect_details(row),
+};
+
 let running_row = (state, row: Runtime_state.running) => {
   let context =
     Runtime_state.context_status_for_issue(state, row.issue.id)
@@ -422,7 +586,9 @@ let running_row = (state, row: Runtime_state.running) => {
     goal_usage: goal_usage(row.goal_usage),
     goal_loop: maybe_goal_loop(state, row.issue.id),
     context_status: Some(context),
-  };
+    inspect_details: [],
+  }
+  |> with_task_inspect_details;
 };
 
 let retrying_row = (state, row: Runtime_state.retrying) => {
@@ -448,7 +614,9 @@ let retrying_row = (state, row: Runtime_state.retrying) => {
         Runtime_state.context_status_for_issue(state, row.issue_id)
         |> context_status,
       ),
-  };
+    inspect_details: [],
+  }
+  |> with_task_inspect_details;
 };
 
 let attention_row = (state, row: Runtime_state.issue_error) => {
@@ -460,7 +628,9 @@ let attention_row = (state, row: Runtime_state.issue_error) => {
   goal_usage: goal_usage(row.goal_usage),
   goal_loop: maybe_goal_loop(state, row.issue_id),
   context_status: maybe_context_status(state, row.issue_id),
-};
+  inspect_details: [],
+}
+|> with_task_inspect_details;
 
 let goal_loop_needs_attention_state = state =>
   switch (String.lowercase_ascii(state)) {
@@ -490,12 +660,21 @@ let goal_loop_row = (state, loop: Runtime_state.goal_loop) => {
     goal_usage: None,
     goal_loop: Some(projected),
     context_status: maybe_context_status(state, loop.issue_id),
-  };
+    inspect_details: [],
+  }
+  |> with_task_inspect_details;
 };
 
-let readiness_row = (gap: Runtime_state.readiness_gap) => {
-  requirement: sanitize(gap.requirement),
-  remediation: sanitize(gap.remediation),
+let readiness_row = (index, gap: Runtime_state.readiness_gap) => {
+  let requirement = sanitize(gap.requirement);
+  let remediation = sanitize(gap.remediation);
+  {
+    id: Printf.sprintf("readiness:%d:%s:%s", index, requirement, remediation),
+    requirement: requirement,
+    remediation: remediation,
+    inspect_details: [],
+  }
+  |> with_readiness_inspect_details;
 };
 
 let queue_row = (entry: Runtime_state.ordered_queue_entry) => {
@@ -519,7 +698,9 @@ let queue_row = (entry: Runtime_state.ordered_queue_entry) => {
     goal_usage: None,
     goal_loop: None,
     context_status: None,
-  };
+    inspect_details: [],
+  }
+  |> with_task_inspect_details;
 };
 
 let compozy_progress = (progress: Runtime_state.compozy_progress) => {
@@ -771,7 +952,7 @@ let of_runtime_state = state => {
     @ List.map(attention_row(state), state.issue_errors)
     @ unmatched_goal_loop_rows;
 
-  let readiness = List.map(readiness_row, state.readiness_gaps);
+  let readiness = List.mapi(readiness_row, state.readiness_gaps);
   let queue =
     switch (state.ordered_queue) {
     | Some(queue) => List.map(queue_row, queue.entries)
@@ -791,6 +972,7 @@ let of_runtime_state = state => {
     summary: summary(state, mode, compozy),
     active,
     readiness,
+    queue_present: Option.is_some(state.ordered_queue),
     queue,
     compozy,
     compozy_progresses,

@@ -38,6 +38,11 @@ type active_tab =
   | Readiness
   | Attention;
 
+type inspect_target = {
+  tab: active_tab,
+  row_key: string,
+};
+
 type settings_field =
   | Settings_theme
   | Settings_port;
@@ -66,6 +71,7 @@ type interaction = {
   settings_modal: option(settings_modal),
   logs_scroll: int,
   expanded_queue_id: option(string),
+  inspect_target: option(inspect_target),
 };
 
 type model = {
@@ -173,6 +179,7 @@ let default_interaction = {
   settings_modal: None,
   logs_scroll: 0,
   expanded_queue_id: None,
+  inspect_target: None,
 };
 
 let status_label =
@@ -293,6 +300,15 @@ let initial_model =
       state,
     ) => {
   let snapshot = Projection.of_runtime_state(state);
+  let interaction = {
+    ...default_interaction,
+    active_tab:
+      if (snapshot.Projection.queue_present) {
+        Queue;
+      } else {
+        Tasks;
+      },
+  };
   {
     snapshot,
     status_label: status_label(snapshot.mode),
@@ -301,7 +317,7 @@ let initial_model =
     terminal_size,
     web_handoff,
     settings,
-    interaction: default_interaction,
+    interaction,
   };
 };
 
@@ -353,7 +369,30 @@ let focused_tab_title = tab_title;
 
 let tab_order = [Queue, Logs, Tasks, Readiness, Attention];
 
-let tab_index = tab => {
+let visible_tab_order = (snapshot: Projection.t) =>
+  if (snapshot.Projection.queue_present) {
+    tab_order;
+  } else {
+    [Tasks, Logs, Readiness, Attention];
+  };
+
+let default_visible_tab = snapshot =>
+  switch (visible_tab_order(snapshot)) {
+  | [tab, ..._] => tab
+  | [] => Tasks
+  };
+
+let tab_is_visible = (snapshot, tab) =>
+  List.exists(visible => visible == tab, visible_tab_order(snapshot));
+
+let clamp_active_tab = (snapshot, tab) =>
+  if (tab_is_visible(snapshot, tab)) {
+    tab;
+  } else {
+    default_visible_tab(snapshot);
+  };
+
+let tab_index = (tabs, tab) => {
   let rec loop = index =>
     fun
     | [] => 0
@@ -364,21 +403,24 @@ let tab_index = tab => {
         loop(index + 1, rest);
       };
 
-  loop(0, tab_order);
+  loop(0, tabs);
 };
 
-let tab_at = index => {
-  let count = List.length(tab_order);
+let tab_at = (tabs, index) => {
+  let count = List.length(tabs);
   let normalized = (index mod count + count) mod count;
-  List.nth(tab_order, normalized);
+  List.nth(tabs, normalized);
 };
 
-let move_tab = (delta, interaction) => {
-  let active_tab = tab_at(tab_index(interaction.active_tab) + delta);
+let move_tab = (delta, snapshot, interaction) => {
+  let tabs = visible_tab_order(snapshot);
+  let current = clamp_active_tab(snapshot, interaction.active_tab);
+  let active_tab = tab_at(tabs, tab_index(tabs, current) + delta);
   {
     ...interaction,
     active_tab,
     filter_active: false,
+    inspect_target: None,
   };
 };
 
@@ -495,7 +537,48 @@ let list_nth_opt = (list, index) => {
   };
 };
 
+let task_inspect_key = (row: Projection.task_row) => row.id;
+let readiness_inspect_key = (row: Projection.readiness_row) => row.id;
+
+let selected_inspect_key = (snapshot, interaction, tab) =>
+  switch (tab) {
+  | Queue =>
+    visible_queue_rows(snapshot, interaction)
+    |> (rows =>
+          list_nth_opt(rows, interaction.selected_rows.queue)
+          |> Option.map(task_inspect_key)
+       )
+  | Tasks =>
+    visible_active_rows(snapshot, interaction)
+    |> (rows =>
+          list_nth_opt(rows, interaction.selected_rows.active)
+          |> Option.map(task_inspect_key)
+       )
+  | Readiness =>
+    visible_readiness_rows(snapshot, interaction)
+    |> (rows =>
+          list_nth_opt(rows, interaction.selected_rows.readiness)
+          |> Option.map(readiness_inspect_key)
+       )
+  | Attention =>
+    visible_attention_rows(snapshot, interaction)
+    |> (rows =>
+          list_nth_opt(rows, interaction.selected_rows.attention)
+          |> Option.map(task_inspect_key)
+       )
+  | Logs => None
+  };
+
+let inspect_target_matches = (interaction, tab, row_key) =>
+  switch (interaction.inspect_target) {
+  | Some({tab: inspected_tab, row_key: inspected_key})
+      when inspected_tab == tab && inspected_key == row_key =>
+    true
+  | _ => false
+  };
+
 let clamp_interaction = (snapshot, interaction) => {
+  let active_tab = clamp_active_tab(snapshot, interaction.active_tab);
   let active =
     clamp_index(
       List.length(visible_active_rows(snapshot, interaction)),
@@ -520,16 +603,24 @@ let clamp_interaction = (snapshot, interaction) => {
       interaction.selected_rows.safe_aid,
     );
   let expanded_queue_id =
-    switch (interaction.expanded_queue_id) {
-    | Some(id)
-        when
-          List.exists((row: Projection.task_row) => row.id == id, queue_rows) =>
-      Some(id)
-    | _ => None
+    if (snapshot.Projection.queue_present) {
+      switch (interaction.expanded_queue_id) {
+      | Some(id)
+          when
+            List.exists(
+              (row: Projection.task_row) => row.id == id,
+              queue_rows,
+            ) =>
+        Some(id)
+      | _ => None
+      };
+    } else {
+      None;
     };
 
-  {
+  let interaction = {
     ...interaction,
+    active_tab,
     selected_rows: {
       active,
       readiness,
@@ -539,6 +630,21 @@ let clamp_interaction = (snapshot, interaction) => {
     },
     logs_scroll: max(0, interaction.logs_scroll),
     expanded_queue_id,
+  };
+
+  let inspect_target =
+    switch (interaction.inspect_target) {
+    | Some({tab, row_key}) when tab == interaction.active_tab =>
+      switch (selected_inspect_key(snapshot, interaction, tab)) {
+      | Some(current_key) when current_key == row_key => Some({tab, row_key})
+      | _ => None
+      }
+    | _ => None
+    };
+
+  {
+    ...interaction,
+    inspect_target,
   };
 };
 
@@ -902,6 +1008,39 @@ let rec intersperse = separator =>
   | [line] => [line]
   | [line, ...rest] => [line, separator, ...intersperse(separator, rest)];
 
+let rec intersperse_blocks = separator =>
+  fun
+  | [] => []
+  | [block] => block
+  | [block, ...rest] =>
+    block @ [separator] @ intersperse_blocks(separator, rest);
+
+let inline_inspect_detail_lines = details =>
+  switch (details) {
+  | [] => ["    No inspect detail available."]
+  | details =>
+    List.map(
+      (detail: Projection.inspect_detail) =>
+        "    " ++ detail.label ++ ": " ++ detail.value,
+      details,
+    )
+  };
+
+let task_inline_inspect_lines = (interaction, tab, row: Projection.task_row) =>
+  if (inspect_target_matches(interaction, tab, task_inspect_key(row))) {
+    inline_inspect_detail_lines(row.inspect_details);
+  } else {
+    [];
+  };
+
+let readiness_inline_inspect_lines =
+    (interaction, row: Projection.readiness_row) =>
+  if (inspect_target_matches(interaction, Readiness, readiness_inspect_key(row))) {
+    inline_inspect_detail_lines(row.inspect_details);
+  } else {
+    [];
+  };
+
 let tasks_panel =
     (
       ~terminal_size=?,
@@ -920,13 +1059,16 @@ let tasks_panel =
       rows
       |> List.mapi((index, row) => {
            let compozy_detail = compozy_detail_for_row(snapshot, row);
-           task_row_line(
-             ~prefix=row_marker(interaction.selected_rows.active, index),
-             ~compozy_detail?,
-             row,
-           );
+           [
+             task_row_line(
+               ~prefix=row_marker(interaction.selected_rows.active, index),
+               ~compozy_detail?,
+               row,
+             ),
+             ...task_inline_inspect_lines(interaction, Tasks, row),
+           ];
          })
-      |> intersperse(task_separator_line(width))
+      |> intersperse_blocks(task_separator_line(width))
     };
 
   let next_lines =
@@ -966,7 +1108,7 @@ let tasks_panel =
   };
 };
 
-let readiness_lines = (~width, ~selected, readiness) =>
+let readiness_lines = (~width, ~interaction, readiness) =>
   readiness
   |> List.mapi((index, row: Projection.readiness_row) =>
        wrap_lines(
@@ -974,25 +1116,25 @@ let readiness_lines = (~width, ~selected, readiness) =>
          [
            Printf.sprintf(
              "%sREADINESS GAP %d requirement: %s",
-             row_marker(selected, index),
+             row_marker(interaction.selected_rows.readiness, index),
              index + 1,
              row.requirement,
            ),
-           "Remediation: " ++ row.remediation,
+           ...readiness_inline_inspect_lines(interaction, row),
          ],
        )
      )
   |> List.concat;
 
-let attention_lines = (~width, ~selected, active) =>
+let attention_lines = (~width, ~interaction, active) =>
   active
   |> List.mapi((index, row) => {
        let lines = [
-         task_row_line(~prefix=row_marker(selected, index), row),
-         ...switch (row.error) {
-            | Some(error) => ["Current error: " ++ shorten(error)]
-            | None => []
-            },
+         task_row_line(
+           ~prefix=row_marker(interaction.selected_rows.attention, index),
+           row,
+         ),
+         ...task_inline_inspect_lines(interaction, Attention, row),
        ];
 
        wrap_lines(~width, lines);
@@ -1009,7 +1151,7 @@ let readiness_panel =
   let readiness =
     readiness_lines(
       ~width,
-      ~selected=interaction.selected_rows.readiness,
+      ~interaction,
       visible_readiness_rows(snapshot, interaction),
     );
   let lines =
@@ -1037,7 +1179,7 @@ let attention_panel =
   let attention =
     attention_lines(
       ~width,
-      ~selected=interaction.selected_rows.attention,
+      ~interaction,
       visible_attention_rows(snapshot, interaction),
     );
 
@@ -1162,13 +1304,12 @@ let queue_row_lines = (snapshot, interaction, index, row) => {
   let line =
     queue_row_line(~compozy_detail?, row)
     |> (line => row_marker(interaction.selected_rows.queue, index) ++ line);
+  let lines = [line, ...task_inline_inspect_lines(interaction, Queue, row)];
 
   switch (interaction.expanded_queue_id) {
-  | Some(id) when id == row.Projection.id => [
-      line,
-      ...queue_expansion_lines(snapshot, row),
-    ]
-  | _ => [line]
+  | Some(id) when id == row.Projection.id =>
+    lines @ queue_expansion_lines(snapshot, row)
+  | _ => lines
   };
 };
 
@@ -1606,8 +1747,22 @@ let render_snapshot =
       snapshot: Projection.t,
     ) => {
   let interaction = clamp_interaction(snapshot, interaction);
-  let tabs = tab_order |> List.map(tab_title) |> String.concat(" | ");
+  let visible_tabs = visible_tab_order(snapshot);
+  let tabs = visible_tabs |> List.map(tab_title) |> String.concat(" | ");
   let status = status_badge_label(snapshot.mode);
+  let panels =
+    visible_tabs
+    |> List.map(tab =>
+         switch (tab) {
+         | Queue => queue_panel(~terminal_size?, ~interaction, snapshot)
+         | Logs => logs_panel(~terminal_size?, ~interaction, logs)
+         | Tasks => tasks_panel(~terminal_size?, ~interaction, snapshot)
+         | Readiness =>
+           readiness_panel(~terminal_size?, ~interaction, snapshot)
+         | Attention =>
+           attention_panel(~terminal_size?, ~interaction, snapshot)
+         }
+       );
   switch (terminal_size) {
   | Some(size) when terminal_too_small(size) => {
       heading: project_title(snapshot),
@@ -1627,13 +1782,7 @@ let render_snapshot =
       status_label: status,
       tabs,
       subheading: Printf.sprintf("generated %s", snapshot.generated_at),
-      panels: [
-        queue_panel(~terminal_size?, ~interaction, snapshot),
-        logs_panel(~terminal_size?, ~interaction, logs),
-        tasks_panel(~terminal_size?, ~interaction, snapshot),
-        readiness_panel(~terminal_size?, ~interaction, snapshot),
-        attention_panel(~terminal_size?, ~interaction, snapshot),
-      ],
+      panels,
       footer: contextual_footer(~interaction, true),
     }
   };
@@ -1911,6 +2060,61 @@ let toggle_queue_expansion = model =>
     };
     transition(update_interaction(~status_message, model, interaction));
   };
+
+let toggle_inline_inspect = model => {
+  let interaction = clamp_interaction(model.snapshot, model.interaction);
+  if (interaction.active_tab == Logs) {
+    transition({
+      ...model,
+      interaction: {
+        ...interaction,
+        inspect_target: None,
+      },
+    });
+  } else {
+    switch (selected_inspect_key(model.snapshot, interaction, interaction.active_tab)) {
+    | None =>
+      transition({
+        ...model,
+        interaction,
+        status_message:
+          Some(focused_tab_title(interaction.active_tab) ++ ": no row selected"),
+      })
+    | Some(row_key) =>
+      let target = {tab: interaction.active_tab, row_key};
+      let opening =
+        switch (interaction.inspect_target) {
+        | Some({tab, row_key})
+            when tab == target.tab && row_key == target.row_key =>
+          false
+        | _ => true
+        };
+      let inspect_target =
+        if (opening) {
+          Some(target);
+        } else {
+          None;
+        };
+      let status_message =
+        if (opening) {
+          Some(
+            Printf.sprintf(
+              "%s inspect: %s",
+              focused_tab_title(target.tab),
+              row_key,
+            ),
+          );
+        } else {
+          Some("Inspect details hidden");
+        };
+      let interaction = {
+        ...interaction,
+        inspect_target,
+      };
+      transition(update_interaction(~status_message?, model, interaction));
+    };
+  };
+};
 
 let supported_settings_themes = Terminal_console_settings.supported_themes;
 
@@ -2271,7 +2475,7 @@ let apply_key =
       | Character('o') => inspect_selected_path(~local_surfaces, model)
       | Character('h')
       | Left_key =>
-        let interaction = move_tab(-1, model.interaction);
+        let interaction = move_tab(-1, model.snapshot, model.interaction);
         transition(
           update_interaction(
             ~status_message=
@@ -2283,7 +2487,7 @@ let apply_key =
       | Character('l')
       | Right_key
       | Tab_key =>
-        let interaction = move_tab(1, model.interaction);
+        let interaction = move_tab(1, model.snapshot, model.interaction);
         transition(
           update_interaction(
             ~status_message=
@@ -2339,8 +2543,8 @@ let apply_key =
         } else {
           transition(model);
         }
+      | Enter_key => toggle_inline_inspect(model)
       | Character(_)
-      | Enter_key
       | Backspace_key => transition(model)
       }
     };
@@ -3140,13 +3344,23 @@ let view = model =>
   with_render_theme(
     theme_for_name(model.settings.theme),
     () => {
-      let rendered = render_model(model);
-      let panel = active_panel(rendered, model.interaction);
-      let active_tab = model.interaction.active_tab;
+      let interaction = clamp_interaction(model.snapshot, model.interaction);
+      let rendered =
+        render_snapshot(
+          ~terminal_size=?model.terminal_size,
+          ~interaction,
+          ~logs=model.logs,
+          model.snapshot,
+        );
+      let panel = active_panel(rendered, interaction);
+      let active_tab = interaction.active_tab;
       let tab_nodes =
-        List.map(tab => tab_node(tab == active_tab, tab), tab_order);
+        List.map(
+          tab => tab_node(tab == active_tab, tab),
+          visible_tab_order(model.snapshot),
+        );
       let scroll_children =
-        if (model.interaction.active_tab == Logs) {
+        if (interaction.active_tab == Logs) {
           log_line_nodes(panel.lines);
         } else {
           content_line_nodes(panel.lines);

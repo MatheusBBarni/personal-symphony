@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Preserve Queue Compatibility and Update Console Guidance
 type: backend
 complexity: medium
 dependencies:
   - task_03
+
 ---
 
 # Task 04: Preserve Queue Compatibility and Update Console Guidance
@@ -30,12 +31,12 @@ Finalize the Terminal Console user-facing behavior by keeping Space-based Queue 
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Confirm Space still toggles Queue expansion for the selected Queue row.
-- [ ] 4.2 Keep Queue expansion and inline inspect state independent in rendering and key transitions.
-- [ ] 4.3 Update contextual footer text for Queue, Tasks, Readiness, Needs attention, and Logs.
-- [ ] 4.4 Update full help copy for inspect and Queue expansion behavior.
-- [ ] 4.5 Add or adjust tests for Queue compatibility and guidance copy.
-- [ ] 4.6 Run the focused Terminal Console Alcotest command and `pnpm backend:build`.
+- [x] 4.1 Confirm Space still toggles Queue expansion for the selected Queue row.
+- [x] 4.2 Keep Queue expansion and inline inspect state independent in rendering and key transitions.
+- [x] 4.3 Update contextual footer text for Queue, Tasks, Readiness, Needs attention, and Logs.
+- [x] 4.4 Update full help copy for inspect and Queue expansion behavior.
+- [x] 4.5 Add or adjust tests for Queue compatibility and guidance copy.
+- [x] 4.6 Run the focused Terminal Console Alcotest command and backend build gate.
 
 ## Implementation Details
 Build on Task 03 after inspect mode exists. Reference the TechSpec "Testing Approach", "Technical Considerations", and ADR-006 for the required verification gate.
@@ -65,15 +66,15 @@ Build on Task 03 after inspect mode exists. Reference the TechSpec "Testing Appr
 
 ## Tests
 - Unit tests:
-  - [ ] Space on Queue still toggles `expanded_queue_id` for the selected queue stage.
-  - [ ] Enter inspect on Queue does not clear or hijack Space-based Queue expansion.
-  - [ ] Contextual footer for Queue mentions both Enter inspect and Space expand.
-  - [ ] Contextual footer for Tasks, Readiness, and Needs attention mentions Enter inspect.
-  - [ ] Contextual footer for Logs does not advertise inspect mode.
-  - [ ] Full help copy describes inspect behavior without suggesting lifecycle mutations.
+  - [x] Space on Queue still toggles `expanded_queue_id` for the selected queue stage.
+  - [x] Enter inspect on Queue does not clear or hijack Space-based Queue expansion.
+  - [x] Contextual footer for Queue mentions both Enter inspect and Space expand.
+  - [x] Contextual footer for Tasks, Readiness, and Needs attention mentions Enter inspect.
+  - [x] Contextual footer for Logs does not advertise inspect mode.
+  - [x] Full help copy describes inspect behavior without suggesting lifecycle mutations.
 - Integration tests:
-  - [ ] Focused Terminal Console Alcotest cases pass for projection, dynamic tabs, inspect toggling, inline details, Queue compatibility, Logs exclusion, and read-only behavior.
-  - [ ] `pnpm backend:build` completes successfully after the TUI and projection type changes.
+  - [x] Focused Terminal Console Alcotest cases pass for projection, dynamic tabs, inspect toggling, inline details, Queue compatibility, Logs exclusion, and read-only behavior.
+  - [x] Backend build completes successfully after the TUI and projection type changes.
 - Test coverage target: >=80%
 - All tests must pass
 

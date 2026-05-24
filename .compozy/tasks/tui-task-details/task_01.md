@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: Preserve Queue Presence in Terminal Console Projection
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 01: Preserve Queue Presence in Terminal Console Projection
@@ -28,12 +29,12 @@ Extend the Terminal Console projection so it preserves the semantic difference b
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Update the Terminal Console projection type to carry Queue presence.
-- [ ] 1.2 Preserve Queue presence during projection from `Runtime_state.t`.
-- [ ] 1.3 Add bounded inspect-detail projection helpers for task rows and readiness rows.
-- [ ] 1.4 Keep existing status, attention, Goal Usage, Goal Loop, and Context Status projection behavior intact.
-- [ ] 1.5 Add focused projection tests for absent Queue, present empty Queue, and inspect detail ordering.
-- [ ] 1.6 Confirm no Runtime State, Runtime Contract, or orchestration schema changes are introduced.
+- [x] 1.1 Update the Terminal Console projection type to carry Queue presence.
+- [x] 1.2 Preserve Queue presence during projection from `Runtime_state.t`.
+- [x] 1.3 Add bounded inspect-detail projection helpers for task rows and readiness rows.
+- [x] 1.4 Keep existing status, attention, Goal Usage, Goal Loop, and Context Status projection behavior intact.
+- [x] 1.5 Add focused projection tests for absent Queue, present empty Queue, and inspect detail ordering.
+- [x] 1.6 Confirm no Runtime State, Runtime Contract, or orchestration schema changes are introduced.
 
 ## Implementation Details
 Modify the projection layer described in the TechSpec "Core Interfaces" and "Data Models" sections. Keep the change local to the read-only Terminal Console projection surface, and avoid adding a new module unless the existing projection file becomes materially harder to read.
@@ -63,13 +64,13 @@ Modify the projection layer described in the TechSpec "Core Interfaces" and "Dat
 
 ## Tests
 - Unit tests:
-  - [ ] `Runtime_state.ordered_queue = None` projects as Queue absent while keeping active tasks intact.
-  - [ ] `Runtime_state.ordered_queue = Some { entries = [] }` projects as Queue present with zero Queue rows.
-  - [ ] Queue entries with skipped, failed, completed, and attention states preserve status-first detail inputs.
-  - [ ] Task-like inspect detail places status, blocker, error, remediation, and attention context before provenance and progress evidence.
-  - [ ] Projected inspect detail sanitizes untrusted task titles, details, errors, and remediation text.
+  - [x] `Runtime_state.ordered_queue = None` projects as Queue absent while keeping active tasks intact.
+  - [x] `Runtime_state.ordered_queue = Some { entries = [] }` projects as Queue present with zero Queue rows.
+  - [x] Queue entries with skipped, failed, completed, and attention states preserve status-first detail inputs.
+  - [x] Task-like inspect detail places status, blocker, error, remediation, and attention context before provenance and progress evidence.
+  - [x] Projected inspect detail sanitizes untrusted task titles, details, errors, and remediation text.
 - Integration tests:
-  - [ ] Existing Terminal Console model fixtures still compile and render from the updated projection shape.
+  - [x] Existing Terminal Console model fixtures still compile and render from the updated projection shape.
 - Test coverage target: >=80%
 - All tests must pass
 

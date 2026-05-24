@@ -1,10 +1,11 @@
 ---
-status: pending
+status: completed
 title: Derive Dynamic Terminal Console Tabs
 type: backend
 complexity: medium
 dependencies:
   - task_01
+
 ---
 
 # Task 02: Derive Dynamic Terminal Console Tabs
@@ -30,12 +31,12 @@ Update the Terminal Console TUI so visible tabs are derived from the projection 
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Replace static visible tab use with projection-derived visible tabs.
-- [ ] 2.2 Update initial interaction state so the default active tab reflects Queue presence.
-- [ ] 2.3 Clamp active tab and selected row state when a refreshed snapshot hides Queue.
-- [ ] 2.4 Preserve present-empty Queue panel behavior and empty-state messaging.
-- [ ] 2.5 Update tab-rendering tests for absent Queue, present empty Queue, and tab navigation.
-- [ ] 2.6 Verify Logs, Tasks, Readiness, and Needs attention remain reachable when Queue is hidden.
+- [x] 2.1 Replace static visible tab use with projection-derived visible tabs.
+- [x] 2.2 Update initial interaction state so the default active tab reflects Queue presence.
+- [x] 2.3 Clamp active tab and selected row state when a refreshed snapshot hides Queue.
+- [x] 2.4 Preserve present-empty Queue panel behavior and empty-state messaging.
+- [x] 2.5 Update tab-rendering tests for absent Queue, present empty Queue, and tab navigation.
+- [x] 2.6 Verify Logs, Tasks, Readiness, and Needs attention remain reachable when Queue is hidden.
 
 ## Implementation Details
 Build on Task 01's Queue-presence projection. Reference the TechSpec "Implementation Design" and "Development Sequencing" sections for the intended visible-tab ownership and clamping behavior.
@@ -64,14 +65,14 @@ Build on Task 01's Queue-presence projection. Reference the TechSpec "Implementa
 
 ## Tests
 - Unit tests:
-  - [ ] A snapshot with Queue absent renders no Queue tab text.
-  - [ ] A snapshot with Queue absent initializes active tab state to Tasks.
-  - [ ] A snapshot with Queue present and zero entries still renders the Queue tab.
-  - [ ] Active tab clamping moves Queue focus to Tasks when a refreshed snapshot hides Queue.
-  - [ ] Left/right tab movement skips hidden Queue and preserves ordering for Logs, Tasks, Readiness, and Needs attention.
+  - [x] A snapshot with Queue absent renders no Queue tab text.
+  - [x] A snapshot with Queue absent initializes active tab state to Tasks.
+  - [x] A snapshot with Queue present and zero entries still renders the Queue tab.
+  - [x] Active tab clamping moves Queue focus to Tasks when a refreshed snapshot hides Queue.
+  - [x] Left/right tab movement skips hidden Queue and preserves ordering for Logs, Tasks, Readiness, and Needs attention.
 - Integration tests:
-  - [ ] Active tab content uses the derived visible-tab set for render output and scroll-box content.
-  - [ ] Existing present-Queue render fixtures retain Queue panel empty-state behavior.
+  - [x] Active tab content uses the derived visible-tab set for render output and scroll-box content.
+  - [x] Existing present-Queue render fixtures retain Queue panel empty-state behavior.
 - Test coverage target: >=80%
 - All tests must pass
 
