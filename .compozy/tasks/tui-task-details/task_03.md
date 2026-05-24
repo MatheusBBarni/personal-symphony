@@ -1,11 +1,12 @@
 ---
-status: pending
+status: completed
 title: Add Enter-Toggled Inline Inspect Mode
 type: backend
 complexity: medium
 dependencies:
   - task_01
   - task_02
+
 ---
 
 # Task 03: Add Enter-Toggled Inline Inspect Mode
@@ -31,12 +32,12 @@ Add explicit inspect state to the Terminal Console interaction model and use Ent
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add interaction state for the currently inspected tab and row.
-- [ ] 3.2 Toggle inspect state with Enter only for inspectable tabs in normal mode.
-- [ ] 3.3 Clear or clamp inspect state when selection, active tab, filter, or snapshot changes make the target invalid.
-- [ ] 3.4 Render inline details below selected Queue, Tasks, Readiness, and Needs attention rows.
-- [ ] 3.5 Keep Logs Enter behavior as a no-op while preserving scroll behavior.
-- [ ] 3.6 Add focused tests for inspect toggling, inline rendering, exclusion, and read-only transitions.
+- [x] 3.1 Add interaction state for the currently inspected tab and row.
+- [x] 3.2 Toggle inspect state with Enter only for inspectable tabs in normal mode.
+- [x] 3.3 Clear or clamp inspect state when selection, active tab, filter, or snapshot changes make the target invalid.
+- [x] 3.4 Render inline details below selected Queue, Tasks, Readiness, and Needs attention rows.
+- [x] 3.5 Keep Logs Enter behavior as a no-op while preserving scroll behavior.
+- [x] 3.6 Add focused tests for inspect toggling, inline rendering, exclusion, and read-only transitions.
 
 ## Implementation Details
 Use the projection details from Task 01 and visible-tab behavior from Task 02. Reference the TechSpec "Core Interfaces", "Testing Approach", and ADR-005 for key handling and status-first detail ordering; do not duplicate the shape-only interface in the task implementation.
@@ -67,16 +68,16 @@ Use the projection details from Task 01 and visible-tab behavior from Task 02. R
 
 ## Tests
 - Unit tests:
-  - [ ] Enter on a selected Queue row toggles inline inspect detail for that row.
-  - [ ] Enter on a selected Tasks row toggles inline inspect detail for that row.
-  - [ ] Enter on a selected Readiness row toggles inline remediation detail for that row.
-  - [ ] Enter on a selected Needs attention row toggles inline inspect detail for that row.
-  - [ ] Enter on Logs leaves inspect state closed and preserves existing scroll behavior.
-  - [ ] Search mode Enter and settings mode Enter continue to perform their existing flows.
-  - [ ] Inspect toggling leaves snapshot identity unchanged and emits no lifecycle mutation safe aids.
+  - [x] Enter on a selected Queue row toggles inline inspect detail for that row.
+  - [x] Enter on a selected Tasks row toggles inline inspect detail for that row.
+  - [x] Enter on a selected Readiness row toggles inline remediation detail for that row.
+  - [x] Enter on a selected Needs attention row toggles inline inspect detail for that row.
+  - [x] Enter on Logs leaves inspect state closed and preserves existing scroll behavior.
+  - [x] Search mode Enter and settings mode Enter continue to perform their existing flows.
+  - [x] Inspect toggling leaves snapshot identity unchanged and emits no lifecycle mutation safe aids.
 - Integration tests:
-  - [ ] Render output places inline detail directly under the selected inspected row.
-  - [ ] Filter or snapshot changes clamp or clear invalid inspect targets without stale detail output.
+  - [x] Render output places inline detail directly under the selected inspected row.
+  - [x] Filter or snapshot changes clamp or clear invalid inspect targets without stale detail output.
 - Test coverage target: >=80%
 - All tests must pass
 

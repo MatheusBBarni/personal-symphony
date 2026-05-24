@@ -7576,6 +7576,20 @@ let check_line_absent label lines unexpected =
 let check_wrapped_text_contains label lines expected =
   Alcotest.(check bool) label true (contains_substring (String.concat " " lines) expected)
 
+let line_index_contains lines expected =
+  let rec loop index = function
+    | [] -> None
+    | line :: _ when contains_substring line expected -> Some index
+    | _ :: rest -> loop (index + 1) rest
+  in
+  loop 0 lines
+
+let check_line_directly_after label lines row_text detail_text =
+  match (line_index_contains lines row_text, line_index_contains lines detail_text) with
+  | Some row_index, Some detail_index -> Alcotest.(check int) label (row_index + 1) detail_index
+  | None, _ -> Alcotest.fail ("missing row line: " ^ row_text)
+  | _, None -> Alcotest.fail ("missing detail line: " ^ detail_text)
+
 let terminal_console_snapshot state = Terminal_console_model.of_runtime_state state
 
 let terminal_console_rendered ?terminal_size ?logs state =
@@ -7598,14 +7612,31 @@ let terminal_console_view_output model =
   let root = Shell.view model in
   Tui.Renderer.render_to_string (Tui.Renderer.create ~width:100 ~height:28 root)
 
+let terminal_console_inspect_target model =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  match model.Shell.interaction.Shell.inspect_target with
+  | None -> None
+  | Some target -> Some (Shell.focused_tab_title target.Shell.tab, target.Shell.row_key)
+
 let test_terminal_console_tui_project_title_and_tabs () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   let state = Runtime_state.empty ~workspace_repository_name:"workspace-one" () in
   let rendered = Shell.render_snapshot (terminal_console_snapshot state) in
   Alcotest.(check string) "project title" "workspace-one" rendered.Shell.heading;
   Alcotest.(check string) "status" "STOPPED" rendered.Shell.status_label;
-  Alcotest.(check string) "tabs" "Queue | Logs | Tasks | Readiness | Needs attention" rendered.Shell.tabs;
-  check_line_absent "subheading does not repeat active tab" [ rendered.Shell.subheading ] "tab "
+  Alcotest.(check string) "tabs without queue" "Tasks | Logs | Readiness | Needs attention" rendered.Shell.tabs;
+  check_line_absent "queue panel hidden when absent" (Shell.rendered_lines rendered) "Queue";
+  check_line_absent "subheading does not repeat active tab" [ rendered.Shell.subheading ] "tab ";
+  let queued =
+    let queue =
+      {
+        Runtime_state.entries =
+          [ { Runtime_state.issue_identifier = "#1"; title = Some "One"; state = "pending"; skip_reason = None } ];
+      }
+    in
+    Shell.render_snapshot (terminal_console_snapshot (Runtime_state.empty ~ordered_queue:queue ()))
+  in
+  Alcotest.(check string) "tabs with queue" "Queue | Logs | Tasks | Readiness | Needs attention" queued.Shell.tabs
 
 let test_terminal_console_tui_uses_cursor_design_theme () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -7709,7 +7740,7 @@ let test_terminal_console_tui_active_home_panel () =
   check_line_contains "home includes update context" lines "Updated:";
   let attention_lines = terminal_console_panel state "Needs attention" in
   check_line_contains "attention tab includes attention row" attention_lines "ATTENTION #3 Attention task";
-  check_line_contains "attention tab includes error" attention_lines "Current error: needs merge"
+  check_line_absent "attention tab keeps current error for inspect" attention_lines "Current error: needs merge"
 
 let test_terminal_console_tui_readiness_attention_panel_wraps_remediation () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -7731,12 +7762,20 @@ let test_terminal_console_tui_readiness_attention_panel_wraps_remediation () =
         ]
       ()
   in
-  let lines = terminal_console_panel ~terminal_size:size state "Readiness" in
+  let base = Shell.initial_model ~terminal_size:size state in
+  let model =
+    Shell.{ base with interaction = { base.interaction with active_tab = Readiness } }
+    |> Shell.apply_key Shell.Enter_key
+    |> fun transition -> transition.Shell.model
+  in
+  let lines = Shell.render_model model |> fun rendered -> Shell.panel_lines rendered "Readiness" in
   check_line_contains "first requirement" lines "READINESS GAP 1 requirement: tracker.owner";
+  check_line_directly_after "first readiness inspect follows row" lines "READINESS GAP 1 requirement: tracker.owner"
+    "Status: readiness_blocked";
   check_wrapped_text_contains "first remediation retained" lines
     "Set tracker.owner in Runtime Settings so dispatch can discover Workspace Repository issues.";
   check_line_contains "second requirement" lines "READINESS GAP 2 requirement: stageAgents.engineer.context.command";
-  check_wrapped_text_contains "second remediation retained" lines
+  check_line_absent "second remediation stays collapsed" lines
     "Use stageAgents.stages[].context.command with an argv array and a Workspace Repository safe cwd"
 
 let test_terminal_console_tui_ordered_queue_panel_states () =
@@ -7929,6 +7968,26 @@ let test_terminal_console_tui_maps_compozy_steps_per_run () =
   check_wrapped_text_contains "tasks second run Compozy detail" task_lines
     "Compozy Task Step: task_05.md -> next task_06.md"
 
+let terminal_console_interaction_state () =
+  let running_issue, running = terminal_console_running_row ~identifier:"#30" ~title:"Running task" "I30" in
+  let retry_issue = Issue.empty ~id:"I31" ~identifier:"#31" ~title:"Retry task" ~state:"Todo" in
+  {
+    (Runtime_state.empty ()) with
+    issues = [ running_issue; retry_issue ];
+    running = [ running ];
+    retrying =
+      [
+        {
+          Runtime_state.issue_id = "I31";
+          issue_identifier = "#31";
+          attempt = 1;
+          due_at = "2026-05-04T00:02:00Z";
+          error = None;
+          goal_usage = None;
+        };
+      ];
+  }
+
 let test_terminal_console_tui_queue_space_expands_selected_stage () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
   (match Shell.ui_key_of_tui_key (Tui.Key.of_sequence " ") with
@@ -7956,6 +8015,149 @@ let test_terminal_console_tui_queue_space_expands_selected_stage () =
   let collapsed = Shell.apply_key Shell.Space_key expanded.model in
   Alcotest.(check (option string)) "collapsed queue row" None
     collapsed.model.Shell.interaction.Shell.expanded_queue_id
+
+let test_terminal_console_tui_enter_toggles_queue_inline_inspect () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let running_issue, running = terminal_console_running_row ~identifier:"#2" ~title:"Two" "I2" in
+  let queue =
+    { Runtime_state.entries = [ { Runtime_state.issue_identifier = "#2"; title = Some "Two"; state = "running"; skip_reason = None } ] }
+  in
+  let state =
+    {
+      (Runtime_state.empty ~ordered_queue:queue ()) with
+      issues = [ running_issue ];
+      running = [ running ];
+    }
+  in
+  let model = Shell.initial_model state in
+  let opened = Shell.apply_key Shell.Enter_key model in
+  Alcotest.(check (option (pair string string))) "queue inspect target" (Some ("Queue", "#2"))
+    (terminal_console_inspect_target opened.model);
+  Alcotest.(check bool) "queue inspect keeps snapshot" true (opened.model.Shell.snapshot == model.Shell.snapshot);
+  Alcotest.(check int) "queue inspect emits no safe aids" 0 (List.length opened.Shell.safe_aids);
+  let lines = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
+  check_line_directly_after "queue inline status follows row" lines "RUNNING #2 Two" "Status: running";
+  let closed = Shell.apply_key Shell.Enter_key opened.model in
+  Alcotest.(check (option (pair string string))) "queue inspect toggled closed" None
+    (terminal_console_inspect_target closed.model)
+
+let test_terminal_console_tui_enter_toggles_tasks_inline_inspect () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  Alcotest.(check string) "tasks default without queue" "Tasks"
+    (Shell.focused_tab_title model.Shell.interaction.Shell.active_tab);
+  let opened = Shell.apply_key Shell.Enter_key model in
+  Alcotest.(check (option (pair string string))) "tasks inspect target" (Some ("Tasks", "#31"))
+    (terminal_console_inspect_target opened.model);
+  Alcotest.(check bool) "tasks inspect keeps snapshot" true (opened.model.Shell.snapshot == model.Shell.snapshot);
+  Alcotest.(check int) "tasks inspect emits no safe aids" 0 (List.length opened.Shell.safe_aids);
+  let lines = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Tasks" in
+  check_line_directly_after "tasks inline status follows row" lines "RETRYING #31 Retry task" "Status: retrying";
+  let closed = Shell.apply_key Shell.Enter_key opened.model in
+  Alcotest.(check (option (pair string string))) "tasks inspect toggled closed" None
+    (terminal_console_inspect_target closed.model)
+
+let test_terminal_console_tui_enter_toggles_readiness_inline_inspect () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let state =
+    Runtime_state.empty
+      ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+      ()
+  in
+  let base = Shell.initial_model state in
+  let model =
+    Shell.{ base with interaction = { base.interaction with active_tab = Readiness } }
+  in
+  let opened = Shell.apply_key Shell.Enter_key model in
+  Alcotest.(check (option (pair string string))) "readiness inspect target"
+    (Some ("Readiness", "tracker.owner"))
+    (terminal_console_inspect_target opened.model);
+  let lines = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Readiness" in
+  check_line_directly_after "readiness inline status follows row" lines
+    "READINESS GAP 1 requirement: tracker.owner" "Status: readiness_blocked";
+  check_line_contains "readiness inline blocker" lines "Blocker: tracker.owner";
+  check_line_contains "readiness inline remediation" lines "Remediation: set owner"
+
+let test_terminal_console_tui_enter_toggles_attention_inline_inspect () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let issue = Issue.empty ~id:"I40" ~identifier:"#40" ~title:"Attention task" ~state:"In progress" in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      issue_errors = [ { Runtime_state.issue_id = "I40"; issue_identifier = "#40"; error = "needs user"; goal_usage = None } ];
+    }
+  in
+  let base = Shell.initial_model state in
+  let model =
+    Shell.{ base with interaction = { base.interaction with active_tab = Attention } }
+  in
+  let opened = Shell.apply_key Shell.Enter_key model in
+  Alcotest.(check (option (pair string string))) "attention inspect target" (Some ("Needs attention", "#40"))
+    (terminal_console_inspect_target opened.model);
+  let lines = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Needs attention" in
+  check_line_directly_after "attention inline status follows row" lines "ATTENTION #40 Attention task" "Status: attention";
+  check_line_contains "attention inline error" lines "Current error: needs user"
+
+let test_terminal_console_tui_logs_enter_ignores_inspect () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let logs = List.init 6 (fun index -> Printf.sprintf "log-%02d" (index + 1)) in
+  let base = Shell.initial_model ~logs (Runtime_state.empty ()) in
+  let model =
+    Shell.{ base with interaction = { base.interaction with active_tab = Logs; logs_scroll = 2 } }
+  in
+  let entered = Shell.apply_key Shell.Enter_key model in
+  Alcotest.(check (option (pair string string))) "logs inspect stays closed" None
+    (terminal_console_inspect_target entered.model);
+  Alcotest.(check int) "logs scroll preserved" 2 entered.model.Shell.interaction.Shell.logs_scroll;
+  Alcotest.(check bool) "logs enter keeps snapshot" true (entered.model.Shell.snapshot == model.Shell.snapshot);
+  Alcotest.(check int) "logs enter emits no safe aids" 0 (List.length entered.Shell.safe_aids)
+
+let test_terminal_console_tui_search_and_settings_enter_preserve_flows () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let searched =
+    Shell.apply_key (Shell.Character '/') model
+    |> fun opened -> Shell.apply_key (Shell.Character '1') opened.model
+    |> fun typed -> Shell.apply_key Shell.Enter_key typed.model
+  in
+  Alcotest.(check bool) "search enter closes filter" false
+    searched.model.Shell.interaction.Shell.filter_active;
+  Alcotest.(check string) "search text retained" "1" searched.model.Shell.interaction.Shell.filter_text;
+  Alcotest.(check (option (pair string string))) "search enter does not inspect" None
+    (terminal_console_inspect_target searched.model);
+  let saved = ref 0 in
+  let settings_open = Shell.apply_key (Shell.Character 's') model in
+  let settings_saved =
+    Shell.apply_key
+      ~save_settings:(fun settings ->
+        incr saved;
+        Shell.Settings_saved settings)
+      Shell.Enter_key settings_open.model
+  in
+  Alcotest.(check int) "settings enter saves" 1 !saved;
+  Alcotest.(check bool) "settings enter closes modal" true
+    (match settings_saved.model.Shell.interaction.Shell.settings_modal with None -> true | Some _ -> false);
+  Alcotest.(check (option (pair string string))) "settings enter does not inspect" None
+    (terminal_console_inspect_target settings_saved.model)
+
+let test_terminal_console_tui_filter_clears_invalid_inline_inspect () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let inspected = Shell.apply_key Shell.Enter_key model in
+  Alcotest.(check (option (pair string string))) "initial inspect target" (Some ("Tasks", "#31"))
+    (terminal_console_inspect_target inspected.model);
+  let filtered =
+    Shell.apply_key (Shell.Character '/') inspected.model
+    |> fun opened -> Shell.apply_key (Shell.Character '3') opened.model
+    |> fun typed -> Shell.apply_key (Shell.Character '0') typed.model
+    |> fun typed -> Shell.apply_key Shell.Enter_key typed.model
+  in
+  Alcotest.(check (option (pair string string))) "filter clears stale inspect" None
+    (terminal_console_inspect_target filtered.model);
+  let lines = Shell.render_model filtered.model |> fun rendered -> Shell.panel_lines rendered "Tasks" in
+  check_line_contains "filtered row remains" lines "RUNNING #30 Running task";
+  check_line_absent "stale retry detail removed" lines "Status: retrying"
 
 let test_terminal_console_tui_logs_panel_uses_background_logs () =
   let state = Runtime_state.empty ~tracker_kind:"compozy_tasks" ~compozy_progress:terminal_console_compozy_fixture () in
@@ -8226,29 +8428,15 @@ let test_terminal_console_tui_minimum_size_message () =
   Alcotest.(check string) "active minimum panel" "Minimum Size" active_panel.Shell.title;
   ignore (Shell.view model)
 
-let terminal_console_interaction_state () =
-  let running_issue, running = terminal_console_running_row ~identifier:"#30" ~title:"Running task" "I30" in
-  let retry_issue = Issue.empty ~id:"I31" ~identifier:"#31" ~title:"Retry task" ~state:"Todo" in
-  {
-    (Runtime_state.empty ()) with
-    issues = [ running_issue; retry_issue ];
-    running = [ running ];
-    retrying =
-      [
-        {
-          Runtime_state.issue_id = "I31";
-          issue_identifier = "#31";
-          attempt = 1;
-          due_at = "2026-05-04T00:02:00Z";
-          error = None;
-          goal_usage = None;
-        };
-      ];
-  }
-
 let test_terminal_console_tui_navigation_is_ui_only () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
-  let model = Shell.initial_model (terminal_console_interaction_state ()) in
+  let state =
+    {
+      (terminal_console_interaction_state ()) with
+      ordered_queue = Some (terminal_console_queue_fixture ());
+    }
+  in
+  let model = Shell.initial_model state in
   let snapshot = model.Shell.snapshot in
   let moved_to_logs = Shell.apply_key Shell.Right_key model in
   let moved_to_tasks = Shell.apply_key Shell.Right_key moved_to_logs.model in
@@ -8404,9 +8592,9 @@ let test_terminal_console_tui_footer_help_content () =
     help.model.Shell.interaction.Shell.help_visible;
   Alcotest.(check (option string)) "modal status" (Some "Commands shown") help.model.Shell.status_message;
   check_line_contains "help includes settings" Shell.help_lines "s open Terminal Console settings";
-  let queue = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
-  check_line_absent "modal help is not appended to active panel" queue "Help";
-  check_line_absent "commands stay out of active panel" queue "switch tabs";
+  let tasks = Shell.render_model help.model |> fun rendered -> Shell.panel_lines rendered "Tasks" in
+  check_line_absent "modal help is not appended to active panel" tasks "Help";
+  check_line_absent "commands stay out of active panel" tasks "switch tabs";
   let closed = Shell.apply_key Shell.Escape_key help.model in
   Alcotest.(check bool) "escape closes command modal" false
     closed.model.Shell.interaction.Shell.help_visible;
@@ -8436,9 +8624,9 @@ let test_terminal_console_tui_settings_modal_opens_separately () =
     "Web Dashboard port: 8080";
   check_line_absent "modal omits saved values" (Shell.settings_modal_lines opened.model.Shell.settings modal)
     "Current saved values";
-  let queue = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Queue" in
-  check_line_absent "settings modal is not appended to active panel" queue "Terminal Console Settings";
-  check_line_absent "settings fields stay out of active panel" queue "Web Dashboard port"
+  let tasks = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Tasks" in
+  check_line_absent "settings modal is not appended to active panel" tasks "Terminal Console Settings";
+  check_line_absent "settings fields stay out of active panel" tasks "Web Dashboard port"
 
 let test_terminal_console_tui_view_layers_modals_as_root_children () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -20127,6 +20315,20 @@ let () =
             test_terminal_console_tui_maps_compozy_steps_per_run;
           Alcotest.test_case "expands Queue stage details with Space" `Quick
             test_terminal_console_tui_queue_space_expands_selected_stage;
+          Alcotest.test_case "Enter toggles Queue inline inspect" `Quick
+            test_terminal_console_tui_enter_toggles_queue_inline_inspect;
+          Alcotest.test_case "Enter toggles Tasks inline inspect" `Quick
+            test_terminal_console_tui_enter_toggles_tasks_inline_inspect;
+          Alcotest.test_case "Enter toggles Readiness inline inspect" `Quick
+            test_terminal_console_tui_enter_toggles_readiness_inline_inspect;
+          Alcotest.test_case "Enter toggles Needs attention inline inspect" `Quick
+            test_terminal_console_tui_enter_toggles_attention_inline_inspect;
+          Alcotest.test_case "Logs Enter ignores inline inspect" `Quick
+            test_terminal_console_tui_logs_enter_ignores_inspect;
+          Alcotest.test_case "search and settings Enter keep existing flows" `Quick
+            test_terminal_console_tui_search_and_settings_enter_preserve_flows;
+          Alcotest.test_case "filter clears invalid inline inspect" `Quick
+            test_terminal_console_tui_filter_clears_invalid_inline_inspect;
           Alcotest.test_case "renders Logs panel background output" `Quick
             test_terminal_console_tui_logs_panel_uses_background_logs;
           Alcotest.test_case "renders Logs newest first with scroll" `Quick
