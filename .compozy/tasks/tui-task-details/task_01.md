@@ -1,9 +1,10 @@
 ---
-status: pending
+status: completed
 title: Preserve Queue Presence in Terminal Console Projection
 type: backend
 complexity: medium
 dependencies: []
+
 ---
 
 # Task 01: Preserve Queue Presence in Terminal Console Projection
@@ -28,12 +29,12 @@ Extend the Terminal Console projection so it preserves the semantic difference b
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Update the Terminal Console projection type to carry Queue presence.
-- [ ] 1.2 Preserve Queue presence during projection from `Runtime_state.t`.
-- [ ] 1.3 Add bounded inspect-detail projection helpers for task rows and readiness rows.
-- [ ] 1.4 Keep existing status, attention, Goal Usage, Goal Loop, and Context Status projection behavior intact.
-- [ ] 1.5 Add focused projection tests for absent Queue, present empty Queue, and inspect detail ordering.
-- [ ] 1.6 Confirm no Runtime State, Runtime Contract, or orchestration schema changes are introduced.
+- [x] 1.1 Update the Terminal Console projection type to carry Queue presence.
+- [x] 1.2 Preserve Queue presence during projection from `Runtime_state.t`.
+- [x] 1.3 Add bounded inspect-detail projection helpers for task rows and readiness rows.
+- [x] 1.4 Keep existing status, attention, Goal Usage, Goal Loop, and Context Status projection behavior intact.
+- [x] 1.5 Add focused projection tests for absent Queue, present empty Queue, and inspect detail ordering.
+- [x] 1.6 Confirm no Runtime State, Runtime Contract, or orchestration schema changes are introduced.
 
 ## Implementation Details
 Modify the projection layer described in the TechSpec "Core Interfaces" and "Data Models" sections. Keep the change local to the read-only Terminal Console projection surface, and avoid adding a new module unless the existing projection file becomes materially harder to read.

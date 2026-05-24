@@ -7057,6 +7057,19 @@ let has_unsafe_terminal_control text =
 let check_no_terminal_control label text =
   Alcotest.(check bool) label false (has_unsafe_terminal_control text)
 
+let inspect_detail_texts details =
+  List.map
+    (fun (detail : Terminal_console_model.inspect_detail) ->
+      detail.Terminal_console_model.label ^ ": " ^ detail.value)
+    details
+
+let rec list_prefix count values =
+  if count <= 0 then []
+  else
+    match values with
+    | [] -> []
+    | value :: rest -> value :: list_prefix (count - 1) rest
+
 let terminal_console_running_row ?(identifier = "#1") ?(title = "Running task") ?branch_name ?goal_usage issue_id =
   let issue =
     {
@@ -7089,6 +7102,7 @@ let test_terminal_console_model_projects_idle () =
   Alcotest.(check string) "mode" "idle" model.Terminal_console_model.mode;
   Alcotest.(check int) "active rows" 0 (List.length model.active);
   Alcotest.(check int) "readiness rows" 0 (List.length model.readiness);
+  Alcotest.(check bool) "queue absent" false model.queue_present;
   Alcotest.(check int) "queue rows" 0 (List.length model.queue);
   Alcotest.(check bool) "generated timestamp present" true (model.generated_at <> "");
   Alcotest.(check bool) "refresh aid"
@@ -7097,6 +7111,23 @@ let test_terminal_console_model_projects_idle () =
   Alcotest.(check bool) "web handoff aid"
     true
     (List.exists (function Terminal_console_model.Show_web_handoff -> true | _ -> false) model.safe_aids)
+
+let test_terminal_console_model_preserves_absent_queue_with_active_tasks () =
+  let issue, running = terminal_console_running_row ~identifier:"#42" ~title:"Active without queue" "I42" in
+  let model =
+    Terminal_console_model.of_runtime_state
+      { (Runtime_state.empty ()) with issues = [ issue ]; running = [ running ] }
+  in
+  Alcotest.(check bool) "queue absent" false model.Terminal_console_model.queue_present;
+  Alcotest.(check int) "queue rows" 0 (List.length model.queue);
+  Alcotest.(check (list string)) "active rows retained" [ "#42" ]
+    (List.map (fun (row : Terminal_console_model.task_row) -> row.id) model.active)
+
+let test_terminal_console_model_preserves_present_empty_queue () =
+  let empty_queue = { Runtime_state.entries = [] } in
+  let model = Terminal_console_model.of_runtime_state (Runtime_state.empty ~ordered_queue:empty_queue ()) in
+  Alcotest.(check bool) "queue present" true model.Terminal_console_model.queue_present;
+  Alcotest.(check int) "queue rows" 0 (List.length model.queue)
 
 let test_terminal_console_model_projects_running_sanitized () =
   let usage = { Runtime_state.status = Some "active"; time_used_seconds = Some 12.; tokens_used = Some 77 } in
@@ -7305,7 +7336,10 @@ let test_terminal_console_model_projects_readiness_blocked () =
   match model.readiness with
   | [ gap ] ->
       Alcotest.(check string) "requirement" "tracker.owner" gap.Terminal_console_model.requirement;
-      Alcotest.(check string) "remediation" "set tracker owner" gap.remediation
+      Alcotest.(check string) "remediation" "set tracker owner" gap.remediation;
+      Alcotest.(check (list string)) "readiness inspect details"
+        [ "Status: readiness_blocked"; "Blocker: tracker.owner"; "Remediation: set tracker owner" ]
+        (inspect_detail_texts gap.inspect_details)
   | _ -> Alcotest.fail "expected one readiness gap"
 
 let test_terminal_console_model_projects_ordered_queue () =
@@ -7328,11 +7362,24 @@ let test_terminal_console_model_projects_ordered_queue () =
   in
   let model = Terminal_console_model.of_runtime_state (Runtime_state.empty ~ordered_queue:queue ()) in
   Alcotest.(check string) "mode" "ready" model.mode;
+  Alcotest.(check bool) "queue present" true model.Terminal_console_model.queue_present;
   Alcotest.(check (list string)) "queue states"
     [ "pending"; "running"; "retrying"; "completed"; "skipped" ]
     (List.map (fun (row : Terminal_console_model.task_row) -> row.state) model.queue);
+  let completed = List.nth model.queue 3 in
+  Alcotest.(check (list string)) "completed inspect status first"
+    [ "Status: completed"; "Task: #4 Four" ]
+    (inspect_detail_texts completed.inspect_details);
   let skipped = List.nth model.queue 4 in
   Alcotest.(check (option string)) "skip reason" (Some "Issue skipped") skipped.error;
+  Alcotest.(check (list string)) "skipped inspect status first"
+    [
+      "Status: skipped";
+      "Blocker: skip reason Issue skipped";
+      "Current error: Issue skipped";
+      "Task: #5 Five";
+    ]
+    (inspect_detail_texts skipped.inspect_details);
   Alcotest.(check bool) "summary next work" true
     (List.exists (fun line -> line = "Next work: #1 One") model.summary)
 
@@ -7364,8 +7411,80 @@ let test_terminal_console_model_projects_ordered_queue_attention () =
   let attention = List.nth model.queue 1 in
   Alcotest.(check (option string)) "failed detail" (Some "failure reason Final task failed") failed.detail;
   Alcotest.(check (option string)) "failed error" (Some "Final task failed") failed.error;
+  Alcotest.(check (list string)) "failed inspect status first"
+    [
+      "Status: failed";
+      "Blocker: failure reason Final task failed";
+      "Current error: Final task failed";
+      "Task: #6 Six";
+    ]
+    (inspect_detail_texts failed.inspect_details);
   Alcotest.(check (option string)) "attention detail" (Some "attention reason Needs review") attention.detail;
-  Alcotest.(check (option string)) "attention error" (Some "Needs review") attention.error
+  Alcotest.(check (option string)) "attention error" (Some "Needs review") attention.error;
+  Alcotest.(check (list string)) "attention inspect status first"
+    [
+      "Status: attention";
+      "Current error: Needs review";
+      "Attention: attention reason Needs review";
+      "Task: #7 Seven";
+    ]
+    (inspect_detail_texts attention.inspect_details)
+
+let test_terminal_console_model_projects_status_first_inspect_details () =
+  let issue =
+    Issue.empty ~id:"I8" ~identifier:"#8" ~title:"Inspect\027[31m details\027[0m" ~state:"In progress"
+  in
+  let goal_loop =
+    {
+      (goal_loop_fixture ~state:"needs_attention" ~attempt_count:2
+         ~latest_evidence:(Some "pnpm\027[31m test failed\027[0m")
+         ~stop_outcome:(Some "needs_attention")
+         ~stop_reason:(Some "maxTurns\027[31m reached\027[0m")
+         ~next_action:(Some "Review\027]0;spoof\007 remediation")
+         ~diagnostics_path:(Some "/tmp/\027[33mgoal-loop.json\027[0m") ())
+      with
+      Runtime_state.issue_id = "I8";
+      issue_identifier = "#8";
+      goal = "Inspect task details";
+    }
+  in
+  let state =
+    {
+      (Runtime_state.empty ()) with
+      issues = [ issue ];
+      issue_errors =
+        [
+          {
+            Runtime_state.issue_id = "I8";
+            issue_identifier = "#8";
+            error = "build\027[31m failed\027[0m";
+            goal_usage = Some { Runtime_state.status = Some "blocked"; time_used_seconds = Some 2.; tokens_used = Some 5 };
+          };
+        ];
+      goal_loops = [ goal_loop ];
+    }
+    |> Runtime_state.set_context_status "I8"
+         (Runtime_state.make_context_status ~state:"warning" ~summary:"Context\000 needs review" ())
+  in
+  let model = Terminal_console_model.of_runtime_state state in
+  match model.active with
+  | [ row ] ->
+      let details = inspect_detail_texts row.Terminal_console_model.inspect_details in
+      Alcotest.(check (list string)) "status layer before provenance"
+        [
+          "Status: attention";
+          "Blocker: maxTurns reached";
+          "Current error: build failed";
+          "Remediation: Review remediation";
+          "Attention: Task Needs Attention";
+          "Context Status: warning: Context needs review";
+          "Task: #8 Inspect details";
+        ]
+        (list_prefix 7 details);
+      Alcotest.(check bool) "progress evidence follows provenance" true
+        (contains_substring (String.concat "\n" details) "Progress Evidence: pnpm test failed");
+      check_no_terminal_control "inspect details sanitized" (String.concat "\n" details)
+  | _ -> Alcotest.fail "expected one inspectable attention row"
 
 let test_terminal_console_model_projects_compozy_progress () =
   let progress =
@@ -19958,6 +20077,10 @@ let () =
             test_runtime_state_goal_loops_compatibility_and_optional_fields;
           Alcotest.test_case "exposes context status" `Quick test_runtime_state_exposes_context_status;
           Alcotest.test_case "projects Terminal Console idle mode" `Quick test_terminal_console_model_projects_idle;
+          Alcotest.test_case "preserves absent Queue with active tasks" `Quick
+            test_terminal_console_model_preserves_absent_queue_with_active_tasks;
+          Alcotest.test_case "preserves present empty Queue" `Quick
+            test_terminal_console_model_preserves_present_empty_queue;
           Alcotest.test_case "projects Terminal Console running rows sanitized" `Quick
             test_terminal_console_model_projects_running_sanitized;
           Alcotest.test_case "projects Terminal Console running Goal Loop sanitized" `Quick
@@ -19974,6 +20097,8 @@ let () =
             test_terminal_console_model_projects_ordered_queue;
           Alcotest.test_case "projects Terminal Console ordered queue attention rows" `Quick
             test_terminal_console_model_projects_ordered_queue_attention;
+          Alcotest.test_case "projects status-first inspect details" `Quick
+            test_terminal_console_model_projects_status_first_inspect_details;
           Alcotest.test_case "projects Terminal Console Compozy progress" `Quick
             test_terminal_console_model_projects_compozy_progress;
           Alcotest.test_case "sanitizes Terminal Console display text" `Quick
