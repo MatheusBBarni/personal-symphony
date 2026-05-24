@@ -54,8 +54,8 @@
       "stallTimeoutMs": 300000
     },
     "reviewer": {
-      "harness": "pi",
-      "model": "zai/GLM-5.1",
+      "harness": "codex",
+      "model": "gpt-5.5",
       "reasoningEffort": "high",
       "turnTimeoutMs": 3600000,
       "readTimeoutMs": 5000,

@@ -460,6 +460,7 @@ _Avoid_: reinitialize, reset
 - A **Claude Harness** uses CLI `stream-json` for the first Claude integration.
 - A **Claude Harness** has **Harness Loop** disabled by default.
 - A **PI Harness** uses PI non-interactive print mode for the first PI integration.
+- A **PI Harness** may remain silent until process exit; Symphony must not treat lack of streamed output as a stall before the Harness turn timeout expires.
 - A **Cursor Harness** uses Cursor CLI non-interactive execution with CLI `stream-json` output.
 - A **Cursor Harness** has **Harness Loop** disabled by default.
 - A selected **PI Harness** must have an installed command executable and PI authentication before dispatch.

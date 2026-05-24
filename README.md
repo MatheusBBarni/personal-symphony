@@ -559,6 +559,11 @@ and PI Harnesses have loop disabled, so those Harnesses run the normal prompt ev
 current tracker status, labels, priority when present, blocker references when present,
 attempt, and stage agent name. It omits issue creation and update timestamps.
 
+PI non-interactive print mode may stay silent until the model finishes. Symphony still enforces the
+Harness `turnTimeoutMs` for PI, but it does not use the output-stall watchdog to fail a silent PI run
+before that turn timeout expires. Streaming Harnesses such as Claude `stream-json` and Cursor
+`stream-json` continue to use output and workspace activity as progress signals.
+
 Codex loop handoff requires a Codex command that accepts the configured Harness loop command from
 standard input. For Codex goals, enable goals in `~/.codex/config.toml`:
 

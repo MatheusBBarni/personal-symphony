@@ -9675,6 +9675,137 @@ let test_orchestrator_uses_workspace_changes_as_agent_activity () =
               Alcotest.(check (option string)) "activity message" (Some "workspace files updated") row.last_message
           | _ -> Alcotest.fail "expected one running row"))
 
+let test_orchestrator_pi_silence_does_not_trigger_stall_timeout () =
+  with_temp_dir "symphony-pi-silent-stall-" (fun root ->
+      let config =
+        {
+          Config.workflow_path = "settings.json";
+          repository_root = root;
+          tracker =
+            {
+              kind = "github";
+              owner = "acme";
+              repo = "widgets";
+              project_number = 7;
+              api_key_env = "GITHUB_TOKEN";
+              api_key = Some "token";
+              minibeads_root = ".beads";
+              minibeads_command = "mb";
+              compozy_root = ".compozy/tasks";
+              compozy_max_task_step_retries = 2;
+              active_states = [ "Todo" ];
+              terminal_states = [ "Done" ];
+              ready_status = "Todo";
+              ready_status_explicit = true;
+              project_status_field = "Status";
+              project_status_on_dispatch = None;
+              project_status_on_success = None;
+              project_status_on_retry = None;
+              ensure_project_statuses = true;
+            };
+          polling = { interval_ms = 1000 };
+          workspace = { root = Filename.concat root "workspaces" };
+          git = Config.default_git;
+          agent = { max_concurrent_agents = 1; max_turns = 10; max_retry_backoff_ms = 1000 };
+          codex =
+            {
+              command = "true";
+              model = Config.default_model;
+              reasoning_effort = Config.default_reasoning_effort;
+              turn_timeout_ms = 100000;
+              read_timeout_ms = 1000;
+              stall_timeout_ms = 1;
+            };
+          agent_harnesses_explicit = false;
+          agent_harnesses = [];
+          logical_agents = [];
+          legacy_agent_harness_paths = [];
+          server = Config.default_server;
+          pull_request = Config.default_pull_request;
+          protected_paths = Config.default_protected_paths;
+          sandbox = Config.default_sandbox;
+          stage_agents = { enabled = false; root = Filename.concat root "agents"; default_agent = None; stages = [] };
+        }
+      in
+      let pi_harness =
+        {
+          Config.name = "pi";
+          kind = "pi";
+          command = Config.default_pi_command;
+          model = Config.default_pi_model;
+          reasoning_effort = Config.default_reasoning_effort;
+          turn_timeout_ms = 100000;
+          read_timeout_ms = 1000;
+          stall_timeout_ms = 1;
+          loop_enabled = false;
+          loop_command = "";
+        }
+      in
+      let issue = Issue.empty ~id:"I1" ~identifier:"#1" ~title:"Silent PI" ~state:"Todo" in
+      let workspace = Workspace.create_for_issue ~root:(Filename.concat root "workspaces") issue.identifier in
+      let stdout_path = Filename.concat workspace.path "stdout.log" in
+      let stderr_path = Filename.concat workspace.path "stderr.log" in
+      Util.write_file stdout_path "";
+      Util.write_file stderr_path "";
+      let pid = Unix.create_process "/bin/sh" [| "/bin/sh"; "-lc"; "sleep 30" |] Unix.stdin Unix.stdout Unix.stderr in
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+          ignore (try Unix.waitpid [] pid with Unix.Unix_error _ -> (0, Unix.WEXITED 0)))
+        (fun () ->
+          let orchestrator =
+            Orchestrator.make ~fetch:(fun _ -> Ok []) ~set_status:(fun _ _ _ -> Ok ()) ~config
+              ~prompt_template:"Issue {{ issue.identifier }}" ()
+          in
+          Orchestrator.set_state orchestrator
+            {
+              (Runtime_state.empty ()) with
+              running =
+                [
+                  {
+                    Runtime_state.issue;
+                    stage_agent = None;
+                    harness_name = Some "pi";
+                    harness_kind = Some "pi";
+                    sandbox_enabled = None;
+                    sandbox_provider = None;
+                    sandbox_reuse_outcome = None;
+                    stage_states = [];
+                    session_id = Some "pid:pi";
+                    turn_count = 0;
+                    last_event = Some "launched";
+                    last_message = None;
+                    started_at = "2026-05-04T00:00:00Z";
+                    last_event_at = None;
+                    tokens = { input_tokens = 0; output_tokens = 0; total_tokens = 0 };
+                    goal_usage = None;
+                  };
+                ];
+            };
+          orchestrator.Orchestrator.children <-
+            [
+              {
+                Orchestrator.pid;
+                issue;
+                stage = None;
+                harness = pi_harness;
+                issue_id = issue.id;
+                issue_identifier = issue.identifier;
+                issue_title = issue.title;
+                workspace;
+                started_at = Unix.time ();
+                last_output_at = Unix.time () -. 10.;
+                stdout_path = Some stdout_path;
+                stderr_path = Some stderr_path;
+                stdout_size = 0;
+                stderr_size = 0;
+              };
+            ];
+          Orchestrator.reap_children orchestrator;
+          let state = Orchestrator.get_state orchestrator in
+          Alcotest.(check int) "PI still running" 1 (List.length state.running);
+          Alcotest.(check int) "PI not retried" 0 (List.length state.retrying)))
+
 let test_orchestrator_preserves_goal_usage_on_blocked_issue_error () =
   with_temp_dir "symphony-blocked-goal-usage-" (fun root ->
       let config =
@@ -20400,6 +20531,8 @@ let () =
             `Quick test_orchestrator_parses_final_output_before_timeout_retry;
           Alcotest.test_case "uses workspace changes as agent activity"
             `Quick test_orchestrator_uses_workspace_changes_as_agent_activity;
+          Alcotest.test_case "PI silence does not trigger stall timeout" `Quick
+            test_orchestrator_pi_silence_does_not_trigger_stall_timeout;
           Alcotest.test_case "preserves goal usage on blocked issue error"
             `Quick test_orchestrator_preserves_goal_usage_on_blocked_issue_error;
           Alcotest.test_case "startup reconciliation merges completed worktrees in order"

@@ -66,6 +66,16 @@ exception Orchestrator_error of string
 
 type protected_path_match = { path : string; pattern_name : string; pattern : string }
 
+let harness_uses_deferred_output (harness : Config.agent_harness) =
+  String.lowercase_ascii harness.kind = "pi"
+
+let child_turn_timed_out now (child : child) =
+  now -. child.started_at > float_of_int child.harness.turn_timeout_ms /. 1000.
+
+let child_stall_timed_out now (child : child) =
+  (not (harness_uses_deferred_output child.harness))
+  && now -. child.last_output_at > float_of_int child.harness.stall_timeout_ms /. 1000.
+
 let runtime_tokens = { Runtime_state.input_tokens = 0; output_tokens = 0; total_tokens = 0 }
 
 let colors_enabled () = Sys.getenv_opt "NO_COLOR" = None
@@ -4350,10 +4360,7 @@ let reap_children orchestrator =
             mark_blocked ~child orchestrator child.issue_id reason;
             (child.issue_id :: finished, running)
         | None ->
-            if
-              now -. child.started_at > float_of_int child.harness.turn_timeout_ms /. 1000.
-              || now -. child.last_output_at > float_of_int child.harness.stall_timeout_ms /. 1000.
-            then (
+            if child_turn_timed_out now child || child_stall_timed_out now child then (
               refresh_child_output ~force:true orchestrator child;
               kill_child child;
               mark_child_failed orchestrator child "agent timed out";

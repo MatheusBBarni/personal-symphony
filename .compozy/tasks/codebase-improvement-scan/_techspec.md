@@ -81,13 +81,15 @@ Allowed boundaries:
 - `frontend`
 - `maintainer workflow`
 
-Allowed runtime-semantics impact:
+Allowed runtime-semantics impact values, with comma-separated values allowed when a finding crosses multiple runtime or product-semantics boundaries:
 - `none`
 - `Runtime Contract`
 - `Runtime Home`
 - `Runtime State`
 - `Task Branch`
 - `Bootstrap`
+- `Compozy PRD Run`
+- `Compozy Task Step`
 - `other`
 
 ### `_tasks.md` Format

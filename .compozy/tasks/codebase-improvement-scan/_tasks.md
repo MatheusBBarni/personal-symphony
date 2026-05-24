@@ -1,6 +1,6 @@
 # Codebase Improvement Scan - Discovery Task List
 
-> MVP discovery artifact: this `_tasks.md` is non-runnable backlog output. Do not run `compozy tasks validate --name codebase-improvement-scan` against it until Phase 2 converts selected findings into executable `task_NN.md` Compozy Task Steps.
+> This MVP `_tasks.md` is non-runnable discovery output. Do not run `compozy tasks validate --name codebase-improvement-scan` against it until Phase 2 converts selected findings into executable `task_NN.md` Compozy Task Steps.
 
 ## Tasks
 
@@ -23,7 +23,7 @@
 | F-015 | Share Web Dashboard host normalization between config parsing and server binding | maintainability | Web Dashboard, CLI | Medium | yes | yes |
 | F-016 | Replace impossible-state `assert false` in CLI branch selection with an explicit diagnostic | defect | CLI | Medium | no | no |
 | F-017 | Replace dashboard auth-token `failwith` with typed startup failure handling | security/blast-radius | Web Dashboard | Medium | no | no |
-| F-018 | Add safer affordances to the Compozy completion utility before it moves PRD Run directories | product polish | Compozy PRD Run, maintainer workflow | Low | no | no |
+| F-018 | Add safer affordances to the Compozy completion utility before it moves PRD Run directories | polish | Compozy PRD Run, maintainer workflow | Low | no | no |
 
 ## F-001: Make custom GitHub token env names actually work with `gh api`
 
@@ -316,7 +316,7 @@
 
 ## F-018: Add safer affordances to the Compozy completion utility before it moves PRD Run directories
 
-- Category: product polish
+- Category: polish
 - Boundary: Compozy PRD Run, maintainer workflow
 - Priority: Low
 - Evidence:
@@ -334,7 +334,7 @@
 ## Manual Metadata Checklist
 
 - Findings total: 18
-- Categories represented: defect, maintainability, polish, security/blast-radius, docs hygiene, Runtime Contract drift, agent-readiness risk, product polish
+- Categories represented: defect, maintainability, polish, security/blast-radius, docs hygiene, Runtime Contract drift, agent-readiness risk
 - Guardrail candidates: 9
 - Deferred structural follow-ups: 5
 - Every finding includes category, boundary, priority, evidence, acceptance target, verification expectation, runtime-semantics impact, guardrail flag, and deferred flag.
