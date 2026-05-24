@@ -52,6 +52,7 @@ type task_row = {
 };
 
 type readiness_row = {
+  id: string,
   requirement: string,
   remediation: string,
   inspect_details: list(inspect_detail),
@@ -664,12 +665,17 @@ let goal_loop_row = (state, loop: Runtime_state.goal_loop) => {
   |> with_task_inspect_details;
 };
 
-let readiness_row = (gap: Runtime_state.readiness_gap) => {
-  requirement: sanitize(gap.requirement),
-  remediation: sanitize(gap.remediation),
-  inspect_details: [],
-}
-|> with_readiness_inspect_details;
+let readiness_row = (index, gap: Runtime_state.readiness_gap) => {
+  let requirement = sanitize(gap.requirement);
+  let remediation = sanitize(gap.remediation);
+  {
+    id: Printf.sprintf("readiness:%d:%s:%s", index, requirement, remediation),
+    requirement: requirement,
+    remediation: remediation,
+    inspect_details: [],
+  }
+  |> with_readiness_inspect_details;
+};
 
 let queue_row = (entry: Runtime_state.ordered_queue_entry) => {
   let reason = sanitize_option(entry.skip_reason);
@@ -946,7 +952,7 @@ let of_runtime_state = state => {
     @ List.map(attention_row(state), state.issue_errors)
     @ unmatched_goal_loop_rows;
 
-  let readiness = List.map(readiness_row, state.readiness_gaps);
+  let readiness = List.mapi(readiness_row, state.readiness_gaps);
   let queue =
     switch (state.ordered_queue) {
     | Some(queue) => List.map(queue_row, queue.entries)

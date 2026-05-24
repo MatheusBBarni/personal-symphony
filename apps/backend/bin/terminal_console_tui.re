@@ -538,8 +538,7 @@ let list_nth_opt = (list, index) => {
 };
 
 let task_inspect_key = (row: Projection.task_row) => row.id;
-let readiness_inspect_key = (row: Projection.readiness_row) =>
-  row.requirement;
+let readiness_inspect_key = (row: Projection.readiness_row) => row.id;
 
 let selected_inspect_key = (snapshot, interaction, tab) =>
   switch (tab) {

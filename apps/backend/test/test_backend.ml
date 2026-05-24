@@ -8070,13 +8070,41 @@ let test_terminal_console_tui_enter_toggles_readiness_inline_inspect () =
   in
   let opened = Shell.apply_key Shell.Enter_key model in
   Alcotest.(check (option (pair string string))) "readiness inspect target"
-    (Some ("Readiness", "tracker.owner"))
+    (Some ("Readiness", "readiness:0:tracker.owner:set owner"))
     (terminal_console_inspect_target opened.model);
   let lines = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Readiness" in
   check_line_directly_after "readiness inline status follows row" lines
     "READINESS GAP 1 requirement: tracker.owner" "Status: readiness_blocked";
   check_line_contains "readiness inline blocker" lines "Blocker: tracker.owner";
   check_line_contains "readiness inline remediation" lines "Remediation: set owner"
+
+let test_terminal_console_tui_readiness_inspect_targets_duplicate_row_identity () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let state =
+    Runtime_state.empty
+      ~readiness_gaps:
+        [
+          { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" };
+          { Runtime_state.requirement = "tracker.owner"; remediation = "set repository owner" };
+        ]
+      ()
+  in
+  let base = Shell.initial_model state in
+  let model =
+    Shell.{ base with interaction = { base.interaction with active_tab = Readiness } }
+  in
+  let moved = Shell.apply_key Shell.Down_key model in
+  let opened = Shell.apply_key Shell.Enter_key moved.model in
+  Alcotest.(check (option (pair string string))) "duplicate readiness inspect target"
+    (Some ("Readiness", "readiness:1:tracker.owner:set repository owner"))
+    (terminal_console_inspect_target opened.model);
+  let lines = Shell.render_model opened.model |> fun rendered -> Shell.panel_lines rendered "Readiness" in
+  check_line_directly_after "first duplicate remains collapsed" lines
+    "READINESS GAP 1 requirement: tracker.owner" "READINESS GAP 2 requirement: tracker.owner";
+  check_line_directly_after "second duplicate expands" lines
+    "READINESS GAP 2 requirement: tracker.owner" "Status: readiness_blocked";
+  check_line_contains "second duplicate remediation" lines "Remediation: set repository owner";
+  check_line_absent "first duplicate remediation stays collapsed" lines "Remediation: set owner"
 
 let test_terminal_console_tui_enter_toggles_attention_inline_inspect () =
   let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
@@ -20321,6 +20349,8 @@ let () =
             test_terminal_console_tui_enter_toggles_tasks_inline_inspect;
           Alcotest.test_case "Enter toggles Readiness inline inspect" `Quick
             test_terminal_console_tui_enter_toggles_readiness_inline_inspect;
+          Alcotest.test_case "Readiness inspect distinguishes duplicate requirements" `Quick
+            test_terminal_console_tui_readiness_inspect_targets_duplicate_row_identity;
           Alcotest.test_case "Enter toggles Needs attention inline inspect" `Quick
             test_terminal_console_tui_enter_toggles_attention_inline_inspect;
           Alcotest.test_case "Logs Enter ignores inline inspect" `Quick
