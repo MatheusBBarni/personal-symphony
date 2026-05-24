@@ -64,13 +64,13 @@ Modify the projection layer described in the TechSpec "Core Interfaces" and "Dat
 
 ## Tests
 - Unit tests:
-  - [ ] `Runtime_state.ordered_queue = None` projects as Queue absent while keeping active tasks intact.
-  - [ ] `Runtime_state.ordered_queue = Some { entries = [] }` projects as Queue present with zero Queue rows.
-  - [ ] Queue entries with skipped, failed, completed, and attention states preserve status-first detail inputs.
-  - [ ] Task-like inspect detail places status, blocker, error, remediation, and attention context before provenance and progress evidence.
-  - [ ] Projected inspect detail sanitizes untrusted task titles, details, errors, and remediation text.
+  - [x] `Runtime_state.ordered_queue = None` projects as Queue absent while keeping active tasks intact.
+  - [x] `Runtime_state.ordered_queue = Some { entries = [] }` projects as Queue present with zero Queue rows.
+  - [x] Queue entries with skipped, failed, completed, and attention states preserve status-first detail inputs.
+  - [x] Task-like inspect detail places status, blocker, error, remediation, and attention context before provenance and progress evidence.
+  - [x] Projected inspect detail sanitizes untrusted task titles, details, errors, and remediation text.
 - Integration tests:
-  - [ ] Existing Terminal Console model fixtures still compile and render from the updated projection shape.
+  - [x] Existing Terminal Console model fixtures still compile and render from the updated projection shape.
 - Test coverage target: >=80%
 - All tests must pass
 
