@@ -2003,9 +2003,7 @@ let make ?ordered_queue ?(launch : launch = shell_launch) ?(fetch = default_fetc
     ?(set_status = default_set_status)
     ?(commit_stage = git_commit_stage_changes) ?(batch_pull_request_handoff = gh_batch_pull_request_handoff)
     ?(notify_state = fun _ -> ()) ~(config : Config.t) ~prompt_template () =
-  let workspace_repository_name =
-    match Util.trim config.tracker.repo with "" -> Filename.basename config.repository_root | repo -> repo
-  in
+  let workspace_repository_name = Filename.basename config.repository_root in
   let tracker = Issue_tracker.make config in
   let resolved_ordered_queue = resolve_ordered_queue tracker ordered_queue in
   {

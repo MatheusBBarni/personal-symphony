@@ -875,8 +875,15 @@ let test_goal_loop_readiness_state_preserves_terminal_inspection () =
           Alcotest.(check bool) "readiness policy blocks dispatch" true
             (Runtime_policy.action ~mode:Cli_mode.Terminal_console ~readiness_gaps:state.readiness_gaps
             = Runtime_policy.Serve_readiness_state);
+          Alcotest.(check (option string)) "readiness state uses Workspace Repository folder name"
+            (Some (Filename.basename config.repository_root))
+            state.Runtime_state.workspace_repository_name;
           let projection = Terminal_console_model.of_runtime_state state in
           Alcotest.(check string) "Terminal Console stays inspectable" "readiness_blocked" projection.mode;
+          Alcotest.(check bool) "Terminal Console summary names Workspace Repository folder" true
+            (List.exists
+               (fun line -> line = "Workspace Repository: " ^ Filename.basename config.repository_root)
+               projection.summary);
           Alcotest.(check bool) "Terminal Console projects Goal Loop readiness" true
             (List.exists
                (fun (row : Terminal_console_model.readiness_row) ->
@@ -7673,6 +7680,17 @@ let test_terminal_console_tui_uses_cursor_design_theme () =
     ("error is not a timeline pastel", Shell.terminal_console_theme Theme.Status_error);
   ]
   |> List.iter (fun (label, color) -> check_not_timeline label color);
+  let tab_color tab = Shell.terminal_console_theme (Shell.theme_slot_of_tone (Shell.tab_tone tab)) in
+  let tab_colors = List.map tab_color [ Shell.Queue; Shell.Logs; Shell.Tasks; Shell.Readiness; Shell.Attention ] in
+  let check_status_not_tab label mode =
+    Alcotest.(check bool) label false
+      (List.exists (fun color -> color = Shell.status_badge_color mode) tab_colors)
+  in
+  check_status_not_tab "running status color differs from tab colors" "running";
+  check_status_not_tab "readiness status color differs from tab colors" "readiness_blocked";
+  check_status_not_tab "attention status color differs from tab colors" "attention";
+  Alcotest.(check bool) "status success uses a different green" false
+    (Shell.status_badge_color "running" = Shell.terminal_console_theme Theme.Status_success);
   let root = Shell.view (Shell.initial_model (Runtime_state.empty ())) in
   Alcotest.(check bool) "root uses cursor dark canvas" true
     ((root.Tui.Node.style).Tui.Style.bg = Some (Shell.terminal_console_theme Theme.Bg_base))
@@ -7688,6 +7706,29 @@ let terminal_console_queue_fixture () =
         { Runtime_state.issue_identifier = "#5"; title = Some "Five"; state = "skipped"; skip_reason = Some "Issue skipped" };
       ];
   }
+
+let test_terminal_console_tui_initial_model_selects_readiness_and_attention () =
+  let module Shell = Symphony_terminal_console_shell.Terminal_console_tui in
+  let queue = terminal_console_queue_fixture () in
+  let readiness_state =
+    Runtime_state.empty ~ordered_queue:queue
+      ~readiness_gaps:[ { Runtime_state.requirement = "tracker.owner"; remediation = "set owner" } ]
+      ()
+  in
+  let readiness_model = Shell.initial_model readiness_state in
+  Alcotest.(check string) "readiness tab selected" "Readiness"
+    (Shell.focused_tab_title readiness_model.Shell.interaction.Shell.active_tab);
+  let issue = Issue.empty ~id:"I41" ~identifier:"#41" ~title:"Attention task" ~state:"In progress" in
+  let attention_state =
+    {
+      (Runtime_state.empty ~ordered_queue:queue ()) with
+      issues = [ issue ];
+      issue_errors = [ { Runtime_state.issue_id = "I41"; issue_identifier = "#41"; error = "needs user"; goal_usage = None } ];
+    }
+  in
+  let attention_model = Shell.initial_model attention_state in
+  Alcotest.(check string) "attention tab selected" "Needs attention"
+    (Shell.focused_tab_title attention_model.Shell.interaction.Shell.active_tab)
 
 let terminal_console_compozy_fixture =
   {
@@ -20454,6 +20495,8 @@ let () =
             test_terminal_console_tui_status_labels;
           Alcotest.test_case "builds Tui shell model from sanitized projection" `Quick
             test_terminal_console_tui_initial_model_uses_projection;
+          Alcotest.test_case "selects readiness and attention tabs on entry" `Quick
+            test_terminal_console_tui_initial_model_selects_readiness_and_attention;
           Alcotest.test_case "renders project title and primary tabs" `Quick
             test_terminal_console_tui_project_title_and_tabs;
           Alcotest.test_case "uses Cursor design theme for Terminal Console" `Quick

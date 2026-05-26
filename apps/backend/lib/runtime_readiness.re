@@ -90,8 +90,10 @@ let state = (~ordered_queue=?, ~queue_parse_problems=[], config) => {
         ),
       )
     };
+  let workspace_repository_name = Filename.basename(config.repository_root);
   Runtime_state.empty(
     ~last_error?,
+    ~workspace_repository_name,
     ~tracker_kind=config.tracker.kind,
     ~status_order=Config.project_status_order(config),
     ~ordered_queue=?ordered_queue_state,

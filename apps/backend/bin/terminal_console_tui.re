@@ -182,6 +182,31 @@ let default_interaction = {
   inspect_target: None,
 };
 
+let task_state_is_attention = state =>
+  switch (String.lowercase_ascii(state)) {
+  | "attention"
+  | "needs_attention"
+  | "budget_exhausted" => true
+  | _ => false
+  };
+
+let snapshot_has_attention_rows = (snapshot: Projection.t) =>
+  List.exists(
+    (row: Projection.task_row) => task_state_is_attention(row.state),
+    snapshot.active,
+  );
+
+let initial_active_tab = (snapshot: Projection.t) =>
+  if (snapshot_has_attention_rows(snapshot)) {
+    Attention;
+  } else if (snapshot.readiness != []) {
+    Readiness;
+  } else if (snapshot.queue_present) {
+    Queue;
+  } else {
+    Tasks;
+  };
+
 let status_label =
   fun
   | "idle" => "Idle"
@@ -302,12 +327,7 @@ let initial_model =
   let snapshot = Projection.of_runtime_state(state);
   let interaction = {
     ...default_interaction,
-    active_tab:
-      if (snapshot.Projection.queue_present) {
-        Queue;
-      } else {
-        Tasks;
-      },
+    active_tab: initial_active_tab(snapshot),
   };
   {
     snapshot,
@@ -478,12 +498,7 @@ let visible_active_rows = (snapshot, interaction) =>
 let visible_queue_rows = (snapshot, interaction) =>
   visible_task_rows(interaction, snapshot.Projection.queue);
 let is_attention_row = (row: Projection.task_row) =>
-  switch (String.lowercase_ascii(row.state)) {
-  | "attention"
-  | "needs_attention"
-  | "budget_exhausted" => true
-  | _ => false
-  };
+  task_state_is_attention(row.state);
 
 let visible_attention_rows = (snapshot, interaction) =>
   visible_active_rows(snapshot, interaction) |> List.filter(is_attention_row);
@@ -2589,6 +2604,10 @@ let cursor_error = Color.rgb(232, 83, 118);
 /* Cursor timeline pastels are reserved for agent timeline markers, not global semantics. */
 let terminal_console_warning = Color.rgb(218, 164, 65);
 let terminal_console_info = Color.rgb(139, 177, 224);
+let terminal_status_success = Color.rgb(34, 197, 94);
+let terminal_status_warning = Color.rgb(250, 204, 21);
+let terminal_status_error = Color.rgb(248, 113, 113);
+let terminal_status_info = Color.rgb(56, 189, 248);
 
 let terminal_console_theme =
   Theme.of_palette(
@@ -2636,6 +2655,10 @@ let current_design = () =>
 
 let theme_color = slot => active_render_theme^(slot);
 
+let color_is_disabled = () =>
+  theme_color(Theme.Fg_default) == Color.Default
+  && theme_color(Theme.Bg_surface) == Color.Default;
+
 let span = (~attrs=[], ~bg=Theme.Bg_surface, slot, text) =>
   Span.make(
     ~style=
@@ -2662,6 +2685,21 @@ let tab_tone =
   | Tasks => Components.Success
   | Readiness => Components.Warning
   | Attention => Components.Error;
+
+let status_badge_color = mode =>
+  if (color_is_disabled()) {
+    Color.Default;
+  } else {
+    switch (mode) {
+    | "idle" => theme_color(Theme.Fg_muted)
+    | "ready"
+    | "running" => terminal_status_success
+    | "retrying" => terminal_status_warning
+    | "attention" => terminal_status_error
+    | "readiness_blocked" => terminal_status_warning
+    | _ => terminal_status_info
+    };
+  };
 
 let log_default = text => span(Theme.Fg_default, text);
 let log_muted = (~attrs=[Attr.Dim], text) =>
@@ -3284,6 +3322,27 @@ let tab_node = (active, tab) => {
   />;
 };
 
+let status_badge_node = (mode, label) => {
+  let fg = status_badge_color(mode);
+  let bg = theme_color(Theme.Bg_selection);
+  <J.Box
+    style=Style.(
+      make(
+        ~height=Cells(1),
+        ~padding=spacing_xy(~x=1, ~y=0),
+        ~fg,
+        ~bg,
+        ~attrs=[Attr.Bold],
+        (),
+      )
+    )>
+    <J.Text
+      style=Style.(make(~fg, ~bg, ~attrs=[Attr.Bold], ()))
+      value=label
+    />
+  </J.Box>;
+};
+
 let header_node = (rendered, active_tab, mode) => {
   let title =
     <J.Text
@@ -3310,14 +3369,14 @@ let header_node = (rendered, active_tab, mode) => {
       value={rendered.subheading}
     />;
 
-  let badges =
-    [
-      (tab_tone(active_tab), tab_title(active_tab)),
-      (status_badge_tone(mode), rendered.status_label),
-    ]
-    |> List.map(((tone, label)) =>
-         <J.Badge tone design={current_design()} label />
-       );
+  let badges = [
+    <J.Badge
+      tone={tab_tone(active_tab)}
+      design={current_design()}
+      label={tab_title(active_tab)}
+    />,
+    status_badge_node(mode, rendered.status_label),
+  ];
 
   <J.Box
     style=Style.(
